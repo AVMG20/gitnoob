@@ -51,7 +51,6 @@ onUnmounted(() => window.removeEventListener('keydown', onKey))
 <template>
   <div v-if="state.open" class="scrim" @click="menu.close()" @contextmenu.prevent="menu.close()">
     <div ref="box" class="menu" :style="style" @click.stop>
-      <div v-if="state.title" class="title truncate">{{ state.title }}</div>
       <template v-for="(item, index) in state.items" :key="index">
         <div v-if="item.separator" class="divider" />
         <button
@@ -66,6 +65,9 @@ onUnmounted(() => window.removeEventListener('keydown', onKey))
           <span v-if="item.hint" class="hint">{{ item.hint }}</span>
         </button>
       </template>
+      <!-- What the menu is about, kept below the actions: it is there to
+           confirm the right row was hit, not to be read first. -->
+      <div v-if="state.title" class="title truncate">{{ state.title }}</div>
     </div>
   </div>
 </template>
@@ -89,11 +91,11 @@ onUnmounted(() => window.removeEventListener('keydown', onKey))
 }
 
 .title {
-  padding: 5px 9px 6px;
+  padding: 6px 9px 5px;
   font-size: 11px;
   color: var(--text-faint);
-  border-bottom: 1px solid var(--line-soft);
-  margin-bottom: 4px;
+  border-top: 1px solid var(--line-soft);
+  margin-top: 4px;
 }
 
 .item {

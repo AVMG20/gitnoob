@@ -15,23 +15,36 @@ export interface Profile {
   host: string
   git_name: string | null
   git_email: string | null
+  /** Path to the private key this profile pushes and pulls with. */
+  ssh_key: string | null
   projects: Project[]
   active_project: string | null
 }
 
+export type ReasoningLevel = 'off' | 'minimal' | 'low' | 'medium' | 'high'
+
 export interface AiSettings {
   model: string | null
-  temperature: number
   max_tokens: number
+  reasoning: ReasoningLevel
   commit_style: 'plain' | 'conventional'
 }
+
+/** OpenRouter's effort levels, plus switching thinking off entirely. */
+export const REASONING_LEVELS: { value: ReasoningLevel; label: string }[] = [
+  { value: 'off', label: 'No thinking' },
+  { value: 'minimal', label: 'Minimal' },
+  { value: 'low', label: 'Low' },
+  { value: 'medium', label: 'Medium' },
+  { value: 'high', label: 'High' }
+]
 
 export interface GlobalSettings {
   ai: AiSettings
   graph_page_size: number
-  confirm_force_push: boolean
   auto_fetch_on_open: boolean
   auto_fetch_minutes: number
+  auto_stash: boolean
 }
 
 export interface Config {
@@ -148,6 +161,7 @@ export function emptyProfile(): Profile {
     host: '',
     git_name: null,
     git_email: null,
+    ssh_key: null,
     projects: [],
     active_project: null
   }

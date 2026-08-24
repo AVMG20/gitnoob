@@ -41,7 +41,8 @@ const modes: { id: ResetMode; title: string; what: string }[] = [
 
 async function apply() {
   if (blocked.value) return
-  if (await git.reset(props.oid, mode.value)) emit('close')
+  // Null means it failed; any string, empty or not, means it ran.
+  if ((await git.reset(props.oid, mode.value)) !== null) emit('close')
 }
 
 onMounted(async () => {

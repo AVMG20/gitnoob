@@ -46,6 +46,16 @@ const hit = ref(0)
 const resetTarget = ref<string | null>(null)
 const tagTarget = ref<GraphRow | null>(null)
 
+/**
+ * Commits picked out with shift or ctrl, for the operations that take more than
+ * one. Kept apart from `store.selected`, which is what the right panel shows:
+ * one row is always the subject even when several are marked.
+ */
+const marked = ref<string[]>([])
+const markedSet = computed(() => new Set(marked.value))
+/** Where a shift-click measures its range from. */
+const anchor = ref<string | null>(null)
+
 const total = computed(() => store.rows.length)
 const lanes = computed(() =>
   Math.min(MAX_LANES, Math.max(2, ...store.rows.map((row) => row.width)))
@@ -138,10 +148,59 @@ function onKey(event: KeyboardEvent) {
   }
 }
 
+// --- selecting several commits
+
+/**
+ * Plain click selects one and clears any marks; ctrl adds or removes one; shift
+ * takes everything between the anchor and here. The same three gestures every
+ * list on the desktop uses.
+ */
+function onRowClick(event: MouseEvent, row: GraphRow) {
+  if (row.oid === WIP) {
+    clearMarks()
+    git.select(row.oid)
+    return
+  }
+
+  if (event.shiftKey && anchor.value) {
+    const oids = store.rows.map((r) => r.oid)
+    const from = oids.indexOf(anchor.value)
+    const to = oids.indexOf(row.oid)
+    if (from >= 0 && to >= 0) {
+      const [lo, hi] = from < to ? [from, to] : [to, from]
+      marked.value = oids.slice(lo, hi + 1).filter((oid) => oid !== WIP)
+    }
+  } else if (event.ctrlKey || event.metaKey) {
+    marked.value = markedSet.value.has(row.oid)
+      ? marked.value.filter((oid) => oid !== row.oid)
+      : [...marked.value, row.oid]
+    anchor.value = row.oid
+  } else {
+    clearMarks()
+    anchor.value = row.oid
+  }
+
+  git.select(row.oid)
+}
+
+function clearMarks() {
+  marked.value = []
+  anchor.value = null
+}
+
+/** Right-clicking outside the marks acts on the row under the pointer. */
+function subjects(row: GraphRow): string[] {
+  return markedSet.value.has(row.oid) && marked.value.length > 1 ? marked.value : [row.oid]
+}
+
+// A reload replaces the rows, so marks pointing at them are stale.
+watch(() => store.repo?.path, clearMarks)
+
 // --- context menus
 
 function commitMenu(event: MouseEvent, row: GraphRow) {
   const isHead = row.labels.some((label) => label.kind === 'local' && label.name === store.repo?.head)
+  const picked = subjects(row)
   menu.show(
     event,
     [
@@ -155,9 +214,31 @@ function commitMenu(event: MouseEvent, row: GraphRow) {
       { label: 'Tag this commit…', icon: Tag, action: () => (tagTarget.value = row) },
       { separator: true, label: '' },
       {
-        label: 'Cherry-pick onto current branch',
+        label:
+          picked.length > 1
+            ? `Cherry-pick ${picked.length} commits onto ${store.repo?.head ?? 'this branch'}`
+            : 'Cherry-pick onto current branch',
         icon: GitCommitHorizontal,
-        action: () => git.cherryPick(row.oid)
+        hint: picked.length > 1 ? 'oldest first' : '',
+        action: async () => {
+          if (await git.cherryPick(picked)) clearMarks()
+        }
+      },
+      {
+        label: picked.length > 1 ? `Cherry-pick ${picked.length} without committing` : 'Cherry-pick without committing',
+        icon: GitCommitHorizontal,
+        hint: 'stages the changes',
+        action: async () => {
+          if (await git.cherryPick(picked, { no_commit: true })) clearMarks()
+        }
+      },
+      {
+        label: 'Cherry-pick, recording the origin',
+        icon: GitCommitHorizontal,
+        hint: 'adds "cherry picked from"',
+        action: async () => {
+          if (await git.cherryPick(picked, { record_origin: true })) clearMarks()
+        }
       },
       {
         label: 'Revert this commit',
@@ -207,7 +288,9 @@ function commitMenu(event: MouseEvent, row: GraphRow) {
         action: () => (store.query = row.short)
       }
     ],
-    `${row.short} · ${row.summary.slice(0, 44)}`
+    picked.length > 1
+      ? `${picked.length} commits selected`
+      : `${row.short} · ${row.summary.slice(0, 44)}`
   )
 }
 
@@ -278,6 +361,11 @@ onUnmounted(() => {
           </button>
         </template>
       </span>
+      <!-- Says what a multi-commit action would act on, and gives it back. -->
+      <button v-if="marked.length > 1" class="marks" @click="clearMarks()">
+        {{ marked.length }} commits selected
+        <X :size="12" />
+      </button>
       <span class="cols">
         <span class="col-author">Author</span>
         <span class="col-date">Date</span>
@@ -333,13 +421,14 @@ onUnmounted(() => {
           class="row"
           :class="{
             on: store.selected === item.row.oid,
+            marked: markedSet.has(item.row.oid),
             hit: matchIds.has(item.row.oid),
             dim: store.query.trim() && !matchIds.has(item.row.oid),
             drop: drag.state.over === `commit:${item.row.oid}`
           }"
           :style="{ top: `${item.top}px` }"
           draggable="true"
-          @click="git.select(item.row.oid)"
+          @click="onRowClick($event, item.row)"
           @contextmenu="commitMenu($event, item.row)"
           @dragstart="
             drag.begin($event, {
@@ -484,6 +573,19 @@ onUnmounted(() => {
   opacity: 0.35;
 }
 
+.marks {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  margin-left: auto;
+  padding: 2px 8px;
+  border-radius: 9px;
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--accent);
+  background: rgba(79, 156, 249, 0.16);
+}
+
 .cols {
   display: flex;
   gap: 10px;
@@ -541,6 +643,17 @@ onUnmounted(() => {
 
 .row.on {
   background: var(--bg-active);
+}
+
+/* A marked row reads as part of a set without competing with the one selected
+   row, which is the one the right panel is showing. */
+.row.marked {
+  background: rgba(79, 156, 249, 0.13);
+  box-shadow: inset 2px 0 0 var(--accent);
+}
+
+.row.marked.on {
+  background: rgba(79, 156, 249, 0.2);
 }
 
 .row.dim {

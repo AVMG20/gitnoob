@@ -8,6 +8,7 @@ pub mod graph;
 pub mod journal;
 pub mod refs;
 pub mod remote;
+pub mod ssh;
 pub mod state;
 pub mod work;
 
@@ -298,8 +299,12 @@ async fn reset(oid: String, mode: work::ResetMode, state: State<'_, AppState>) -
 }
 
 #[tauri::command]
-async fn cherry_pick(oid: String, state: State<'_, AppState>) -> Result<String, String> {
-    work::cherry_pick(&state, &oid)
+async fn cherry_pick(
+    oids: Vec<String>,
+    options: Option<work::CherryPickOptions>,
+    state: State<'_, AppState>,
+) -> Result<String, String> {
+    work::cherry_pick(&state, &oids, options.unwrap_or_default())
 }
 
 #[tauri::command]
@@ -488,6 +493,8 @@ fn profile_save(profile: config::Profile, state: State<'_, AppState>) -> Result<
             config.active_profile = Some(profile.id.clone());
         }
     })?;
+    // The key may have been what changed.
+    ssh::apply(&state.config());
     Ok(state.config())
 }
 
@@ -503,6 +510,7 @@ fn profile_delete(id: String, state: State<'_, AppState>) -> Result<config::Conf
         }
     })?;
     let _ = config::secret_set(&config::forge_key(&id), "");
+    ssh::apply(&state.config());
     Ok(state.config())
 }
 
@@ -514,8 +522,10 @@ fn profile_activate(id: String, state: State<'_, AppState>) -> Result<config::Co
             config.active_profile = Some(id.clone());
         }
     })?;
-    // The repository that was open belongs to the previous profile.
+    // The repository that was open belongs to the previous profile, and so does
+    // the key every git command should now be using.
     state.clear_path();
+    ssh::apply(&state.config());
     Ok(state.config())
 }
 
@@ -585,6 +595,38 @@ fn apply_identity(state: State<'_, AppState>) -> Result<String, String> {
     git_cmd::run_checked(&root, &["config", "--local", "user.name", &name])?;
     git_cmd::run_checked(&root, &["config", "--local", "user.email", &email])?;
     Ok(format!("This repository will now commit as {name} <{email}>"))
+}
+
+// --- ssh --------------------------------------------------------------------
+
+/// The key pairs in `~/.ssh`, so a profile can be pointed at one without the
+/// user having to type a path.
+#[tauri::command]
+fn ssh_keys() -> Vec<ssh::SshKey> {
+    ssh::list_keys()
+}
+
+/// Tries the profile's key against its forge and reports who the forge thinks
+/// you are — the quickest way to catch a work key aimed at a personal account.
+#[tauri::command]
+async fn ssh_test(
+    host: Option<String>,
+    key: Option<String>,
+    state: State<'_, AppState>,
+) -> Result<ssh::SshTest, String> {
+    let config = state.config();
+    let profile = config.active();
+    let host = host
+        .filter(|h| !h.trim().is_empty())
+        .or_else(|| profile.map(|p| p.host.clone()))
+        .unwrap_or_default();
+    let key = key.or_else(|| profile.and_then(|p| p.ssh_key.clone()));
+
+    // ssh can sit for as long as ConnectTimeout allows, so keep it off the
+    // thread that draws the window.
+    tauri::async_runtime::spawn_blocking(move || ssh::test(&host, key.as_deref()))
+        .await
+        .map_err(|e| format!("The connection test did not finish: {e}"))?
 }
 
 #[tauri::command]
@@ -695,7 +737,11 @@ pub fn run() {
         .plugin(tauri_plugin_dialog::init())
         .setup(|app| {
             let dir = app.path().app_config_dir()?;
-            app.manage(AppState::new(dir));
+            let state = AppState::new(dir);
+            // Before any git command runs, so the very first fetch already uses
+            // the right key.
+            ssh::apply(&state.config());
+            app.manage(state);
             // The inspector is only compiled into debug builds, and having it
             // open from the start is the only way to see a failure that happens
             // before the page can report anything itself.
@@ -779,6 +825,8 @@ pub fn run() {
             project_close,
             project_reorder,
             apply_identity,
+            ssh_keys,
+            ssh_test,
             secret_set,
             secret_status,
             forge_secret_key,

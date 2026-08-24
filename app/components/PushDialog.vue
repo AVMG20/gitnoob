@@ -2,6 +2,10 @@
 import { computed, onMounted, ref } from 'vue'
 import { relativeTime, useGit, type PushPreview } from '~/composables/useGit'
 
+const props = defineProps<{
+  /** Which branch to push. Null is whatever is checked out. */
+  branch?: string | null
+}>()
 const emit = defineEmits<{ close: [] }>()
 
 const git = useGit()
@@ -21,7 +25,7 @@ const blocked = computed(() => force.value && !acknowledged.value)
 
 async function load(fetchFirst = false) {
   loading.value = true
-  preview.value = await git.pushPreview(undefined, fetchFirst)
+  preview.value = await git.pushPreview(props.branch ?? undefined, fetchFirst)
   // A diverged branch cannot be pushed without a rewrite, so preselect force
   // rather than letting the user discover the rejection the hard way.
   force.value = diverged.value

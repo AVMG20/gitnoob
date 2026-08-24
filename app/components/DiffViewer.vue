@@ -94,7 +94,7 @@ onUnmounted(() => window.removeEventListener('keydown', onKey))
       <button class="btn" title="Copy path" @click="copyText(target.path, 'Path')">
         <Copy :size="14" />
       </button>
-      <button class="btn" title="Reveal in Finder" @click="git.reveal(target.path)">
+      <button class="btn" :title="git.revealLabel" @click="git.reveal(target.path)">
         <FolderOpen :size="14" />
       </button>
       <button class="btn" title="Close (Esc)" @click="close">

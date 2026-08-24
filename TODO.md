@@ -45,6 +45,13 @@ Every request made in this project, so nothing gets dropped between sessions.
 - [x] Sign-in button opening the forge's token page with scopes pre-selected
 - [ ] Real OAuth sign-in (device flow) — needs an application registered with
       GitHub and GitLab, so the client ids have to exist first
+- [x] An SSH key per profile: the profile's key becomes a `GIT_SSH_COMMAND`
+      with `IdentitiesOnly=yes`, applied at startup and on every profile switch,
+      so a work key and a personal key live side by side without editing
+      `~/.ssh/config`. Settings lists the pairs found in `~/.ssh` and has a
+      "test ssh" button that reads the forge's greeting back, naming the account
+- [ ] Match an opened repository's remote host against the profiles and offer
+      to switch to the one that owns it
 - [ ] Apply the profile identity automatically for repositories under a chosen
       directory, rather than only on request
 
@@ -80,12 +87,34 @@ Every request made in this project, so nothing gets dropped between sessions.
 - [x] Search the graph by message, author or hash, with highlighting and
       next/previous (⌘F, ⌘G)
 - [x] Copy hash, short hash, message, patch, path, branch name
+- [x] Cherry-pick several commits at once: shift-click and ctrl-click mark rows
+      in the graph, and the backend sorts them into history order before handing
+      them to git, so picking newest-first still applies oldest-first. Also
+      `--no-commit` (stage without committing, to re-split) and `-x` (record
+      "cherry picked from")
 - [ ] Interactive rebase as a list: reorder, squash, reword, drop
 - [ ] "Fix up into this commit" — pick an older commit and autosquash into it
 - [x] Hunk-level staging: Stage Hunk, Unstage Hunk and Discard Hunk in the diff
       view, applied by feeding a rebuilt one-hunk patch back to `git apply`
 - [ ] Line-level staging (pick individual lines within a hunk)
 - [ ] Drag a branch onto a remote to push it
+
+### Round 3 — Windows, keys, and the toolbar as the interactive part
+- [x] Amend removed from the toolbar; it lives on the commit box, where the
+      message being amended is already in front of you
+- [x] A refused push turns the strip under the toolbar into the next step —
+      pull with rebase, pull and merge, or force push — rather than a dialog
+- [x] Force push always asks a second time, in red, naming the commits that
+      stop being reachable. The dead `confirm_force_push` setting is gone: it
+      was never read, and it promised a way to skip the question
+- [x] Ahead/behind counts use arrow glyphs with a gap, so "↑1" no longer reads
+      as "11"
+- [x] Context menus put the subject at the bottom, under the actions
+- [x] Discard Hunk moved away from Stage Hunk, so the destructive button is not
+      where the hand already is
+- [x] "Reveal in Finder" says Explorer on Windows
+- [x] AI temperature replaced by a thinking level, using OpenRouter's own
+      effort scale plus "no thinking", which is the default
 
 ### Look and feel
 - [x] Lucide icons throughout
@@ -115,8 +144,9 @@ Every request made in this project, so nothing gets dropped between sessions.
 - [ ] Auto-set the upstream on a first push rather than failing with a hint
 - [ ] Undo beyond this session by reading the reflog
 - [ ] Watch the working tree so status updates without a click
-- [ ] Translate common transport failures into something actionable
-      ("Permission denied (publickey)" → which key, which agent, what to run)
+- [x] Translate common transport failures into something actionable: `git_cmd`
+      appends an explanation to a publickey refusal (naming the pinned key), a
+      host-key failure and an HTTPS remote with no credential helper
 - [ ] Offer to fix a detached HEAD rather than only reporting it
 - [ ] Repository health: stale branches, old stashes, unmerged work
 - [ ] Submodules and worktrees
@@ -125,8 +155,11 @@ Every request made in this project, so nothing gets dropped between sessions.
 
 ### Reach
 - [ ] A content security policy that works in the bundled app
-- [ ] Windows and Linux: the keychain is macOS-only today, and the reveal-in-
-      file-manager path needs testing
+- [~] Windows and Linux: the keyring feature is now chosen per platform
+      (`apple-native`, `windows-native`, `sync-secret-service`), so tokens go to
+      the Windows Credential Manager rather than failing to build. The
+      reveal-in-file-manager path already branches on Windows but is untested,
+      and Linux has never been built.
 - [ ] Release build, code signing and notarisation
 
 ## How to run it
@@ -141,13 +174,20 @@ only.
 `cssCodeSplit` is off so the page links one stylesheet rather than fetching
 per-route chunks at runtime.
 
+On Windows the toolchain is rustup with the `x86_64-pc-windows-msvc` host, which
+needs the Visual Studio Build Tools (the MSVC x64 compiler and a Windows SDK)
+and the WebView2 runtime, which Windows 11 ships already. The test sandbox pins
+`core.autocrlf` to false, because Git for Windows turns it on globally and the
+tests compare against LF content.
+
 ## Verification
 
-42 tests pass: 9 unit (remote URL parsing, API bases, URL encoding, AI answer
-parsing, one-hunk patch rebuilding) and 33 integration against real repositories built with the git CLI —
+59 tests pass on Windows: 22 unit (remote URL parsing, API bases, URL encoding, AI answer
+parsing, reasoning levels, one-hunk patch rebuilding, SSH command building, transport-failure
+explanations) and 37 integration against real repositories built with the git CLI —
 graph lane invariants, divergence reporting, every conflict-resolution
-combination, undo and redo, auto-stash, stash operations, empty repository,
-detached HEAD, tracking-branch checkout.
+combination, undo and redo, auto-stash, stash operations, cherry-picking several
+commits out of order, empty repository, detached HEAD, tracking-branch checkout.
 
 The UI is checked by rendering the built bundle in a browser and reading the
 console; the Tauri window itself cannot be screenshotted from this shell

@@ -17,6 +17,7 @@ import {
   DEFAULT_HOSTS,
   FORGE_LABELS,
   OPENROUTER_SECRET,
+  REASONING_LEVELS,
   emptyProfile,
   useConfig,
   type ForgeKind,
@@ -25,9 +26,11 @@ import {
 import { useForge } from '~/composables/useForge'
 import { useAi } from '~/composables/useAi'
 import { useGit } from '~/composables/useGit'
+import { describeKey, useSsh } from '~/composables/useSsh'
 
 const config = useConfig()
 const forge = useForge()
+const ssh = useSsh()
 const ai = useAi()
 const git = useGit()
 
@@ -46,11 +49,13 @@ const forgeIcon = (kind: ForgeKind) =>
 function edit(profile: Profile) {
   editing.value = JSON.parse(JSON.stringify(profile))
   token.value = ''
+  ssh.clear()
 }
 
 function add() {
   editing.value = emptyProfile()
   token.value = ''
+  ssh.clear()
 }
 
 /** Keeps the host in step with the forge unless the user typed their own. */
@@ -118,6 +123,26 @@ async function testConnection() {
   )
 }
 
+// --- ssh keys
+/**
+ * Checks the key against the forge over ssh, which is a different question from
+ * the token check above: the token is what the API accepts, the key is what
+ * push and pull use.
+ */
+async function testSsh() {
+  if (!editing.value) return
+  const result = await ssh.test(editing.value.host, editing.value.ssh_key)
+  const named = result.user ? `${result.message} (${result.user})` : result.message
+  git.note(named, result.ok ? 'info' : 'error')
+}
+
+/** The picker writes a path; clearing it hands ssh back its own choice. */
+function chooseKey(path: string) {
+  if (!editing.value) return
+  editing.value.ssh_key = path || null
+  ssh.clear()
+}
+
 // --- AI
 const apiKey = ref('')
 const keySaved = computed(() => config.hasSecret(OPENROUTER_SECRET))
@@ -152,6 +177,7 @@ async function patchAi(patch: Record<string, unknown>) {
 onMounted(async () => {
   tokenKey.value = await config.forgeSecretKey()
   await config.refreshSecrets()
+  await ssh.loadKeys()
 })
 </script>
 
@@ -294,8 +320,51 @@ onMounted(async () => {
                 "
               />
               <span class="hint faint">
-                Kept in the macOS keychain, never in the config file.
+                Kept in the operating system's keychain, never in the config file.
               </span>
+            </div>
+
+            <div class="field">
+              <span class="label">
+                <KeyRound :size="12" /> SSH key
+              </span>
+              <select
+                class="key-select"
+                :value="editing.ssh_key ?? ''"
+                @change="chooseKey(($event.target as HTMLSelectElement).value)"
+              >
+                <option value="">Let ssh choose (agent or ~/.ssh/config)</option>
+                <option v-for="key in ssh.store.keys" :key="key.path" :value="key.path">
+                  {{ describeKey(key) }}
+                </option>
+                <option
+                  v-if="editing.ssh_key && !ssh.store.keys.some((k) => k.path === editing!.ssh_key)"
+                  :value="editing.ssh_key"
+                >
+                  {{ editing.ssh_key }}
+                </option>
+              </select>
+              <span class="hint faint">
+                Pins this profile to one key, so a work account and a personal account can share a
+                machine without ssh offering the wrong one first. Every fetch, pull and push made
+                while this profile is active uses it and nothing else.
+              </span>
+              <button
+                v-if="editing.forge !== 'none'"
+                class="btn btn-ghost signin"
+                :disabled="ssh.store.testing"
+                @click="testSsh"
+              >
+                <component :is="forgeIcon(editing.forge)" :size="14" />
+                {{ ssh.store.testing ? 'Connecting…' : `Test ssh to ${editing.host || DEFAULT_HOSTS[editing.forge]}` }}
+              </button>
+              <p
+                v-if="ssh.store.result"
+                class="hint"
+                :class="ssh.store.result.ok ? 'ok' : 'err'"
+              >
+                {{ ssh.store.result.message }}
+              </p>
             </div>
 
             <div class="two">
@@ -381,20 +450,22 @@ onMounted(async () => {
               </select>
             </label>
             <label class="field">
-              <span class="label">
-                Temperature
-                <span class="faint">{{ config.settings.value?.ai.temperature }}</span>
-              </span>
-              <input
-                type="range"
-                min="0"
-                max="1"
-                step="0.1"
-                :value="config.settings.value?.ai.temperature"
-                @change="patchAi({ temperature: Number(($event.target as HTMLInputElement).value) })"
-              />
+              <span class="label">Thinking</span>
+              <select
+                :value="config.settings.value?.ai.reasoning"
+                @change="patchAi({ reasoning: ($event.target as HTMLSelectElement).value })"
+              >
+                <option v-for="level in REASONING_LEVELS" :key="level.value" :value="level.value">
+                  {{ level.label }}
+                </option>
+              </select>
             </label>
           </div>
+          <p class="hint faint no-top">
+            OpenRouter's own effort levels, passed on to whichever model you picked. Thinking
+            tokens are billed, and a commit message rarely needs them — a model that cannot reason
+            ignores this either way.
+          </p>
 
           <p class="hint faint">
             With a key and a model set, you get a Generate button on the commit box and
@@ -447,22 +518,6 @@ onMounted(async () => {
               <span class="faint block">
                 Uncommitted work is stashed, the operation runs, then the work comes back. Without
                 this, git refuses and you tidy up by hand.
-              </span>
-            </span>
-          </label>
-
-          <label class="check">
-            <input
-              type="checkbox"
-              :checked="config.settings.value?.confirm_force_push"
-              @change="patchGlobal({ confirm_force_push: ($event.target as HTMLInputElement).checked })"
-            />
-            <span>
-              <strong>Confirm before a force push</strong>
-              <span class="faint block">
-                The dialog always lists what would be dropped; this decides whether it also needs a
-                tick to proceed. Force pushes always use
-                <span class="mono">--force-with-lease</span>.
               </span>
             </span>
           </label>
@@ -693,6 +748,10 @@ select {
   justify-content: center;
   padding: 7px;
   margin-bottom: 7px;
+}
+
+.key-select {
+  margin-bottom: 2px;
 }
 
 .key-row {

@@ -31,6 +31,12 @@ impl Sandbox {
         sandbox.git(&["config", "user.email", "test@example.com"]);
         // Keep the test independent of the machine's global git config.
         sandbox.git(&["config", "commit.gpgsign", "false"]);
+        // Git for Windows defaults `core.autocrlf` to true, which would hand
+        // back CRLF from every checkout and fail the LF comparisons below. The
+        // app honours whatever the user set; the tests pin it so the expected
+        // content is the same on every platform.
+        sandbox.git(&["config", "core.autocrlf", "false"]);
+        sandbox.git(&["config", "core.eol", "lf"]);
         sandbox
     }
 
@@ -1003,4 +1009,122 @@ fn hunk_staging_refuses_when_there_is_nothing_to_stage() {
         gitui_lib::work::apply_hunk(&state, "a.txt", 0, gitui_lib::work::HunkAction::Stage)
             .unwrap_err();
     assert!(error.contains("No unstaged changes"), "unexpected: {error}");
+}
+
+#[test]
+fn cherry_picking_several_commits_applies_them_oldest_first() {
+    let sandbox = Sandbox::new("cherrymany");
+    sandbox.commit("base.txt", "base\n", "Base");
+    sandbox.git(&["checkout", "-q", "-b", "feature"]);
+    sandbox.commit("a.txt", "one\n", "First");
+    sandbox.commit("a.txt", "one\ntwo\n", "Second");
+    sandbox.commit("a.txt", "one\ntwo\nthree\n", "Third");
+
+    let first = sandbox.git(&["rev-parse", "feature~2"]).trim().to_string();
+    let second = sandbox.git(&["rev-parse", "feature~1"]).trim().to_string();
+    let third = sandbox.git(&["rev-parse", "feature"]).trim().to_string();
+
+    sandbox.git(&["checkout", "-q", "main"]);
+    let state = sandbox.state();
+
+    // Newest first on purpose: applying them in this order would conflict, so a
+    // clean result is the proof that they were reordered.
+    gitui_lib::work::cherry_pick(
+        &state,
+        &[third, second, first],
+        gitui_lib::work::CherryPickOptions::default(),
+    )
+    .unwrap();
+
+    assert_eq!(
+        std::fs::read_to_string(sandbox.root.join("a.txt")).unwrap(),
+        "one\ntwo\nthree\n"
+    );
+    let log = sandbox.git(&["log", "--format=%s", "-3"]);
+    let subjects: Vec<&str> = log.lines().collect();
+    assert_eq!(subjects, vec!["Third", "Second", "First"]);
+}
+
+#[test]
+fn cherry_picking_without_committing_leaves_the_change_staged() {
+    let sandbox = Sandbox::new("cherrynocommit");
+    sandbox.commit("base.txt", "base\n", "Base");
+    sandbox.git(&["checkout", "-q", "-b", "feature"]);
+    sandbox.commit("a.txt", "one\n", "First");
+    let oid = sandbox.git(&["rev-parse", "feature"]).trim().to_string();
+
+    sandbox.git(&["checkout", "-q", "main"]);
+    let state = sandbox.state();
+    let head_before = sandbox.git(&["rev-parse", "HEAD"]).trim().to_string();
+
+    gitui_lib::work::cherry_pick(
+        &state,
+        &[oid],
+        gitui_lib::work::CherryPickOptions {
+            no_commit: true,
+            record_origin: false,
+        },
+    )
+    .unwrap();
+
+    // Nothing was committed, but the change is in the index ready to be.
+    assert_eq!(sandbox.git(&["rev-parse", "HEAD"]).trim(), head_before);
+    let status = refs::status(&state).unwrap();
+    assert!(status.staged.iter().any(|e| e.path == "a.txt"));
+}
+
+#[test]
+fn recording_the_origin_names_the_commit_it_came_from() {
+    let sandbox = Sandbox::new("cherryx");
+    sandbox.commit("base.txt", "base\n", "Base");
+    sandbox.git(&["checkout", "-q", "-b", "feature"]);
+    sandbox.commit("a.txt", "one\n", "First");
+    let oid = sandbox.git(&["rev-parse", "feature"]).trim().to_string();
+
+    sandbox.git(&["checkout", "-q", "main"]);
+    let state = sandbox.state();
+    gitui_lib::work::cherry_pick(
+        &state,
+        &[oid.clone()],
+        gitui_lib::work::CherryPickOptions {
+            no_commit: false,
+            record_origin: true,
+        },
+    )
+    .unwrap();
+
+    let message = sandbox.git(&["log", "-1", "--format=%B"]);
+    assert!(
+        message.contains(&format!("(cherry picked from commit {oid})")),
+        "unexpected message: {message}"
+    );
+}
+
+#[test]
+fn cherry_picking_nothing_is_refused() {
+    let sandbox = Sandbox::new("cherrynone");
+    sandbox.commit("a.txt", "one\n", "Base");
+    let state = sandbox.state();
+    let error = gitui_lib::work::cherry_pick(
+        &state,
+        &[],
+        gitui_lib::work::CherryPickOptions::default(),
+    )
+    .unwrap_err();
+    assert!(error.contains("No commits"), "unexpected: {error}");
+}
+
+#[test]
+fn creating_a_branch_reports_what_it_did() {
+    let sandbox = Sandbox::new("branchmsg");
+    sandbox.commit("a.txt", "one\n", "First");
+    let state = sandbox.state();
+
+    // `git checkout -b` writes its confirmation to stderr, so a bare stdout
+    // would be empty here — and a caller testing the result for truth would
+    // read that as failure.
+    let message = refs::create_branch(&state, "feature", None, true).unwrap();
+    assert!(!message.trim().is_empty(), "expected a message, got {message:?}");
+    assert!(message.contains("feature"));
+    assert_eq!(refs::describe(&state).unwrap().head, "feature");
 }

@@ -46,6 +46,12 @@ pub struct Profile {
     pub git_name: Option<String>,
     #[serde(default)]
     pub git_email: Option<String>,
+    /// Private key this profile authenticates with. Unset means ssh decides for
+    /// itself, the way it did before profiles existed. Set, and every git
+    /// command run under this profile uses that key and no other, which is what
+    /// lets a work account and a personal account share one machine.
+    #[serde(default)]
+    pub ssh_key: Option<String>,
     #[serde(default)]
     pub projects: Vec<Project>,
     #[serde(default)]
@@ -61,6 +67,7 @@ impl Profile {
             forge,
             git_name: None,
             git_email: None,
+            ssh_key: None,
             projects: Vec::new(),
             active_project: None,
         }
@@ -74,10 +81,6 @@ pub struct Global {
     pub ai: Ai,
     #[serde(default = "default_page_size")]
     pub graph_page_size: usize,
-    /// Ask before a force push. Off is allowed, but the dialog still explains
-    /// what will be dropped.
-    #[serde(default = "yes")]
-    pub confirm_force_push: bool,
     /// Fetch as soon as a project tab is opened, so the ahead/behind counts are
     /// true rather than whatever they were last session.
     #[serde(default = "yes")]
@@ -95,10 +98,13 @@ pub struct Ai {
     /// An OpenRouter model id, e.g. `anthropic/claude-sonnet-4.5`.
     #[serde(default)]
     pub model: Option<String>,
-    #[serde(default = "default_temperature")]
-    pub temperature: f32,
     #[serde(default = "default_max_tokens")]
     pub max_tokens: u32,
+    /// How hard the model should think before answering, in OpenRouter's own
+    /// terms: `off`, `minimal`, `low`, `medium` or `high`. A model that cannot
+    /// reason ignores it.
+    #[serde(default = "default_reasoning")]
+    pub reasoning: String,
     /// `conventional` or `plain`.
     #[serde(default = "default_commit_style")]
     pub commit_style: String,
@@ -125,11 +131,13 @@ fn yes() -> bool {
 fn default_page_size() -> usize {
     500
 }
-fn default_temperature() -> f32 {
-    0.2
-}
 fn default_max_tokens() -> u32 {
     1500
+}
+/// Off by default: a commit message does not need a reasoning budget, and
+/// thinking tokens are billed.
+fn default_reasoning() -> String {
+    "off".to_string()
 }
 fn default_commit_style() -> String {
     "plain".to_string()
@@ -142,8 +150,8 @@ impl Default for Ai {
     fn default() -> Self {
         Ai {
             model: None,
-            temperature: default_temperature(),
             max_tokens: default_max_tokens(),
+            reasoning: default_reasoning(),
             commit_style: default_commit_style(),
         }
     }
@@ -154,7 +162,6 @@ impl Default for Global {
         Global {
             ai: Ai::default(),
             graph_page_size: default_page_size(),
-            confirm_force_push: true,
             auto_fetch_on_open: true,
             auto_fetch_minutes: default_fetch_minutes(),
             auto_stash: true,

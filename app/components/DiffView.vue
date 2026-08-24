@@ -35,14 +35,9 @@ const paint = (code: string) => highlightLine(code, language.value)
       <div v-for="(hunk, hi) in props.diff.hunks" :key="hi" class="hunk">
         <div class="hunk-head mono">
           <span class="truncate">{{ hunk.header }}</span>
+          <!-- Discard sits away from the staging button, so the destructive
+               one is never where the hand already is. -->
           <span v-if="props.side" class="hunk-actions">
-            <button
-              class="hunk-btn"
-              :disabled="props.busy"
-              @click="emit('hunk', hi, props.side === 'staged' ? 'unstage' : 'stage')"
-            >
-              {{ props.side === 'staged' ? 'Unstage hunk' : 'Stage hunk' }}
-            </button>
             <button
               v-if="props.side === 'unstaged'"
               class="hunk-btn danger"
@@ -51,6 +46,13 @@ const paint = (code: string) => highlightLine(code, language.value)
               @click="emit('hunk', hi, 'discard')"
             >
               Discard hunk
+            </button>
+            <button
+              class="hunk-btn"
+              :disabled="props.busy"
+              @click="emit('hunk', hi, props.side === 'staged' ? 'unstage' : 'stage')"
+            >
+              {{ props.side === 'staged' ? 'Unstage hunk' : 'Stage hunk' }}
             </button>
           </span>
         </div>

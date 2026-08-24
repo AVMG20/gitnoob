@@ -149,7 +149,7 @@ function fileMenu(event: MouseEvent, path: string, side: 'staged' | 'unstaged', 
         disabled: kind !== 'untracked',
         action: () => git.addToGitignore(path)
       },
-      { label: 'Reveal in Finder', icon: FolderOpen, action: () => git.reveal(path) },
+      { label: git.revealLabel, icon: FolderOpen, action: () => git.reveal(path) },
       { label: 'Copy path', icon: Copy, action: () => copyText(path, 'Path') }
     ],
     path

@@ -3,6 +3,8 @@ import { computed, reactive, ref } from 'vue'
 import { invoke } from '@tauri-apps/api/core'
 import {
   Archive,
+  ArrowDown,
+  ArrowUp,
   ChevronRight,
   Cloud,
   Copy,
@@ -81,7 +83,7 @@ async function onDropOnBranch(event: MouseEvent, target: string, targetIsRemote:
           hint: target === head.value ? '' : 'checks out first',
           action: async () => {
             if (target !== head.value) await git.checkout(target)
-            await git.cherryPick(payload.oid)
+            await git.cherryPick([payload.oid])
           }
         }
       ],
@@ -205,7 +207,16 @@ function localMenu(event: MouseEvent, name: string, upstream: string | null) {
       {
         label: upstream ? `Push to ${upstream}` : 'Push and set upstream',
         icon: Upload,
+        hint: 'straight away',
         action: () => git.pushBranch(name, !upstream)
+      },
+      // The same dialog the toolbar's Push opens, for when you want to see what
+      // would go before it goes.
+      {
+        label: 'Push…',
+        icon: Upload,
+        hint: 'with a preview',
+        action: () => git.openPush(name)
       },
       {
         label: 'Copy branch name',
@@ -360,8 +371,18 @@ function stashMenu(event: MouseEvent, index: number, message: string) {
         >
           <GitBranch :size="13" class="glyph" :class="{ current: branch.is_head }" />
           <span class="name truncate">{{ branch.name }}</span>
-          <span v-if="branch.ahead" class="tick up">↑{{ branch.ahead }}</span>
-          <span v-if="branch.behind" class="tick down">↓{{ branch.behind }}</span>
+          <!-- A text arrow at this size sits so close to the digit that "↑1"
+               reads as "11", so the arrow is a glyph with a gap of its own. -->
+          <span v-if="branch.ahead" class="tick up" :title="`${branch.ahead} ahead of the upstream`">
+            <ArrowUp :size="11" :stroke-width="2.5" />{{ branch.ahead }}
+          </span>
+          <span
+            v-if="branch.behind"
+            class="tick down"
+            :title="`${branch.behind} behind the upstream`"
+          >
+            <ArrowDown :size="11" :stroke-width="2.5" />{{ branch.behind }}
+          </span>
           <Cloud v-if="!branch.upstream" :size="11" class="faint no-upstream" />
         </div>
       </div>
@@ -653,8 +674,13 @@ function stashMenu(event: MouseEvent, index: number, message: string) {
 }
 
 .tick {
-  font-size: 10px;
+  display: inline-flex;
+  align-items: center;
+  gap: 1px;
+  margin-left: 3px;
+  font-size: 11px;
   font-weight: 600;
+  font-variant-numeric: tabular-nums;
   flex: none;
 }
 

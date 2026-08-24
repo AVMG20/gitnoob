@@ -31,7 +31,11 @@ const invalid = computed(() => {
 
 async function submit() {
   if (invalid.value) return
-  if (await git.createBranch(name.value.trim(), start.value.trim() || undefined)) emit('close')
+  // Null is the only failure: a command that succeeds quietly still returns a
+  // string, and an empty one would otherwise leave the dialog open saying the
+  // branch it had just made already exists.
+  const created = await git.createBranch(name.value.trim(), start.value.trim() || undefined)
+  if (created !== null) emit('close')
 }
 </script>
 

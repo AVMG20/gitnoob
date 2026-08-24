@@ -1,6 +1,18 @@
 import { invoke } from '@tauri-apps/api/core'
 import { reactive, ref } from 'vue'
 
+/**
+ * What the platform calls its file manager. The backend already opens the right
+ * one; this is only so the menu does not offer a Mac user's Finder to someone
+ * on Windows.
+ */
+function fileManagerName(): string {
+  const agent = typeof navigator === 'undefined' ? '' : navigator.userAgent
+  if (agent.includes('Windows')) return 'Explorer'
+  if (agent.includes('Mac OS')) return 'Finder'
+  return 'the file manager'
+}
+
 export interface RepoInfo {
   path: string
   name: string
@@ -104,6 +116,42 @@ export interface PushPreview {
   force_needed: boolean
   will_orphan: CommitSummary[]
   will_push: CommitSummary[]
+}
+
+/**
+ * A push the remote turned down because the branch has moved on there.
+ *
+ * Kept in the store rather than thrown away with the error, because the way out
+ * — pull, or rewrite the remote — is a choice the toolbar has to offer.
+ */
+export interface PushBlock {
+  remote: string
+  branch: string
+  upstream: string | null
+  /** Git's own rejection, shown so the offer is not taken on trust. */
+  message: string
+}
+
+/**
+ * Whether git turned a push down for being behind, as opposed to failing for
+ * some other reason. Only these are worth offering a pull or a rewrite for.
+ */
+function isRejectedForBeingBehind(out: CmdOutput): boolean {
+  if (out.ok) return false
+  const text = `${out.stdout}\n${out.stderr}`
+  return (
+    text.includes('[rejected]') &&
+    (text.includes('non-fast-forward') ||
+      text.includes('fetch first') ||
+      text.includes('stale info'))
+  )
+}
+
+export interface CherryPickOptions {
+  /** Stage the changes but do not commit, so they can be re-split first. */
+  no_commit?: boolean
+  /** Record "(cherry picked from commit …)" in the message. */
+  record_origin?: boolean
 }
 
 export interface MergeOutcome { ok: boolean; message: string; conflicts: string[] }
@@ -220,6 +268,12 @@ const store = reactive({
   pending: 0,
   /** What the newest in-flight call is doing, for the progress bar. */
   busyLabel: null as string | null,
+  /** Set when a push was rejected, so the toolbar can offer a way out. */
+  pushBlocked: null as PushBlock | null,
+  /** The push dialog, and which branch it is about. Null when closed; a null
+      branch means whatever is checked out. Kept in the store so the sidebar can
+      open the same dialog the toolbar does. */
+  pushDialog: null as { branch: string | null } | null,
   log: [] as LogLine[]
 })
 
@@ -382,6 +436,7 @@ export function useGit() {
         { path, hunkIndex, action }
       ),
     reveal: (path: string) => guard('Reveal', () => invoke('reveal', { path })),
+    revealLabel: `Reveal in ${fileManagerName()}`,
 
     stage: (paths: string[]) => run<string>('Stage', 'stage', { paths }),
     stageAll: () => run<string>('Stage all', 'stage_all'),
@@ -400,7 +455,12 @@ export function useGit() {
     resetPreview: (oid: string) =>
       guard('Read reset', () => invoke<ResetPreview>('reset_preview', { oid })),
     reset: (oid: string, mode: ResetMode) => run<string>('Reset', 'reset', { oid, mode }),
-    cherryPick: (oid: string) => run<string>('Cherry-pick', 'cherry_pick', { oid }),
+    /**
+     * Copies one or more commits onto the current branch. The backend puts them
+     * in history order, so the caller's selection order does not matter.
+     */
+    cherryPick: (oids: string[], options: CherryPickOptions = {}) =>
+      run<string>('Cherry-pick', 'cherry_pick', { oids, options }),
     revert: (oid: string) => run<string>('Revert', 'revert', { oid }),
     createTag: (name: string, oid: string, message?: string) =>
       run<string>('Tag', 'create_tag', { name, oid, message }),
@@ -442,8 +502,29 @@ export function useGit() {
         invoke<CmdOutput>('push', { remoteName, branch, force, setUpstream })
       )
       const ok = report(force ? 'Force push' : 'Push', out)
+      // A rejection for being behind has an answer; hand it to the toolbar
+      // instead of leaving the user to read git's advice in the log.
+      store.pushBlocked =
+        out && isRejectedForBeingBehind(out)
+          ? {
+              remote: remoteName,
+              branch,
+              upstream: store.refs?.locals.find((b) => b.name === branch)?.upstream ?? null,
+              message: `${out.stdout}\n${out.stderr}`.trim()
+            }
+          : null
       await refresh()
       return ok
+    },
+    dismissPushBlock: () => {
+      store.pushBlocked = null
+    },
+    /** Opens the push dialog, for a named branch or for the current one. */
+    openPush: (branch: string | null = null) => {
+      store.pushDialog = { branch }
+    },
+    closePush: () => {
+      store.pushDialog = null
     },
     /** Pushes one branch by name, rather than whatever is checked out. */
     pushBranch: async (branch: string, setUpstream: boolean) => {
@@ -458,6 +539,15 @@ export function useGit() {
         })
       )
       const ok = report('Push', out)
+      store.pushBlocked =
+        out && isRejectedForBeingBehind(out)
+          ? {
+              remote: target,
+              branch,
+              upstream: store.refs?.locals.find((b) => b.name === branch)?.upstream ?? null,
+              message: `${out.stdout}\n${out.stderr}`.trim()
+            }
+          : null
       await refresh()
       return ok
     },

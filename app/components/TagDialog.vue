@@ -21,7 +21,7 @@ const invalid = computed(() => {
 async function submit() {
   if (invalid.value) return
   const tag = name.value.trim()
-  if (!(await git.createTag(tag, props.row.oid, message.value.trim() || undefined))) return
+  if ((await git.createTag(tag, props.row.oid, message.value.trim() || undefined)) === null) return
   if (push.value) await git.pushTag('origin', tag)
   emit('close')
 }

@@ -46,7 +46,7 @@ function fileMenu(event: MouseEvent, path: string) {
     event,
     [
       { label: 'Copy path', icon: Copy, action: () => copyText(path, 'Path') },
-      { label: 'Reveal in Finder', icon: FileText, action: () => git.reveal(path) }
+      { label: git.revealLabel, icon: FileText, action: () => git.reveal(path) }
     ],
     path
   )

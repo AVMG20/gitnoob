@@ -26,8 +26,17 @@ reqwest = { version = "0.12", default-features = false, features = [
   "rustls-tls",
   "gzip",
 ] }
-# Tokens live in the OS keychain, never in the config file.
+
+# Tokens live in the OS keychain, never in the config file. The backing store
+# differs per platform, so each one picks its own keyring feature.
+[target.'cfg(target_os = "macos")'.dependencies]
 keyring = { version = "3", features = ["apple-native"] }
+
+[target.'cfg(target_os = "windows")'.dependencies]
+keyring = { version = "3", features = ["windows-native"] }
+
+[target.'cfg(target_os = "linux")'.dependencies]
+keyring = { version = "3", features = ["sync-secret-service"] }
 
 [profile.release]
 codegen-units = 1

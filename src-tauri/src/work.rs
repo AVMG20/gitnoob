@@ -415,13 +415,47 @@ pub fn reset(state: &AppState, oid: &str, mode: ResetMode) -> Result<String, Str
     Ok(format!("Branch moved to {short}"))
 }
 
-/// Copies a commit onto the current branch.
-pub fn cherry_pick(state: &AppState, oid: &str) -> Result<String, String> {
+/// How a cherry-pick should behave.
+#[derive(serde::Deserialize, Clone, Copy, Default)]
+pub struct CherryPickOptions {
+    /// Apply the changes and stage them, but stop short of committing, so the
+    /// work can be re-split or amended into something else first.
+    #[serde(default)]
+    pub no_commit: bool,
+    /// Append "(cherry picked from commit …)" to the message. Worth having when
+    /// the commit also lives on a branch someone else reads.
+    #[serde(default)]
+    pub record_origin: bool,
+}
+
+/// Copies commits onto the current branch, oldest first.
+///
+/// Git applies a list in the order given, so the caller's selection is sorted
+/// into history order before it is handed over — picking newest-first would
+/// conflict against a tree that does not have the earlier change yet.
+pub fn cherry_pick(
+    state: &AppState,
+    oids: &[String],
+    options: CherryPickOptions,
+) -> Result<String, String> {
+    if oids.is_empty() {
+        return Err("No commits to cherry-pick".to_string());
+    }
     let root = state.path()?;
     let before = journal::head_oid(state);
     let branch = journal::current_branch(state);
+    let ordered = in_history_order(state, oids)?;
 
-    let out = git_cmd::run(&root, &["cherry-pick", oid])?;
+    let mut args: Vec<&str> = vec!["cherry-pick"];
+    if options.no_commit {
+        args.push("--no-commit");
+    }
+    if options.record_origin {
+        args.push("-x");
+    }
+    args.extend(ordered.iter().map(String::as_str));
+
+    let out = git_cmd::run(&root, &args)?;
     if !out.ok {
         let conflicts = crate::conflict::list(state).unwrap_or_default();
         if conflicts.is_empty() {
@@ -437,18 +471,65 @@ pub fn cherry_pick(state: &AppState, oid: &str) -> Result<String, String> {
         ));
     }
 
-    let short: String = oid.chars().take(7).collect();
-    journal::record(
-        state,
-        "cherry-pick",
-        format!("Cherry-pick {short}"),
-        branch,
-        before,
-        journal::head_oid(state),
-        Mode::Hard,
-        true,
-    );
-    Ok(format!("Cherry-picked {short}"))
+    let shorts: Vec<String> = ordered
+        .iter()
+        .map(|oid| oid.chars().take(7).collect())
+        .collect();
+    let label = shorts.join(", ");
+
+    // With --no-commit nothing was committed, so there is no new HEAD to undo
+    // back from; the change sits in the index for the user to deal with.
+    if !options.no_commit {
+        journal::record(
+            state,
+            "cherry-pick",
+            format!("Cherry-pick {label}"),
+            branch,
+            before,
+            journal::head_oid(state),
+            Mode::Hard,
+            true,
+        );
+    }
+
+    Ok(if options.no_commit {
+        format!("Applied {label} without committing — the changes are staged")
+    } else {
+        format!("Cherry-picked {label}")
+    })
+}
+
+/// Sorts commits oldest first, using the order git itself walks them in.
+///
+/// `rev-list --topo-order` lists newest first over the whole repository, so the
+/// chosen commits keep their relative history order once reversed. Anything git
+/// does not report back is appended in the order it was given, rather than
+/// dropped.
+fn in_history_order(state: &AppState, oids: &[String]) -> Result<Vec<String>, String> {
+    if oids.len() < 2 {
+        return Ok(oids.to_vec());
+    }
+    let root = state.path()?;
+
+    let mut args: Vec<&str> = vec!["rev-list", "--topo-order", "--no-walk"];
+    args.extend(oids.iter().map(String::as_str));
+    let listed = git_cmd::run_checked(&root, &args)?;
+
+    let mut ordered: Vec<String> = Vec::with_capacity(oids.len());
+    for line in listed.lines().rev() {
+        let line = line.trim();
+        if let Some(found) = oids.iter().find(|o| line.starts_with(o.as_str())) {
+            if !ordered.contains(found) {
+                ordered.push(found.clone());
+            }
+        }
+    }
+    for oid in oids {
+        if !ordered.contains(oid) {
+            ordered.push(oid.clone());
+        }
+    }
+    Ok(ordered)
 }
 
 /// Adds a commit that undoes an earlier one, leaving history intact.

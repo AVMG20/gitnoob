@@ -387,7 +387,15 @@ pub fn create_branch(state: &AppState, name: &str, start: Option<&str>, checkout
     if let Some(start) = start {
         args.push(start);
     }
-    git_cmd::run_checked(&path, &args)
+    // `git checkout -b` says "Switched to a new branch" on stderr, so its stdout
+    // is empty on success. Say it ourselves rather than hand back nothing.
+    git_cmd::run_checked(&path, &args)?;
+    Ok(match (checkout, start) {
+        (true, Some(start)) => format!("Created {name} from {start} and checked it out"),
+        (true, None) => format!("Created {name} and checked it out"),
+        (false, Some(start)) => format!("Created {name} from {start}"),
+        (false, None) => format!("Created {name}"),
+    })
 }
 
 pub fn delete_branch(state: &AppState, name: &str, force: bool) -> Result<String, String> {

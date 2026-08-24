@@ -135,6 +135,21 @@ pub async fn models(state: &AppState, refresh: bool) -> Result<Vec<Model>, Strin
     Ok(models)
 }
 
+/// Turns the chosen thinking level into OpenRouter's `reasoning` object.
+///
+/// OpenRouter takes one shape for every provider: an effort level, which it
+/// translates into whatever the model underneath wants, or `enabled: false` to
+/// switch thinking off on a model that would otherwise do it. Anything the
+/// reasoning tokens are spent on is billed, so "off" is a real choice rather
+/// than a placeholder.
+fn reasoning_field(level: &str) -> serde_json::Value {
+    match level {
+        "minimal" | "low" | "medium" | "high" => serde_json::json!({ "effort": level }),
+        // "off", and anything unrecognised: no thinking at all.
+        _ => serde_json::json!({ "enabled": false }),
+    }
+}
+
 /// One chat completion round trip.
 async fn complete(state: &AppState, system: &str, user: String) -> Result<String, String> {
     let config = state.config();
@@ -154,8 +169,8 @@ async fn complete(state: &AppState, system: &str, user: String) -> Result<String
         .header("X-Title", "gitui")
         .json(&serde_json::json!({
             "model": model,
-            "temperature": config.global.ai.temperature,
             "max_tokens": config.global.ai.max_tokens,
+            "reasoning": reasoning_field(&config.global.ai.reasoning),
             "messages": [
                 { "role": "system", "content": system },
                 { "role": "user", "content": user }
@@ -371,6 +386,25 @@ unchanged, output that side verbatim.";
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_thinking_level_becomes_an_effort() {
+        assert_eq!(reasoning_field("high"), serde_json::json!({ "effort": "high" }));
+        assert_eq!(
+            reasoning_field("minimal"),
+            serde_json::json!({ "effort": "minimal" })
+        );
+    }
+
+    #[test]
+    fn off_switches_thinking_off_rather_than_omitting_it() {
+        assert_eq!(reasoning_field("off"), serde_json::json!({ "enabled": false }));
+        // An unknown value from a hand-edited config must not turn thinking on.
+        assert_eq!(
+            reasoning_field("whatever"),
+            serde_json::json!({ "enabled": false })
+        );
+    }
 
     #[test]
     fn splits_a_summary_from_a_body() {
