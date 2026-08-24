@@ -1,0 +1,650 @@
+<script setup lang="ts">
+import { computed, nextTick, onMounted, onUnmounted, ref, watch } from 'vue'
+import {
+  ArrowDownToLine,
+  Check,
+  ChevronDown,
+  ChevronUp,
+  Copy,
+  FileText,
+  GitBranchPlus,
+  GitCommitHorizontal,
+  Search,
+  Tag,
+  Undo2,
+  X
+} from 'lucide-vue-next'
+import {
+  WIP,
+  copyText,
+  highlight,
+  laneColor,
+  relativeTime,
+  rowMatches,
+  useGit,
+  type GraphRow,
+  type Segment
+} from '~/composables/useGit'
+import { useContextMenu } from '~/composables/useContextMenu'
+import { useDragDrop } from '~/composables/useDragDrop'
+
+const git = useGit()
+const store = git.store
+const menu = useContextMenu()
+const drag = useDragDrop()
+
+const ROW = 27
+const LANE = 14
+const OVERSCAN = 12
+const MAX_LANES = 14
+
+const viewport = ref<HTMLElement | null>(null)
+const searchBox = ref<HTMLInputElement | null>(null)
+const scrollTop = ref(0)
+const height = ref(600)
+const hit = ref(0)
+const resetTarget = ref<string | null>(null)
+const tagTarget = ref<GraphRow | null>(null)
+
+const total = computed(() => store.rows.length)
+const lanes = computed(() =>
+  Math.min(MAX_LANES, Math.max(2, ...store.rows.map((row) => row.width)))
+)
+const graphWidth = computed(() => lanes.value * LANE + 8)
+
+const matches = computed(() =>
+  store.query.trim() ? store.rows.filter((row) => rowMatches(row, store.query)) : []
+)
+const matchIds = computed(() => new Set(matches.value.map((row) => row.oid)))
+
+const first = computed(() => Math.max(0, Math.floor(scrollTop.value / ROW) - OVERSCAN))
+const last = computed(() =>
+  Math.min(total.value, Math.ceil((scrollTop.value + height.value) / ROW) + OVERSCAN)
+)
+const window_ = computed(() =>
+  store.rows
+    .slice(first.value, last.value)
+    .map((row, i) => ({ row, top: (first.value + i) * ROW }))
+)
+
+const dirty = computed(
+  () => (store.status?.staged.length ?? 0) + (store.status?.unstaged.length ?? 0)
+)
+const conflicts = computed(() => store.status?.conflicted.length ?? 0)
+/** The WIP node sits on whichever lane the newest commit is on. */
+const headLane = computed(() => store.rows[0]?.lane ?? 0)
+const headColor = computed(() => store.rows[0]?.color ?? 0)
+
+const x = (lane: number) => Math.min(lane, MAX_LANES - 1) * LANE + LANE / 2
+const y = (level: number) => (level === 0 ? 0 : level === 1 ? ROW / 2 : ROW)
+
+function path(segment: Segment) {
+  const x1 = x(segment.x1)
+  const x2 = x(segment.x2)
+  const y1 = y(segment.y1)
+  const y2 = y(segment.y2)
+  if (x1 === x2) return `M${x1},${y1} L${x2},${y2}`
+  const mid = (y1 + y2) / 2
+  return `M${x1},${y1} C${x1},${mid} ${x2},${mid} ${x2},${y2}`
+}
+
+function onScroll() {
+  if (viewport.value) scrollTop.value = viewport.value.scrollTop
+}
+
+function measure() {
+  if (viewport.value) height.value = viewport.value.clientHeight
+}
+
+function scrollTo(oid: string) {
+  const index = store.rows.findIndex((row) => row.oid === oid)
+  if (index < 0 || !viewport.value) return
+  const target = index * ROW - height.value / 2 + ROW
+  viewport.value.scrollTo({ top: Math.max(0, target), behavior: 'smooth' })
+}
+
+function step(by: number) {
+  if (!matches.value.length) return
+  hit.value = (hit.value + by + matches.value.length) % matches.value.length
+  const row = matches.value[hit.value]
+  git.select(row.oid)
+  scrollTo(row.oid)
+}
+
+watch(
+  () => store.query,
+  async () => {
+    hit.value = 0
+    if (matches.value.length) {
+      await nextTick()
+      scrollTo(matches.value[0].oid)
+    }
+  }
+)
+
+function onKey(event: KeyboardEvent) {
+  if ((event.metaKey || event.ctrlKey) && event.key === 'f') {
+    event.preventDefault()
+    searchBox.value?.focus()
+    searchBox.value?.select()
+  }
+  if (event.key === 'Escape' && document.activeElement === searchBox.value) {
+    store.query = ''
+    searchBox.value?.blur()
+  }
+  if ((event.metaKey || event.ctrlKey) && event.key === 'g') {
+    event.preventDefault()
+    step(event.shiftKey ? -1 : 1)
+  }
+}
+
+// --- context menus
+
+function commitMenu(event: MouseEvent, row: GraphRow) {
+  const isHead = row.labels.some((label) => label.kind === 'local' && label.name === store.repo?.head)
+  menu.show(
+    event,
+    [
+      {
+        label: 'Check out this commit',
+        icon: Check,
+        hint: 'detached',
+        action: () => git.checkout(row.oid)
+      },
+      { label: 'Branch from here…', icon: GitBranchPlus, action: () => git.select(row.oid) },
+      { label: 'Tag this commit…', icon: Tag, action: () => (tagTarget.value = row) },
+      { separator: true, label: '' },
+      {
+        label: 'Cherry-pick onto current branch',
+        icon: GitCommitHorizontal,
+        action: () => git.cherryPick(row.oid)
+      },
+      {
+        label: 'Revert this commit',
+        icon: Undo2,
+        hint: 'adds a commit',
+        action: () => git.revert(row.oid)
+      },
+      {
+        label: `Reset ${store.repo?.head ?? 'branch'} here…`,
+        icon: ArrowDownToLine,
+        danger: true,
+        disabled: isHead,
+        action: () => (resetTarget.value = row.oid)
+      },
+      { separator: true, label: '' },
+      {
+        label: 'Copy full hash',
+        icon: Copy,
+        action: () => copyText(row.oid, 'Hash')
+      },
+      {
+        label: 'Copy short hash',
+        icon: Copy,
+        hint: row.short,
+        action: () => copyText(row.short, 'Hash')
+      },
+      {
+        label: 'Copy message',
+        icon: FileText,
+        action: async () => {
+          const text = await git.commitMessageText(row.oid)
+          if (text) copyText(text, 'Message')
+        }
+      },
+      {
+        label: 'Copy patch',
+        icon: FileText,
+        action: async () => {
+          const text = await git.commitPatch(row.oid)
+          if (text) copyText(text, 'Patch')
+        }
+      },
+      { separator: true, label: '' },
+      {
+        label: 'Search for this hash',
+        icon: Search,
+        action: () => (store.query = row.short)
+      }
+    ],
+    `${row.short} · ${row.summary.slice(0, 44)}`
+  )
+}
+
+function wipMenu(event: MouseEvent) {
+  menu.show(
+    event,
+    [
+      { label: 'Stage everything', icon: Check, action: () => git.stageAll() },
+      {
+        label: 'Stash everything',
+        icon: ArrowDownToLine,
+        action: () => git.stashPush()
+      },
+      {
+        label: 'Discard all unstaged changes',
+        icon: X,
+        danger: true,
+        disabled: !(store.status?.unstaged.length ?? 0),
+        action: () => git.discard((store.status?.unstaged ?? []).map((e) => e.path))
+      }
+    ],
+    'Uncommitted changes'
+  )
+}
+
+/** Dropping a branch on a commit moves that branch there. */
+function onDropOnRow(row: GraphRow) {
+  const payload = drag.take(['branch'])
+  if (!payload || payload.kind !== 'branch' || payload.remote) return
+  resetTarget.value = row.oid
+}
+
+const observer = new ResizeObserver(measure)
+onMounted(() => {
+  measure()
+  if (viewport.value) observer.observe(viewport.value)
+  window.addEventListener('keydown', onKey)
+})
+onUnmounted(() => {
+  observer.disconnect()
+  window.removeEventListener('keydown', onKey)
+})
+</script>
+
+<template>
+  <section class="graph">
+    <div class="head">
+      <span class="search">
+        <Search :size="13" class="faint" />
+        <input
+          ref="searchBox"
+          v-model="store.query"
+          type="search"
+          placeholder="Search messages, authors, hashes  (⌘F)"
+        />
+        <template v-if="store.query.trim()">
+          <span class="count" :class="{ none: !matches.length }">
+            {{ matches.length ? `${hit + 1} of ${matches.length}` : 'no matches' }}
+          </span>
+          <button class="step" :disabled="!matches.length" title="Previous (⇧⌘G)" @click="step(-1)">
+            <ChevronUp :size="13" />
+          </button>
+          <button class="step" :disabled="!matches.length" title="Next (⌘G)" @click="step(1)">
+            <ChevronDown :size="13" />
+          </button>
+          <button class="step" title="Clear" @click="store.query = ''">
+            <X :size="13" />
+          </button>
+        </template>
+      </span>
+      <span class="cols">
+        <span class="col-author">Author</span>
+        <span class="col-date">Date</span>
+      </span>
+    </div>
+
+    <!-- The working tree, always the top row and selected by default. -->
+    <div
+      class="wip"
+      :class="{ on: store.selected === WIP }"
+      @click="git.select(WIP)"
+      @contextmenu="wipMenu($event)"
+    >
+      <svg class="cell" :width="graphWidth" :height="ROW" :viewBox="`0 0 ${graphWidth} ${ROW}`">
+        <path
+          v-if="store.rows.length"
+          :d="`M${x(headLane)},${ROW / 2} L${x(headLane)},${ROW}`"
+          :stroke="laneColor(headColor)"
+          stroke-width="1.6"
+          stroke-dasharray="2 2"
+          fill="none"
+        />
+        <circle
+          :cx="x(headLane)"
+          :cy="ROW / 2"
+          r="4"
+          fill="var(--bg)"
+          :stroke="dirty || conflicts ? 'var(--amber)' : 'var(--text-faint)'"
+          stroke-width="1.8"
+          :stroke-dasharray="dirty || conflicts ? '' : '2 2'"
+        />
+      </svg>
+      <span class="col-msg">
+        <span v-if="conflicts" class="chip chip-conflict">{{ conflicts }} conflicted</span>
+        <span v-else-if="dirty" class="chip chip-wip">uncommitted</span>
+        <span class="summary truncate" :class="{ quiet: !dirty && !conflicts }">
+          <template v-if="conflicts">Resolve conflicts before committing</template>
+          <template v-else-if="dirty">
+            {{ dirty }} {{ dirty === 1 ? 'change' : 'changes' }} in your working tree
+          </template>
+          <template v-else>No local changes</template>
+        </span>
+      </span>
+      <span class="col-author faint">you</span>
+      <span class="col-date faint">now</span>
+    </div>
+
+    <div ref="viewport" class="viewport" @scroll.passive="onScroll">
+      <div class="spacer" :style="{ height: `${total * ROW}px` }">
+        <div
+          v-for="item in window_"
+          :key="item.row.oid"
+          class="row"
+          :class="{
+            on: store.selected === item.row.oid,
+            hit: matchIds.has(item.row.oid),
+            dim: store.query.trim() && !matchIds.has(item.row.oid),
+            drop: drag.state.over === `commit:${item.row.oid}`
+          }"
+          :style="{ top: `${item.top}px` }"
+          draggable="true"
+          @click="git.select(item.row.oid)"
+          @contextmenu="commitMenu($event, item.row)"
+          @dragstart="
+            drag.begin($event, {
+              kind: 'commit',
+              oid: item.row.oid,
+              short: item.row.short,
+              summary: item.row.summary
+            })
+          "
+          @dragend="drag.end()"
+          @dragover="drag.hover($event, `commit:${item.row.oid}`, ['branch'])"
+          @dragleave="drag.leave(`commit:${item.row.oid}`)"
+          @drop.prevent="onDropOnRow(item.row)"
+        >
+          <svg
+            class="cell"
+            :width="graphWidth"
+            :height="ROW"
+            :viewBox="`0 0 ${graphWidth} ${ROW}`"
+          >
+            <path
+              v-for="(segment, i) in item.row.segments"
+              :key="i"
+              :d="path(segment)"
+              :stroke="laneColor(segment.color)"
+              fill="none"
+              stroke-width="1.6"
+            />
+            <circle
+              :cx="x(item.row.lane)"
+              :cy="ROW / 2"
+              :r="item.row.parents.length > 1 ? 3.4 : 4"
+              :fill="item.row.parents.length > 1 ? 'var(--bg)' : laneColor(item.row.color)"
+              :stroke="laneColor(item.row.color)"
+              stroke-width="1.8"
+            />
+          </svg>
+
+          <span class="col-msg">
+            <span
+              v-for="label in item.row.labels"
+              :key="label.kind + label.name"
+              :class="`chip chip-${label.kind}`"
+              >{{ label.name }}</span
+            >
+            <span class="summary truncate">
+              <span
+                v-for="(part, i) in highlight(item.row.summary, store.query)"
+                :key="i"
+                :class="{ mark: part.hit }"
+                >{{ part.text }}</span
+              >
+            </span>
+          </span>
+          <span class="col-author truncate">{{ item.row.author }}</span>
+          <span class="col-date faint" :title="new Date(item.row.time * 1000).toLocaleString()">
+            {{ relativeTime(item.row.time) }}
+          </span>
+        </div>
+      </div>
+
+      <div v-if="store.hasMore" class="more">
+        <button class="btn btn-ghost" :disabled="store.busy" @click="git.loadMore()">
+          Load older commits
+        </button>
+      </div>
+      <div v-else-if="total === 0" class="empty dim">No commits yet.</div>
+    </div>
+
+    <ResetDialog v-if="resetTarget" :oid="resetTarget" @close="resetTarget = null" />
+    <TagDialog v-if="tagTarget" :row="tagTarget" @close="tagTarget = null" />
+  </section>
+</template>
+
+<style scoped>
+.graph {
+  display: grid;
+  grid-template-rows: auto auto minmax(0, 1fr);
+  min-width: 0;
+  background: var(--bg);
+}
+
+.head {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 5px 12px 5px 8px;
+  border-bottom: 1px solid var(--line);
+  user-select: none;
+}
+
+.search {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+  padding: 0 8px;
+  background: var(--bg-panel);
+  border: 1px solid var(--line);
+  border-radius: 5px;
+}
+
+.search input {
+  flex: 1;
+  min-width: 0;
+  border: none;
+  background: none;
+  padding: 4px 0;
+  font-size: 12px;
+}
+
+.search input:focus {
+  outline: none;
+}
+
+.count {
+  font-size: 10.5px;
+  color: var(--text-dim);
+  white-space: nowrap;
+}
+
+.count.none {
+  color: var(--amber);
+}
+
+.step {
+  display: grid;
+  place-items: center;
+  width: 18px;
+  height: 18px;
+  border-radius: 4px;
+  color: var(--text-faint);
+}
+
+.step:hover:not(:disabled) {
+  background: var(--bg-hover);
+  color: var(--text);
+}
+
+.step:disabled {
+  opacity: 0.35;
+}
+
+.cols {
+  display: flex;
+  gap: 10px;
+  font-size: 10px;
+  letter-spacing: 0.07em;
+  text-transform: uppercase;
+  color: var(--text-faint);
+}
+
+.wip {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  height: 27px;
+  padding: 0 12px 0 8px;
+  background: var(--bg-panel);
+  border-bottom: 1px solid var(--line);
+  cursor: default;
+  user-select: none;
+}
+
+.wip:hover {
+  background: var(--bg-hover);
+}
+
+.wip.on {
+  background: var(--bg-active);
+}
+
+.viewport {
+  overflow-y: auto;
+  position: relative;
+}
+
+.spacer {
+  position: relative;
+}
+
+.row {
+  position: absolute;
+  left: 0;
+  right: 0;
+  height: 27px;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 0 12px 0 8px;
+  cursor: default;
+  user-select: none;
+}
+
+.row:hover {
+  background: var(--bg-hover);
+}
+
+.row.on {
+  background: var(--bg-active);
+}
+
+.row.dim {
+  opacity: 0.36;
+}
+
+.row.hit {
+  background: rgba(240, 168, 60, 0.08);
+}
+
+.row.drop {
+  outline: 1px solid var(--accent);
+  outline-offset: -1px;
+  background: rgba(79, 156, 249, 0.14);
+}
+
+.cell {
+  flex: none;
+  display: block;
+}
+
+.col-msg {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  overflow: hidden;
+}
+
+.summary {
+  min-width: 0;
+}
+
+.summary.quiet {
+  color: var(--text-faint);
+}
+
+.mark {
+  background: rgba(240, 168, 60, 0.32);
+  border-radius: 2px;
+  color: #fff;
+}
+
+.col-author {
+  width: 130px;
+  flex: none;
+  color: var(--text-dim);
+  font-size: 12px;
+}
+
+.col-date {
+  width: 88px;
+  flex: none;
+  text-align: right;
+  font-size: 12px;
+}
+
+.chip {
+  flex: none;
+  padding: 1px 6px;
+  border-radius: 3px;
+  font-size: 10px;
+  font-weight: 600;
+  max-width: 180px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.chip-local {
+  background: rgba(79, 156, 249, 0.18);
+  color: #8dc0fb;
+}
+
+.chip-remote {
+  background: rgba(169, 123, 240, 0.16);
+  color: #c4a4f6;
+}
+
+.chip-tag {
+  background: rgba(240, 168, 60, 0.16);
+  color: #f2bd6e;
+}
+
+.chip-head {
+  background: rgba(87, 193, 132, 0.18);
+  color: #7ed3a5;
+}
+
+.chip-wip {
+  background: rgba(240, 168, 60, 0.16);
+  color: #f2bd6e;
+}
+
+.chip-conflict {
+  background: rgba(224, 87, 109, 0.2);
+  color: #ef8d9c;
+}
+
+.more,
+.empty {
+  display: flex;
+  justify-content: center;
+  padding: 14px;
+}
+</style>

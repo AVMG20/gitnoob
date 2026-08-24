@@ -1,0 +1,598 @@
+<script setup lang="ts">
+import { computed, ref, watch } from 'vue'
+import { Sparkles } from 'lucide-vue-next'
+import { useGit, type ConflictBlock, type ConflictFile, type Resolution } from '~/composables/useGit'
+import { useAi } from '~/composables/useAi'
+
+const git = useGit()
+const store = git.store
+const ai = useAi()
+
+/** Which conflict region the model is currently working on. */
+const thinking = ref<number | null>(null)
+
+const path = ref<string | null>(null)
+const file = ref<ConflictFile | null>(null)
+const choices = ref<Resolution[]>([])
+const result = ref('')
+const showBase = ref(false)
+const loading = ref(false)
+
+const files = computed(() => store.status?.conflicted ?? [])
+const conflicts = computed(
+  () =>
+    (file.value?.blocks ?? []).filter(
+      (block): block is Extract<ConflictBlock, { kind: 'conflict' }> => block.kind === 'conflict'
+    )
+)
+const hasBase = computed(() => conflicts.value.some((block) => block.has_base))
+/** Regions where the user has turned both sides off, which deletes them. */
+const dropped = computed(
+  () => choices.value.filter((choice) => !choice.take_ours && !choice.take_theirs).length
+)
+const oursLabel = computed(() => conflicts.value[0]?.ours_label || 'ours')
+const theirsLabel = computed(() => conflicts.value[0]?.theirs_label || 'theirs')
+
+async function load(target: string) {
+  path.value = target
+  // The overlay is driven by this, so keep the two in step.
+  store.resolving = target
+  loading.value = true
+  file.value = await git.conflictRead(target)
+  // Start from "keep ours", the same default as reading the file top to bottom.
+  choices.value = Array.from({ length: file.value?.conflict_count ?? 0 }, () => ({
+    take_ours: true,
+    take_theirs: false,
+    ours_first: true,
+    custom: null
+  }))
+  loading.value = false
+  await preview()
+}
+
+async function preview() {
+  if (!path.value) return
+  result.value = (await git.conflictPreview(path.value, choices.value)) ?? ''
+}
+
+function set(index: number, patch: Partial<Resolution>) {
+  const next = { ...choices.value[index], ...patch }
+  choices.value = choices.value.map((choice, i) => (i === index ? next : choice))
+}
+
+function takeAll(side: 'ours' | 'theirs' | 'both') {
+  choices.value = choices.value.map((choice) => ({
+    ...choice,
+    take_ours: side !== 'theirs',
+    take_theirs: side !== 'ours'
+  }))
+}
+
+async function markResolved() {
+  if (!path.value) return
+  const target = path.value
+  await git.conflictResolve(target, choices.value)
+  // Move on to whatever is still conflicted, or clear the view when done.
+  const next = (store.status?.conflicted ?? []).find((p) => p !== target)
+  if (next) await load(next)
+  else {
+    path.value = null
+    file.value = null
+    result.value = ''
+    // Nothing left to resolve, so close the resolver.
+    store.resolving = null
+  }
+}
+
+async function takeWholeFile(side: 'ours' | 'theirs') {
+  if (!path.value) return
+  await git.conflictResolveWhole(path.value, side)
+  const next = store.status?.conflicted[0]
+  if (next) await load(next)
+  else {
+    path.value = null
+    file.value = null
+  }
+}
+
+/**
+ * Asks the model for one region and stores its answer as a hand edit, so it
+ * shows up in the result pane like any other choice and can still be overridden.
+ */
+async function aiResolve(index: number) {
+  if (!path.value) return
+  thinking.value = index
+  try {
+    const lines = await ai.resolveConflict(path.value, index)
+    if (lines) {
+      set(index, { custom: lines, take_ours: true, take_theirs: true })
+      git.note(`Model resolved conflict ${index + 1} — check it before accepting`)
+    }
+  } catch (error) {
+    git.note(`AI resolve: ${String(error)}`, 'error')
+  } finally {
+    thinking.value = null
+  }
+}
+
+async function aiResolveAll() {
+  for (const block of conflicts.value) {
+    await aiResolve(block.index)
+  }
+}
+
+watch(choices, preview, { deep: true })
+
+// Open the first conflicted file as soon as there is one.
+watch(
+  files,
+  (list) => {
+    if (!path.value && list.length) load(list[0])
+    else if (path.value && !list.includes(path.value)) {
+      path.value = list[0] ?? null
+      if (path.value) load(path.value)
+      else {
+        file.value = null
+        result.value = ''
+      }
+    }
+  },
+  { immediate: true }
+)
+</script>
+
+<template>
+  <section class="conflicts">
+    <div v-if="!files.length" class="clear">
+      <div>
+        <h3>No conflicts</h3>
+        <p class="dim">
+          When a merge stops with conflicts, each file shows up here with both sides side by side.
+        </p>
+      </div>
+    </div>
+
+    <template v-else>
+      <div class="rail">
+        <div class="section-title">Conflicted files</div>
+        <button
+          v-for="name in files"
+          :key="name"
+          class="rail-file"
+          :class="{ on: name === path }"
+          :title="name"
+          @click="load(name)"
+        >
+          <span class="truncate">{{ name.split('/').pop() }}</span>
+          <span class="faint truncate small">{{ name }}</span>
+        </button>
+      </div>
+
+      <div class="work">
+        <div class="toolbar">
+          <span class="file-name mono truncate">{{ path }}</span>
+          <span class="stat">
+            {{ conflicts.length }} {{ conflicts.length === 1 ? 'conflict' : 'conflicts' }}
+            <template v-if="dropped">
+              · <span class="warn">{{ dropped }} set to be dropped</span>
+            </template>
+          </span>
+          <span class="spacer" />
+          <button class="btn tiny" @click="takeAll('ours')">All ours</button>
+          <button class="btn tiny" @click="takeAll('theirs')">All theirs</button>
+          <button class="btn tiny" @click="takeAll('both')">All both</button>
+          <button
+            v-if="ai.configured.value"
+            class="btn tiny ai"
+            :disabled="thinking !== null"
+            title="Ask the model to resolve every region in this file"
+            @click="aiResolveAll"
+          >
+            <Spinner v-if="thinking !== null" :size="12" />
+            <Sparkles v-else :size="12" />
+            AI resolve all
+          </button>
+          <label v-if="hasBase" class="tiny check">
+            <input v-model="showBase" type="checkbox" />
+            Base
+          </label>
+          <span class="sep" />
+          <button class="btn tiny" @click="takeWholeFile('ours')">Whole file: ours</button>
+          <button class="btn tiny" @click="takeWholeFile('theirs')">Whole file: theirs</button>
+          <button class="btn btn-primary tiny" :disabled="store.busy" @click="markResolved">
+            Mark resolved
+          </button>
+        </div>
+
+        <div class="panes" :class="{ 'with-base': showBase && hasBase }">
+          <!-- Pane 1: our side. -->
+          <div class="pane">
+            <div class="pane-head ours">
+              Ours <span class="mono faint">{{ oursLabel }}</span>
+            </div>
+            <div class="pane-body">
+              <template v-for="(block, bi) in file?.blocks ?? []" :key="`o${bi}`">
+                <div v-if="block.kind === 'context'" class="ctx">
+                  <div v-for="(line, li) in block.lines" :key="li" class="line">{{ line || ' ' }}</div>
+                </div>
+                <div v-else class="chunk" :class="{ off: !choices[block.index]?.take_ours }">
+                  <label class="chunk-head">
+                    <input
+                      type="checkbox"
+                      :checked="choices[block.index]?.take_ours"
+                      @change="set(block.index, { take_ours: ($event.target as HTMLInputElement).checked })"
+                    />
+                    Take ours
+                    <button
+                      v-if="choices[block.index]?.take_ours && choices[block.index]?.take_theirs && !choices[block.index]?.custom"
+                      class="order"
+                      title="Swap the order the two sides are written in"
+                      @click.prevent="set(block.index, { ours_first: !choices[block.index].ours_first })"
+                    >
+                      {{ choices[block.index].ours_first ? 'first' : 'second' }}
+                    </button>
+                    <button
+                      v-if="ai.configured.value"
+                      class="order ai"
+                      :disabled="thinking !== null"
+                      title="Ask the model to merge these two sides"
+                      @click.prevent="aiResolve(block.index)"
+                    >
+                      <Spinner v-if="thinking === block.index" :size="10" />
+                      <Sparkles v-else :size="10" />
+                      AI
+                    </button>
+                    <button
+                      v-if="choices[block.index]?.custom"
+                      class="order"
+                      title="Drop the edit and go back to the checkboxes"
+                      @click.prevent="set(block.index, { custom: null })"
+                    >
+                      undo edit
+                    </button>
+                  </label>
+                  <div v-for="(line, li) in block.ours" :key="li" class="line ours-line">
+                    {{ line || ' ' }}
+                  </div>
+                  <div v-if="!block.ours.length" class="line faint">(nothing on this side)</div>
+                </div>
+              </template>
+            </div>
+          </div>
+
+          <!-- Optional middle pane: the merge base, when git wrote diff3 markers. -->
+          <div v-if="showBase && hasBase" class="pane">
+            <div class="pane-head base">Base <span class="faint">merge base</span></div>
+            <div class="pane-body">
+              <template v-for="(block, bi) in file?.blocks ?? []" :key="`b${bi}`">
+                <div v-if="block.kind === 'context'" class="ctx">
+                  <div v-for="(line, li) in block.lines" :key="li" class="line">{{ line || ' ' }}</div>
+                </div>
+                <div v-else class="chunk neutral">
+                  <div class="chunk-head faint">Before either change</div>
+                  <div v-for="(line, li) in block.base" :key="li" class="line">{{ line || ' ' }}</div>
+                  <div v-if="!block.base.length" class="line faint">(added on both sides)</div>
+                </div>
+              </template>
+            </div>
+          </div>
+
+          <!-- Pane 2: their side. -->
+          <div class="pane">
+            <div class="pane-head theirs">
+              Theirs <span class="mono faint">{{ theirsLabel }}</span>
+            </div>
+            <div class="pane-body">
+              <template v-for="(block, bi) in file?.blocks ?? []" :key="`t${bi}`">
+                <div v-if="block.kind === 'context'" class="ctx">
+                  <div v-for="(line, li) in block.lines" :key="li" class="line">{{ line || ' ' }}</div>
+                </div>
+                <div v-else class="chunk" :class="{ off: !choices[block.index]?.take_theirs }">
+                  <label class="chunk-head">
+                    <input
+                      type="checkbox"
+                      :checked="choices[block.index]?.take_theirs"
+                      @change="set(block.index, { take_theirs: ($event.target as HTMLInputElement).checked })"
+                    />
+                    Take theirs
+                    <button
+                      v-if="choices[block.index]?.take_ours && choices[block.index]?.take_theirs"
+                      class="order"
+                      title="Swap the order the two sides are written in"
+                      @click.prevent="set(block.index, { ours_first: !choices[block.index].ours_first })"
+                    >
+                      {{ choices[block.index].ours_first ? 'second' : 'first' }}
+                    </button>
+                  </label>
+                  <div v-for="(line, li) in block.theirs" :key="li" class="line theirs-line">
+                    {{ line || ' ' }}
+                  </div>
+                  <div v-if="!block.theirs.length" class="line faint">(nothing on this side)</div>
+                </div>
+              </template>
+            </div>
+          </div>
+        </div>
+
+        <!-- Pane 3: exactly what will be written to disk. -->
+        <div class="output">
+          <div class="pane-head result">
+            Result <span class="faint">what gets written</span>
+            <span v-if="choices.some((c) => c.custom)" class="edited">includes AI or hand edits</span>
+          </div>
+          <pre class="out-body">{{ result }}</pre>
+        </div>
+      </div>
+    </template>
+  </section>
+</template>
+
+<style scoped>
+.conflicts {
+  display: grid;
+  grid-template-columns: 210px minmax(0, 1fr);
+  min-width: 0;
+}
+
+.clear {
+  grid-column: 1 / -1;
+  display: grid;
+  place-items: center;
+  text-align: center;
+}
+
+.clear h3 {
+  margin: 0 0 6px;
+}
+
+.clear p {
+  margin: 0;
+  max-width: 340px;
+  font-size: 12px;
+}
+
+.rail {
+  border-right: 1px solid var(--line);
+  background: var(--bg-panel);
+  overflow-y: auto;
+}
+
+.rail-file {
+  width: 100%;
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  align-items: flex-start;
+  padding: 5px 10px;
+  text-align: left;
+  font-size: 12px;
+}
+
+.rail-file:hover {
+  background: var(--bg-hover);
+}
+
+.rail-file.on {
+  background: var(--bg-active);
+}
+
+.rail-file .small {
+  font-size: 10px;
+  max-width: 100%;
+}
+
+.work {
+  display: grid;
+  grid-template-rows: auto minmax(0, 1.4fr) minmax(0, 1fr);
+  min-width: 0;
+}
+
+.toolbar {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 10px;
+  border-bottom: 1px solid var(--line);
+  background: var(--bg-panel);
+}
+
+.file-name {
+  max-width: 280px;
+  color: var(--text-dim);
+}
+
+.stat {
+  font-size: 11px;
+  color: var(--text-faint);
+  white-space: nowrap;
+}
+
+.warn {
+  color: var(--amber);
+}
+
+.spacer {
+  flex: 1;
+}
+
+.sep {
+  width: 1px;
+  height: 16px;
+  background: var(--line);
+  margin: 0 3px;
+}
+
+.tiny {
+  font-size: 11px;
+  padding: 3px 7px;
+}
+
+.check {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  color: var(--text-dim);
+  cursor: pointer;
+}
+
+.panes {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  min-height: 0;
+  border-bottom: 1px solid var(--line);
+}
+
+.panes.with-base {
+  grid-template-columns: 1fr 1fr 1fr;
+}
+
+.pane {
+  display: grid;
+  grid-template-rows: auto minmax(0, 1fr);
+  min-width: 0;
+  border-right: 1px solid var(--line);
+}
+
+.pane:last-child {
+  border-right: none;
+}
+
+.pane-head {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  padding: 4px 10px;
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+  border-bottom: 1px solid var(--line-soft);
+  background: var(--bg-raised);
+}
+
+.pane-head.ours {
+  color: #8dc0fb;
+}
+
+.pane-head.theirs {
+  color: #c4a4f6;
+}
+
+.pane-head.base {
+  color: var(--text-dim);
+}
+
+.pane-head.result {
+  color: var(--green);
+}
+
+.pane-head .faint {
+  text-transform: none;
+  letter-spacing: 0;
+  font-weight: 400;
+}
+
+.pane-body {
+  overflow: auto;
+  font-family: var(--mono);
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+.line {
+  white-space: pre;
+  padding: 0 10px;
+  tab-size: 4;
+}
+
+.ctx .line {
+  color: var(--text-faint);
+}
+
+.chunk {
+  margin: 3px 0;
+  border-top: 1px solid var(--line);
+  border-bottom: 1px solid var(--line);
+}
+
+.chunk.off {
+  opacity: 0.38;
+}
+
+.chunk-head {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 2px 10px;
+  font-family: var(--font);
+  font-size: 11px;
+  background: var(--bg-raised);
+  cursor: pointer;
+  user-select: none;
+}
+
+.chunk.neutral .chunk-head {
+  cursor: default;
+}
+
+.order {
+  margin-left: auto;
+  padding: 0 6px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  font-size: 10px;
+  color: var(--text-dim);
+}
+
+.order:hover:not(:disabled) {
+  color: var(--text);
+  border-color: var(--text-faint);
+}
+
+.order.ai,
+.tiny.ai {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  color: var(--purple);
+  border-color: rgba(169, 123, 240, 0.45);
+}
+
+.order:disabled {
+  opacity: 0.5;
+}
+
+.ours-line {
+  background: rgba(79, 156, 249, 0.1);
+}
+
+.theirs-line {
+  background: rgba(169, 123, 240, 0.1);
+}
+
+.output {
+  display: grid;
+  grid-template-rows: auto minmax(0, 1fr);
+  min-height: 0;
+}
+
+.edited {
+  margin-left: auto;
+  text-transform: none;
+  letter-spacing: 0;
+  font-weight: 400;
+  font-size: 10.5px;
+  color: var(--purple);
+}
+
+.out-body {
+  margin: 0;
+  padding: 4px 10px;
+  overflow: auto;
+  font-family: var(--mono);
+  font-size: 12px;
+  line-height: 1.5;
+  white-space: pre;
+  tab-size: 4;
+}
+</style>

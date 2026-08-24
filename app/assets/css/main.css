@@ -1,0 +1,246 @@
+:root {
+  --bg: #14181d;
+  --bg-panel: #191e24;
+  --bg-raised: #1f252d;
+  --bg-hover: #252c35;
+  --bg-active: #2b3a4a;
+  --line: #2a323b;
+  --line-soft: #222931;
+  --text: #d7dee6;
+  --text-dim: #8b98a5;
+  --text-faint: #5f6b78;
+  --accent: #4f9cf9;
+  --green: #57c184;
+  --red: #e0576d;
+  --amber: #f0a83c;
+  --purple: #a97bf0;
+  --row-h: 27px;
+  --font: -apple-system, BlinkMacSystemFont, 'Segoe UI', system-ui, sans-serif;
+  --mono: ui-monospace, SFMono-Regular, 'SF Mono', Menlo, Consolas, monospace;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body,
+#__nuxt {
+  height: 100%;
+  margin: 0;
+}
+
+body {
+  background: var(--bg);
+  color: var(--text);
+  font: 13px/1.45 var(--font);
+  overflow: hidden;
+  -webkit-font-smoothing: antialiased;
+}
+
+button {
+  font: inherit;
+  color: inherit;
+  background: none;
+  border: none;
+  cursor: pointer;
+}
+
+input,
+textarea {
+  font: inherit;
+  color: var(--text);
+  background: var(--bg);
+  border: 1px solid var(--line);
+  border-radius: 5px;
+  padding: 5px 8px;
+}
+
+input:focus,
+textarea:focus {
+  outline: none;
+  border-color: var(--accent);
+}
+
+textarea {
+  font-family: var(--font);
+  resize: vertical;
+}
+
+/* Scrollbars: visible enough to grab, quiet enough to ignore. */
+::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+
+::-webkit-scrollbar-thumb {
+  background: #333c47;
+  border-radius: 5px;
+  border: 2px solid transparent;
+  background-clip: content-box;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: #43505f;
+  background-clip: content-box;
+}
+
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+.btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 5px 10px;
+  border-radius: 5px;
+  color: var(--text-dim);
+  white-space: nowrap;
+}
+
+.btn:hover:not(:disabled) {
+  background: var(--bg-hover);
+  color: var(--text);
+}
+
+.btn:disabled {
+  opacity: 0.4;
+  cursor: default;
+}
+
+.btn-primary {
+  background: var(--accent);
+  color: #0d1218;
+  font-weight: 600;
+}
+
+.btn-primary:hover:not(:disabled) {
+  background: #6aabfb;
+  color: #0d1218;
+}
+
+.btn-danger {
+  background: var(--red);
+  color: #1a0d10;
+  font-weight: 600;
+}
+
+.btn-danger:hover:not(:disabled) {
+  background: #e97183;
+  color: #1a0d10;
+}
+
+.btn-ghost {
+  border: 1px solid var(--line);
+}
+
+.mono {
+  font-family: var(--mono);
+  font-size: 12px;
+}
+
+.dim {
+  color: var(--text-dim);
+}
+
+.faint {
+  color: var(--text-faint);
+}
+
+.truncate {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.section-title {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 10px;
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--text-faint);
+  user-select: none;
+}
+
+.pill {
+  padding: 1px 6px;
+  border-radius: 9px;
+  font-size: 10px;
+  font-weight: 600;
+  background: var(--bg-raised);
+  color: var(--text-dim);
+}
+
+/* Syntax colours in the spirit of Darcula, the JetBrains dark scheme, so code
+   in a diff reads the way it does in the editor it came from. */
+.hljs-keyword,
+.hljs-literal,
+.hljs-selector-tag,
+.hljs-type {
+  color: #cc7832;
+}
+
+.hljs-string,
+.hljs-regexp,
+.hljs-addition {
+  color: #6a8759;
+}
+
+.hljs-number,
+.hljs-symbol,
+.hljs-bullet {
+  color: #6897bb;
+}
+
+.hljs-comment,
+.hljs-quote {
+  color: #7f8c8d;
+  font-style: italic;
+}
+
+.hljs-title,
+.hljs-title.function_,
+.hljs-section {
+  color: #ffc66d;
+}
+
+.hljs-variable,
+.hljs-template-variable,
+.hljs-attr,
+.hljs-attribute,
+.hljs-selector-attr {
+  color: #9876aa;
+}
+
+.hljs-meta,
+.hljs-doctag {
+  color: #bbb529;
+}
+
+.hljs-name,
+.hljs-selector-class,
+.hljs-selector-id {
+  color: #e8bf6a;
+}
+
+.hljs-built_in,
+.hljs-class .hljs-title {
+  color: #a9b7c6;
+}
+
+.hljs-deletion {
+  color: #cf7d7d;
+}
+
+.hljs-emphasis {
+  font-style: italic;
+}
+
+.hljs-strong {
+  font-weight: 600;
+}
