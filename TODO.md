@@ -82,15 +82,17 @@ Every request made in this project, so nothing gets dropped between sessions.
 - [x] Copy hash, short hash, message, patch, path, branch name
 - [ ] Interactive rebase as a list: reorder, squash, reword, drop
 - [ ] "Fix up into this commit" — pick an older commit and autosquash into it
-- [ ] Hunk-level and line-level staging, with Stage Hunk / Discard Hunk in the
-      diff view
+- [x] Hunk-level staging: Stage Hunk, Unstage Hunk and Discard Hunk in the diff
+      view, applied by feeding a rebuilt one-hunk patch back to `git apply`
+- [ ] Line-level staging (pick individual lines within a hunk)
 - [ ] Drag a branch onto a remote to push it
 
 ### Look and feel
 - [x] Lucide icons throughout
 - [x] Loading indicators: progress bar, spinners, named in-flight operation
 - [x] Slow git work moved off the main thread so the window stops freezing
-- [ ] File tree as well as flat path list, with a Path/Tree toggle
+- [x] File tree as well as flat path list, with a Path/Tree toggle; single-child
+      directories are joined into one row so deep trees stay readable
 - [ ] Side-by-side diff toggle, whitespace-ignore toggle
 - [ ] Word-level highlighting inside a changed line
 - [ ] Blame and file history views
@@ -127,10 +129,18 @@ Every request made in this project, so nothing gets dropped between sessions.
       file-manager path needs testing
 - [ ] Release build, code signing and notarisation
 
+## Build order
+
+The binary embeds `.output/public` at compile time, so the frontend must be
+built first: `npm run generate` then `cargo build`. Building them the other way
+round leaves the window showing a stale bundle — which looked like broken CSS
+until the cause was found. `cssCodeSplit` is off so the page links one
+stylesheet rather than fetching per-route chunks at runtime.
+
 ## Verification
 
-38 tests pass: 7 unit (remote URL parsing, API bases, URL encoding, AI answer
-parsing) and 31 integration against real repositories built with the git CLI —
+42 tests pass: 9 unit (remote URL parsing, API bases, URL encoding, AI answer
+parsing, one-hunk patch rebuilding) and 33 integration against real repositories built with the git CLI —
 graph lane invariants, divergence reporting, every conflict-resolution
 combination, undo and redo, auto-stash, stash operations, empty repository,
 detached HEAD, tracking-branch checkout.
