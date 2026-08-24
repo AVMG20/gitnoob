@@ -129,6 +129,32 @@ Every request made in this project, so nothing gets dropped between sessions.
 - [ ] Keyboard shortcuts for the common actions
 - [ ] Conflict panes: synchronised scrolling and syntax highlighting
 
+## Found by audit, August 2026 — missing outright
+
+These are not refinements of something half-built; the app cannot do them at
+all, and none of them were on this list before.
+
+- [ ] Clone a repository. Today the only way in is to open a folder that is
+      already a repository, so a machine with no checkout has no route at all.
+      This is where the profile work pays off: clone from the work GitLab over
+      the work key, from personal GitHub over the personal key, without
+      choosing either by hand
+- [ ] Create a repository, with a first commit and a `.gitignore`
+- [ ] List the repositories a profile's token can see, so cloning is picking
+      one from a list rather than pasting a URL. `forge.rs` already
+      authenticates and reads pull requests; it has never asked for `/user/repos`
+      or `/projects?membership=true`
+- [ ] Manage remotes: add one, rename one, change a URL, remove one. `remotes`
+      only lists them, and a repository cloned over HTTPS cannot be moved to ssh
+      without dropping to the command line
+- [ ] Check out a pull request's branch, and read its diff. Reviews can be
+      listed and opened in a browser, which is where the app stops
+- [ ] Compare two branches directly — what is on one and not the other, as a
+      diff rather than as two graph rows
+- [ ] Show whether a commit is signed. Signing works today because the git CLI
+      does it, but nothing in the window says so, and a profile cannot carry a
+      signing key next to its SSH key
+
 ## Ideas worth doing, not yet started
 
 ### Behind the scenes
