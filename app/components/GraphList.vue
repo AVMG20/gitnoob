@@ -150,6 +150,99 @@ function onKey(event: KeyboardEvent) {
   }
 }
 
+// --- ref chips
+
+/** One label in the branch column, after folding and ordering. */
+interface RefChip {
+  key: string
+  name: string
+  kind: string
+  head: boolean
+  /** Remote branches for this same name sitting on this same commit. */
+  remotes: string[]
+}
+
+/**
+ * Turns a commit's refs into the chips to draw.
+ *
+ * A branch that has not moved since its last push carries both `main` and
+ * `origin/main` on one commit, and drawing two chips says nothing the one chip
+ * cannot: the name is the same, and the only fact worth adding is that the
+ * remote is here too. So a local branch absorbs the remotes tracking its name
+ * and wears a cloud beside its screen. Remotes with no local of that name, and
+ * tags, keep chips of their own.
+ *
+ * Order puts the checked-out branch first, then the other locals, then
+ * remote-only branches, then tags — which is also the order of how likely you
+ * are to be looking for it.
+ */
+function refChips(row: GraphRow): RefChip[] {
+  const locals = row.labels.filter((l) => l.kind === 'local')
+  const remotes = row.labels.filter((l) => l.kind === 'remote')
+  const rest = row.labels.filter((l) => l.kind !== 'local' && l.kind !== 'remote')
+
+  const absorbed = new Set<string>()
+  const fromLocals = locals.map((local) => {
+    // `origin/feature/x` tracks `feature/x`: split on the first slash only.
+    const mine = remotes.filter((r) => r.name.slice(r.name.indexOf('/') + 1) === local.name)
+    for (const remote of mine) absorbed.add(remote.name)
+    return {
+      key: `local:${local.name}`,
+      name: local.name,
+      kind: 'local',
+      head: local.head,
+      remotes: mine.map((r) => r.name)
+    }
+  })
+
+  const orphanRemotes = remotes
+    .filter((r) => !absorbed.has(r.name))
+    .map((r) => ({ key: `remote:${r.name}`, name: r.name, kind: 'remote', head: false, remotes: [] }))
+
+  const others = rest.map((l) => ({
+    key: `${l.kind}:${l.name}`,
+    name: l.name,
+    kind: l.kind,
+    head: l.head,
+    remotes: []
+  }))
+
+  return [
+    ...fromLocals.filter((c) => c.head),
+    ...fromLocals.filter((c) => !c.head),
+    ...orphanRemotes,
+    ...others
+  ]
+}
+
+/** What one chip is, spelled out, for a tooltip or a menu row. */
+function describeChip(chip: RefChip): string {
+  const where = chip.remotes.length ? ` — also on ${chip.remotes.join(', ')}` : ''
+  if (chip.head) return `${chip.name} — checked out${where}`
+  return `${chip.name}${where}`
+}
+
+/** The refs a commit carries beyond the one on show. */
+function hiddenRefs(row: GraphRow) {
+  return refChips(row).slice(1)
+}
+
+/** Lists every ref on a commit, each one checkout-able. */
+function refsMenu(event: MouseEvent, row: GraphRow) {
+  const chips = refChips(row)
+  menu.show(
+    event,
+    chips.map((chip) => ({
+      label: chip.name,
+      icon: chip.kind === 'tag' ? Tag : chip.kind === 'remote' ? Cloud : MonitorDot,
+      hint: chip.head ? 'checked out' : chip.remotes.length ? 'pushed' : '',
+      disabled: chip.head,
+      action: () => git.checkout(chip.name)
+    })),
+    `${chips.length} refs on ${row.short}`
+  )
+}
+
 // --- selecting several commits
 
 /**
@@ -459,17 +552,35 @@ onUnmounted(() => {
                so a tip is found by scanning one narrow strip rather than by
                reading the start of every message. -->
           <span class="col-refs">
-            <span
-              v-for="label in item.row.labels"
-              :key="label.kind + label.name"
-              class="chip"
-              :class="[`chip-${label.kind}`, { 'chip-current': label.head }]"
-              :title="label.head ? `${label.name} — checked out` : label.name"
+            <!-- Only the first chip is drawn; the rest live behind a counter
+                 that lists them, so a commit with five refs takes the same
+                 width as one with a single branch. -->
+            <button
+              v-if="hiddenRefs(item.row).length"
+              class="more-refs"
+              :title="hiddenRefs(item.row).map(describeChip).join('\n')"
+              @click.stop="refsMenu($event, item.row)"
             >
-              <Check v-if="label.head" :size="11" :stroke-width="3" class="glyph" />
-              <span class="truncate">{{ label.name }}</span>
+              +{{ hiddenRefs(item.row).length }}
+            </button>
+            <span
+              v-for="chip in refChips(item.row).slice(0, 1)"
+              :key="chip.key"
+              class="chip"
+              :class="[`chip-${chip.kind}`, { 'chip-current': chip.head }]"
+              :title="describeChip(chip)"
+            >
+              <Check v-if="chip.head" :size="11" :stroke-width="3" class="glyph" />
+              <span class="truncate">{{ chip.name }}</span>
               <component
-                :is="label.kind === 'remote' ? Cloud : label.kind === 'tag' ? Tag : MonitorDot"
+                :is="chip.kind === 'remote' ? Cloud : chip.kind === 'tag' ? Tag : MonitorDot"
+                :size="11"
+                class="glyph"
+              />
+              <!-- A local branch that is also on its remote says so here rather
+                   than by growing a second chip with the same name in it. -->
+              <Cloud
+                v-if="chip.kind === 'local' && chip.remotes.length"
                 :size="11"
                 class="glyph"
               />
@@ -741,6 +852,23 @@ onUnmounted(() => {
      after a gap it cannot reach across. */
   margin-right: -10px;
   padding-right: 0;
+}
+
+/* The counter for the refs not on show. Deliberately quiet: it is a way in,
+   not a label competing with the branch beside it. */
+.more-refs {
+  flex: none;
+  padding: 0 5px;
+  border-radius: 3px;
+  font-size: 10px;
+  font-weight: 600;
+  color: var(--text-faint);
+  background: var(--bg-raised);
+}
+
+.more-refs:hover {
+  color: var(--text);
+  background: var(--bg-active);
 }
 
 .colhead {
