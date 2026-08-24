@@ -25,6 +25,20 @@ const showBranch = ref(false)
 const showHistory = ref(false)
 
 const head = computed(() => store.refs?.locals.find((b) => b.is_head) ?? null)
+
+/**
+ * A branch to offer as the way out of a detached HEAD.
+ *
+ * The branch that was checked out before is not recorded anywhere the frontend
+ * can see, so this picks the most plausible destination instead: `main` or
+ * `master` if either exists, otherwise the first local branch. Better a named
+ * button than none.
+ */
+const lastBranch = computed(() => {
+  const locals = store.refs?.locals ?? []
+  const usual = locals.find((b) => b.name === 'main' || b.name === 'master')
+  return (usual ?? locals[0])?.name ?? null
+})
 const conflicts = computed(() => store.status?.conflicted.length ?? 0)
 const nextUndo = computed(() => store.history.undo[0] ?? null)
 const nextRedo = computed(() => store.history.redo[0] ?? null)
@@ -214,6 +228,29 @@ watch(
         </button>
         <button class="btn tiny ghost close" @click="confirming = false">Cancel</button>
       </template>
+    </div>
+
+    <!-- Detached HEAD is easy to reach and, until now, had no way back from
+         inside the app. Anything committed here belongs to no branch and is
+         lost the moment you check something else out, so the strip says so and
+         offers both ways out. -->
+    <div v-if="store.repo?.detached" class="banner">
+      <TriangleAlert :size="14" />
+      <span>
+        Not on a branch. Commits made here belong to nothing and are lost when
+        you check out something else.
+      </span>
+      <button
+        v-if="lastBranch"
+        class="btn tiny"
+        :disabled="store.busy"
+        @click="git.checkout(lastBranch)"
+      >
+        Back to {{ lastBranch }}
+      </button>
+      <button class="btn tiny ghost" :disabled="store.busy" @click="showBranch = true">
+        Branch from here
+      </button>
     </div>
 
     <div v-if="conflicts" class="banner">

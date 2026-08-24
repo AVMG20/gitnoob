@@ -3,14 +3,18 @@ import { computed, onMounted, ref } from 'vue'
 import { TriangleAlert } from 'lucide-vue-next'
 import { relativeTime, useGit, type ResetMode, type ResetPreview } from '~/composables/useGit'
 
-const props = defineProps<{ oid: string }>()
+const props = defineProps<{
+  oid: string
+  /** Preselected when the caller already asked which kind of reset. */
+  mode?: ResetMode
+}>()
 const emit = defineEmits<{ close: [] }>()
 
 const git = useGit()
 const store = git.store
 
 const preview = ref<ResetPreview | null>(null)
-const mode = ref<ResetMode>('mixed')
+const mode = ref<ResetMode>(props.mode ?? 'mixed')
 const acknowledged = ref(false)
 
 const dropped = computed(() => preview.value?.dropped ?? [])

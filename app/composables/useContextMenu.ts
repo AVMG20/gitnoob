@@ -11,6 +11,13 @@ export interface MenuItem {
   danger?: boolean
   disabled?: boolean
   hint?: string
+  /**
+   * A nested menu. An item with children opens them on hover rather than doing
+   * anything itself, which is how a family of related choices — the three reset
+   * modes, say — can be offered without spending three rows on them or making
+   * the caller invent a dialog.
+   */
+  children?: MenuItem[]
 }
 
 const state = reactive({

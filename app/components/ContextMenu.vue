@@ -1,11 +1,16 @@
 <script setup lang="ts">
 import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
-import { useContextMenu } from '~/composables/useContextMenu'
+import { ChevronRight } from 'lucide-vue-next'
+import { useContextMenu, type MenuItem } from '~/composables/useContextMenu'
 
 const menu = useContextMenu()
 const state = menu.state
 const box = ref<HTMLElement | null>(null)
 const offset = ref({ x: 0, y: 0 })
+
+/** Which row's nested menu is open, and whether it had to open leftwards. */
+const sub = ref<number | null>(null)
+const flipSub = ref(false)
 
 const style = computed(() => ({
   left: `${state.x + offset.value.x}px`,
@@ -25,8 +30,37 @@ function fit() {
 async function run(index: number) {
   const item = state.items[index]
   if (!item || item.disabled || item.separator) return
+  // A row with children is a door, not a button: clicking it opens them rather
+  // than doing something the user has not chosen yet.
+  if (item.children?.length) {
+    openSub(index)
+    return
+  }
   menu.close()
   await item.action?.()
+}
+
+async function runChild(child: MenuItem) {
+  if (child.disabled || child.separator) return
+  menu.close()
+  await child.action?.()
+}
+
+/**
+ * Opens a row's nested menu, deciding first whether it fits to the right.
+ *
+ * The menu is at most 320px wide, so anything closer than that to the right
+ * edge of the window opens leftwards instead.
+ */
+function openSub(index: number) {
+  const item = state.items[index]
+  if (!item?.children?.length) {
+    sub.value = null
+    return
+  }
+  const right = box.value?.getBoundingClientRect().right ?? 0
+  flipSub.value = right + 200 > window.innerWidth - 8
+  sub.value = index
 }
 
 function onKey(event: KeyboardEvent) {
@@ -37,6 +71,7 @@ watch(
   () => state.open,
   async (open) => {
     offset.value = { x: 0, y: 0 }
+    sub.value = null
     if (open) {
       await new Promise((resolve) => requestAnimationFrame(resolve))
       fit()
@@ -56,13 +91,38 @@ onUnmounted(() => window.removeEventListener('keydown', onKey))
         <button
           v-else
           class="item"
-          :class="{ danger: item.danger, off: item.disabled }"
+          :class="{ danger: item.danger, off: item.disabled, parent: item.children?.length }"
           :disabled="item.disabled"
           @click="run(index)"
+          @mouseenter="openSub(index)"
         >
           <component :is="item.icon" v-if="item.icon" :size="14" class="icon" />
           <span class="label">{{ item.label }}</span>
           <span v-if="item.hint" class="hint">{{ item.hint }}</span>
+          <ChevronRight v-if="item.children?.length" :size="13" class="arrow" />
+
+          <!-- The nested menu, anchored to its row. Flipped to the left when
+               there is no room on the right, the same way the parent menu is
+               nudged back inside the window. -->
+          <span
+            v-if="item.children?.length && sub === index"
+            class="submenu"
+            :class="{ flip: flipSub }"
+            @mouseenter="openSub(index)"
+          >
+            <button
+              v-for="(child, childIndex) in item.children"
+              :key="childIndex"
+              class="item"
+              :class="{ danger: child.danger, off: child.disabled }"
+              :disabled="child.disabled"
+              @click.stop="runChild(child)"
+            >
+              <component :is="child.icon" v-if="child.icon" :size="14" class="icon" />
+              <span class="label">{{ child.label }}</span>
+              <span v-if="child.hint" class="hint">{{ child.hint }}</span>
+            </button>
+          </span>
         </button>
       </template>
       <!-- What the menu is about, kept below the actions: it is there to
@@ -82,7 +142,9 @@ onUnmounted(() => window.removeEventListener('keydown', onKey))
 .menu {
   position: fixed;
   min-width: 216px;
-  max-width: 320px;
+  /* Wide enough that the longest action, with its hint beside it, is not
+     ellipsised — a truncated verb is worse than a wide menu. */
+  max-width: 380px;
   padding: 4px;
   background: var(--bg-raised);
   border: 1px solid var(--line);
@@ -99,6 +161,7 @@ onUnmounted(() => window.removeEventListener('keydown', onKey))
 }
 
 .item {
+  position: relative;
   display: flex;
   align-items: center;
   gap: 9px;
@@ -108,6 +171,35 @@ onUnmounted(() => window.removeEventListener('keydown', onKey))
   text-align: left;
   font-size: 12.5px;
   color: var(--text);
+}
+
+.arrow {
+  flex: none;
+  opacity: 0.6;
+}
+
+/* The nested menu hangs off its row, overlapping the parent's edge slightly so
+   the pointer can cross between the two without falling into the gap and
+   closing it. */
+.submenu {
+  position: absolute;
+  top: -5px;
+  left: 100%;
+  z-index: 1;
+  min-width: 232px;
+  margin-left: -3px;
+  padding: 4px;
+  background: var(--bg-raised);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  box-shadow: 0 12px 34px rgba(0, 0, 0, 0.55);
+}
+
+.submenu.flip {
+  left: auto;
+  right: 100%;
+  margin-left: 0;
+  margin-right: -3px;
 }
 
 .item:hover:not(:disabled) {
@@ -129,6 +221,12 @@ onUnmounted(() => window.removeEventListener('keydown', onKey))
 
 .label {
   flex: 1;
+  min-width: 0;
+  /* A wrapped label makes a row twice as tall as its neighbours and turns an
+     even list into a ragged one; the menu grows sideways instead. */
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 .hint {

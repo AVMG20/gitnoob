@@ -25,6 +25,7 @@ import {
   rowMatches,
   useGit,
   type GraphRow,
+  type ResetMode,
   type Segment
 } from '~/composables/useGit'
 import { useContextMenu } from '~/composables/useContextMenu'
@@ -42,10 +43,11 @@ const MAX_LANES = 14
 
 const viewport = ref<HTMLElement | null>(null)
 const searchBox = ref<HTMLInputElement | null>(null)
+const searchOpen = ref(false)
 const scrollTop = ref(0)
 const height = ref(600)
 const hit = ref(0)
-const resetTarget = ref<string | null>(null)
+const resetTarget = ref<{ oid: string; mode: ResetMode } | null>(null)
 const tagTarget = ref<GraphRow | null>(null)
 
 /**
@@ -134,20 +136,41 @@ watch(
   }
 )
 
+/**
+ * The search bar is summoned rather than resident: it costs a row of the window
+ * and is wanted for seconds at a time. Closing always clears the query, because
+ * a filter still applied but no longer on screen is a trap.
+ */
+async function openSearch() {
+  searchOpen.value = true
+  await nextTick()
+  searchBox.value?.focus()
+  searchBox.value?.select()
+}
+
+function closeSearch() {
+  searchOpen.value = false
+  store.query = ''
+  searchBox.value?.blur()
+}
+
 function onKey(event: KeyboardEvent) {
   if ((event.metaKey || event.ctrlKey) && event.key === 'f') {
     event.preventDefault()
-    searchBox.value?.focus()
-    searchBox.value?.select()
+    openSearch()
   }
-  if (event.key === 'Escape' && document.activeElement === searchBox.value) {
-    store.query = ''
-    searchBox.value?.blur()
+  if (event.key === 'Escape' && searchOpen.value) {
+    closeSearch()
   }
   if ((event.metaKey || event.ctrlKey) && event.key === 'g') {
     event.preventDefault()
     step(event.shiftKey ? -1 : 1)
   }
+}
+
+/** Opens the reset dialog with a mode already chosen. */
+function openReset(oid: string, mode: ResetMode) {
+  resetTarget.value = { oid, mode }
 }
 
 // --- ref chips
@@ -299,13 +322,17 @@ function commitMenu(event: MouseEvent, row: GraphRow) {
   menu.show(
     event,
     [
+      // Branching is the safe way to work from an old commit and goes first.
+      // Checking the commit out directly detaches HEAD, which strands anything
+      // committed afterwards on no branch at all, so it sits behind a submenu
+      // that says as much rather than under the pointer on every right-click.
+      { label: 'Branch from here…', icon: GitBranchPlus, action: () => git.select(row.oid) },
       {
-        label: 'Check out this commit',
+        label: 'Checkout this commit',
         icon: Check,
-        hint: 'detached',
+        hint: 'detaches HEAD',
         action: () => git.checkout(row.oid)
       },
-      { label: 'Branch from here…', icon: GitBranchPlus, action: () => git.select(row.oid) },
       { label: 'Tag this commit…', icon: Tag, action: () => (tagTarget.value = row) },
       { separator: true, label: '' },
       {
@@ -341,12 +368,34 @@ function commitMenu(event: MouseEvent, row: GraphRow) {
         hint: 'adds a commit',
         action: () => git.revert(row.oid)
       },
+      // What each reset mode keeps is the whole question, so the three are
+      // offered by name rather than left for the dialog to explain after the
+      // fact. Each still opens the dialog, which names what would be lost.
       {
-        label: `Reset ${store.repo?.head ?? 'branch'} here…`,
+        label: `Reset ${store.repo?.head ?? 'branch'} to this commit`,
         icon: ArrowDownToLine,
-        danger: true,
         disabled: isHead,
-        action: () => (resetTarget.value = row.oid)
+        children: [
+          {
+            label: 'Soft',
+            icon: ArrowDownToLine,
+            hint: 'keep all changes, staged',
+            action: () => openReset(row.oid, 'soft')
+          },
+          {
+            label: 'Mixed',
+            icon: ArrowDownToLine,
+            hint: 'keep all changes, unstaged',
+            action: () => openReset(row.oid, 'mixed')
+          },
+          {
+            label: 'Hard',
+            icon: ArrowDownToLine,
+            danger: true,
+            hint: 'discard all changes',
+            action: () => openReset(row.oid, 'hard')
+          }
+        ]
       },
       { separator: true, label: '' },
       {
@@ -415,7 +464,7 @@ function wipMenu(event: MouseEvent) {
 function onDropOnRow(row: GraphRow) {
   const payload = drag.take(['branch'])
   if (!payload || payload.kind !== 'branch' || payload.remote) return
-  resetTarget.value = row.oid
+  openReset(row.oid, 'mixed')
 }
 
 const observer = new ResizeObserver(measure)
@@ -432,14 +481,16 @@ onUnmounted(() => {
 
 <template>
   <section class="graph">
-    <div class="head">
+    <!-- Summoned with ⌘F rather than always on screen: it is wanted for
+         seconds at a time and costs a row of the window the whole session. -->
+    <div v-if="searchOpen" class="head">
       <span class="search">
         <Search :size="13" class="faint" />
         <input
           ref="searchBox"
           v-model="store.query"
           type="search"
-          placeholder="Search messages, authors, hashes  (⌘F)"
+          placeholder="Search messages, authors, hashes"
         />
         <template v-if="store.query.trim()">
           <span class="count" :class="{ none: !matches.length }">
@@ -451,16 +502,11 @@ onUnmounted(() => {
           <button class="step" :disabled="!matches.length" title="Next (⌘G)" @click="step(1)">
             <ChevronDown :size="13" />
           </button>
-          <button class="step" title="Clear" @click="store.query = ''">
-            <X :size="13" />
-          </button>
         </template>
+        <button class="step" title="Close (Esc)" @click="closeSearch">
+          <X :size="13" />
+        </button>
       </span>
-      <!-- Says what a multi-commit action would act on, and gives it back. -->
-      <button v-if="marked.length > 1" class="marks" @click="clearMarks()">
-        {{ marked.length }} commits selected
-        <X :size="12" />
-      </button>
     </div>
 
     <!-- Column headings, so the branch strip on the left reads as a column
@@ -469,6 +515,12 @@ onUnmounted(() => {
       <span class="col-refs">Branch / tag</span>
       <span class="cell-head" :style="{ width: `${graphWidth}px` }">Graph</span>
       <span class="col-msg">Commit message</span>
+      <!-- Lives here rather than beside the search box, which is not always on
+           screen to hold it. -->
+      <button v-if="marked.length > 1" class="marks" @click="clearMarks()">
+        {{ marked.length }} selected
+        <X :size="11" />
+      </button>
       <span class="col-author">Author</span>
       <span class="col-date">Date</span>
     </div>
@@ -663,20 +715,27 @@ onUnmounted(() => {
       <div v-else-if="total === 0" class="empty dim">No commits yet.</div>
     </div>
 
-    <ResetDialog v-if="resetTarget" :oid="resetTarget" @close="resetTarget = null" />
+    <ResetDialog
+      v-if="resetTarget"
+      :oid="resetTarget.oid"
+      :mode="resetTarget.mode"
+      @close="resetTarget = null"
+    />
     <TagDialog v-if="tagTarget" :row="tagTarget" @close="tagTarget = null" />
   </section>
 </template>
 
 <style scoped>
-/* One track per child, in order: the search bar, the column headings, the
-   working tree, then the scrolling list which takes what is left. Every child
-   needs a track — a missing one drops the list into an implicit row underneath
-   everything, which reads as the graph having fallen to the bottom. */
+/* A flex column rather than a grid with named row tracks. The search bar comes
+   and goes, so the number of children varies, and a grid told how many rows to
+   expect drops the extra child into an implicit row at the bottom — which is
+   what made the whole graph appear at the foot of an empty panel. Flex stacks
+   whatever is there and gives the rest to the list. */
 .graph {
-  display: grid;
-  grid-template-rows: auto auto auto minmax(0, 1fr);
+  display: flex;
+  flex-direction: column;
   min-width: 0;
+  min-height: 0;
   background: var(--bg);
 }
 
@@ -684,6 +743,7 @@ onUnmounted(() => {
   display: flex;
   align-items: center;
   gap: 10px;
+  flex: none;
   padding: 5px 12px 5px 8px;
   border-bottom: 1px solid var(--line);
   user-select: none;
@@ -712,6 +772,12 @@ onUnmounted(() => {
 
 .search input:focus {
   outline: none;
+}
+
+/* The browser's own clear button for a search field, next to ours, offering
+   the same thing in a different shape. */
+.search input::-webkit-search-cancel-button {
+  display: none;
 }
 
 .count {
@@ -746,7 +812,7 @@ onUnmounted(() => {
   display: flex;
   align-items: center;
   gap: 5px;
-  margin-left: auto;
+  flex: none;
   padding: 2px 8px;
   border-radius: 9px;
   font-size: 11px;
@@ -759,6 +825,7 @@ onUnmounted(() => {
   display: flex;
   align-items: center;
   gap: 10px;
+  flex: none;
   height: 27px;
   padding: 0 12px 0 8px;
   background: var(--bg-panel);
@@ -776,6 +843,8 @@ onUnmounted(() => {
 }
 
 .viewport {
+  flex: 1;
+  min-height: 0;
   overflow-y: auto;
   position: relative;
 }
@@ -875,6 +944,7 @@ onUnmounted(() => {
   display: flex;
   align-items: center;
   gap: 10px;
+  flex: none;
   padding: 3px 12px 3px 8px;
   font-size: 10px;
   letter-spacing: 0.07em;
