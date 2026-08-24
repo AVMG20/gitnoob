@@ -18,6 +18,36 @@ const { layout } = usePanes()
 const ready = ref(false)
 let fetchTimer: number | undefined
 let unlisten: UnlistenFn | undefined
+let unlistenCommand: UnlistenFn | undefined
+
+/**
+ * Changes seen while the app was busy.
+ *
+ * A watcher event that arrives mid-operation used to be dropped, and the next
+ * one might be minutes away — long enough to sit looking at a stale window. So
+ * it is remembered instead, and acted on when the work finishes.
+ */
+const pending = { gitDir: false, workTree: false }
+
+function drain() {
+  if (store.busy || !store.repo) return
+  const { gitDir, workTree } = pending
+  pending.gitDir = false
+  pending.workTree = false
+  // A write under `.git` moved refs or HEAD, so everything is rebuilt; a write
+  // in the work tree only changed the status, which is far cheaper.
+  if (gitDir) git.refresh()
+  else if (workTree) git.refreshStatus()
+}
+
+// Whatever the watcher saw while an operation was running is applied the moment
+// the last one finishes.
+watch(
+  () => store.busy,
+  (busy) => {
+    if (!busy) drain()
+  }
+)
 
 const settings = computed(() => config.settings.value)
 
@@ -82,10 +112,17 @@ onMounted(async () => {
   unlisten = await listen<{ git_dir: boolean; work_tree: boolean }>(
     'repo-changed',
     ({ payload }) => {
-      if (store.busy) return
-      if (payload.git_dir) git.refresh()
-      else if (payload.work_tree) git.refreshStatus()
+      if (payload.git_dir) pending.gitDir = true
+      if (payload.work_tree) pending.workTree = true
+      drain()
     }
+  ).catch(() => undefined)
+
+  // Every git command the backend runs, so the log doubles as a lesson in what
+  // the buttons do.
+  unlistenCommand = await listen<{ line: string; ok: boolean }>(
+    'git-command',
+    ({ payload }) => git.note(payload.line, payload.ok ? 'command' : 'error')
   ).catch(() => undefined)
 
   // Belt and braces for anything the watcher cannot see — a network share, a
@@ -101,6 +138,7 @@ function onFocus() {
 onUnmounted(() => {
   if (fetchTimer) window.clearInterval(fetchTimer)
   unlisten?.()
+  unlistenCommand?.()
   window.removeEventListener('focus', onFocus)
 })
 </script>

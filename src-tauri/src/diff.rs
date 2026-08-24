@@ -50,7 +50,18 @@ pub struct FileDiff {
     pub path: String,
     pub binary: bool,
     pub hunks: Vec<DiffHunk>,
+    /// Lines beyond [`MAX_DIFF_LINES`] that were not collected. Zero for the
+    /// diffs anyone reads; large for a generated file nobody does.
+    pub truncated: usize,
 }
+
+/// How many diff lines are worth sending to the window.
+///
+/// A regenerated lockfile is a hundred thousand lines that no one is going to
+/// read, and collecting them costs twice: once building the JSON here, and
+/// again laying out a DOM node per line there. Ten thousand is past any diff a
+/// person reviews by eye and still renders without a pause.
+const MAX_DIFF_LINES: usize = 10_000;
 
 /// Which side of the index a working-tree diff should describe.
 #[derive(serde::Deserialize)]
@@ -206,6 +217,8 @@ fn file_changes(diff: &Diff) -> Result<Vec<FileChange>, String> {
 fn collect_hunks(diff: &Diff, path: &str) -> Result<FileDiff, String> {
     let binary = Cell::new(false);
     let hunks: RefCell<Vec<DiffHunk>> = RefCell::new(Vec::new());
+    let taken = Cell::new(0usize);
+    let dropped = Cell::new(0usize);
 
     diff.foreach(
         &mut |delta, _| {
@@ -216,6 +229,11 @@ fn collect_hunks(diff: &Diff, path: &str) -> Result<FileDiff, String> {
         },
         None,
         Some(&mut |_, hunk| {
+            // Past the cap, stop opening hunks too, or the view ends on a run of
+            // empty headers.
+            if taken.get() >= MAX_DIFF_LINES {
+                return true;
+            }
             hunks.borrow_mut().push(DiffHunk {
                 header: String::from_utf8_lossy(hunk.header()).trim_end().to_string(),
                 lines: Vec::new(),
@@ -223,6 +241,10 @@ fn collect_hunks(diff: &Diff, path: &str) -> Result<FileDiff, String> {
             true
         }),
         Some(&mut |_, _, line| {
+            if taken.get() >= MAX_DIFF_LINES {
+                dropped.set(dropped.get() + 1);
+                return true;
+            }
             if let Some(current) = hunks.borrow_mut().last_mut() {
                 current.lines.push(DiffLine {
                     origin: line.origin(),
@@ -232,6 +254,7 @@ fn collect_hunks(diff: &Diff, path: &str) -> Result<FileDiff, String> {
                         .trim_end_matches('\n')
                         .to_string(),
                 });
+                taken.set(taken.get() + 1);
             }
             true
         }),
@@ -242,6 +265,7 @@ fn collect_hunks(diff: &Diff, path: &str) -> Result<FileDiff, String> {
         path: path.to_string(),
         binary: binary.get(),
         hunks: hunks.into_inner(),
+        truncated: dropped.get(),
     })
 }
 

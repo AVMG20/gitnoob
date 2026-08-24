@@ -129,10 +129,90 @@ Every request made in this project, so nothing gets dropped between sessions.
 - [ ] Keyboard shortcuts for the common actions
 - [ ] Conflict panes: synchronised scrolling and syntax highlighting
 
-## Found by audit, August 2026 — missing outright
+## Round 4 — the code audit, August 2026
+
+### Done in this pass
+
+- [x] **Resolving a conflict no longer rewrites a CRLF file to LF.** The parser
+      splits on `str::lines`, which eats the carriage returns, and the result
+      was rejoined with `\n` — so resolving one conflict in a Windows-line-ended
+      file showed every line in it as changed. The file's own ending is detected
+      and put back. Never seen because the test sandbox pins `core.autocrlf` to
+      false, which is exactly the config that hides it
+- [x] **`git checkout <name>` is followed by `--`.** Without it a name that is
+      not a ref is read as a path, and `git checkout notes.txt` silently
+      restores that file over the uncommitted work in it. Now it is an error,
+      which is the truth. Applies to checkout, tracking checkout, branch
+      creation, and the checkouts inside pull and undo
+- [x] **A pull says which reconciliation it means.** A bare `git pull` across a
+      divergence dies with "Need to specify how to reconcile divergent
+      branches" unless `pull.rebase` is configured, which nobody opening this
+      app has done. `--rebase` or `--no-rebase` is always passed. The UI had
+      always asked the question; it just was not passing the answer on
+- [x] **The activity log shows the git command that ran**, written the way it
+      would be typed. `CmdOutput` had carried the argv all along and the window
+      threw it away. Pure queries are left out, so the log is a record of what
+      changed the repository. This is the cheapest teaching the app can do
+- [x] **A failed read is reported.** The six calls behind a refresh each
+      swallowed their errors, so a status that had stopped updating looked
+      exactly like a repository that had stopped changing
+- [x] **Watcher events that arrive mid-operation are kept, not dropped.** They
+      were discarded whenever the app was busy, and the next event might be
+      minutes away — long enough to sit looking at a stale window. They are now
+      applied when the work finishes
+- [x] **Diffs are capped at 10,000 lines**, with the remainder counted and
+      named in the view. A regenerated lockfile was collected in full, sent as
+      JSON, and given a DOM node per line
+- [x] **Syntax highlighting is cached per line.** It ran from the template, so
+      highlight.js re-ran for every line of a diff on every re-render
+- [x] `npm run typecheck`, and `store.busy` typed rather than invisible to
+      TypeScript — it is attached with `defineProperty`, so all 39 uses of it
+      were errors nobody was running the checker to see
+
+### Next, in the order I would take them
+
+- [ ] **One repository at a time, underneath.** `AppState` holds a single path
+      and not one of the 89 commands takes a repository argument, but the window
+      has project tabs, a watcher and an interval fetch. A tab switch during an
+      operation can land a read — or a write — on the wrong repository. Either
+      thread a repository handle through the command surface, or carry an epoch
+      that stale replies are dropped against
+- [ ] **A content security policy.** `csp` is `null` and the diff view uses
+      `v-html`. highlight.js escapes what it emits, so there is no way in today,
+      but in a window with 89 commands one injection is arbitrary git
+      execution with the user's key. The policy has to be written against the
+      bundled app, not dev
+- [ ] **Frontend tests.** 9,400 lines and no runner. Vitest with a mocked
+      `invoke` would cover the store, and `GraphList`'s virtualization and the
+      drag-drop target rules are the parts most likely to break silently
+- [ ] **Tests for `config.rs`.** 289 lines carrying profiles, projects, the
+      rename-on-corrupt path and a migration, with no test over any of it — and
+      losing it loses the user's whole setup
+- [ ] **Tests for the forge and AI HTTP paths.** Only response parsing is
+      covered. Nothing exercises a 401, a rate limit, an Enterprise base URL, a
+      nested GitLab group, or pagination. A mock server would fix that
+- [ ] **A test for `push` itself.** `push_preview` is well covered; the push it
+      previews, including `--force-with-lease`, is never run against a bare
+      remote, though the test harness already builds one
+- [ ] **Clear the 59 remaining typecheck errors** (`SideBar`, `GraphList`,
+      `WorkingChanges`, `ConflictView`, `CommitDetails`, `DeleteBranchDialog`),
+      then make the checker a gate
+- [ ] **Undo that outlives the session.** The journal is in memory, so quitting
+      loses it. The reflog is already on disk
+- [ ] **A safety net for discard.** It is the most destructive button a
+      beginner presses and the one operation the journal does not record.
+      Discarded changes could go to a hidden ref, recoverable for a few days
+- [ ] **Accessibility.** Not one `aria-` attribute in the app, and no arrow-key
+      navigation of the commit list or the file list
+- [ ] **Continuous integration.** No `.github/`, so nothing stops a broken
+      build landing: `cargo test`, `cargo clippy`, `npm run typecheck`
+- [ ] Conflict resolution reads the file with `read_to_string`, so a file that
+      is not valid UTF-8 fails rather than saying why
+
+## Missing outright — found by the feature audit
 
 These are not refinements of something half-built; the app cannot do them at
-all, and none of them were on this list before.
+all.
 
 - [ ] Clone a repository. Today the only way in is to open a folder that is
       already a repository, so a machine with no checkout has no route at all.
@@ -156,6 +236,27 @@ all, and none of them were on this list before.
       signing key next to its SSH key
 
 ## Ideas worth doing, not yet started
+
+### For people who do not know git yet
+
+The app is aimed at someone who does not want to learn git before they can use
+it. These are the gaps that hurt that person specifically.
+
+- [x] Show the git command that just ran, written the way it would be typed
+- [ ] Guided bisect: pick a good commit and a bad one, answer works/broken a few
+      times, and be told what broke it. Intimidating on the command line and
+      approachable as a wizard, which is the whole argument for this app
+- [ ] Blame, and the history of one file — "who changed this line, and why" is
+      the question beginners actually ask
+- [ ] Search history for a string (`git log -S`): when did this line arrive, and
+      when did it go
+- [ ] Restore a deleted branch from the reflog. Deleting the wrong branch is a
+      beginner's mistake that should cost a click, not an afternoon
+- [ ] "Update this branch from main" as a labelled button that explains merge
+      against rebase. The drag gesture exists, but it is undiscoverable to
+      someone who does not know the operation is possible
+- [ ] Stop and ask before committing to `main`, rather than only warning. The
+      detection is already there
 
 ### Behind the scenes
 - [ ] Warn before committing straight to `main` or `master` — partly done, the
@@ -184,36 +285,29 @@ all, and none of them were on this list before.
 - [~] Windows and Linux: the keyring feature is now chosen per platform
       (`apple-native`, `windows-native`, `sync-secret-service`), so tokens go to
       the Windows Credential Manager rather than failing to build. The
-      reveal-in-file-manager path already branches on Windows but is untested,
-      and Linux has never been built.
+      reveal-in-file-manager path already branches on Windows but is untested.
+      Linux now builds and the full test suite passes there, given the GTK and
+      WebKit development packages the README names; the window itself has still
+      never been looked at on Linux.
 - [ ] Release build, code signing and notarisation
 
 ## How to run it
 
-`npm run app` for development, `npm run app:build` for a real `.app`. Running
-`src-tauri/target/debug/gitnoob` by hand gives a blank window: a debug build loads
-the `devUrl` from `tauri.conf.json` rather than the bundle compiled into it, so
-with no dev server on port 3000 there is nothing to show. Only a release build
-serves `frontendDist`. `GITUI_DEVTOOLS=1` opens the inspector, debug builds
-only.
-
-`cssCodeSplit` is off so the page links one stylesheet rather than fetching
-per-route chunks at runtime.
-
-On Windows the toolchain is rustup with the `x86_64-pc-windows-msvc` host, which
-needs the Visual Studio Build Tools (the MSVC x64 compiler and a Windows SDK)
-and the WebView2 runtime, which Windows 11 ships already. The test sandbox pins
-`core.autocrlf` to false, because Git for Windows turns it on globally and the
-tests compare against LF content.
+See the README, which is now the one place the build notes live.
 
 ## Verification
 
-59 tests pass on Windows: 22 unit (remote URL parsing, API bases, URL encoding, AI answer
-parsing, reasoning levels, one-hunk patch rebuilding, SSH command building, transport-failure
-explanations) and 37 integration against real repositories built with the git CLI —
-graph lane invariants, divergence reporting, every conflict-resolution
-combination, undo and redo, auto-stash, stash operations, cherry-picking several
-commits out of order, empty repository, detached HEAD, tracking-branch checkout.
+`cargo test` runs 99 and they pass: 29 unit (remote URL parsing, API bases, URL
+encoding, AI answer parsing, reasoning levels, one-hunk patch rebuilding, SSH
+command building, transport-failure explanations, git command rendering) and 70
+integration against real repositories built with the git CLI — graph lane
+invariants, divergence reporting, every conflict-resolution combination, undo
+and redo, auto-stash, stash operations, cherry-picking several commits out of
+order, empty repository, detached HEAD, tracking-branch checkout, CRLF files,
+a pull across a divergence, and an oversized diff.
+
+`npm run typecheck` runs and reports 59 errors in six components, all
+pre-existing. `npm run generate` builds the bundle clean.
 
 The UI is checked by rendering the built bundle in a browser and reading the
 console; the Tauri window itself cannot be screenshotted from this shell

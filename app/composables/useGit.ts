@@ -105,7 +105,13 @@ export interface DiffLine {
   content: string
 }
 export interface DiffHunk { header: string; lines: DiffLine[] }
-export interface FileDiff { path: string; binary: boolean; hunks: DiffHunk[] }
+export interface FileDiff {
+  path: string
+  binary: boolean
+  hunks: DiffHunk[]
+  /** Lines the backend stopped collecting; 0 for any diff worth reading. */
+  truncated: number
+}
 
 export interface CommitSummary {
   oid: string
@@ -259,10 +265,16 @@ export interface Resolution {
 }
 
 /** One line in the activity log at the bottom of the window. */
+/**
+ * `command` is a git command line the app ran, shown as it would be typed.
+ * It reads differently from a result and is styled differently for it.
+ */
+export type LogLevel = 'info' | 'error' | 'command'
+
 export interface LogLine {
   id: number
   at: number
-  level: 'info' | 'error'
+  level: LogLevel
   text: string
 }
 
@@ -273,7 +285,7 @@ export const WIP = '__working__'
 
 // A single shared store: the app has one open repository at a time, so there is
 // nothing to gain from per-component state.
-const store = reactive({
+const fields = reactive({
   repo: null as RepoInfo | null,
   refs: null as RefTree | null,
   status: null as WorkingStatus | null,
@@ -305,12 +317,21 @@ const logSeq = ref(0)
 
 // Everything already written reads `store.busy`; keep it as a live getter over
 // the counter rather than a second source of truth.
-Object.defineProperty(store, 'busy', {
-  get: () => store.pending > 0,
+Object.defineProperty(fields, 'busy', {
+  get: () => fields.pending > 0,
   enumerable: true
 })
 
-function note(text: string, level: 'info' | 'error' = 'info') {
+/**
+ * The store as the rest of the app sees it.
+ *
+ * `busy` is attached above rather than declared in the object, which left it
+ * invisible to TypeScript — so every `store.busy` in a template was an error
+ * nobody saw. The cast says what the getter already does.
+ */
+const store = fields as typeof fields & { readonly busy: boolean }
+
+function note(text: string, level: LogLevel = 'info') {
   if (!text.trim()) return
   store.log.unshift({ id: ++logSeq.value, at: Date.now(), level, text: text.trim() })
   if (store.log.length > 200) store.log.length = 200
@@ -366,21 +387,40 @@ export function useGit() {
    */
   async function refreshStatus() {
     if (!store.repo) return
-    const status = await invoke<WorkingStatus>('working_status').catch(() => null)
+    const status = await part('the working tree', invoke<WorkingStatus>('working_status'), null)
     if (status) store.status = status
+  }
+
+  /**
+   * Runs one of the reads a refresh is made of.
+   *
+   * A read that fails leaves the panel it feeds showing what it showed before,
+   * which is the right thing on screen — but silently, and a status that has
+   * stopped updating looks exactly like a repository that has stopped changing.
+   * So the failure is kept and the previous value returned.
+   */
+  async function part<T>(what: string, call: Promise<T>, fallback: T): Promise<T> {
+    try {
+      return await call
+    } catch (error) {
+      note(`Could not read ${what}: ${String(error)}`, 'error')
+      return fallback
+    }
   }
 
   async function refresh() {
     if (!store.repo) return
     const [info, refs, status, page, stashes, history] = await Promise.all([
-      invoke<RepoInfo>('repo_info').catch(() => store.repo),
-      invoke<RefTree>('ref_tree').catch(() => null),
-      invoke<WorkingStatus>('working_status').catch(() => null),
-      invoke<{ rows: GraphRow[]; has_more: boolean }>('commit_graph', {
-        limit: store.limit
-      }).catch(() => null),
-      invoke<StashEntry[]>('stash_list').catch(() => []),
-      invoke<Stacks>('history').catch(() => ({ undo: [], redo: [] }))
+      part('the repository', invoke<RepoInfo>('repo_info'), store.repo),
+      part('the branches', invoke<RefTree>('ref_tree'), null),
+      part('the working tree', invoke<WorkingStatus>('working_status'), null),
+      part(
+        'the history',
+        invoke<{ rows: GraphRow[]; has_more: boolean }>('commit_graph', { limit: store.limit }),
+        null
+      ),
+      part('the stashes', invoke<StashEntry[]>('stash_list'), [] as StashEntry[]),
+      part('the undo history', invoke<Stacks>('history'), { undo: [], redo: [] } as Stacks)
     ])
     if (info) store.repo = info
     if (refs) store.refs = refs
@@ -705,7 +745,7 @@ export async function copyText(text: string, label = 'Copied') {
   const { note } = useGit()
   try {
     await navigator.clipboard.writeText(text)
-    note(`${label}: ${text.split('\n')[0].slice(0, 60)}`)
+    note(`${label}: ${(text.split('\n')[0] ?? text).slice(0, 60)}`)
     return true
   } catch {
     // Some webview builds refuse the async API without a user gesture; the old
@@ -719,7 +759,7 @@ export async function copyText(text: string, label = 'Copied') {
       field.select()
       document.execCommand('copy')
       field.remove()
-      note(`${label}: ${text.split('\n')[0].slice(0, 60)}`)
+      note(`${label}: ${(text.split('\n')[0] ?? text).slice(0, 60)}`)
       return true
     } catch (error) {
       note(`Could not copy: ${String(error)}`, 'error')

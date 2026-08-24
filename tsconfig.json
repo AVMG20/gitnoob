@@ -1,0 +1,5 @@
+{
+  // Nuxt writes the real settings into .nuxt on `nuxt prepare`; this is the
+  // root file `vue-tsc` and editors look for.
+  "extends": "./.nuxt/tsconfig.json"
+}

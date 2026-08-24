@@ -1749,3 +1749,164 @@ fn pulling_a_branch_with_no_upstream_says_so() {
     let error = remote::pull_branch(&sandbox.state(), "orphan", false).unwrap_err();
     assert!(error.contains("not tracking"), "unexpected: {error}");
 }
+
+/// A conflict in a file that uses Windows line endings, built with autocrlf
+/// off so the CRLF is really in the blob rather than added by the checkout.
+fn conflicted_crlf() -> Sandbox {
+    let sandbox = Sandbox::new("conflict-crlf");
+    sandbox.commit("a.txt", "top\r\nmiddle\r\nbottom\r\n", "Base");
+    sandbox.git(&["checkout", "-q", "-b", "theirs"]);
+    sandbox.commit("a.txt", "top\r\ntheir middle\r\nbottom\r\n", "Their change");
+    sandbox.git(&["checkout", "-q", "main"]);
+    sandbox.commit("a.txt", "top\r\nour middle\r\nbottom\r\n", "Our change");
+
+    let merged = sandbox.git_may_fail(&["merge", "theirs"]);
+    assert!(!merged, "the merge was supposed to conflict");
+    sandbox
+}
+
+#[test]
+fn resolving_a_crlf_file_keeps_its_line_endings() {
+    let sandbox = conflicted_crlf();
+    let state = sandbox.state();
+
+    let choices = vec![conflict::Resolution {
+        take_ours: true,
+        take_theirs: false,
+        ours_first: true,
+        custom: None,
+    }];
+    // Rejoining with LF would rewrite every line of the file, so resolving one
+    // conflict would show up as a change to all of it.
+    assert_eq!(
+        conflict::preview(&state, "a.txt", &choices).unwrap(),
+        "top\r\nour middle\r\nbottom\r\n"
+    );
+
+    conflict::resolve(&state, "a.txt", &choices).unwrap();
+    let on_disk = std::fs::read(sandbox.root.join("a.txt")).unwrap();
+    assert_eq!(String::from_utf8(on_disk).unwrap(), "top\r\nour middle\r\nbottom\r\n");
+
+    // Keeping our side reproduces our commit exactly, so nothing is staged.
+    // Rewriting the endings would show up here as all three lines changed.
+    let diff = sandbox.git(&["diff", "--cached", "--numstat"]);
+    assert!(diff.trim().is_empty(), "the file should be unchanged from ours: {diff}");
+}
+
+#[test]
+fn resolving_does_not_add_a_newline_the_file_never_had() {
+    let sandbox = Sandbox::new("conflict-no-eof-newline");
+    // The conflict is in the middle: a file whose last line is agreed context
+    // is one where the missing final newline is still visible to the parser.
+    // When the conflict is the last thing in the file git has to write a
+    // newline before the closing marker, and the original is unknowable.
+    sandbox.commit("a.txt", "middle\nlast", "Base");
+    sandbox.git(&["checkout", "-q", "-b", "theirs"]);
+    sandbox.commit("a.txt", "their middle\nlast", "Their change");
+    sandbox.git(&["checkout", "-q", "main"]);
+    sandbox.commit("a.txt", "our middle\nlast", "Our change");
+    assert!(!sandbox.git_may_fail(&["merge", "theirs"]));
+
+    let state = sandbox.state();
+    let choices = vec![conflict::Resolution {
+        take_ours: true,
+        take_theirs: false,
+        ours_first: true,
+        custom: None,
+    }];
+    conflict::resolve(&state, "a.txt", &choices).unwrap();
+    let on_disk = std::fs::read_to_string(sandbox.root.join("a.txt")).unwrap();
+    assert_eq!(on_disk, "our middle\nlast");
+}
+
+#[test]
+fn pulling_a_diverged_branch_does_not_ask_how_to_reconcile() {
+    let sandbox = Sandbox::new("pull-divergent");
+    sandbox.commit("a.txt", "one\n", "One");
+    let bare = with_origin(&sandbox, "pull-divergent");
+    sandbox.git(&["push", "-q", "-u", "origin", "main"]);
+
+    // Both sides move, so the pull has to reconcile rather than fast-forward.
+    commit_on_remote(&sandbox, &bare, "main", "remote.txt", "from the remote\n");
+    sandbox.commit("local.txt", "from here\n", "Local work");
+    sandbox.git(&["fetch", "-q", "origin"]);
+
+    // Git refuses a bare `git pull` across a divergence unless `pull.rebase` is
+    // configured. Nobody opening this app has configured it.
+    let state = sandbox.state();
+    let out = remote::pull(&state, false).unwrap();
+    assert!(
+        out.ok,
+        "a merging pull should not need `pull.rebase` set: {}",
+        out.stderr
+    );
+    assert!(
+        !out.stderr.contains("reconcile divergent"),
+        "git should not be left to ask: {}",
+        out.stderr
+    );
+}
+
+#[test]
+fn checking_out_a_name_that_is_only_a_file_is_refused() {
+    let sandbox = Sandbox::new("checkout-pathspec");
+    sandbox.commit("notes.txt", "committed\n", "One");
+    sandbox.write("notes.txt", "work in progress\n");
+
+    let state = sandbox.state();
+    // "notes.txt" is no branch, tag or revision — only a path. Without a `--`
+    // git reads it as one and restores the file, throwing the edit away.
+    let result = refs::checkout(&state, "notes.txt");
+    assert!(result.is_err(), "checking out a path should fail, not succeed silently");
+    assert_eq!(
+        std::fs::read_to_string(sandbox.root.join("notes.txt")).unwrap(),
+        "work in progress\n",
+        "the uncommitted edit must survive"
+    );
+}
+
+#[test]
+fn a_branch_named_like_a_file_still_checks_out() {
+    let sandbox = Sandbox::new("checkout-ambiguous");
+    sandbox.commit("release", "committed\n", "One");
+    sandbox.git(&["branch", "release"]);
+
+    let state = sandbox.state();
+    // Both a branch and a path called "release"; the branch is what was asked
+    // for and what the `--` guarantees.
+    refs::checkout(&state, "release").unwrap();
+    assert_eq!(sandbox.git(&["branch", "--show-current"]).trim(), "release");
+}
+
+#[test]
+fn an_enormous_diff_is_capped_and_says_so() {
+    let sandbox = Sandbox::new("diff-cap");
+    // Stands in for a regenerated lockfile: far more changed lines than anyone
+    // is going to read, and every one of them a DOM node if it is sent.
+    let original: String = (0..12_000).map(|n| format!("line {n}\n")).collect();
+    sandbox.commit("generated.txt", &original, "Generated");
+    let rewritten: String = (0..12_000).map(|n| format!("changed {n}\n")).collect();
+    sandbox.write("generated.txt", &rewritten);
+
+    let state = sandbox.state();
+    let diff = diff::working_file_diff(&state, "generated.txt", diff::Side::Unstaged).unwrap();
+
+    let shown: usize = diff.hunks.iter().map(|hunk| hunk.lines.len()).sum();
+    assert!(shown <= 10_000, "the cap should hold: {shown} lines");
+    assert!(shown > 0, "the diff should not be empty");
+    assert!(
+        diff.truncated > 0,
+        "the lines left out should be counted, so the view can say so"
+    );
+}
+
+#[test]
+fn an_ordinary_diff_is_not_reported_as_truncated() {
+    let sandbox = Sandbox::new("diff-uncapped");
+    sandbox.commit("a.txt", "one\ntwo\nthree\n", "One");
+    sandbox.write("a.txt", "one\ntwo changed\nthree\n");
+
+    let state = sandbox.state();
+    let diff = diff::working_file_diff(&state, "a.txt", diff::Side::Unstaged).unwrap();
+    assert_eq!(diff.truncated, 0);
+}

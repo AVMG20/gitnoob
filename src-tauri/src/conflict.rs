@@ -30,6 +30,47 @@ pub struct ConflictFile {
     pub path: String,
     pub blocks: Vec<Block>,
     pub conflict_count: usize,
+    /// How the file on disk ends its lines. Parsing throws the endings away, so
+    /// writing the resolution back has to put the right ones on again.
+    #[serde(skip)]
+    pub eol: Eol,
+    /// Whether the file on disk ended with a line ending. Adding one to a file
+    /// that never had one is a change the user did not ask for.
+    #[serde(skip)]
+    pub final_newline: bool,
+}
+
+/// The line ending a file uses.
+#[derive(Clone, Copy, Default, PartialEq, Debug)]
+pub enum Eol {
+    #[default]
+    Lf,
+    Crlf,
+}
+
+impl Eol {
+    fn as_str(self) -> &'static str {
+        match self {
+            Eol::Lf => "\n",
+            Eol::Crlf => "\r\n",
+        }
+    }
+}
+
+/// The ending the file already uses, by majority.
+///
+/// A merge can leave both in one file — one side's lines came from a checkout
+/// that converted them and the other's did not — and rewriting the file in
+/// whichever is rarer would show every line as changed. The majority is the one
+/// the file is meant to have.
+fn detect_eol(text: &str) -> Eol {
+    let crlf = text.matches("\r\n").count();
+    let lf = text.matches('\n').count() - crlf;
+    if crlf > lf {
+        Eol::Crlf
+    } else {
+        Eol::Lf
+    }
 }
 
 /// What the user chose for one conflict region.
@@ -157,6 +198,8 @@ pub fn read(state: &AppState, path: &str) -> Result<ConflictFile, String> {
         path: path.to_string(),
         blocks,
         conflict_count,
+        eol: detect_eol(&text),
+        final_newline: text.ends_with('\n'),
     })
 }
 
@@ -208,10 +251,12 @@ pub fn preview(state: &AppState, path: &str, choices: &[Resolution]) -> Result<S
         }
     }
 
-    let mut text = out.join("\n");
-    // Keep the file ending in a newline; git and every other tool expect it.
-    if !text.is_empty() {
-        text.push('\n');
+    // Rejoin with the endings the file came in with. `str::lines` dropped the
+    // carriage returns on the way in, and writing plain LF back would rewrite
+    // every line of a CRLF file to resolve one conflict in it.
+    let mut text = out.join(file.eol.as_str());
+    if !text.is_empty() && file.final_newline {
+        text.push_str(file.eol.as_str());
     }
     Ok(text)
 }

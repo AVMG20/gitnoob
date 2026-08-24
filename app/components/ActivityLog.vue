@@ -14,7 +14,9 @@ const latest = computed(() => store.log[0] ?? null)
     <button class="strip" @click="open = !open">
       <span class="chev" :class="{ up: open }">▴</span>
       <span v-if="store.busy" class="busy">working…</span>
-      <span v-else-if="latest" class="line truncate" :class="latest.level">{{ latest.text }}</span>
+      <span v-else-if="latest" class="line truncate" :class="latest.level">
+        <span v-if="latest.level === 'command'" class="prompt">$</span>{{ latest.text }}
+      </span>
       <span v-else class="faint">Ready</span>
       <span class="faint count">{{ store.log.length }}</span>
     </button>
@@ -22,6 +24,9 @@ const latest = computed(() => store.log[0] ?? null)
     <div v-if="open" class="body">
       <div v-for="entry in store.log" :key="entry.id" class="entry" :class="entry.level">
         <span class="faint time">{{ new Date(entry.at).toLocaleTimeString() }}</span>
+        <!-- A command is shown as it would be typed, so the log reads as the
+             terminal session the clicks stood in for. -->
+        <span v-if="entry.level === 'command'" class="prompt">$</span>
         <pre class="text">{{ entry.text }}</pre>
       </div>
       <p v-if="!store.log.length" class="faint pad">Nothing yet.</p>
@@ -63,6 +68,19 @@ const latest = computed(() => store.log[0] ?? null)
 
 .line.error {
   color: var(--red);
+}
+
+.line.command,
+.entry.command .text {
+  color: var(--accent);
+}
+
+.prompt {
+  flex: none;
+  margin-right: 4px;
+  font-family: var(--mono);
+  font-size: 11px;
+  color: var(--text-faint);
 }
 
 .busy {

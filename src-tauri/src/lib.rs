@@ -16,7 +16,7 @@ pub mod work;
 use std::path::PathBuf;
 
 use state::AppState;
-use tauri::{Manager, State};
+use tauri::{Emitter, Manager, State};
 
 // --- repository -------------------------------------------------------------
 
@@ -781,6 +781,12 @@ pub fn run() {
             // Before any git command runs, so the very first fetch already uses
             // the right key.
             ssh::apply(&state.config());
+            // Every git command the app runs goes to the window, so the log
+            // reads as the session the user would have typed themselves.
+            let reporting = app.handle().clone();
+            git_cmd::report_to(move |command| {
+                let _ = reporting.emit("git-command", command);
+            });
             app.manage(state);
             // Holds the watch for whichever repository is open; empty until one
             // is.
