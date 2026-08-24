@@ -1,3 +1,7 @@
+use std::collections::HashMap;
+use std::path::Path;
+use std::sync::Mutex;
+
 use serde::Serialize;
 
 use crate::git_cmd;
@@ -188,9 +192,7 @@ pub fn stash_list(state: &AppState) -> Result<Vec<StashEntry>, String> {
         // `git stash list` subjects read "WIP on main: 1234abc Message" or
         // "On main: my message"; pull the branch out and keep the rest.
         let (branch, message) = split_subject(&subject);
-        let files = git_cmd::run_checked(&root, &["stash", "show", "--name-only", &format!("stash@{{{index}}}")])
-            .map(|text| text.lines().filter(|l| !l.trim().is_empty()).count())
-            .unwrap_or(0);
+        let files = file_count(&root, &oid, index);
 
         out.push(StashEntry {
             index,
@@ -203,6 +205,41 @@ pub fn stash_list(state: &AppState) -> Result<Vec<StashEntry>, String> {
     }
     Ok(out)
 }
+
+/// How many files a stash entry touches, asked once per entry ever.
+///
+/// The count needs its own `git stash show`, and the stash list is re-read on
+/// every refresh — a file saved in an editor was enough to spawn one process
+/// per stash. A stash's oid names its content, so the answer for an oid can
+/// never change; only entries seen for the first time cost anything.
+fn file_count(root: &Path, oid: &str, index: usize) -> usize {
+    let known = FILE_COUNTS
+        .lock()
+        .unwrap()
+        .as_ref()
+        .and_then(|seen| seen.get(oid).copied());
+    if let Some(known) = known {
+        return known;
+    }
+    let count = git_cmd::run_checked(
+        root,
+        &["stash", "show", "--name-only", &format!("stash@{{{index}}}")],
+    )
+    .map(|text| text.lines().filter(|l| !l.trim().is_empty()).count())
+    .unwrap_or(0);
+    // A stash with no oid is a line git did not print the way we expect;
+    // remembering the fallback under an empty key would spread it.
+    if !oid.is_empty() {
+        FILE_COUNTS
+            .lock()
+            .unwrap()
+            .get_or_insert_with(HashMap::new)
+            .insert(oid.to_string(), count);
+    }
+    count
+}
+
+static FILE_COUNTS: Mutex<Option<HashMap<String, usize>>> = Mutex::new(None);
 
 fn split_subject(subject: &str) -> (Option<String>, String) {
     let trimmed = subject

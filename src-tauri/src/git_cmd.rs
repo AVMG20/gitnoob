@@ -75,7 +75,7 @@ fn is_query(args: &[&str]) -> bool {
         ["branch", rest @ ..] => rest
             .iter()
             .any(|arg| arg.starts_with("--format") || *arg == "--list"),
-        ["stash", "list", ..] | ["config", "--get", ..] => true,
+        ["stash", "list", ..] | ["stash", "show", ..] | ["config", "--get", ..] => true,
         _ => false,
     }
 }
@@ -183,6 +183,7 @@ mod tests {
         assert!(is_query(&["diff", "--cached"]));
         assert!(is_query(&["branch", "--format=%(refname)"]));
         assert!(is_query(&["stash", "list"]));
+        assert!(is_query(&["stash", "show", "--name-only", "stash@{0}"]));
         assert!(!is_query(&["commit", "-m", "x"]));
         assert!(!is_query(&["branch", "-d", "old"]));
         assert!(!is_query(&["stash", "push"]));
