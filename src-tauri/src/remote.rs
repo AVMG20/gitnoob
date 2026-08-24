@@ -59,10 +59,12 @@ pub fn pull(state: &AppState, rebase: bool) -> Result<CmdOutput, String> {
     let branch = journal::current_branch(state);
 
     let held = work::stash_before(state, "pulling")?;
+    // Always say which reconciliation is meant. A bare `git pull` on a diverged
+    // branch stops with "Need to specify how to reconcile divergent branches"
+    // unless the user has set `pull.rebase` — and the caller has already asked
+    // them, so there is nothing left to be undecided about.
     let mut args = vec!["pull"];
-    if rebase {
-        args.push("--rebase");
-    }
+    args.push(if rebase { "--rebase" } else { "--no-rebase" });
     let mut output = git_cmd::run(&path, &args)?;
 
     match work::restore_after(state, held) {
@@ -177,7 +179,7 @@ fn pull_by_visiting(state: &AppState, branch: &str, rebase: bool) -> Result<CmdO
 
     let held = work::stash_before(state, &format!("pulling {branch}"))?;
 
-    let switched = git_cmd::run(&path, &["checkout", branch])?;
+    let switched = git_cmd::run(&path, &["checkout", branch, "--"])?;
     if !switched.ok {
         let _ = work::restore_after(state, held);
         let mut out = switched;
@@ -189,10 +191,9 @@ fn pull_by_visiting(state: &AppState, branch: &str, rebase: bool) -> Result<CmdO
         return Ok(out);
     }
 
+    // See `pull`: name the reconciliation rather than leaving it to config.
     let mut args = vec!["pull"];
-    if rebase {
-        args.push("--rebase");
-    }
+    args.push(if rebase { "--rebase" } else { "--no-rebase" });
     let mut out = git_cmd::run(&path, &args)?;
 
     if !out.ok {
@@ -210,7 +211,7 @@ fn pull_by_visiting(state: &AppState, branch: &str, rebase: bool) -> Result<CmdO
     }
 
     // Home again, whichever way the pull went.
-    let back = git_cmd::run(&path, &["checkout", &original])?;
+    let back = git_cmd::run(&path, &["checkout", &original, "--"])?;
     if !back.ok {
         out.stderr = format!(
             "{}\n\nCould not return to {original} — you are on {branch}.",

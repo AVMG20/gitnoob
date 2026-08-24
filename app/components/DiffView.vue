@@ -21,7 +21,27 @@ function lineClass(origin: string) {
   return 'ctx'
 }
 
-const paint = (code: string) => highlightLine(code, language.value)
+/**
+ * Highlighted lines, cached by content.
+ *
+ * `paint` used to be called straight from the template, so highlight.js ran
+ * again for every line on every re-render — and a diff is thousands of lines
+ * that have not changed. The cache is dropped whenever the language does, which
+ * is whenever a different file is opened.
+ */
+const painted = computed(() => {
+  const cache = new Map<string, string>()
+  const language_ = language.value
+  return (code: string) => {
+    const hit = cache.get(code)
+    if (hit !== undefined) return hit
+    const html = highlightLine(code, language_)
+    cache.set(code, html)
+    return html
+  }
+})
+
+const paint = (code: string) => painted.value(code)
 </script>
 
 <template>
@@ -63,6 +83,11 @@ const paint = (code: string) => highlightLine(code, language.value)
           <span class="text" v-html="paint(line.content)" />
         </div>
       </div>
+
+      <p v-if="props.diff.truncated" class="note dim">
+        {{ props.diff.truncated.toLocaleString() }} more changed lines are not shown. A file this
+        large is generated rather than written; open it in an editor if you need the rest.
+      </p>
     </template>
   </div>
 </template>

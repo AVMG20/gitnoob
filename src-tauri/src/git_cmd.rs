@@ -1,6 +1,6 @@
 use std::path::Path;
 use std::process::Command;
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 
 /// Result of running the `git` CLI.
 #[derive(serde::Serialize, Debug)]
@@ -30,6 +30,70 @@ pub fn ssh_command() -> Option<String> {
     SSH_COMMAND.lock().unwrap().clone()
 }
 
+/// One `git` invocation, written the way it would be typed.
+///
+/// The window is a way to learn git, not only a way to avoid it, so every
+/// command the app runs on the user's behalf is shown to them.
+#[derive(Clone, Debug, serde::Serialize)]
+pub struct GitCommand {
+    /// The full command line, ready to paste into a terminal.
+    pub line: String,
+    pub ok: bool,
+}
+
+type Reporter = Arc<dyn Fn(GitCommand) + Send + Sync>;
+
+/// Where to send each command as it runs. Set once at startup; a closure rather
+/// than an `AppHandle` so the tests can watch it without a window.
+static REPORTER: Mutex<Option<Reporter>> = Mutex::new(None);
+
+pub fn report_to(reporter: impl Fn(GitCommand) + Send + Sync + 'static) {
+    *REPORTER.lock().unwrap() = Some(Arc::new(reporter));
+}
+
+/// Commands that only ask a question. They are how the app fills the window —
+/// several per refresh — and listing them would bury the one command the user
+/// actually caused.
+fn is_query(args: &[&str]) -> bool {
+    const READS: &[&str] = &[
+        "rev-parse",
+        "merge-base",
+        "status",
+        "log",
+        "show",
+        "diff",
+        "ls-files",
+        "cat-file",
+        "for-each-ref",
+        "symbolic-ref",
+    ];
+    if args.first().is_some_and(|first| READS.contains(first)) {
+        return true;
+    }
+    // The subcommands that share a verb with something that writes.
+    match args {
+        ["branch", rest @ ..] => rest
+            .iter()
+            .any(|arg| arg.starts_with("--format") || *arg == "--list"),
+        ["stash", "list", ..] | ["config", "--get", ..] => true,
+        _ => false,
+    }
+}
+
+/// Renders an argument list as a command line, quoting only what needs it.
+fn command_line(args: &[&str]) -> String {
+    let mut line = String::from("git");
+    for arg in args {
+        line.push(' ');
+        if arg.is_empty() || arg.contains(' ') {
+            line.push_str(&format!("'{arg}'"));
+        } else {
+            line.push_str(arg);
+        }
+    }
+    line
+}
+
 /// A `git` invocation with the environment every call needs.
 fn git(cwd: &Path, args: &[&str]) -> Command {
     let mut command = Command::new("git");
@@ -54,9 +118,22 @@ pub fn run(cwd: &Path, args: &[&str]) -> Result<CmdOutput, String> {
         .output()
         .map_err(|e| format!("Could not run git: {e}"))?;
 
+    let ok = output.status.success();
+    if !is_query(args) {
+        // Taken out of the lock before it is called: git runs on several
+        // threads, and reporting one command should not hold up the next.
+        let reporter = REPORTER.lock().unwrap().clone();
+        if let Some(reporter) = reporter {
+            reporter(GitCommand {
+                line: command_line(args),
+                ok,
+            });
+        }
+    }
+
     Ok(CmdOutput {
         argv: args.iter().map(|s| s.to_string()).collect(),
-        ok: output.status.success(),
+        ok,
         code: output.status.code().unwrap_or(-1),
         stdout: String::from_utf8_lossy(&output.stdout).into_owned(),
         stderr: explained(&String::from_utf8_lossy(&output.stderr)),
@@ -89,6 +166,27 @@ mod tests {
         set_ssh_command(None);
         let out = explained("fatal: could not read Username for 'https://github.com'");
         assert!(out.contains("HTTPS"));
+    }
+
+    #[test]
+    fn a_command_line_is_rendered_the_way_it_would_be_typed() {
+        assert_eq!(command_line(&["checkout", "main", "--"]), "git checkout main --");
+        assert_eq!(
+            command_line(&["commit", "-m", "a message with spaces"]),
+            "git commit -m 'a message with spaces'"
+        );
+    }
+
+    #[test]
+    fn questions_are_not_reported_but_changes_are() {
+        assert!(is_query(&["status", "--porcelain"]));
+        assert!(is_query(&["diff", "--cached"]));
+        assert!(is_query(&["branch", "--format=%(refname)"]));
+        assert!(is_query(&["stash", "list"]));
+        assert!(!is_query(&["commit", "-m", "x"]));
+        assert!(!is_query(&["branch", "-d", "old"]));
+        assert!(!is_query(&["stash", "push"]));
+        assert!(!is_query(&["push", "origin", "main"]));
     }
 
     #[test]
@@ -184,9 +282,22 @@ pub fn run_with_input(cwd: &Path, args: &[&str], input: &str) -> Result<CmdOutpu
         .wait_with_output()
         .map_err(|e| format!("git did not finish: {e}"))?;
 
+    let ok = output.status.success();
+    if !is_query(args) {
+        // Taken out of the lock before it is called: git runs on several
+        // threads, and reporting one command should not hold up the next.
+        let reporter = REPORTER.lock().unwrap().clone();
+        if let Some(reporter) = reporter {
+            reporter(GitCommand {
+                line: command_line(args),
+                ok,
+            });
+        }
+    }
+
     Ok(CmdOutput {
         argv: args.iter().map(|s| s.to_string()).collect(),
-        ok: output.status.success(),
+        ok,
         code: output.status.code().unwrap_or(-1),
         stdout: String::from_utf8_lossy(&output.stdout).into_owned(),
         stderr: explained(&String::from_utf8_lossy(&output.stderr)),

@@ -190,7 +190,7 @@ fn step(state: &AppState, entry: &Entry, direction: Direction) -> Result<String,
     match entry.mode {
         Mode::Checkout => {
             let branch = target.ok_or_else(|| "Nothing recorded to switch back to".to_string())?;
-            git_cmd::run_checked(&root, &["checkout", branch])?;
+            git_cmd::run_checked(&root, &["checkout", branch, "--"])?;
             Ok(format!("Switched to {branch}"))
         }
         Mode::Stash => match direction {

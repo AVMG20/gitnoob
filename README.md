@@ -1,44 +1,69 @@
 # gitnoob
 
-A desktop Git client: Rust + Tauri backend, Nuxt (Vue 3) frontend.
+A desktop Git client for people who would rather not memorise git. Rust and
+Tauri underneath, Nuxt (Vue 3) on top.
 
-## Prototype scope
+The idea is that the window teaches as it goes: every git command it runs on
+your behalf is printed in the activity log the way you would have typed it, and
+anything destructive says what it will cost before it does it.
 
-Working today:
+## What it does
 
-- **Open a repository** by folder, with a recent list. Opening a subdirectory finds the work tree root.
-- **Branch sidebar** — local branches with ahead/behind counts, remote branches grouped by remote, tags, stashes. Double-click or the ⤴ button checks out; checking out a remote branch creates a local tracking branch.
-- **Commit graph** — topological lane layout with per-lane colours, ref chips, and a virtualized list that only renders the visible rows.
-- **Commit detail** — message, author, parents (clickable), changed files with per-file additions/deletions, and an inline diff per file.
-- **Changes tab** — staged/unstaged lists, per-file stage/unstage/discard, diff for either side of the index, and a commit box.
-- **Fetch / pull / push / merge**, plus stash push and pop.
-- **Amend** with a warning when the commit being amended is already on a remote.
-- **Force-push guard** — before pushing a diverged branch, the dialog lists the commits that exist only on the remote and would be dropped, and requires an explicit acknowledgement. Force pushes always use `--force-with-lease`.
-- **Conflict resolver** — three panes (ours, theirs, and the result that will be written), an optional fourth showing the merge base, a checkbox per conflict region on each side, a per-region order swap, and whole-file "take ours/theirs" shortcuts. Marking a file resolved writes it and stages it.
+**Getting around.** Open a repository by folder — a subdirectory finds the work
+tree root — and keep several open as tabs. A sidebar of local branches with
+ahead/behind counts, remote branches, tags and stashes. A commit graph with
+topological lanes, ref chips and virtualized rows, so a long history scrolls
+without stuttering. Search it by message, author or hash.
 
-## Design
+**Changing things.** Stage and unstage by file or by hunk, discard, commit,
+amend. Fetch, pull, push, merge, rebase, cherry-pick, revert, reset, tag, stash.
+Drag a branch onto another to fast-forward, merge or rebase it; drag a commit
+onto a branch to cherry-pick; drag a stash onto a branch to apply it there.
+Undo and redo, with a history menu that refuses when the branch has moved on.
 
-Reads go through **libgit2** (the `git2` crate): the revision walk, diffs, status,
-ahead/behind counts, and ref enumeration. They need to be fast and they need
+**Not losing work.** Uncommitted changes are stashed and put back around branch
+switches, pulls and rebases — but only when they are actually in the way.
+Force-pushing lists the commits that would stop being reachable and asks again,
+in red, and always uses `--force-with-lease`. Resetting explains what soft,
+mixed and hard each mean and previews what goes. A rejected push turns the strip
+under the toolbar into the next step rather than an error.
+
+**Conflicts.** Three panes — ours, theirs, and the result that will be written —
+with a fourth for the merge base when `merge.conflictStyle` provides one. A
+checkbox per conflict region on each side, a per-region order swap, and
+whole-file "take ours/theirs" shortcuts. Marking a file resolved writes it and
+stages it.
+
+**Profiles.** A profile carries an identity, a forge, and an SSH key, so a work
+account and a personal one live side by side without editing `~/.ssh/config`.
+GitHub and GitLab, including Enterprise and self-hosted, can list and open pull
+and merge requests. Tokens go to the OS keychain, never the config file.
+
+**AI, optional.** With an OpenRouter key: a commit message from the staged diff,
+and conflict resolution per region or per file.
+
+## How it works
+
+Reads go through **libgit2** (the `git2` crate): the revision walk, diffs,
+status, ahead/behind counts, ref enumeration. They need to be fast and they need
 structured data rather than text to parse.
 
 Writes go through the **`git` CLI**: checkout, add, restore, commit, merge,
-fetch, pull, push, stash. That keeps the user's own environment in force —
-credential helpers, SSH agent and `~/.ssh/config`, hooks, commit signing,
-`merge.conflictStyle` — none of which libgit2 gets for free. It also means the
-activity log at the bottom of the window shows the same output the terminal
-would.
+fetch, pull, push, stash. That keeps your own environment in force — credential
+helpers, SSH agent and `~/.ssh/config`, hooks, commit signing,
+`merge.conflictStyle` — none of which libgit2 gets for free. It is also what
+makes the activity log honest: it shows the same commands and the same output a
+terminal would.
 
-Two things about the bundled build are worth knowing. Nuxt stamps `crossorigin`
-on its stylesheet and module script tags; Tauri serves the bundle from the
-`tauri://` custom protocol, where those CORS requests fail and the window comes
-up blank with no CSS and no app. A `prerender:generate` hook in `nuxt.config.ts`
-strips them. For the same reason the content security policy is currently off:
-`default-src 'self'` blocks Nuxt's inline import map. A working policy needs to
-be written and checked in the bundled app, not just in dev.
+Two consequences worth knowing:
 
-`git2` is built with `default-features = false`, so there is no `openssl-sys` or
-`libssh2-sys` in the build: the transport those provide is not used.
+- Where git needs a decision, the app makes it explicitly rather than leaving it
+  to config. A pull passes `--rebase` or `--no-rebase`, because a bare `git
+  pull` across a divergence stops to ask. Ref arguments are followed by `--`,
+  because `git checkout <name>` on a name that is not a ref quietly restores the
+  *file* of that name over your edits.
+- `git2` is built with `default-features = false`, so there is no `openssl-sys`
+  or `libssh2-sys` in the build: the transport those provide is not used.
 
 ## Running
 
@@ -47,28 +72,32 @@ Requires Rust and Node.
 ```sh
 npm install
 npm run app          # development: starts Nuxt and the window together
-npm run app:build    # a real .app in src-tauri/target/release/bundle
+npm run app:build    # a real bundle in src-tauri/target/release/bundle
+npm run typecheck    # vue-tsc over the frontend
+cargo test --manifest-path src-tauri/Cargo.toml
 ```
 
-**Use one of those two.** Running `src-tauri/target/debug/gitnoob` by hand shows a
-blank window, and the reason is worth knowing: a debug build loads the `devUrl`
-from `tauri.conf.json` — `http://localhost:3000` — rather than the bundle
-compiled into it. With no dev server listening there is nothing to show. Only a
-release build serves the files from `frontendDist`.
-
-If you do want a debug binary that stands on its own, build the frontend first
-and drop `devUrl`:
-
-```sh
-npm run generate
-cargo build --manifest-path src-tauri/Cargo.toml   # with devUrl removed
-```
-
-Set `GITUI_DEVTOOLS=1` to open the web inspector on launch; it is only compiled
-into debug builds.
+**Use one of the first two to run it.** Launching
+`src-tauri/target/debug/gitnoob` by hand shows a blank window: a debug build
+loads `devUrl` from `tauri.conf.json` — `http://localhost:3000` — rather than
+the bundle compiled into it, and with no dev server there is nothing to show.
+Only a release build serves `frontendDist`.
 
 `npm run dev` alone serves the frontend in a browser, where every backend call
-fails: `invoke` needs the Tauri host. It is still useful for checking layout.
+fails because `invoke` needs the Tauri host. It is still useful for checking
+layout. `GITUI_DEVTOOLS=1` opens the web inspector; debug builds only.
+
+Nuxt stamps `crossorigin` on its stylesheet and module script tags, and Tauri
+serves the bundle from the `tauri://` protocol where those CORS requests fail —
+a blank window with no CSS. A `prerender:generate` hook in `nuxt.config.ts`
+strips them. `cssCodeSplit` is off so the page links one stylesheet rather than
+fetching per-route chunks at runtime.
+
+On Linux the Tauri build needs the GTK and WebKit development packages
+(`libgtk-3-dev`, `libwebkit2gtk-4.1-dev`, `libsoup-3.0-dev`,
+`libjavascriptcoregtk-4.1-dev`). On Windows it needs the Visual Studio Build
+Tools — the MSVC x64 compiler and a Windows SDK — plus the WebView2 runtime,
+which Windows 11 already ships.
 
 ## Layout
 
@@ -76,27 +105,50 @@ fails: `invoke` needs the Tauri host. It is still useful for checking layout.
 src-tauri/src
   lib.rs        Tauri command surface
   state.rs      the open repository
-  git_cmd.rs    git CLI wrapper
+  git_cmd.rs    git CLI wrapper, and the command log the window shows
   refs.rs       repo info, branches, tags, stashes, status, checkout
   graph.rs      revision walk and commit-graph lane layout
   diff.rs       commit details, file diffs, working-tree diffs
-  remote.rs     fetch, pull, push preview, push, merge
+  remote.rs     fetch, pull, push preview, push, merge, rebase
   conflict.rs   conflict marker parsing and resolution
-  work.rs       stage, unstage, discard, commit, amend, stash
+  work.rs       stage, unstage, discard, commit, amend, stash, hunks
+  journal.rs    undo and redo
+  config.rs     settings, profiles, projects
+  forge.rs      GitHub and GitLab
+  ai.rs         OpenRouter
+  ssh.rs        per-profile keys
+  watch.rs      filesystem watcher
 app
   app.vue           shell, tabs, repository picker
   composables/      the single shared store and the invoke wrappers
   components/       sidebar, graph, panels, dialogs, conflict resolver
 ```
 
-## Not done yet
+## Testing
 
-- No content security policy — see above.
-- Interactive rebase, cherry-pick, revert, reset.
-- Hunk- and line-level staging (files stage whole).
-- Worktrees, submodules, LFS.
-- Pull request / issue integration.
-- Conflict panes scroll independently rather than in step.
-- The graph reloads from the first commit when you load more history, which gets
-  slow past a few tens of thousands of commits; the lane state would need to be
-  carried across pages instead.
+`cargo test` runs 99: unit tests over the parts with fiddly rules (remote URL
+parsing, one-hunk patch rebuilding, SSH command building, transport-failure
+explanations, AI answer parsing) and integration tests against real
+repositories built with the `git` CLI — graph lane invariants, divergence
+reporting, every conflict-resolution combination, undo and redo, auto-stash,
+cherry-picking out of order, empty repositories, detached HEAD, CRLF files.
+
+The frontend has no tests yet, which is the largest gap in the project.
+`npm run typecheck` runs, and currently reports 59 errors across six components
+— mostly indexing that Nuxt's strict settings want guarded.
+
+## Known gaps
+
+`TODO.md` is the full list, kept current. The ones worth knowing before you
+rely on this:
+
+- **No clone.** The only way in is a folder that is already a repository.
+- **No content security policy.** `default-src 'self'` blocks Nuxt's inline
+  import map, so it is off until a working one is written and checked in the
+  bundled app rather than in dev.
+- **One repository at a time, underneath.** The window has project tabs, but the
+  backend holds a single open path, so a slow operation and a tab switch can
+  race.
+- No interactive rebase, line-level staging, blame, worktrees, submodules or
+  LFS.
+- Linux and Windows are built and tested far less than macOS.

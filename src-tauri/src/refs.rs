@@ -360,8 +360,12 @@ pub fn checkout(state: &AppState, name: &str) -> Result<String, String> {
     // must not be alive while git runs.
     let args: Vec<String> = {
         let repo = state.repo()?;
+        // Every form ends in `--`. Without it git falls back to reading the
+        // name as a path, and `git checkout notes.txt` on a name that is not a
+        // ref throws away the uncommitted changes in that file without a word.
+        // With it, a name that is not a ref is an error, which is the truth.
         if repo.find_branch(name, BranchType::Local).is_ok() {
-            vec!["checkout".into(), name.into()]
+            vec!["checkout".into(), name.into(), "--".into()]
         } else if repo.find_branch(name, BranchType::Remote).is_ok() {
             let local = name.split_once('/').map(|(_, n)| n).unwrap_or(name);
             vec![
@@ -370,10 +374,11 @@ pub fn checkout(state: &AppState, name: &str) -> Result<String, String> {
                 local.into(),
                 "--track".into(),
                 name.into(),
+                "--".into(),
             ]
         } else {
             // Could be a tag or a raw revision; let git decide and report.
-            vec!["checkout".into(), name.into()]
+            vec!["checkout".into(), name.into(), "--".into()]
         }
     };
 
@@ -449,6 +454,9 @@ pub fn create_branch(state: &AppState, name: &str, start: Option<&str>, checkout
     if let Some(start) = start {
         args.push(start);
     }
+    // See `checkout`: the trailing `--` stops a start point that is not a ref
+    // from being read as a path.
+    args.push("--");
     // `git checkout -b` says "Switched to a new branch" on stderr, so its stdout
     // is empty on success. Say it ourselves rather than hand back nothing.
     git_cmd::run_checked(&path, &args)?;
