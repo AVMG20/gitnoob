@@ -87,6 +87,150 @@ pub fn pull(state: &AppState, rebase: bool) -> Result<CmdOutput, String> {
     Ok(output)
 }
 
+/// Brings a branch up to date with its upstream, whether or not it is the one
+/// checked out.
+///
+/// For a branch you are not on, this needs no working tree at all: `git fetch
+/// <remote> <theirs>:<ours>` moves the local ref straight to what the remote
+/// has. Open changes are beside the point because nothing touches them, and
+/// there is no checkout, no stash, and no way to end up somewhere unexpected.
+///
+/// That only works while the update is a fast-forward. A branch that has moved
+/// on locally needs its commits replayed, and replaying them means having them
+/// in the working tree — so that case is reported rather than guessed at.
+pub fn pull_branch(state: &AppState, branch: &str, rebase: bool) -> Result<CmdOutput, String> {
+    // The branch you are on is an ordinary pull, stash dance and all.
+    if journal::current_branch(state).as_deref() == Some(branch) {
+        return pull(state, rebase);
+    }
+
+    let path = state.path()?;
+    let (remote, theirs) = {
+        let repo = state.repo()?;
+        let local = repo
+            .find_branch(branch, BranchType::Local)
+            .map_err(|_| format!("No local branch named {branch}"))?;
+        let upstream = local
+            .upstream()
+            .map_err(|_| format!("{branch} is not tracking anything to pull from"))?;
+        let full = upstream
+            .name()
+            .ok()
+            .flatten()
+            .ok_or_else(|| format!("Could not read what {branch} tracks"))?
+            .to_string();
+        // `origin/feature/x` is remote `origin`, branch `feature/x`.
+        let (remote, theirs) = full
+            .split_once('/')
+            .ok_or_else(|| format!("{full} does not name a remote branch"))?;
+        (remote.to_string(), theirs.to_string())
+    };
+
+    let before = branch_oid(state, branch);
+
+    let refspec = format!("{theirs}:{branch}");
+    let mut out = git_cmd::run(&path, &["fetch", &remote, &refspec])?;
+
+    // It has commits of its own, so the update has to be a real merge, and a
+    // merge needs the branch in the working tree. Do the whole dance out of
+    // sight instead of handing the problem back.
+    if !out.ok && out.stderr.contains("non-fast-forward") {
+        return pull_by_visiting(state, branch, rebase);
+    }
+
+    if out.ok {
+        let after = branch_oid(state, branch);
+        if before == after {
+            out.stdout = format!("{branch} was already up to date");
+        } else {
+            out.stdout = format!("{branch} brought up to date with {remote}/{theirs}");
+        }
+    }
+    Ok(out)
+}
+
+/// Where a local branch points, as an owned string.
+///
+/// The `Branch` borrows the `Repository`, so the handle has to outlive the
+/// lookup; taking the id out here keeps that confined to one place.
+fn branch_oid(state: &AppState, branch: &str) -> Option<String> {
+    let repo = state.repo().ok()?;
+    let found = repo.find_branch(branch, BranchType::Local).ok()?;
+    found.get().target().map(|oid| oid.to_string())
+}
+
+/// Pulls a branch that has diverged, by going there and coming back.
+///
+/// Stash, switch, pull, switch back, unstash. Every step is undone on the way
+/// out, including on failure: if the pull conflicts, the merge is abandoned
+/// before returning, so the repository is left exactly as it was found and the
+/// user is told the branch needs their attention rather than discovering
+/// themselves standing on it mid-merge.
+///
+/// The one thing this cannot hide is `auto_stash` being switched off with a
+/// dirty tree, because then the switch itself is refused — and quietly
+/// overriding a setting is worse than saying so.
+fn pull_by_visiting(state: &AppState, branch: &str, rebase: bool) -> Result<CmdOutput, String> {
+    let path = state.path()?;
+    let original = journal::current_branch(state)
+        .ok_or_else(|| "HEAD is detached; check out a branch first".to_string())?;
+
+    let held = work::stash_before(state, &format!("pulling {branch}"))?;
+
+    let switched = git_cmd::run(&path, &["checkout", branch])?;
+    if !switched.ok {
+        let _ = work::restore_after(state, held);
+        let mut out = switched;
+        out.stderr = format!(
+            "{}\n\nCould not step onto {branch} to update it. Commit or stash your changes, or \
+             turn auto-stash on in settings.",
+            out.stderr.trim()
+        );
+        return Ok(out);
+    }
+
+    let mut args = vec!["pull"];
+    if rebase {
+        args.push("--rebase");
+    }
+    let mut out = git_cmd::run(&path, &args)?;
+
+    if !out.ok {
+        // Leave nothing half-finished behind us. Only one of these applies; the
+        // other is a no-op that reports there is nothing to abort.
+        let _ = git_cmd::run(&path, &["merge", "--abort"]);
+        let _ = git_cmd::run(&path, &["rebase", "--abort"]);
+        out.stderr = format!(
+            "{}\n\n{branch} was left as it was: updating it needs a merge that does not apply \
+             cleanly. Check it out to work through it.",
+            out.stderr.trim()
+        );
+    } else {
+        out.stdout = format!("{branch} brought up to date");
+    }
+
+    // Home again, whichever way the pull went.
+    let back = git_cmd::run(&path, &["checkout", &original])?;
+    if !back.ok {
+        out.stderr = format!(
+            "{}\n\nCould not return to {original} — you are on {branch}.",
+            out.stderr.trim()
+        );
+        out.ok = false;
+        return Ok(out);
+    }
+
+    match work::restore_after(state, held) {
+        Ok(Some(note)) => out.stdout = format!("{}\n{note}", out.stdout.trim()),
+        Err(error) => {
+            out.stderr = format!("{}\n{error}", out.stderr.trim());
+            out.ok = false;
+        }
+        Ok(None) => {}
+    }
+    Ok(out)
+}
+
 pub fn push_preview(
     state: &AppState,
     branch: Option<&str>,

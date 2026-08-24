@@ -578,6 +578,18 @@ export function useGit() {
       store.pushBlocked = null
     },
     /** Pushes one branch by name, rather than whatever is checked out. */
+    /**
+     * Brings a branch up to date whether or not it is checked out, and whether
+     * or not there are open changes. The backend does whatever that takes.
+     */
+    pullBranch: async (branch: string, rebase = false) => {
+      const out = await guard('Pull', () =>
+        invoke<CmdOutput>('pull_branch', { branch, rebase })
+      )
+      const ok = report('Pull', out)
+      await refresh()
+      return ok
+    },
     pushBranch: async (branch: string, setUpstream: boolean) => {
       // A branch that already tracks something goes back where it came from,
       // whichever remote that is; only a new branch has to guess.

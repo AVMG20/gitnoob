@@ -391,6 +391,16 @@ async fn pull(rebase: Option<bool>, state: State<'_, AppState>) -> Result<git_cm
     remote::pull(&state, rebase.unwrap_or(false))
 }
 
+/// Brings any branch up to date, checked out or not.
+#[tauri::command]
+async fn pull_branch(
+    branch: String,
+    rebase: Option<bool>,
+    state: State<'_, AppState>,
+) -> Result<git_cmd::CmdOutput, String> {
+    remote::pull_branch(&state, &branch, rebase.unwrap_or(false))
+}
+
 #[tauri::command]
 async fn push_preview(
     branch: Option<String>,
@@ -839,6 +849,7 @@ pub fn run() {
             redo,
             fetch,
             pull,
+            pull_branch,
             push_preview,
             push,
             merge,

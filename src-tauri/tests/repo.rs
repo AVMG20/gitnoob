@@ -1575,3 +1575,177 @@ fn a_commits_patch_can_be_read_back() {
     assert!(patch.contains("diff --git a/a.txt b/a.txt"), "unexpected: {patch}");
     assert!(patch.contains("+two"));
 }
+
+/// Sets up a repository with a bare `origin` it can push to and pull from,
+/// returning the path of the bare one so the test can commit into it.
+fn with_origin(sandbox: &Sandbox, tag: &str) -> String {
+    let bare = sandbox
+        .root
+        .parent()
+        .unwrap()
+        .join(format!("gitnoob-test-{tag}-origin-{}.git", std::process::id()));
+    let _ = std::fs::remove_dir_all(&bare);
+    let arg = bare.to_string_lossy().into_owned();
+    sandbox.git(&["clone", "-q", "--bare", ".", &arg]);
+    sandbox.git(&["remote", "add", "origin", &arg]);
+    sandbox.git(&["fetch", "-q", "origin"]);
+    arg
+}
+
+/// Adds a commit to a branch inside the bare remote, standing in for someone
+/// else pushing while you were working.
+fn commit_on_remote(sandbox: &Sandbox, bare: &str, branch: &str, file: &str, body: &str) {
+    // Named after this sandbox, not just the branch: the tests run in parallel
+    // and several of them use a branch called `topic`.
+    let work = sandbox.root.parent().unwrap().join(format!(
+        "{}-clone-{branch}",
+        sandbox.root.file_name().unwrap().to_string_lossy()
+    ));
+    let _ = std::fs::remove_dir_all(&work);
+    let work_arg = work.to_string_lossy().into_owned();
+    sandbox.git(&["clone", "-q", "-b", branch, bare, &work_arg]);
+
+    let run = |args: &[&str]| {
+        let out = Command::new("git")
+            .args(args)
+            .current_dir(&work)
+            .output()
+            .expect("git should be on PATH");
+        assert!(out.status.success(), "git {:?}: {}", args, String::from_utf8_lossy(&out.stderr));
+    };
+    std::fs::write(work.join(file), body).unwrap();
+    run(&["config", "user.name", "Someone"]);
+    run(&["config", "user.email", "someone@example.com"]);
+    run(&["config", "commit.gpgsign", "false"]);
+    run(&["add", "--all"]);
+    run(&["commit", "-q", "-m", "Someone else's work"]);
+    run(&["push", "-q", "origin", branch]);
+    let _ = std::fs::remove_dir_all(&work);
+}
+
+#[test]
+fn pulling_another_branch_never_touches_the_working_tree() {
+    let sandbox = Sandbox::new("pullother");
+    sandbox.commit("a.txt", "one\n", "Base");
+    sandbox.git(&["checkout", "-q", "-b", "topic"]);
+    sandbox.commit("t.txt", "topic\n", "Topic base");
+    sandbox.git(&["checkout", "-q", "main"]);
+    let bare = with_origin(&sandbox, "pullother");
+    sandbox.git(&["branch", "-q", "--set-upstream-to=origin/topic", "topic"]);
+
+    // Someone else moves topic on, while you are on main with work in progress.
+    commit_on_remote(&sandbox, &bare, "topic", "theirs.txt", "theirs\n");
+    sandbox.git(&["fetch", "-q", "origin"]);
+    sandbox.write("mine.txt", "half-finished\n");
+    sandbox.git(&["add", "mine.txt"]);
+
+    let state = sandbox.state();
+    let out = remote::pull_branch(&state, "topic", false).unwrap();
+    assert!(out.ok, "unexpected: {} {}", out.stdout, out.stderr);
+
+    // topic moved, and nothing else did.
+    assert_eq!(refs::describe(&state).unwrap().head, "main", "still on main");
+    assert!(sandbox.git(&["stash", "list"]).trim().is_empty(), "nothing was stashed");
+    assert!(
+        refs::status(&state).unwrap().staged.iter().any(|e| e.path == "mine.txt"),
+        "the staged file is untouched"
+    );
+    assert!(
+        !sandbox.root.join("theirs.txt").exists(),
+        "their file belongs to topic, not to the tree we are standing in"
+    );
+    let log = sandbox.git(&["log", "--format=%s", "topic"]);
+    assert!(log.contains("Someone else"), "topic has their commit: {log}");
+
+    let _ = std::fs::remove_dir_all(&bare);
+}
+
+#[test]
+fn pulling_a_diverged_branch_visits_it_and_comes_back() {
+    let sandbox = Sandbox::new("pulldiverged");
+    sandbox.commit("a.txt", "one\n", "Base");
+    sandbox.git(&["checkout", "-q", "-b", "topic"]);
+    sandbox.commit("t.txt", "topic\n", "Topic base");
+    sandbox.git(&["checkout", "-q", "main"]);
+    let bare = with_origin(&sandbox, "pulldiverged");
+    sandbox.git(&["branch", "-q", "--set-upstream-to=origin/topic", "topic"]);
+
+    // They add a commit; so do you, on the same branch, so it cannot simply be
+    // moved forward. The two touch different files, so the merge itself works.
+    commit_on_remote(&sandbox, &bare, "topic", "theirs.txt", "theirs\n");
+    sandbox.git(&["fetch", "-q", "origin"]);
+    sandbox.git(&["checkout", "-q", "topic"]);
+    sandbox.commit("ours.txt", "ours\n", "Our own");
+    sandbox.git(&["checkout", "-q", "main"]);
+
+    // And you are mid-edit on main the whole time.
+    sandbox.write("mine.txt", "half-finished\n");
+
+    let state = sandbox.state();
+    let out = remote::pull_branch(&state, "topic", false).unwrap();
+    assert!(out.ok, "unexpected: {} {}", out.stdout, out.stderr);
+
+    // Back where we started, with the work in progress back in place.
+    assert_eq!(refs::describe(&state).unwrap().head, "main");
+    assert_eq!(
+        std::fs::read_to_string(sandbox.root.join("mine.txt")).unwrap(),
+        "half-finished\n"
+    );
+    assert!(sandbox.git(&["stash", "list"]).trim().is_empty(), "the stash was put back");
+
+    // topic has both sides of the history now.
+    let log = sandbox.git(&["log", "--format=%s", "topic"]);
+    assert!(log.contains("Someone else") && log.contains("Our own"), "unexpected: {log}");
+
+    let _ = std::fs::remove_dir_all(&bare);
+}
+
+#[test]
+fn a_pull_that_cannot_merge_leaves_everything_as_it_was() {
+    let sandbox = Sandbox::new("pullconflict");
+    sandbox.commit("a.txt", "one\n", "Base");
+    sandbox.git(&["checkout", "-q", "-b", "topic"]);
+    sandbox.commit("shared.txt", "base\n", "Topic base");
+    sandbox.git(&["checkout", "-q", "main"]);
+    let bare = with_origin(&sandbox, "pullconflict");
+    sandbox.git(&["branch", "-q", "--set-upstream-to=origin/topic", "topic"]);
+
+    // Both sides change the same file, so the merge cannot go through.
+    commit_on_remote(&sandbox, &bare, "topic", "shared.txt", "theirs\n");
+    sandbox.git(&["fetch", "-q", "origin"]);
+    sandbox.git(&["checkout", "-q", "topic"]);
+    sandbox.commit("shared.txt", "ours\n", "Our version");
+    sandbox.git(&["checkout", "-q", "main"]);
+    sandbox.write("mine.txt", "half-finished\n");
+
+    let state = sandbox.state();
+    let out = remote::pull_branch(&state, "topic", false).unwrap();
+    assert!(!out.ok, "the merge cannot succeed");
+    assert!(
+        out.stderr.contains("left as it was"),
+        "should say so plainly: {}",
+        out.stderr
+    );
+
+    // The point of the exercise: we are home, nothing is half-merged, and the
+    // work in progress is where it was left.
+    assert_eq!(refs::describe(&state).unwrap().head, "main");
+    assert!(!remote::in_progress(&state).unwrap().merging, "no merge left dangling");
+    assert!(refs::status(&state).unwrap().conflicted.is_empty());
+    assert_eq!(
+        std::fs::read_to_string(sandbox.root.join("mine.txt")).unwrap(),
+        "half-finished\n"
+    );
+    assert!(sandbox.git(&["stash", "list"]).trim().is_empty(), "the stash was put back");
+
+    let _ = std::fs::remove_dir_all(&bare);
+}
+
+#[test]
+fn pulling_a_branch_with_no_upstream_says_so() {
+    let sandbox = Sandbox::new("pullnoupstream");
+    sandbox.commit("a.txt", "one\n", "Base");
+    sandbox.git(&["branch", "orphan"]);
+    let error = remote::pull_branch(&sandbox.state(), "orphan", false).unwrap_err();
+    assert!(error.contains("not tracking"), "unexpected: {error}");
+}

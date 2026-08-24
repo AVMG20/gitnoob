@@ -8,6 +8,7 @@ import {
   ChevronRight,
   Cloud,
   Copy,
+  Download,
   ExternalLink,
   GitBranch,
   GitMerge,
@@ -203,6 +204,16 @@ function localMenu(event: MouseEvent, name: string, upstream: string | null) {
       // two that rewrite or combine history, then housekeeping, then the one
       // that destroys something.
       { label: 'Check out', icon: GitBranch, disabled: isHead, action: () => git.checkout(name) },
+      {
+        // Works on a branch you are not standing on, open changes and all:
+        // the backend moves the ref directly when it can, and visits the
+        // branch and comes back when it cannot.
+        label: upstream ? `Pull from ${upstream}` : 'Pull',
+        icon: Download,
+        disabled: !upstream,
+        hint: upstream ? '' : 'no upstream',
+        action: () => git.pullBranch(name)
+      },
       {
         label: upstream ? `Push to ${upstream}` : 'Push and set upstream',
         icon: Upload,

@@ -3,7 +3,7 @@ use std::process::Command;
 use std::sync::Mutex;
 
 /// Result of running the `git` CLI.
-#[derive(serde::Serialize)]
+#[derive(serde::Serialize, Debug)]
 pub struct CmdOutput {
     pub argv: Vec<String>,
     pub ok: bool,
