@@ -31,37 +31,50 @@ const selected = computed(() =>
     ? { path: store.viewer.path, side: store.viewer.side ?? 'unstaged' }
     : null
 )
-const summary = ref('')
-const body = ref('')
+const message = ref('')
 const amend = ref(false)
 /** What the user had typed before ticking amend, so unticking restores it. */
-const stashedMessage = ref<{ summary: string; body: string } | null>(null)
+const stashedMessage = ref<string | null>(null)
 const amendPushed = ref(false)
+
+/** The first line is the commit subject, the way git reads it. */
+const subject = computed(() => message.value.split('\n')[0]?.trim() ?? '')
+/** Git's own soft limit; past it `git log --oneline` starts truncating. */
+const SUBJECT_LIMIT = 72
+
+/**
+ * Normalises the typed text into a git commit message.
+ *
+ * Git takes the first line as the subject whatever follows it, but every tool
+ * that shows a subject and a body expects a blank line between them — so one is
+ * inserted if the user did not leave one.
+ */
+function composed() {
+  const lines = message.value.split('\n')
+  const head = (lines.shift() ?? '').trim()
+  const rest = lines.join('\n').replace(/^\s*\n/, '').trimEnd()
+  return rest ? `${head}\n\n${rest}` : head
+}
 
 const staged = computed(() => store.status?.staged ?? [])
 const unstaged = computed(() => store.status?.unstaged ?? [])
 const conflicted = computed(() => store.status?.conflicted ?? [])
 const canCommit = computed(
-  () =>
-    (staged.value.length > 0 || amend.value) &&
-    summary.value.trim().length > 0 &&
-    !conflicted.value.length
+  () => (staged.value.length > 0 || amend.value) && subject.value.length > 0 && !conflicted.value.length
 )
 
 /** Ticking amend loads HEAD's message; unticking gives back what was typed. */
 async function toggleAmend(on: boolean) {
   amend.value = on
   if (on) {
-    stashedMessage.value = { summary: summary.value, body: body.value }
+    stashedMessage.value = message.value
     const draft = await git.amendDraft()
     if (draft) {
-      summary.value = draft.summary
-      body.value = draft.body
+      message.value = draft.body ? `${draft.summary}\n\n${draft.body}` : draft.summary
       amendPushed.value = draft.is_pushed
     }
   } else {
-    summary.value = stashedMessage.value?.summary ?? ''
-    body.value = stashedMessage.value?.body ?? ''
+    message.value = stashedMessage.value ?? ''
     amendPushed.value = false
   }
 }
@@ -69,15 +82,16 @@ async function toggleAmend(on: boolean) {
  * The commit box is pinned to the bottom and the two file lists share what is
  * left equally. The diff only claims space once a file is actually open.
  */
-const rows = computed(() =>
-  [
-    conflicted.value.length ? 'auto' : '0px',
-    conflicted.value.length ? 'auto' : '0px',
-    'minmax(80px, 1fr)',
-    'minmax(80px, 1fr)',
-    'auto'
-  ].join(' ')
-)
+const rows = computed(() => {
+  // Only name rows for children that are actually rendered. Emitting `0px`
+  // placeholders for the hidden conflict banners handed those rows to the two
+  // file lists instead, which collapsed them and pushed the commit box to the
+  // top of the panel.
+  const parts: string[] = []
+  if (conflicted.value.length) parts.push('auto', 'auto')
+  parts.push('minmax(46px, 1fr)', 'minmax(46px, 1fr)', 'auto')
+  return parts.join(' ')
+})
 
 /** Committing straight to a shared branch is worth a word of warning. */
 const onProtected = computed(() => ['main', 'master', 'develop'].includes(store.repo?.head ?? ''))
@@ -90,12 +104,8 @@ function show(path: string, side: 'staged' | 'unstaged') {
 
 async function commit() {
   if (!canCommit.value) return
-  const message = body.value.trim()
-    ? `${summary.value.trim()}\n\n${body.value.trim()}`
-    : summary.value.trim()
-  if (await git.commit(message, amend.value)) {
-    summary.value = ''
-    body.value = ''
+  if (await git.commit(composed(), amend.value)) {
+    message.value = ''
     stashedMessage.value = null
     amend.value = false
     amendPushed.value = false
@@ -108,18 +118,13 @@ async function commit() {
  * tell apart later.
  */
 async function stashInstead() {
-  const name = summary.value.trim()
-  if (await git.stashPush(name || undefined)) {
-    summary.value = ''
-    body.value = ''
-  }
+  if (await git.stashPush(subject.value || undefined)) message.value = ''
 }
 
 async function generate() {
-  const message = await ai.commitMessage()
-  if (!message) return
-  summary.value = message.summary
-  body.value = message.body
+  const written = await ai.commitMessage()
+  if (!written) return
+  message.value = written.body ? `${written.summary}\n\n${written.body}` : written.summary
   git.note('Commit message written by the model — read it before committing')
 }
 
@@ -286,8 +291,22 @@ function fileMenu(event: MouseEvent, path: string, side: 'staged' | 'unstaged', 
           {{ ai.store.busy ? 'Writing…' : 'Generate' }}
         </button>
       </div>
-      <input v-model="summary" class="summary" type="text" placeholder="Summary" />
-      <textarea v-model="body" rows="3" placeholder="Why (optional)" />
+      <div class="field">
+        <textarea
+          v-model="message"
+          rows="4"
+          placeholder="Summary on the first line, why it changed below"
+          @keydown.meta.enter="commit"
+        />
+        <span
+          v-if="subject.length"
+          class="counter"
+          :class="{ over: subject.length > SUBJECT_LIMIT }"
+          :title="`Subject length — git truncates past ${SUBJECT_LIMIT}`"
+        >
+          {{ subject.length }}
+        </span>
+      </div>
       <p v-if="amend && amendPushed" class="warn-line">
         <TriangleAlert :size="12" /> That commit is already on a remote — amending it will need a
         force push.
@@ -311,8 +330,8 @@ function fileMenu(event: MouseEvent, path: string, side: 'staged' | 'unstaged', 
           class="btn btn-ghost stash-btn"
           :disabled="store.busy || (!staged.length && !unstaged.length)"
           :title="
-            summary.trim()
-              ? `Stash everything as \u201c${summary.trim()}\u201d instead of committing`
+            subject
+              ? `Stash everything as \u201c${subject}\u201d instead of committing`
               : 'Stash everything instead of committing'
           "
           @click="stashInstead"
@@ -373,6 +392,9 @@ function fileMenu(event: MouseEvent, path: string, side: 'staged' | 'unstaged', 
   display: flex;
   flex-direction: column;
   min-height: 0;
+  /* Clip inside the group when the panel is too short, rather than letting one
+     group's rows bleed over the next one's header. */
+  overflow: hidden;
   border-bottom: 1px solid var(--line-soft);
 }
 
@@ -386,7 +408,9 @@ function fileMenu(event: MouseEvent, path: string, side: 'staged' | 'unstaged', 
   display: flex;
   align-items: center;
   justify-content: space-between;
+  gap: 8px;
   padding-right: 8px;
+  flex: none;
 }
 
 .num {
@@ -459,10 +483,30 @@ function fileMenu(event: MouseEvent, path: string, side: 'staged' | 'unstaged', 
   padding: 2px 0 5px;
 }
 
-.summary,
+.field {
+  position: relative;
+  margin-bottom: 7px;
+}
+
 textarea {
   width: 100%;
-  margin-bottom: 7px;
+  display: block;
+  /* Room for the counter in the corner. */
+  padding-right: 38px;
+}
+
+.counter {
+  position: absolute;
+  top: 6px;
+  right: 8px;
+  font-size: 10.5px;
+  font-variant-numeric: tabular-nums;
+  color: var(--text-faint);
+  pointer-events: none;
+}
+
+.counter.over {
+  color: var(--amber);
 }
 
 .buttons {

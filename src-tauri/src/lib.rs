@@ -696,6 +696,15 @@ pub fn run() {
         .setup(|app| {
             let dir = app.path().app_config_dir()?;
             app.manage(AppState::new(dir));
+            // The inspector is only compiled into debug builds, and having it
+            // open from the start is the only way to see a failure that happens
+            // before the page can report anything itself.
+            #[cfg(debug_assertions)]
+            if std::env::var("GITUI_DEVTOOLS").is_ok() {
+                if let Some(window) = app.get_webview_window("main") {
+                    window.open_devtools();
+                }
+            }
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![

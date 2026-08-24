@@ -46,12 +46,29 @@ Requires Rust and Node.
 
 ```sh
 npm install
-npm run app          # tauri dev — starts Nuxt and the window together
-npm run app:build    # bundle a release .app / installer
+npm run app          # development: starts Nuxt and the window together
+npm run app:build    # a real .app in src-tauri/target/release/bundle
 ```
 
+**Use one of those two.** Running `src-tauri/target/debug/gitui` by hand shows a
+blank window, and the reason is worth knowing: a debug build loads the `devUrl`
+from `tauri.conf.json` — `http://localhost:3000` — rather than the bundle
+compiled into it. With no dev server listening there is nothing to show. Only a
+release build serves the files from `frontendDist`.
+
+If you do want a debug binary that stands on its own, build the frontend first
+and drop `devUrl`:
+
+```sh
+npm run generate
+cargo build --manifest-path src-tauri/Cargo.toml   # with devUrl removed
+```
+
+Set `GITUI_DEVTOOLS=1` to open the web inspector on launch; it is only compiled
+into debug builds.
+
 `npm run dev` alone serves the frontend in a browser, where every backend call
-fails: `invoke` needs the Tauri host.
+fails: `invoke` needs the Tauri host. It is still useful for checking layout.
 
 ## Layout
 

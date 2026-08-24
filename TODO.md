@@ -129,13 +129,17 @@ Every request made in this project, so nothing gets dropped between sessions.
       file-manager path needs testing
 - [ ] Release build, code signing and notarisation
 
-## Build order
+## How to run it
 
-The binary embeds `.output/public` at compile time, so the frontend must be
-built first: `npm run generate` then `cargo build`. Building them the other way
-round leaves the window showing a stale bundle — which looked like broken CSS
-until the cause was found. `cssCodeSplit` is off so the page links one
-stylesheet rather than fetching per-route chunks at runtime.
+`npm run app` for development, `npm run app:build` for a real `.app`. Running
+`src-tauri/target/debug/gitui` by hand gives a blank window: a debug build loads
+the `devUrl` from `tauri.conf.json` rather than the bundle compiled into it, so
+with no dev server on port 3000 there is nothing to show. Only a release build
+serves `frontendDist`. `GITUI_DEVTOOLS=1` opens the inspector, debug builds
+only.
+
+`cssCodeSplit` is off so the page links one stylesheet rather than fetching
+per-route chunks at runtime.
 
 ## Verification
 
