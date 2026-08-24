@@ -19,6 +19,8 @@ export interface RepoInfo {
   head: string
   detached: boolean
   state: string
+  /** This repository's effective `user.name`; empty when git has none. */
+  author: string
 }
 
 export interface LocalBranch {
@@ -49,7 +51,12 @@ export interface WorkingStatus {
 }
 
 export interface Segment { x1: number; y1: number; x2: number; y2: number; color: number }
-export interface RefLabel { kind: string; name: string }
+export interface RefLabel {
+  kind: string
+  name: string
+  /** The checked-out branch, or a detached HEAD. */
+  head: boolean
+}
 
 export interface GraphRow {
   oid: string
@@ -64,6 +71,8 @@ export interface GraphRow {
   width: number
   segments: Segment[]
   labels: RefLabel[]
+  /** On a local branch but not yet on its upstream. */
+  unpushed: boolean
 }
 
 export interface FileChange {
@@ -270,10 +279,6 @@ const store = reactive({
   busyLabel: null as string | null,
   /** Set when a push was rejected, so the toolbar can offer a way out. */
   pushBlocked: null as PushBlock | null,
-  /** The push dialog, and which branch it is about. Null when closed; a null
-      branch means whatever is checked out. Kept in the store so the sidebar can
-      open the same dialog the toolbar does. */
-  pushDialog: null as { branch: string | null } | null,
   log: [] as LogLine[]
 })
 
@@ -324,7 +329,6 @@ export function useGit() {
     // otherwise act on this one: a rejected push offering to force a branch
     // that is not here, a file viewer on a path that no longer exists.
     store.pushBlocked = null
-    store.pushDialog = null
     store.viewer = null
     store.resolving = null
     store.query = ''
@@ -527,17 +531,14 @@ export function useGit() {
     dismissPushBlock: () => {
       store.pushBlocked = null
     },
-    /** Opens the push dialog, for a named branch or for the current one. */
-    openPush: (branch: string | null = null) => {
-      store.pushDialog = { branch }
-    },
-    closePush: () => {
-      store.pushDialog = null
-    },
     /** Pushes one branch by name, rather than whatever is checked out. */
     pushBranch: async (branch: string, setUpstream: boolean) => {
-      const remotes = await invoke<string[]>('remotes').catch(() => [])
-      const target = remotes[0] ?? 'origin'
+      // A branch that already tracks something goes back where it came from,
+      // whichever remote that is; only a new branch has to guess.
+      const upstream = store.refs?.locals.find((b) => b.name === branch)?.upstream ?? null
+      const tracked = upstream?.split('/')[0] ?? null
+      const remotes = tracked ? [] : await invoke<string[]>('remotes').catch(() => [])
+      const target = tracked ?? remotes[0] ?? 'origin'
       const out = await guard('Push', () =>
         invoke<CmdOutput>('push', {
           remoteName: target,
@@ -552,7 +553,7 @@ export function useGit() {
           ? {
               remote: target,
               branch,
-              upstream: store.refs?.locals.find((b) => b.name === branch)?.upstream ?? null,
+              upstream,
               message: `${out.stdout}\n${out.stderr}`.trim()
             }
           : null

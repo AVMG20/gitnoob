@@ -1128,3 +1128,68 @@ fn creating_a_branch_reports_what_it_did() {
     assert!(message.contains("feature"));
     assert_eq!(refs::describe(&state).unwrap().head, "feature");
 }
+
+#[test]
+fn the_graph_marks_commits_the_upstream_does_not_have() {
+    let sandbox = Sandbox::new("unpushed");
+    sandbox.commit("a.txt", "one\n", "Shared");
+
+    let bare = sandbox
+        .root
+        .parent()
+        .unwrap()
+        .join(format!("gitui-test-unpushed-origin-{}.git", std::process::id()));
+    let _ = std::fs::remove_dir_all(&bare);
+    let bare_arg = bare.to_string_lossy().into_owned();
+    sandbox.git(&["clone", "-q", "--bare", ".", &bare_arg]);
+    sandbox.git(&["remote", "add", "origin", &bare_arg]);
+    sandbox.git(&["fetch", "-q", "origin"]);
+    sandbox.git(&["branch", "-q", "--set-upstream-to=origin/main", "main"]);
+
+    // Two commits made after the clone, so the bare remote has neither.
+    sandbox.commit("a.txt", "one\ntwo\n", "Local only");
+    sandbox.commit("a.txt", "one\ntwo\nthree\n", "Local only as well");
+
+    let page = graph::build(&sandbox.state(), 500).unwrap();
+    let unpushed: Vec<&str> = page
+        .rows
+        .iter()
+        .filter(|row| row.unpushed)
+        .map(|row| row.summary.as_str())
+        .collect();
+    assert_eq!(unpushed, vec!["Local only as well", "Local only"]);
+
+    // The commit the remote already has is not marked.
+    let shared = page.rows.iter().find(|r| r.summary == "Shared").unwrap();
+    assert!(!shared.unpushed);
+
+    let _ = std::fs::remove_dir_all(&bare);
+}
+
+#[test]
+fn the_checked_out_branch_is_the_only_label_marked_as_head() {
+    let sandbox = Sandbox::new("headlabel");
+    sandbox.commit("a.txt", "one\n", "First");
+    // Two branches on the same commit: the label has to tell them apart.
+    sandbox.git(&["branch", "other"]);
+
+    let page = graph::build(&sandbox.state(), 500).unwrap();
+    let row = page.rows.first().unwrap();
+    let heads: Vec<&str> = row
+        .labels
+        .iter()
+        .filter(|l| l.head)
+        .map(|l| l.name.as_str())
+        .collect();
+    assert_eq!(heads, vec!["main"]);
+}
+
+#[test]
+fn repository_info_reports_the_identity_a_commit_would_use() {
+    let sandbox = Sandbox::new("author");
+    sandbox.commit("a.txt", "one\n", "First");
+    sandbox.git(&["config", "--local", "user.name", "AVMG20"]);
+
+    let info = refs::describe(&sandbox.state()).unwrap();
+    assert_eq!(info.author, "AVMG20");
+}

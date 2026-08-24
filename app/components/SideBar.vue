@@ -207,16 +207,7 @@ function localMenu(event: MouseEvent, name: string, upstream: string | null) {
       {
         label: upstream ? `Push to ${upstream}` : 'Push and set upstream',
         icon: Upload,
-        hint: 'straight away',
         action: () => git.pushBranch(name, !upstream)
-      },
-      // The same dialog the toolbar's Push opens, for when you want to see what
-      // would go before it goes.
-      {
-        label: 'Push…',
-        icon: Upload,
-        hint: 'with a preview',
-        action: () => git.openPush(name)
       },
       {
         label: 'Copy branch name',

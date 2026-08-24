@@ -409,7 +409,10 @@ onUnmounted(() => {
           <template v-else>No local changes</template>
         </span>
       </span>
-      <span class="col-author faint">you</span>
+      <!-- Whoever a commit made here would be authored by, rather than "you":
+           with a profile per context, which identity is in force is the thing
+           worth showing. -->
+      <span class="col-author faint truncate">{{ store.repo?.author || 'no author set' }}</span>
       <span class="col-date faint">now</span>
     </div>
 
@@ -457,23 +460,42 @@ onUnmounted(() => {
               fill="none"
               stroke-width="1.6"
             />
+            <!-- A commit the upstream does not have yet is drawn in the accent
+                 colour rather than its lane colour, so the boundary between
+                 what has been pushed and what has not is visible in the graph
+                 itself and not only in an ahead count. -->
             <circle
               :cx="x(item.row.lane)"
               :cy="ROW / 2"
               :r="item.row.parents.length > 1 ? 3.4 : 4"
-              :fill="item.row.parents.length > 1 ? 'var(--bg)' : laneColor(item.row.color)"
-              :stroke="laneColor(item.row.color)"
+              :fill="
+                item.row.parents.length > 1
+                  ? 'var(--bg)'
+                  : item.row.unpushed
+                    ? 'var(--accent)'
+                    : laneColor(item.row.color)
+              "
+              :stroke="item.row.unpushed ? 'var(--accent)' : laneColor(item.row.color)"
               stroke-width="1.8"
-            />
+            >
+              <title v-if="item.row.unpushed">Not pushed yet</title>
+            </circle>
           </svg>
 
           <span class="col-msg">
+            <!-- The checked-out branch gets a tick and a brighter chip: with
+                 several branches on one commit, which one you are standing on
+                 is the thing the decorations exist to answer. -->
             <span
               v-for="label in item.row.labels"
               :key="label.kind + label.name"
-              :class="`chip chip-${label.kind}`"
-              >{{ label.name }}</span
+              class="chip"
+              :class="[`chip-${label.kind}`, { 'chip-current': label.head }]"
+              :title="label.head ? `${label.name} — checked out` : label.name"
             >
+              <Check v-if="label.head" :size="11" :stroke-width="3" class="tick" />
+              {{ label.name }}
+            </span>
             <span class="summary truncate">
               <span
                 v-for="(part, i) in highlight(item.row.summary, store.query)"
@@ -713,6 +735,9 @@ onUnmounted(() => {
 }
 
 .chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
   flex: none;
   padding: 1px 6px;
   border-radius: 3px;
@@ -720,8 +745,20 @@ onUnmounted(() => {
   font-weight: 600;
   max-width: 180px;
   overflow: hidden;
-  text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+/* The branch you are on: brighter, outlined, and ticked. Everything else on
+   the same commit stays flat, so the eye lands on this one. */
+.chip-current {
+  background: rgba(79, 156, 249, 0.32);
+  color: #cfe4ff;
+  box-shadow: inset 0 0 0 1px var(--accent);
+}
+
+.chip .tick {
+  flex: none;
+  opacity: 0.9;
 }
 
 .chip-local {

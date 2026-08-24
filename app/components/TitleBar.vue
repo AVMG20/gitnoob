@@ -29,6 +29,13 @@ const conflicts = computed(() => store.status?.conflicted.length ?? 0)
 const nextUndo = computed(() => store.history.undo[0] ?? null)
 const nextRedo = computed(() => store.history.redo[0] ?? null)
 
+/** Push is push: no dialog. If the remote refuses, the strip below offers the
+    way out, which is the only moment a choice is actually needed. */
+function push() {
+  if (!head.value) return
+  return git.pushBranch(head.value.name, !head.value.upstream)
+}
+
 // --- a refused push
 const blocked = computed(() => store.pushBlocked)
 const confirming = ref(false)
@@ -111,7 +118,12 @@ watch(
       <button class="btn" :disabled="store.busy" title="Pull, stashing local work first" @click="git.pull()">
         <ArrowDownToLine :size="14" /> Pull
       </button>
-      <button class="btn" :disabled="store.busy" @click="git.openPush()">
+      <button
+        class="btn"
+        :disabled="store.busy || !head"
+        :title="head?.upstream ? `Push to ${head.upstream}` : 'Push and set the upstream'"
+        @click="push"
+      >
         <ArrowUpFromLine :size="14" /> Push
       </button>
 
@@ -219,14 +231,6 @@ watch(
     </div>
 
     <HistoryMenu v-if="showHistory" @close="showHistory = false" />
-    <!-- Lives here but is opened from the store, so the sidebar's branch menu
-         reaches the same dialog as the toolbar button. -->
-    <PushDialog
-      v-if="store.pushDialog"
-      :key="store.pushDialog.branch ?? ''"
-      :branch="store.pushDialog.branch"
-      @close="git.closePush()"
-    />
     <BranchDialog v-if="showBranch" @close="showBranch = false" />
   </header>
 </template>

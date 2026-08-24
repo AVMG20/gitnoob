@@ -15,6 +15,10 @@ pub struct RepoInfo {
     pub head: String,
     pub detached: bool,
     pub state: String,
+    /// Who a commit made here would be authored by: this repository's effective
+    /// `user.name`, which is local config if it has one and global otherwise.
+    /// Empty when git has no name to use, which is worth showing as such.
+    pub author: String,
 }
 
 #[derive(Serialize)]
@@ -94,12 +98,21 @@ pub fn describe(state: &AppState) -> Result<RepoInfo, String> {
         .map(|s| s.to_string_lossy().into_owned())
         .unwrap_or_else(|| path.to_string_lossy().into_owned());
 
+    // `snapshot` resolves the whole chain — local, global, system — the same way
+    // a commit would.
+    let author = repo
+        .config()
+        .and_then(|mut c| c.snapshot())
+        .and_then(|c| c.get_string("user.name"))
+        .unwrap_or_default();
+
     Ok(RepoInfo {
         path: path.to_string_lossy().into_owned(),
         name,
         head,
         detached,
         state: format!("{:?}", repo.state()),
+        author,
     })
 }
 
@@ -204,13 +217,34 @@ pub fn tree(state: &AppState) -> Result<RefTree, String> {
     })
 }
 
+/// One ref decorating a commit in the graph.
+pub struct Decoration {
+    pub kind: String,
+    pub name: String,
+    /// True for the one local branch that is checked out. The graph draws it
+    /// differently, because "which of these am I standing on" is the question
+    /// the decorations are there to answer.
+    pub head: bool,
+}
+
 /// Maps every commit that carries a ref to its labels, for graph decoration.
-pub fn labels_by_oid(repo: &Repository) -> HashMap<String, Vec<(String, String)>> {
-    let mut map: HashMap<String, Vec<(String, String)>> = HashMap::new();
-    let mut push = |oid: git2::Oid, kind: &str, name: String| {
-        map.entry(oid.to_string())
-            .or_default()
-            .push((kind.to_string(), name));
+pub fn labels_by_oid(repo: &Repository) -> HashMap<String, Vec<Decoration>> {
+    let mut map: HashMap<String, Vec<Decoration>> = HashMap::new();
+    let detached = repo.head_detached().unwrap_or(false);
+    let current = if detached {
+        None
+    } else {
+        repo.head()
+            .ok()
+            .and_then(|h| h.shorthand().map(|s| s.to_string()))
+    };
+
+    let mut push = |oid: git2::Oid, kind: &str, name: String, head: bool| {
+        map.entry(oid.to_string()).or_default().push(Decoration {
+            kind: kind.to_string(),
+            name,
+            head,
+        });
     };
 
     if let Ok(refs) = repo.references() {
@@ -218,22 +252,23 @@ pub fn labels_by_oid(repo: &Repository) -> HashMap<String, Vec<(String, String)>
             let Some(oid) = r.target() else { continue };
             let Some(name) = r.shorthand() else { continue };
             if r.is_branch() {
-                push(oid, "local", name.to_string());
+                let is_head = current.as_deref() == Some(name);
+                push(oid, "local", name.to_string(), is_head);
             } else if r.is_remote() {
                 if name.ends_with("/HEAD") {
                     continue;
                 }
-                push(oid, "remote", name.to_string());
+                push(oid, "remote", name.to_string(), false);
             } else if r.is_tag() {
-                push(oid, "tag", name.to_string());
+                push(oid, "tag", name.to_string(), false);
             }
         }
     }
     // A detached HEAD deserves its own marker; otherwise HEAD is implied by the
     // branch label already collected above.
-    if repo.head_detached().unwrap_or(false) {
+    if detached {
         if let Some(oid) = repo.head().ok().and_then(|h| h.target()) {
-            push(oid, "head", "HEAD".to_string());
+            push(oid, "head", "HEAD".to_string(), true);
         }
     }
     map

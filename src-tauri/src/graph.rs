@@ -1,3 +1,5 @@
+use std::collections::HashSet;
+
 use git2::{Oid, Sort};
 use serde::Serialize;
 
@@ -8,6 +10,8 @@ use crate::state::AppState;
 pub struct RefLabel {
     pub kind: String,
     pub name: String,
+    /// The checked-out branch, or a detached HEAD.
+    pub head: bool,
 }
 
 /// A single line segment to draw in one row's graph cell.
@@ -38,6 +42,10 @@ pub struct GraphRow {
     pub width: usize,
     pub segments: Vec<Segment>,
     pub labels: Vec<RefLabel>,
+    /// On a local branch but not yet on its upstream. Drawn hollow, so the
+    /// boundary between what the remote has and what it does not is visible in
+    /// the graph rather than only in an ahead count.
+    pub unpushed: bool,
 }
 
 #[derive(Serialize)]
@@ -59,6 +67,7 @@ pub struct GraphPage {
 pub fn build(state: &AppState, limit: usize) -> Result<GraphPage, String> {
     let repo = state.repo()?;
     let labels = refs::labels_by_oid(&repo);
+    let unpushed = unpushed_commits(&repo, limit);
 
     let mut walk = repo.revwalk().map_err(err)?;
     // Topological order keeps a branch's commits contiguous; the time secondary
@@ -193,17 +202,54 @@ pub fn build(state: &AppState, limit: usize) -> Result<GraphPage, String> {
                 .get(&oid.to_string())
                 .map(|v| {
                     v.iter()
-                        .map(|(kind, name)| RefLabel {
-                            kind: kind.clone(),
-                            name: name.clone(),
+                        .map(|d| RefLabel {
+                            kind: d.kind.clone(),
+                            name: d.name.clone(),
+                            head: d.head,
                         })
                         .collect()
                 })
                 .unwrap_or_default(),
+            unpushed: unpushed.contains(&oid.to_string()),
         });
     }
 
     Ok(GraphPage { rows, has_more })
+}
+
+/// The commits a local branch has and its upstream does not.
+///
+/// An ahead count says how many there are; this says which, so the graph can
+/// draw the boundary between what the remote knows about and what is still only
+/// here. Branches with no upstream contribute nothing: everything on them is
+/// unpushed in a sense, but there is nowhere it was meant to go.
+fn unpushed_commits(repo: &git2::Repository, limit: usize) -> HashSet<String> {
+    let mut out = HashSet::new();
+    let Ok(branches) = repo.branches(Some(git2::BranchType::Local)) else {
+        return out;
+    };
+
+    for branch in branches.flatten() {
+        let (branch, _) = branch;
+        let Some(local) = branch.get().target() else {
+            continue;
+        };
+        let Some(upstream) = branch.upstream().ok().and_then(|u| u.get().target()) else {
+            continue;
+        };
+        if local == upstream {
+            continue;
+        }
+
+        let Ok(mut walk) = repo.revwalk() else { continue };
+        if walk.push(local).is_err() || walk.hide(upstream).is_err() {
+            continue;
+        }
+        for oid in walk.flatten().take(limit) {
+            out.insert(oid.to_string());
+        }
+    }
+    out
 }
 
 /// Returns the index of a reusable empty lane, appending one if none is free.
