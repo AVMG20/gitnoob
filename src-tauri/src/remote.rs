@@ -438,7 +438,7 @@ pub fn can_fast_forward(state: &AppState, branch: &str, onto: &str) -> Result<bo
 /// Merge, fast-forward and rebase are not always all possible, and offering one
 /// that would do nothing is worse than not offering it: the user picks it,
 /// something happens or does not, and they are left guessing which.
-#[derive(serde::Serialize)]
+#[derive(serde::Serialize, Debug)]
 pub struct BranchRelation {
     /// Commits on `source` that `target` does not have.
     pub ahead: usize,

@@ -1313,3 +1313,265 @@ fn switching_branches_stashes_only_when_the_edit_is_in_the_way() {
         "the stash is kept when the pop conflicts"
     );
 }
+
+// --- the moves gitnoob offers on top of plain git -------------------------
+
+#[test]
+fn branch_relation_tells_the_menu_what_is_possible() {
+    let sandbox = Sandbox::new("relation");
+    sandbox.commit("a.txt", "one\n", "Base");
+    sandbox.git(&["checkout", "-q", "-b", "topic"]);
+    sandbox.commit("b.txt", "two\n", "Ahead by one");
+    sandbox.git(&["checkout", "-q", "main"]);
+    let state = sandbox.state();
+
+    // main can simply be moved forward to topic: nothing of its own in the way.
+    let forward = remote::relation(&state, "topic", "main").unwrap();
+    assert_eq!((forward.ahead, forward.behind), (1, 0));
+    assert!(forward.fast_forward());
+    assert!(!forward.merged());
+
+    // The other direction has nothing to bring over.
+    let back = remote::relation(&state, "main", "topic").unwrap();
+    assert_eq!((back.ahead, back.behind), (0, 1));
+    assert!(back.merged());
+    assert!(!back.fast_forward());
+
+    // Once main has a commit of its own, neither is a fast-forward.
+    sandbox.commit("c.txt", "three\n", "Its own commit");
+    let diverged = remote::relation(&state, "topic", "main").unwrap();
+    assert_eq!((diverged.ahead, diverged.behind), (1, 1));
+    assert!(!diverged.fast_forward());
+    assert!(!diverged.merged());
+}
+
+#[test]
+fn relation_refuses_a_name_that_is_not_there() {
+    let sandbox = Sandbox::new("relationmissing");
+    sandbox.commit("a.txt", "one\n", "Base");
+    let error = remote::relation(&sandbox.state(), "nope", "main").unwrap_err();
+    assert!(error.contains("nope"), "unexpected: {error}");
+}
+
+#[test]
+fn reverting_adds_a_commit_rather_than_removing_one() {
+    let sandbox = Sandbox::new("revert");
+    sandbox.commit("a.txt", "one\n", "Base");
+    sandbox.commit("a.txt", "one\ntwo\n", "Add two");
+    let target = sandbox.git(&["rev-parse", "HEAD"]).trim().to_string();
+
+    let state = sandbox.state();
+    gitnoob_lib::work::revert(&state, &target).unwrap();
+
+    // The file is back to its earlier content, and history grew.
+    assert_eq!(
+        std::fs::read_to_string(sandbox.root.join("a.txt")).unwrap(),
+        "one\n"
+    );
+    assert_eq!(sandbox.git(&["rev-list", "--count", "HEAD"]).trim(), "3");
+    // The reverted commit is still reachable; nothing was rewritten.
+    assert!(sandbox.git(&["log", "--format=%s"]).contains("Add two"));
+}
+
+#[test]
+fn a_rebase_that_conflicts_can_be_abandoned() {
+    let sandbox = Sandbox::new("rebaseabort");
+    sandbox.commit("a.txt", "base\n", "Base");
+    sandbox.git(&["checkout", "-q", "-b", "topic"]);
+    sandbox.commit("a.txt", "topic\n", "Topic edit");
+    sandbox.git(&["checkout", "-q", "main"]);
+    sandbox.commit("a.txt", "main\n", "Main edit");
+    sandbox.git(&["checkout", "-q", "topic"]);
+
+    let state = sandbox.state();
+    let outcome = remote::rebase(&state, "main").unwrap();
+    assert!(!outcome.ok);
+    assert_eq!(outcome.conflicts, vec!["a.txt".to_string()]);
+
+    // While it is stopped, the app can say what git is part-way through.
+    let during = remote::in_progress(&state).unwrap();
+    assert!(during.rebasing, "a stopped rebase should be reported");
+
+    remote::abort_rebase(&state).unwrap();
+    assert!(!remote::in_progress(&state).unwrap().rebasing);
+    assert_eq!(refs::describe(&state).unwrap().head, "topic");
+    assert_eq!(
+        std::fs::read_to_string(sandbox.root.join("a.txt")).unwrap(),
+        "topic\n",
+        "aborting puts the branch back the way it was"
+    );
+}
+
+#[test]
+fn a_resolved_rebase_can_be_continued() {
+    let sandbox = Sandbox::new("rebasecontinue");
+    sandbox.commit("a.txt", "base\n", "Base");
+    sandbox.git(&["checkout", "-q", "-b", "topic"]);
+    sandbox.commit("a.txt", "topic\n", "Topic edit");
+    sandbox.git(&["checkout", "-q", "main"]);
+    sandbox.commit("a.txt", "main\n", "Main edit");
+    sandbox.git(&["checkout", "-q", "topic"]);
+
+    let state = sandbox.state();
+    assert!(!remote::rebase(&state, "main").unwrap().ok);
+
+    // Resolve by hand the way the conflict view would, then carry on.
+    sandbox.write("a.txt", "resolved\n");
+    sandbox.git(&["add", "a.txt"]);
+    let outcome = remote::continue_rebase(&state).unwrap();
+    assert!(outcome.ok, "unexpected: {}", outcome.message);
+    assert!(!remote::in_progress(&state).unwrap().rebasing);
+    assert_eq!(
+        std::fs::read_to_string(sandbox.root.join("a.txt")).unwrap(),
+        "resolved\n"
+    );
+}
+
+#[test]
+fn nothing_in_progress_is_reported_as_nothing() {
+    let sandbox = Sandbox::new("idle");
+    sandbox.commit("a.txt", "one\n", "Base");
+    let state = sandbox.state();
+    let idle = remote::in_progress(&state).unwrap();
+    assert!(!idle.merging && !idle.rebasing && !idle.cherry_picking && !idle.reverting);
+}
+
+#[test]
+fn a_branch_whose_remote_is_gone_is_reported_as_stale() {
+    let sandbox = Sandbox::new("stale");
+    sandbox.commit("a.txt", "one\n", "Base");
+    sandbox.git(&["checkout", "-q", "-b", "topic"]);
+    sandbox.commit("b.txt", "two\n", "Topic work");
+
+    let bare = sandbox
+        .root
+        .parent()
+        .unwrap()
+        .join(format!("gitnoob-test-stale-origin-{}.git", std::process::id()));
+    let _ = std::fs::remove_dir_all(&bare);
+    let bare_arg = bare.to_string_lossy().into_owned();
+    sandbox.git(&["clone", "-q", "--bare", ".", &bare_arg]);
+    sandbox.git(&["remote", "add", "origin", &bare_arg]);
+    sandbox.git(&["fetch", "-q", "origin"]);
+    sandbox.git(&["branch", "-q", "--set-upstream-to=origin/topic", "topic"]);
+
+    let state = sandbox.state();
+    assert!(
+        refs::stale_branches(&state).unwrap().is_empty(),
+        "the upstream is still there"
+    );
+
+    // The branch is deleted on the remote and the stale ref pruned locally,
+    // which is what happens after someone merges and tidies up.
+    sandbox.git(&["--git-dir", &bare_arg, "branch", "-D", "topic"]);
+    sandbox.git(&["fetch", "-q", "--prune", "origin"]);
+
+    assert_eq!(refs::stale_branches(&state).unwrap(), vec!["topic".to_string()]);
+    let _ = std::fs::remove_dir_all(&bare);
+}
+
+#[test]
+fn renaming_a_branch_keeps_its_commits() {
+    let sandbox = Sandbox::new("rename");
+    sandbox.commit("a.txt", "one\n", "Base");
+    sandbox.git(&["checkout", "-q", "-b", "old-name"]);
+    sandbox.commit("b.txt", "two\n", "Work");
+    let before = sandbox.git(&["rev-parse", "HEAD"]).trim().to_string();
+
+    let state = sandbox.state();
+    refs::rename_branch(&state, "old-name", "new-name").unwrap();
+
+    assert_eq!(refs::describe(&state).unwrap().head, "new-name");
+    assert_eq!(sandbox.git(&["rev-parse", "HEAD"]).trim(), before);
+    let tree = refs::tree(&state).unwrap();
+    assert!(tree.locals.iter().all(|b| b.name != "old-name"));
+}
+
+#[test]
+fn an_upstream_can_be_set_and_taken_away() {
+    let sandbox = Sandbox::new("upstream");
+    sandbox.commit("a.txt", "one\n", "Base");
+
+    let bare = sandbox
+        .root
+        .parent()
+        .unwrap()
+        .join(format!("gitnoob-test-upstream-origin-{}.git", std::process::id()));
+    let _ = std::fs::remove_dir_all(&bare);
+    let bare_arg = bare.to_string_lossy().into_owned();
+    sandbox.git(&["clone", "-q", "--bare", ".", &bare_arg]);
+    sandbox.git(&["remote", "add", "origin", &bare_arg]);
+    sandbox.git(&["fetch", "-q", "origin"]);
+
+    let state = sandbox.state();
+    refs::set_upstream(&state, "main", "origin/main").unwrap();
+    let tracked = refs::tree(&state).unwrap();
+    let main = tracked.locals.iter().find(|b| b.name == "main").unwrap();
+    assert_eq!(main.upstream.as_deref(), Some("origin/main"));
+
+    refs::unset_upstream(&state, "main").unwrap();
+    let untracked = refs::tree(&state).unwrap();
+    let main = untracked.locals.iter().find(|b| b.name == "main").unwrap();
+    assert!(main.upstream.is_none());
+
+    let _ = std::fs::remove_dir_all(&bare);
+}
+
+#[test]
+fn tags_can_be_made_and_removed() {
+    let sandbox = Sandbox::new("tags");
+    sandbox.commit("a.txt", "one\n", "Base");
+    let oid = sandbox.git(&["rev-parse", "HEAD"]).trim().to_string();
+    let state = sandbox.state();
+
+    // A lightweight tag, then an annotated one carrying a message.
+    gitnoob_lib::work::create_tag(&state, "v1", &oid, None).unwrap();
+    gitnoob_lib::work::create_tag(&state, "v2", &oid, Some("the second one")).unwrap();
+
+    let tree = refs::tree(&state).unwrap();
+    let names: Vec<&str> = tree.tags.iter().map(|t| t.name.as_str()).collect();
+    assert!(names.contains(&"v1") && names.contains(&"v2"));
+    assert!(sandbox.git(&["tag", "-l", "-n", "v2"]).contains("the second one"));
+
+    gitnoob_lib::work::delete_tag(&state, "v1").unwrap();
+    let after = refs::tree(&state).unwrap();
+    assert!(after.tags.iter().all(|t| t.name != "v1"));
+    assert!(after.tags.iter().any(|t| t.name == "v2"));
+}
+
+#[test]
+fn a_pattern_added_to_gitignore_takes_effect() {
+    let sandbox = Sandbox::new("ignore");
+    sandbox.commit("a.txt", "one\n", "Base");
+    sandbox.write("noise.log", "chatter\n");
+
+    let state = sandbox.state();
+    assert!(refs::status(&state)
+        .unwrap()
+        .unstaged
+        .iter()
+        .any(|e| e.path == "noise.log"));
+
+    refs::add_to_gitignore(&state, "*.log").unwrap();
+
+    let after = refs::status(&state).unwrap();
+    assert!(
+        !after.unstaged.iter().any(|e| e.path == "noise.log"),
+        "the ignored file should drop out of the status"
+    );
+    assert!(std::fs::read_to_string(sandbox.root.join(".gitignore"))
+        .unwrap()
+        .contains("*.log"));
+}
+
+#[test]
+fn a_commits_patch_can_be_read_back() {
+    let sandbox = Sandbox::new("patch");
+    sandbox.commit("a.txt", "one\n", "Base");
+    sandbox.commit("a.txt", "one\ntwo\n", "Add a line");
+    let oid = sandbox.git(&["rev-parse", "HEAD"]).trim().to_string();
+
+    let patch = gitnoob_lib::work::commit_patch(&sandbox.state(), &oid).unwrap();
+    assert!(patch.contains("diff --git a/a.txt b/a.txt"), "unexpected: {patch}");
+    assert!(patch.contains("+two"));
+}

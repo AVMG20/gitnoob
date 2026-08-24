@@ -199,7 +199,16 @@ function localMenu(event: MouseEvent, name: string, upstream: string | null) {
   menu.show(
     event,
     [
+      // Ordered by how often it is wanted: the two everyday moves, then the
+      // two that rewrite or combine history, then housekeeping, then the one
+      // that destroys something.
       { label: 'Check out', icon: GitBranch, disabled: isHead, action: () => git.checkout(name) },
+      {
+        label: upstream ? `Push to ${upstream}` : 'Push and set upstream',
+        icon: Upload,
+        action: () => git.pushBranch(name, !upstream)
+      },
+      { separator: true, label: '' },
       // Both of these move history between two branches, in opposite
       // directions, and "merge" alone does not say which way. Name both
       // branches and say which one ends up changed.
@@ -225,6 +234,11 @@ function localMenu(event: MouseEvent, name: string, upstream: string | null) {
       },
       { separator: true, label: '' },
       {
+        label: 'Copy branch name',
+        icon: Copy,
+        action: () => copyText(name, 'Branch')
+      },
+      {
         label: 'Rename…',
         icon: Pencil,
         action: () =>
@@ -235,16 +249,6 @@ function localMenu(event: MouseEvent, name: string, upstream: string | null) {
             confirm: 'Rename',
             run: (value) => git.renameBranch(name, value)
           })
-      },
-      {
-        label: upstream ? `Push to ${upstream}` : 'Push and set upstream',
-        icon: Upload,
-        action: () => git.pushBranch(name, !upstream)
-      },
-      {
-        label: 'Copy branch name',
-        icon: Copy,
-        action: () => copyText(name, 'Branch')
       },
       { separator: true, label: '' },
       {
