@@ -302,6 +302,14 @@ watch(
   font-variant-numeric: tabular-nums;
 }
 
+/* Same nudge as the sidebar, for the same reason: Lucide's padded viewBox
+   leaves the arrow high and tight against the digit once the two boxes are
+   centred against each other. */
+.up svg,
+.down svg {
+  transform: translate(-1px, 1px);
+}
+
 .up {
   background: rgba(87, 193, 132, 0.16);
   color: var(--green);

@@ -558,9 +558,13 @@ onUnmounted(() => {
 </template>
 
 <style scoped>
+/* One track per child, in order: the search bar, the column headings, the
+   working tree, then the scrolling list which takes what is left. Every child
+   needs a track — a missing one drops the list into an implicit row underneath
+   everything, which reads as the graph having fallen to the bottom. */
 .graph {
   display: grid;
-  grid-template-rows: auto auto minmax(0, 1fr);
+  grid-template-rows: auto auto auto minmax(0, 1fr);
   min-width: 0;
   background: var(--bg);
 }
@@ -726,13 +730,17 @@ onUnmounted(() => {
    pointing at. */
 .col-refs {
   flex: none;
-  width: 168px;
+  width: 124px;
   display: flex;
   align-items: center;
   justify-content: flex-end;
   gap: 4px;
   overflow: hidden;
-  padding-right: 2px;
+  /* Cancels the row's gap on this side alone, so the leader line — which starts
+     at the left edge of the graph cell — begins against the chip instead of
+     after a gap it cannot reach across. */
+  margin-right: -10px;
+  padding-right: 0;
 }
 
 .colhead {

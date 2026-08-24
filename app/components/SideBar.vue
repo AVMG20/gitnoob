@@ -675,6 +675,13 @@ function stashMenu(event: MouseEvent, index: number, message: string) {
   flex: none;
 }
 
+/* Lucide draws on a padded 24-unit grid, so centring the icon box against the
+   digit leaves the stroke sitting high and crowding it. Nudge the glyph rather
+   than the box. */
+.tick svg {
+  transform: translate(-1px, 1px);
+}
+
 .up {
   color: var(--green);
 }
