@@ -357,6 +357,19 @@ export function useGit() {
   }
 
   /** Reloads refs, status and the graph. Called after anything that mutates. */
+  /**
+   * Re-reads only the working tree status.
+   *
+   * A file saved in an editor changes what is staged and what is not, and
+   * nothing else. Walking the whole history to find that out is what makes a
+   * watcher expensive, so the cheap question has its own answer.
+   */
+  async function refreshStatus() {
+    if (!store.repo) return
+    const status = await invoke<WorkingStatus>('working_status').catch(() => null)
+    if (status) store.status = status
+  }
+
   async function refresh() {
     if (!store.repo) return
     const [info, refs, status, page, stashes, history] = await Promise.all([
@@ -442,6 +455,7 @@ export function useGit() {
     store,
     note,
     refresh,
+    refreshStatus,
     loadMore,
     openRepo,
     select,

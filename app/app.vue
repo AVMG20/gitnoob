@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
 import { invoke } from '@tauri-apps/api/core'
+import { listen, type UnlistenFn } from '@tauri-apps/api/event'
 import { useGit } from '~/composables/useGit'
 import { useConfig } from '~/composables/useConfig'
 import { useForge } from '~/composables/useForge'
@@ -16,6 +17,7 @@ const { layout } = usePanes()
 
 const ready = ref(false)
 let fetchTimer: number | undefined
+let unlisten: UnlistenFn | undefined
 
 const settings = computed(() => config.settings.value)
 
@@ -73,10 +75,33 @@ onMounted(async () => {
   const target = fromArgv ?? config.activeProject.value
   if (target) await openProject(target)
   ready.value = true
+
+  // The backend watches the open repository and says what kind of change it
+  // saw. A write under `.git` moved refs or HEAD, so everything is rebuilt; a
+  // write in the work tree only changed the status, which is far cheaper.
+  unlisten = await listen<{ git_dir: boolean; work_tree: boolean }>(
+    'repo-changed',
+    ({ payload }) => {
+      if (store.busy) return
+      if (payload.git_dir) git.refresh()
+      else if (payload.work_tree) git.refreshStatus()
+    }
+  ).catch(() => undefined)
+
+  // Belt and braces for anything the watcher cannot see — a network share, a
+  // platform without file notifications — and for the commonest case of all:
+  // you left, changed something elsewhere, and came back.
+  window.addEventListener('focus', onFocus)
 })
+
+function onFocus() {
+  if (!store.busy && store.repo) git.refresh()
+}
 
 onUnmounted(() => {
   if (fetchTimer) window.clearInterval(fetchTimer)
+  unlisten?.()
+  window.removeEventListener('focus', onFocus)
 })
 </script>
 

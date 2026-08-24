@@ -10,6 +10,7 @@ pub mod refs;
 pub mod remote;
 pub mod ssh;
 pub mod state;
+pub mod watch;
 pub mod work;
 
 use std::path::PathBuf;
@@ -21,7 +22,12 @@ use tauri::{Manager, State};
 
 /// Opens a repository and records it in the active profile's tab strip.
 #[tauri::command]
-async fn open_repo(path: String, state: State<'_, AppState>) -> Result<refs::RepoInfo, String> {
+async fn open_repo(
+    path: String,
+    app: tauri::AppHandle,
+    watching: State<'_, watch::Slot>,
+    state: State<'_, AppState>,
+) -> Result<refs::RepoInfo, String> {
     let root = state::discover_workdir(&PathBuf::from(&path))?;
     let recorded = root.to_string_lossy().into_owned();
     let name = root
@@ -41,6 +47,10 @@ async fn open_repo(path: String, state: State<'_, AppState>) -> Result<refs::Rep
             profile.active_project = Some(recorded.clone());
         }
     })?;
+
+    // Watch this one instead of whichever was open before. Assigning replaces
+    // the old watch, and dropping it stops its thread.
+    *watching.lock().unwrap() = watch::start(app, PathBuf::from(&recorded));
 
     refs::describe(&state)
 }
@@ -762,6 +772,9 @@ pub fn run() {
             // the right key.
             ssh::apply(&state.config());
             app.manage(state);
+            // Holds the watch for whichever repository is open; empty until one
+            // is.
+            app.manage(watch::Slot::default());
             // The inspector is only compiled into debug builds, and having it
             // open from the start is the only way to see a failure that happens
             // before the page can report anything itself.

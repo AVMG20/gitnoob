@@ -20,6 +20,10 @@ serde_json = "1"
 # default-features off: network transport comes from the git CLI, so we skip
 # the openssl / libssh2 build dependencies entirely.
 git2 = { version = "0.20", default-features = false }
+# Watching the work tree, so a commit made in a terminal shows up without a
+# click. Debouncing is done here rather than by a helper crate: the rules are
+# specific to git and worth reading.
+notify = "8"
 # rustls rather than native-tls: no openssl in the build.
 reqwest = { version = "0.12", default-features = false, features = [
   "json",
