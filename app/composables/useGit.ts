@@ -320,6 +320,14 @@ export function useGit() {
     store.limit = COMMIT_PAGE
     store.selected = WIP
     store.detail = null
+    // Everything below is about the repository that was open, and would
+    // otherwise act on this one: a rejected push offering to force a branch
+    // that is not here, a file viewer on a path that no longer exists.
+    store.pushBlocked = null
+    store.pushDialog = null
+    store.viewer = null
+    store.resolving = null
+    store.query = ''
     note(`Opened ${info.path}`)
     await refresh()
     return true
