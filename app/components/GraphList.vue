@@ -460,22 +460,26 @@ onUnmounted(() => {
               fill="none"
               stroke-width="1.6"
             />
-            <!-- A commit the upstream does not have yet is drawn in the accent
-                 colour rather than its lane colour, so the boundary between
-                 what has been pushed and what has not is visible in the graph
-                 itself and not only in an ahead count. -->
+            <!-- A commit the upstream does not have yet wears a ring. Colour
+                 alone will not do it: the first lane is already the accent
+                 colour, so the boundary between what the remote has and what is
+                 still only here has to be a difference in shape. -->
+            <circle
+              v-if="item.row.unpushed"
+              :cx="x(item.row.lane)"
+              :cy="ROW / 2"
+              r="6.5"
+              fill="none"
+              :stroke="laneColor(item.row.color)"
+              stroke-width="1.5"
+              opacity="0.55"
+            />
             <circle
               :cx="x(item.row.lane)"
               :cy="ROW / 2"
               :r="item.row.parents.length > 1 ? 3.4 : 4"
-              :fill="
-                item.row.parents.length > 1
-                  ? 'var(--bg)'
-                  : item.row.unpushed
-                    ? 'var(--accent)'
-                    : laneColor(item.row.color)
-              "
-              :stroke="item.row.unpushed ? 'var(--accent)' : laneColor(item.row.color)"
+              :fill="item.row.parents.length > 1 ? 'var(--bg)' : laneColor(item.row.color)"
+              :stroke="laneColor(item.row.color)"
               stroke-width="1.8"
             >
               <title v-if="item.row.unpushed">Not pushed yet</title>

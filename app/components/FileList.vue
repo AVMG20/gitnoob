@@ -21,6 +21,21 @@ const emit = defineEmits<{
 const view = useFileView()
 const rows = computed(() => buildRows(props.files, view.state.mode, view.state.collapsed))
 
+/**
+ * Where a row's content starts.
+ *
+ * A directory row spends 18px on its chevron before the folder icon; a file
+ * row has no chevron. Indenting both by the same step therefore left a file's
+ * name to the *left* of its parent folder's name, which is why a file looked
+ * like it sat beside the folder rather than inside it. Files get that 18px
+ * back, less one step, and then a little more so the nesting reads.
+ */
+function indent(depth: number, file = false) {
+  return 12 + depth * STEP + (file ? 8 : 0)
+}
+
+const STEP = 16
+
 function mark(kind: string) {
   return (
     {
@@ -42,7 +57,7 @@ function mark(kind: string) {
       <button
         v-if="row.kind === 'dir'"
         class="row dir"
-        :style="{ paddingLeft: `${12 + row.depth * 13}px` }"
+        :style="{ paddingLeft: `${indent(row.depth)}px` }"
         @click="view.toggleDir(row.path)"
       >
         <component :is="row.collapsed ? ChevronRight : ChevronDown" :size="12" class="chev" />
@@ -55,7 +70,7 @@ function mark(kind: string) {
         v-else
         class="row file"
         :class="{ on: props.selected === row.path }"
-        :style="{ paddingLeft: `${12 + row.depth * 13}px` }"
+        :style="{ paddingLeft: `${indent(row.depth, true)}px` }"
         :title="row.path"
         :draggable="props.draggable"
         @click="emit('select', row.path)"
