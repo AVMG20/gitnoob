@@ -2,13 +2,20 @@
 import { computed, ref } from 'vue'
 import { useGit } from '~/composables/useGit'
 
+const props = defineProps<{
+  /** Where the branch starts. Empty means whatever is checked out. */
+  start?: string
+  /** Shown instead of the raw starting point, when the caller has something
+      more readable to say than a hash. */
+  startLabel?: string
+}>()
 const emit = defineEmits<{ close: [] }>()
 
 const git = useGit()
 const store = git.store
 
 const name = ref('')
-const start = ref('')
+const start = ref(props.start ?? '')
 
 const taken = computed(() =>
   store.refs?.locals.some((b) => b.name === name.value.trim()) ?? false
@@ -57,7 +64,11 @@ async function submit() {
     <label class="field">
       <span class="label">Starting point</span>
       <input v-model="start" type="text" :placeholder="store.repo?.head ?? 'HEAD'" />
-      <span class="hint faint">A branch, tag or commit. Defaults to the current HEAD.</span>
+      <span v-if="props.startLabel" class="hint faint">
+        Branching from <span class="mono">{{ props.startLabel }}</span
+        >. Change it here to start somewhere else.
+      </span>
+      <span v-else class="hint faint">A branch, tag or commit. Defaults to the current HEAD.</span>
     </label>
 
     <template #footer>

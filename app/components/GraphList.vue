@@ -49,6 +49,7 @@ const height = ref(600)
 const hit = ref(0)
 const resetTarget = ref<{ oid: string; mode: ResetMode } | null>(null)
 const tagTarget = ref<GraphRow | null>(null)
+const branchTarget = ref<GraphRow | null>(null)
 
 /**
  * Commits picked out with shift or ctrl, for the operations that take more than
@@ -322,11 +323,14 @@ function commitMenu(event: MouseEvent, row: GraphRow) {
   menu.show(
     event,
     [
-      // Branching is the safe way to work from an old commit and goes first.
-      // Checking the commit out directly detaches HEAD, which strands anything
-      // committed afterwards on no branch at all, so it sits behind a submenu
-      // that says as much rather than under the pointer on every right-click.
-      { label: 'Branch from here…', icon: GitBranchPlus, action: () => git.select(row.oid) },
+      // Branching is the safe way to work from an old commit, so it goes first:
+      // checking the commit out directly detaches HEAD, and anything committed
+      // afterwards belongs to no branch.
+      {
+        label: 'Branch from here…',
+        icon: GitBranchPlus,
+        action: () => (branchTarget.value = row)
+      },
       {
         label: 'Checkout this commit',
         icon: Check,
@@ -722,6 +726,12 @@ onUnmounted(() => {
       @close="resetTarget = null"
     />
     <TagDialog v-if="tagTarget" :row="tagTarget" @close="tagTarget = null" />
+    <BranchDialog
+      v-if="branchTarget"
+      :start="branchTarget.oid"
+      :start-label="`${branchTarget.short} · ${branchTarget.summary.slice(0, 40)}`"
+      @close="branchTarget = null"
+    />
   </section>
 </template>
 
