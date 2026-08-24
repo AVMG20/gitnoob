@@ -5,10 +5,12 @@ import {
   Check,
   ChevronDown,
   ChevronUp,
+  Cloud,
   Copy,
   FileText,
   GitBranchPlus,
   GitCommitHorizontal,
+  MonitorDot,
   Search,
   Tag,
   Undo2,
@@ -366,10 +368,16 @@ onUnmounted(() => {
         {{ marked.length }} commits selected
         <X :size="12" />
       </button>
-      <span class="cols">
-        <span class="col-author">Author</span>
-        <span class="col-date">Date</span>
-      </span>
+    </div>
+
+    <!-- Column headings, so the branch strip on the left reads as a column
+         rather than as labels that drifted away from their commits. -->
+    <div class="colhead">
+      <span class="col-refs">Branch / tag</span>
+      <span class="cell-head" :style="{ width: `${graphWidth}px` }">Graph</span>
+      <span class="col-msg">Commit message</span>
+      <span class="col-author">Author</span>
+      <span class="col-date">Date</span>
     </div>
 
     <!-- The working tree, always the top row and selected by default. -->
@@ -379,6 +387,7 @@ onUnmounted(() => {
       @click="git.select(WIP)"
       @contextmenu="wipMenu($event)"
     >
+      <span class="col-refs" />
       <svg class="cell" :width="graphWidth" :height="ROW" :viewBox="`0 0 ${graphWidth} ${ROW}`">
         <path
           v-if="store.rows.length"
@@ -446,12 +455,44 @@ onUnmounted(() => {
           @dragleave="drag.leave(`commit:${item.row.oid}`)"
           @drop.prevent="onDropOnRow(item.row)"
         >
+          <!-- Refs live in their own column with a line running to the node,
+               so a tip is found by scanning one narrow strip rather than by
+               reading the start of every message. -->
+          <span class="col-refs">
+            <span
+              v-for="label in item.row.labels"
+              :key="label.kind + label.name"
+              class="chip"
+              :class="[`chip-${label.kind}`, { 'chip-current': label.head }]"
+              :title="label.head ? `${label.name} — checked out` : label.name"
+            >
+              <Check v-if="label.head" :size="11" :stroke-width="3" class="glyph" />
+              <span class="truncate">{{ label.name }}</span>
+              <component
+                :is="label.kind === 'remote' ? Cloud : label.kind === 'tag' ? Tag : MonitorDot"
+                :size="11"
+                class="glyph"
+              />
+            </span>
+          </span>
+
           <svg
             class="cell"
             :width="graphWidth"
             :height="ROW"
             :viewBox="`0 0 ${graphWidth} ${ROW}`"
           >
+            <!-- The leader from the column to the node. Drawn here rather than
+                 in the column because only the graph knows which lane the
+                 commit landed in. -->
+            <path
+              v-if="item.row.labels.length"
+              :d="`M0,${ROW / 2} L${x(item.row.lane)},${ROW / 2}`"
+              :stroke="laneColor(item.row.color)"
+              stroke-width="1.2"
+              opacity="0.45"
+              fill="none"
+            />
             <path
               v-for="(segment, i) in item.row.segments"
               :key="i"
@@ -487,19 +528,6 @@ onUnmounted(() => {
           </svg>
 
           <span class="col-msg">
-            <!-- The checked-out branch gets a tick and a brighter chip: with
-                 several branches on one commit, which one you are standing on
-                 is the thing the decorations exist to answer. -->
-            <span
-              v-for="label in item.row.labels"
-              :key="label.kind + label.name"
-              class="chip"
-              :class="[`chip-${label.kind}`, { 'chip-current': label.head }]"
-              :title="label.head ? `${label.name} — checked out` : label.name"
-            >
-              <Check v-if="label.head" :size="11" :stroke-width="3" class="tick" />
-              {{ label.name }}
-            </span>
             <span class="summary truncate">
               <span
                 v-for="(part, i) in highlight(item.row.summary, store.query)"
@@ -612,15 +640,6 @@ onUnmounted(() => {
   background: rgba(79, 156, 249, 0.16);
 }
 
-.cols {
-  display: flex;
-  gap: 10px;
-  font-size: 10px;
-  letter-spacing: 0.07em;
-  text-transform: uppercase;
-  color: var(--text-faint);
-}
-
 .wip {
   display: flex;
   align-items: center;
@@ -701,6 +720,43 @@ onUnmounted(() => {
   display: block;
 }
 
+/* The branch strip. Right-aligned so every chip ends against the graph and the
+   leader lines all start from the same edge; when a commit carries more refs
+   than fit, the ones nearest the graph win, which are the ones the line is
+   pointing at. */
+.col-refs {
+  flex: none;
+  width: 168px;
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 4px;
+  overflow: hidden;
+  padding-right: 2px;
+}
+
+.colhead {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 3px 12px 3px 8px;
+  font-size: 10px;
+  letter-spacing: 0.07em;
+  text-transform: uppercase;
+  color: var(--text-faint);
+  border-bottom: 1px solid var(--line);
+  user-select: none;
+}
+
+.cell-head {
+  flex: none;
+}
+
+/* The heading reads left to right; only the chips below it hug the graph. */
+.colhead .col-refs {
+  justify-content: flex-start;
+}
+
 .col-msg {
   flex: 1;
   min-width: 0;
@@ -760,9 +816,15 @@ onUnmounted(() => {
   box-shadow: inset 0 0 0 1px var(--accent);
 }
 
-.chip .tick {
+/* The tick and the kind glyph either side of the name: a tick for the branch
+   you are on, then a screen, a cloud or a tag for where the ref lives. */
+.chip .glyph {
   flex: none;
-  opacity: 0.9;
+  opacity: 0.75;
+}
+
+.chip-current .glyph {
+  opacity: 1;
 }
 
 .chip-local {
