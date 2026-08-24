@@ -176,7 +176,7 @@ fn prepare(state: &AppState) -> Result<Call, String> {
 
 fn client() -> Result<reqwest::Client, String> {
     reqwest::Client::builder()
-        .user_agent("gitui/0.1")
+        .user_agent("gitnoob/0.1")
         .timeout(std::time::Duration::from_secs(20))
         .build()
         .map_err(|e| e.to_string())
@@ -419,13 +419,13 @@ mod tests {
             assert_eq!(slug.name, name, "name for {url}");
         };
 
-        expect("git@github.com:arno/gitui.git", "github.com", "arno", "gitui");
-        expect("https://github.com/arno/gitui.git", "github.com", "arno", "gitui");
-        expect("https://github.com/arno/gitui", "github.com", "arno", "gitui");
+        expect("git@github.com:arno/gitnoob.git", "github.com", "arno", "gitnoob");
+        expect("https://github.com/arno/gitnoob.git", "github.com", "arno", "gitnoob");
+        expect("https://github.com/arno/gitnoob", "github.com", "arno", "gitnoob");
         expect("ssh://git@gitlab.com/group/sub/app.git", "gitlab.com", "group/sub", "app");
         expect("git@gitlab.bigbridge.nl:team/deep/nest/app.git", "gitlab.bigbridge.nl", "team/deep/nest", "app");
         expect("https://gitlab.example.com:8443/team/app.git", "gitlab.example.com", "team", "app");
-        expect("https://user:token@github.com/arno/gitui.git", "github.com", "arno", "gitui");
+        expect("https://user:token@github.com/arno/gitnoob.git", "github.com", "arno", "gitnoob");
 
         assert!(parse_remote("/local/path/repo").is_none());
         assert!(parse_remote("git@github.com:noslash").is_none());
@@ -463,10 +463,10 @@ pub fn signin_url(kind: ForgeKind, host: &str) -> Option<String> {
     };
     match kind {
         ForgeKind::GitHub => Some(format!(
-            "https://{host}/settings/tokens/new?description=gitui&scopes=repo,read:org,read:user"
+            "https://{host}/settings/tokens/new?description=gitnoob&scopes=repo,read:org,read:user"
         )),
         ForgeKind::GitLab => Some(format!(
-            "https://{host}/-/user_settings/personal_access_tokens?name=gitui&scopes=api,read_user"
+            "https://{host}/-/user_settings/personal_access_tokens?name=gitnoob&scopes=api,read_user"
         )),
         ForgeKind::None => None,
     }

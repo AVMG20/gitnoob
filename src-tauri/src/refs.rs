@@ -377,17 +377,35 @@ pub fn checkout(state: &AppState, name: &str) -> Result<String, String> {
         }
     };
 
-    let held = work::stash_before(state, &format!("switching to {name}"))?;
     let borrowed: Vec<&str> = args.iter().map(|s| s.as_str()).collect();
-    let result = git_cmd::run_checked(&path, &borrowed);
 
-    if result.is_err() {
-        // Put the changes back before reporting, so a failed switch leaves the
-        // working tree as it was.
-        let _ = work::restore_after(state, held);
-        return result;
-    }
-    let restored = work::restore_after(state, held)?;
+    // Try the switch as it is first. Git carries uncommitted edits across a
+    // branch change whenever they do not collide with what that change touches,
+    // and that is the common case — stashing every time churns the working tree,
+    // loses the staged/unstaged split, and risks a conflicted pop for nothing.
+    let plain = git_cmd::run_checked(&path, &borrowed);
+    let (out, restored) = match plain {
+        Ok(message) => (message, None),
+        Err(error) if !refused_over_local_changes(&error) => return Err(error),
+        Err(error) => {
+            // It collided. Now the stash is worth it.
+            let held = work::stash_before(state, &format!("switching to {name}"))?;
+            if !held.stashed {
+                // Auto-stash is off, or there was nothing to stash; either way
+                // retrying would fail the same way. Report what git said.
+                return Err(error);
+            }
+            match git_cmd::run_checked(&path, &borrowed) {
+                Ok(message) => (message, work::restore_after(state, held)?),
+                Err(again) => {
+                    // Put the changes back before reporting, so a failed switch
+                    // leaves the working tree as it was.
+                    let _ = work::restore_after(state, held);
+                    return Err(again);
+                }
+            }
+        }
+    };
 
     let landed = journal::current_branch(state);
     if let (Some(from), Some(to)) = (previous.clone(), landed.clone()) {
@@ -405,11 +423,20 @@ pub fn checkout(state: &AppState, name: &str) -> Result<String, String> {
         }
     }
 
-    let mut message = result?;
+    let mut message = out;
     if let Some(note) = restored {
         message = format!("{}\n{note}", message.trim());
     }
     Ok(message)
+}
+
+/// Whether git turned a checkout down because uncommitted work was in the way,
+/// as opposed to failing for some other reason. Only the first is worth
+/// stashing and retrying for.
+fn refused_over_local_changes(error: &str) -> bool {
+    error.contains("would be overwritten by checkout")
+        || error.contains("Please commit your changes or stash them")
+        || error.contains("would be overwritten by merge")
 }
 
 pub fn create_branch(state: &AppState, name: &str, start: Option<&str>, checkout: bool) -> Result<String, String> {
@@ -430,6 +457,83 @@ pub fn create_branch(state: &AppState, name: &str, start: Option<&str>, checkout
         (true, None) => format!("Created {name} and checked it out"),
         (false, Some(start)) => format!("Created {name} from {start}"),
         (false, None) => format!("Created {name}"),
+    })
+}
+
+/// What deleting a branch would cost, so the question can be asked properly.
+#[derive(Serialize)]
+pub struct BranchDeletion {
+    pub name: String,
+    /// Checked out. Git refuses to delete this one, and so do we.
+    pub is_head: bool,
+    /// Reachable from HEAD, so nothing is lost by deleting it.
+    pub merged: bool,
+    pub upstream: Option<String>,
+    /// Commits on this branch that its upstream does not have. These are what a
+    /// delete actually costs, when it costs anything.
+    pub unpushed: usize,
+    /// Remote branches of the same name, e.g. `origin/feature`. Their presence
+    /// is what turns one question into two.
+    pub remotes: Vec<String>,
+}
+
+pub fn deletion_preview(state: &AppState, name: &str) -> Result<BranchDeletion, String> {
+    let repo = state.repo()?;
+    let branch = repo
+        .find_branch(name, BranchType::Local)
+        .map_err(|_| format!("No local branch named {name}"))?;
+    let oid = branch
+        .get()
+        .target()
+        .ok_or_else(|| format!("Branch {name} has no commit"))?;
+
+    let head = repo.head().ok().and_then(|h| h.target());
+    // Merged means HEAD can already reach it: deleting the label loses nothing.
+    let merged = match head {
+        Some(head) => head == oid || repo.graph_descendant_of(head, oid).unwrap_or(false),
+        None => false,
+    };
+
+    let upstream_ref = branch.upstream().ok();
+    let upstream = upstream_ref
+        .as_ref()
+        .and_then(|u| u.name().ok().flatten().map(|s| s.to_string()));
+    let unpushed = upstream_ref
+        .as_ref()
+        .and_then(|u| u.get().target())
+        .and_then(|up| repo.graph_ahead_behind(oid, up).ok())
+        .map(|(ahead, _)| ahead)
+        .unwrap_or(0);
+
+    // Any remote carrying this branch name, not only the tracked one: a branch
+    // pushed to two remotes has two copies to think about.
+    let mut remotes = Vec::new();
+    if let Ok(list) = repo.branches(Some(BranchType::Remote)) {
+        for entry in list.flatten() {
+            let (remote_branch, _) = entry;
+            let Some(full) = remote_branch.name().ok().flatten() else {
+                continue;
+            };
+            if full.ends_with("/HEAD") {
+                continue;
+            }
+            if full.splitn(2, '/').nth(1) == Some(name) {
+                remotes.push(full.to_string());
+            }
+        }
+    }
+    remotes.sort();
+
+    Ok(BranchDeletion {
+        name: name.to_string(),
+        // By name, not by commit: another branch can sit on the same commit as
+        // HEAD without being the one checked out.
+        is_head: !repo.head_detached().unwrap_or(false)
+            && repo.head().ok().and_then(|h| h.shorthand().map(String::from)) == Some(name.to_string()),
+        merged,
+        upstream,
+        unpushed,
+        remotes,
     })
 }
 

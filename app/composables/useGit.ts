@@ -163,6 +163,25 @@ export interface CherryPickOptions {
   record_origin?: boolean
 }
 
+/** How two branches stand to each other. */
+export interface BranchRelation {
+  /** Commits the source has that the target does not. */
+  ahead: number
+  /** Commits the target has that the source does not. */
+  behind: number
+}
+
+/** What deleting a branch would cost, read before the question is asked. */
+export interface BranchDeletion {
+  name: string
+  is_head: boolean
+  merged: boolean
+  upstream: string | null
+  unpushed: number
+  /** Remote branches of the same name, e.g. `origin/feature`. */
+  remotes: string[]
+}
+
 export interface MergeOutcome { ok: boolean; message: string; conflicts: string[] }
 export interface AmendDraft { summary: string; body: string; is_pushed: boolean; short: string }
 
@@ -403,7 +422,11 @@ export function useGit() {
 
   async function run<T>(label: string, command: string, args: Record<string, unknown> = {}) {
     const result = await guard(label, () => invoke<T>(command, args))
-    if (result !== null) await refresh()
+    // Refresh whether or not it worked. A git command that fails can still have
+    // changed the repository — a branch switch whose stash pop conflicted has
+    // switched, a rebase that stopped has moved HEAD — and leaving the window
+    // showing the state from before is worse than an extra read.
+    await refresh()
     return result
   }
 
@@ -433,6 +456,15 @@ export function useGit() {
       run<string>('Create branch', 'create_branch', { name, start, checkout: true }),
     deleteBranch: (name: string, force = false) =>
       run<string>('Delete branch', 'delete_branch', { name, force }),
+    /** How two branches stand, so a menu offers only the moves that would do
+        something. `ahead` is what source has and target does not. */
+    branchRelation: (source: string, target: string) =>
+      guard('Compare branches', () =>
+        invoke<BranchRelation>('branch_relation', { source, target })
+      ),
+    /** What deleting would cost, so the dialog can ask a real question. */
+    deleteBranchPreview: (name: string) =>
+      guard('Read branch', () => invoke<BranchDeletion>('delete_branch_preview', { name })),
     renameBranch: (from: string, to: string) =>
       run<string>('Rename branch', 'rename_branch', { from, to }),
     setUpstream: (branch: string, upstream: string) =>

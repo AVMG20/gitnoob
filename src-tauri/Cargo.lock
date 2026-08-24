@@ -1180,7 +1180,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "gitui"
+name = "gitnoob"
 version = "0.1.0"
 dependencies = [
  "git2",

@@ -1,4 +1,4 @@
-# gitui
+# gitnoob
 
 A desktop Git client: Rust + Tauri backend, Nuxt (Vue 3) frontend.
 
@@ -50,7 +50,7 @@ npm run app          # development: starts Nuxt and the window together
 npm run app:build    # a real .app in src-tauri/target/release/bundle
 ```
 
-**Use one of those two.** Running `src-tauri/target/debug/gitui` by hand shows a
+**Use one of those two.** Running `src-tauri/target/debug/gitnoob` by hand shows a
 blank window, and the reason is worth knowing: a debug build loads the `devUrl`
 from `tauri.conf.json` — `http://localhost:3000` — rather than the bundle
 compiled into it. With no dev server listening there is nothing to show. Only a

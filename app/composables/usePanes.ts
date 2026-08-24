@@ -1,6 +1,6 @@
 import { reactive, watch } from 'vue'
 
-const KEY = 'gitui.layout'
+const KEY = 'gitnoob.layout'
 
 const limits = { sidebar: [180, 460], panel: [280, 720] } as const
 

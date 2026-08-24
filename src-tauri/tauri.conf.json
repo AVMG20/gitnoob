@@ -1,8 +1,8 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
-  "productName": "gitui",
+  "productName": "gitnoob",
   "version": "0.1.0",
-  "identifier": "dev.gitui.app",
+  "identifier": "dev.gitnoob.app",
   "build": {
     "beforeDevCommand": "npm run dev",
     "devUrl": "http://localhost:3000",
@@ -13,7 +13,7 @@
     "windows": [
       {
         "label": "main",
-        "title": "gitui",
+        "title": "gitnoob",
         "width": 1500,
         "height": 950,
         "minWidth": 900,

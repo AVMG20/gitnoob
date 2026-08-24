@@ -1,6 +1,6 @@
 import { reactive, watch } from 'vue'
 
-const KEY = 'gitui.fileview'
+const KEY = 'gitnoob.fileview'
 
 const state = reactive({
   /** `tree` groups by directory; `path` lists full paths flat. */

@@ -191,7 +191,7 @@ all, and none of them were on this list before.
 ## How to run it
 
 `npm run app` for development, `npm run app:build` for a real `.app`. Running
-`src-tauri/target/debug/gitui` by hand gives a blank window: a debug build loads
+`src-tauri/target/debug/gitnoob` by hand gives a blank window: a debug build loads
 the `devUrl` from `tauri.conf.json` rather than the bundle compiled into it, so
 with no dev server on port 3000 there is nothing to show. Only a release build
 serves `frontendDist`. `GITUI_DEVTOOLS=1` opens the inspector, debug builds

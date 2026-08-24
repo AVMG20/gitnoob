@@ -432,3 +432,43 @@ pub fn can_fast_forward(state: &AppState, branch: &str, onto: &str) -> Result<bo
     let path = state.path()?;
     Ok(git_cmd::run_checked(&path, &["merge-base", "--is-ancestor", branch, onto]).is_ok())
 }
+
+/// How two branches stand to each other.
+///
+/// Merge, fast-forward and rebase are not always all possible, and offering one
+/// that would do nothing is worse than not offering it: the user picks it,
+/// something happens or does not, and they are left guessing which.
+#[derive(serde::Serialize)]
+pub struct BranchRelation {
+    /// Commits on `source` that `target` does not have.
+    pub ahead: usize,
+    /// Commits on `target` that `source` does not have.
+    pub behind: usize,
+}
+
+impl BranchRelation {
+    /// `source` is already contained in `target`; there is nothing to bring over.
+    pub fn merged(&self) -> bool {
+        self.ahead == 0
+    }
+    /// `target` has nothing of its own, so it can simply be moved forward.
+    pub fn fast_forward(&self) -> bool {
+        self.ahead > 0 && self.behind == 0
+    }
+}
+
+pub fn relation(state: &AppState, source: &str, target: &str) -> Result<BranchRelation, String> {
+    let repo = state.repo()?;
+    let resolve = |name: &str| -> Result<git2::Oid, String> {
+        repo.revparse_single(name)
+            .map_err(|_| format!("No branch or commit named {name}"))?
+            .peel_to_commit()
+            .map(|c| c.id())
+            .map_err(|e| e.message().to_string())
+    };
+    let (source_oid, target_oid) = (resolve(source)?, resolve(target)?);
+    let (ahead, behind) = repo
+        .graph_ahead_behind(source_oid, target_oid)
+        .map_err(|e| e.message().to_string())?;
+    Ok(BranchRelation { ahead, behind })
+}

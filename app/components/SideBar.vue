@@ -32,6 +32,8 @@ const forge = useForge()
 
 const open = reactive({ locals: true, remotes: true, tags: false, stashes: true, reviews: true })
 const filter = ref('')
+/** The branch whose deletion is being confirmed. */
+const deleting = ref<string | null>(null)
 const prompt = ref<{
   title: string
   label: string
@@ -117,21 +119,40 @@ async function onDropOnBranch(event: MouseEvent, target: string, targetIsRemote:
     return
   }
 
-  // Offer the cheap answer first when there is one.
-  const fastForward = await invoke<boolean>('can_fast_forward', {
-    branch: target,
-    onto: source
-  }).catch(() => false)
+  // What is actually possible between these two. Offering a move that would do
+  // nothing is worse than not offering it: it gets picked, nothing visible
+  // happens, and the user is left guessing whether it worked.
+  const relation = await git.branchRelation(source, target)
+  const ahead = relation?.ahead ?? 0
+  const behind = relation?.behind ?? 0
+  const merged = ahead === 0
+  const fastForward = ahead > 0 && behind === 0
+
+  if (merged) {
+    menu.show(
+      event,
+      [
+        {
+          label: `${target} already has everything from ${source}`,
+          icon: GitMerge,
+          disabled: true
+        }
+      ],
+      `${source} → ${target}`
+    )
+    return
+  }
 
   menu.show(
     event,
     [
+      // The cheap answer first, when there is one.
       ...(fastForward
         ? [
             {
-              label: `Fast-forward ${target} to ${source}`,
+              label: `Fast-forward ${source} → ${target}`,
               icon: GitMerge,
-              hint: 'no merge commit',
+              hint: `${target} moves, no merge commit`,
               action: async () => {
                 if (target !== head.value) await git.checkout(target)
                 await git.merge(source, false)
@@ -140,28 +161,34 @@ async function onDropOnBranch(event: MouseEvent, target: string, targetIsRemote:
           ]
         : []),
       {
-        label: `Merge ${source} into ${target}`,
+        label: `Merge ${source} → ${target}`,
         icon: GitMerge,
-        hint: fastForward ? 'force a merge commit' : '',
+        hint: fastForward ? `${target} changes, forced merge commit` : `${target} changes`,
         action: async () => {
           if (target !== head.value) await git.checkout(target)
           const outcome = await git.merge(source, fastForward)
           if (outcome?.conflicts.length) store.resolving = outcome.conflicts[0]
         }
       },
-      {
-        label: `Rebase ${target} onto ${source}`,
-        icon: GitBranch,
-        hint: 'rewrites history',
-        danger: true,
-        action: async () => {
-          if (target !== head.value) await git.checkout(target)
-          const outcome = await git.rebase(source)
-          if (outcome?.conflicts.length) store.resolving = outcome.conflicts[0]
-        }
-      }
+      // Rebasing a branch that has nothing of its own is a fast-forward with
+      // extra steps, so it is only worth offering once the two have diverged.
+      ...(behind > 0
+        ? [
+            {
+              label: `Rebase ${target} → onto ${source}`,
+              icon: GitBranch,
+              hint: `${behind} ${behind === 1 ? 'commit' : 'commits'} rewritten`,
+              danger: true,
+              action: async () => {
+                if (target !== head.value) await git.checkout(target)
+                const outcome = await git.rebase(source)
+                if (outcome?.conflicts.length) store.resolving = outcome.conflicts[0]
+              }
+            }
+          ]
+        : [])
     ],
-    `${source} → ${target}`
+    `${ahead} ahead · ${behind} behind`
   )
 }
 
@@ -173,9 +200,13 @@ function localMenu(event: MouseEvent, name: string, upstream: string | null) {
     event,
     [
       { label: 'Check out', icon: GitBranch, disabled: isHead, action: () => git.checkout(name) },
+      // Both of these move history between two branches, in opposite
+      // directions, and "merge" alone does not say which way. Name both
+      // branches and say which one ends up changed.
       {
-        label: `Merge into ${head.value}`,
+        label: `Merge ${name} → ${head.value}`,
         icon: GitMerge,
+        hint: `${head.value} changes`,
         disabled: isHead,
         action: async () => {
           const outcome = await git.merge(name, false)
@@ -183,8 +214,9 @@ function localMenu(event: MouseEvent, name: string, upstream: string | null) {
         }
       },
       {
-        label: `Rebase ${head.value} onto this`,
+        label: `Rebase ${head.value} → onto ${name}`,
         icon: GitBranch,
+        hint: `${head.value} rewritten`,
         disabled: isHead,
         action: async () => {
           const outcome = await git.rebase(name)
@@ -216,11 +248,11 @@ function localMenu(event: MouseEvent, name: string, upstream: string | null) {
       },
       { separator: true, label: '' },
       {
-        label: 'Delete branch',
+        label: 'Delete branch…',
         icon: Trash2,
         danger: true,
         disabled: isHead,
-        action: () => git.deleteBranch(name, false)
+        action: () => (deleting.value = name)
       }
     ],
     name
@@ -526,6 +558,8 @@ function stashMenu(event: MouseEvent, index: number, message: string) {
         }
       "
     />
+
+    <DeleteBranchDialog v-if="deleting" :name="deleting" @close="deleting = null" />
   </aside>
 </template>
 

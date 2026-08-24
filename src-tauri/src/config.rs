@@ -198,12 +198,33 @@ pub fn file_path(dir: &Path) -> PathBuf {
     dir.join("config.json")
 }
 
+/// The app's config directory is named after its bundle identifier, so renaming
+/// the app from `gitui` to `gitnoob` moved it and left the old profiles behind.
+/// On a first run under the new name, bring the old file across.
+///
+/// Copies rather than moves: if this turns out to be the wrong call, the
+/// original is still where it was. Tokens cannot come along — they live in the
+/// OS keychain under the old service name and have to be entered again.
+fn adopt_previous_name(dir: &Path) {
+    let Some(parent) = dir.parent() else { return };
+    let previous = parent.join("dev.gitui.app").join("config.json");
+    if !previous.is_file() {
+        return;
+    }
+    if fs::create_dir_all(dir).is_ok() {
+        let _ = fs::copy(&previous, file_path(dir));
+    }
+}
+
 /// Reads the config, falling back to defaults for a missing or unreadable file.
 ///
 /// A corrupt file is moved aside rather than overwritten, so a hand-edit that
 /// went wrong is still recoverable.
 pub fn load(dir: &Path) -> Config {
     let path = file_path(dir);
+    if !path.exists() {
+        adopt_previous_name(dir);
+    }
     let Ok(text) = fs::read_to_string(&path) else {
         return Config::default();
     };
@@ -238,7 +259,7 @@ pub fn new_id() -> String {
 
 // --- secrets ---------------------------------------------------------------
 
-const SERVICE: &str = "dev.gitui.app";
+const SERVICE: &str = "dev.gitnoob.app";
 
 /// Stores a secret in the OS keychain. An empty value deletes the entry.
 pub fn secret_set(key: &str, value: &str) -> Result<(), String> {

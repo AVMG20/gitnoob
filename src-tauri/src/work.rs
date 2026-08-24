@@ -273,7 +273,7 @@ pub fn stash_before(state: &AppState, reason: &str) -> Result<Held, String> {
         return Ok(Held { stashed: false });
     }
     let root = state.path()?;
-    let message = format!("gitui auto-stash: {reason}");
+    let message = format!("gitnoob auto-stash: {reason}");
     git_cmd::run_checked(
         &root,
         &["stash", "push", "--include-untracked", "-m", &message],

@@ -165,8 +165,8 @@ async fn complete(state: &AppState, system: &str, user: String) -> Result<String
         .post(format!("{BASE}/chat/completions"))
         .bearer_auth(key)
         // OpenRouter uses these for its own attribution listings.
-        .header("HTTP-Referer", "https://github.com/gitui")
-        .header("X-Title", "gitui")
+        .header("HTTP-Referer", "https://github.com/gitnoob")
+        .header("X-Title", "gitnoob")
         .json(&serde_json::json!({
             "model": model,
             "max_tokens": config.global.ai.max_tokens,

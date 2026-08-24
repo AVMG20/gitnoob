@@ -17,7 +17,7 @@ async function pick() {
 <template>
   <div class="welcome">
     <div class="card">
-      <h1>gitui</h1>
+      <h1>gitnoob</h1>
       <p class="dim sub">
         An open-source Git client<template v-if="config.profile.value">
           — {{ config.profile.value.name }}</template

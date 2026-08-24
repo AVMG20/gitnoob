@@ -68,7 +68,7 @@ onMounted(async () => {
     git.note(`Could not read settings: ${String(error)}`, 'error')
   }
 
-  // `gitui /path/to/repo` wins; otherwise reopen whatever was open last time.
+  // `gitnoob /path/to/repo` wins; otherwise reopen whatever was open last time.
   const fromArgv = await invoke<string | null>('startup_repo').catch(() => null)
   const target = fromArgv ?? config.activeProject.value
   if (target) await openProject(target)

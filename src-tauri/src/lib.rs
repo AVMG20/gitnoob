@@ -45,7 +45,7 @@ async fn open_repo(path: String, state: State<'_, AppState>) -> Result<refs::Rep
     refs::describe(&state)
 }
 
-/// The repository named on the command line, if any: `gitui /path/to/repo`.
+/// The repository named on the command line, if any: `gitnoob /path/to/repo`.
 #[tauri::command]
 fn startup_repo() -> Option<String> {
     std::env::args()
@@ -117,6 +117,15 @@ async fn create_branch(
     refs::create_branch(&state, &name, start.as_deref(), checkout.unwrap_or(true))
 }
 
+/// What deleting a branch would cost, read before the question is asked.
+#[tauri::command]
+async fn delete_branch_preview(
+    name: String,
+    state: State<'_, AppState>,
+) -> Result<refs::BranchDeletion, String> {
+    refs::deletion_preview(&state, &name)
+}
+
 #[tauri::command]
 async fn delete_branch(
     name: String,
@@ -164,6 +173,17 @@ fn can_fast_forward(
     state: State<'_, AppState>,
 ) -> Result<bool, String> {
     remote::can_fast_forward(&state, &branch, &onto)
+}
+
+/// How two branches stand to each other, so a menu can offer only the moves
+/// that would actually do something.
+#[tauri::command]
+fn branch_relation(
+    source: String,
+    target: String,
+    state: State<'_, AppState>,
+) -> Result<remote::BranchRelation, String> {
+    remote::relation(&state, &source, &target)
 }
 
 #[tauri::command]
@@ -766,6 +786,7 @@ pub fn run() {
             checkout,
             create_branch,
             delete_branch,
+            delete_branch_preview,
             rename_branch,
             set_upstream,
             unset_upstream,
@@ -773,6 +794,7 @@ pub fn run() {
             add_to_gitignore,
             remotes,
             can_fast_forward,
+            branch_relation,
             delete_remote_branch,
             push_tag,
             delete_remote_tag,
@@ -842,5 +864,5 @@ pub fn run() {
             open_external,
         ])
         .run(tauri::generate_context!())
-        .expect("error while running gitui");
+        .expect("error while running gitnoob");
 }

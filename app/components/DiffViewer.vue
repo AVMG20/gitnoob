@@ -69,7 +69,17 @@ onUnmounted(() => window.removeEventListener('keydown', onKey))
 
       <span class="grow" />
 
+      <!-- Discard left, stage right, matching the hunk buttons in the diff
+           below: the destructive one is never where the hand already is. -->
       <template v-if="!target.commit">
+        <button
+          class="btn danger"
+          :disabled="store.busy"
+          title="Throw away the changes to this file"
+          @click="git.discard([target.path])"
+        >
+          <Undo2 :size="14" /> Discard
+        </button>
         <button
           v-if="target.side === 'unstaged'"
           class="btn"
@@ -80,14 +90,6 @@ onUnmounted(() => window.removeEventListener('keydown', onKey))
         </button>
         <button v-else class="btn" :disabled="store.busy" @click="git.unstage([target.path])">
           <Minus :size="14" /> Unstage file
-        </button>
-        <button
-          class="btn danger"
-          :disabled="store.busy"
-          title="Throw away the changes to this file"
-          @click="git.discard([target.path])"
-        >
-          <Undo2 :size="14" /> Discard
         </button>
       </template>
 

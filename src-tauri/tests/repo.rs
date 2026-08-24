@@ -8,8 +8,8 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
-use gitui_lib::state::AppState;
-use gitui_lib::{conflict, diff, graph, refs, remote};
+use gitnoob_lib::state::AppState;
+use gitnoob_lib::{conflict, diff, graph, refs, remote};
 
 static COUNTER: AtomicUsize = AtomicUsize::new(0);
 
@@ -21,7 +21,7 @@ struct Sandbox {
 impl Sandbox {
     fn new(tag: &str) -> Self {
         let id = COUNTER.fetch_add(1, Ordering::SeqCst);
-        let root = std::env::temp_dir().join(format!("gitui-test-{tag}-{}-{id}", std::process::id()));
+        let root = std::env::temp_dir().join(format!("gitnoob-test-{tag}-{}-{id}", std::process::id()));
         let _ = std::fs::remove_dir_all(&root);
         std::fs::create_dir_all(&root).unwrap();
 
@@ -78,7 +78,7 @@ impl Sandbox {
 
     fn state(&self) -> AppState {
         // Point the config at the sandbox so tests never touch the real one.
-        let state = AppState::new(self.root.join(".gitui-config"));
+        let state = AppState::new(self.root.join(".gitnoob-config"));
         state.set_path(self.root.clone());
         state
     }
@@ -96,7 +96,7 @@ fn opens_a_repository_from_a_subdirectory() {
     sandbox.commit("a.txt", "one\n", "First");
     std::fs::create_dir_all(sandbox.root.join("deep/nested")).unwrap();
 
-    let found = gitui_lib::state::discover_workdir(&sandbox.root.join("deep/nested")).unwrap();
+    let found = gitnoob_lib::state::discover_workdir(&sandbox.root.join("deep/nested")).unwrap();
     // Compare canonically: macOS temp paths go through a /private symlink.
     assert_eq!(
         found.canonicalize().unwrap(),
@@ -106,9 +106,9 @@ fn opens_a_repository_from_a_subdirectory() {
 
 #[test]
 fn rejects_a_directory_outside_any_repository() {
-    let root = std::env::temp_dir().join(format!("gitui-not-a-repo-{}", std::process::id()));
+    let root = std::env::temp_dir().join(format!("gitnoob-not-a-repo-{}", std::process::id()));
     std::fs::create_dir_all(&root).unwrap();
-    assert!(gitui_lib::state::discover_workdir(&root).is_err());
+    assert!(gitnoob_lib::state::discover_workdir(&root).is_err());
     let _ = std::fs::remove_dir_all(&root);
 }
 
@@ -292,7 +292,7 @@ fn push_preview_reports_divergence_and_what_a_force_would_drop() {
 
     // Stand in for a remote: a bare clone that already has both commits.
     let bare = sandbox.root.parent().unwrap().join(format!(
-        "gitui-test-push-origin-{}.git",
+        "gitnoob-test-push-origin-{}.git",
         std::process::id()
     ));
     let _ = std::fs::remove_dir_all(&bare);
@@ -543,7 +543,7 @@ fn amend_draft_knows_when_a_commit_is_published() {
     sandbox.commit("a.txt", "one\n", "Only commit\n\nWith a body.");
     let state = sandbox.state();
 
-    let draft = gitui_lib::work::amend_draft(&state).unwrap();
+    let draft = gitnoob_lib::work::amend_draft(&state).unwrap();
     assert_eq!(draft.summary, "Only commit");
     assert_eq!(draft.body, "With a body.");
     assert!(!draft.is_pushed, "nothing has been pushed yet");
@@ -552,14 +552,14 @@ fn amend_draft_knows_when_a_commit_is_published() {
         .root
         .parent()
         .unwrap()
-        .join(format!("gitui-test-amend-origin-{}.git", std::process::id()));
+        .join(format!("gitnoob-test-amend-origin-{}.git", std::process::id()));
     let _ = std::fs::remove_dir_all(&bare);
     let bare_arg = bare.to_string_lossy().into_owned();
     sandbox.git(&["clone", "-q", "--bare", ".", &bare_arg]);
     sandbox.git(&["remote", "add", "origin", &bare_arg]);
     sandbox.git(&["fetch", "-q", "origin"]);
 
-    let published = gitui_lib::work::amend_draft(&state).unwrap();
+    let published = gitnoob_lib::work::amend_draft(&state).unwrap();
     assert!(published.is_pushed, "the commit is now on a remote");
 
     let _ = std::fs::remove_dir_all(&bare);
@@ -572,17 +572,17 @@ fn stage_unstage_and_discard_move_files_around() {
     sandbox.write("a.txt", "one\ntwo\n");
     let state = sandbox.state();
 
-    gitui_lib::work::stage(&state, &["a.txt".to_string()]).unwrap();
+    gitnoob_lib::work::stage(&state, &["a.txt".to_string()]).unwrap();
     assert!(refs::status(&state)
         .unwrap()
         .staged
         .iter()
         .any(|e| e.path == "a.txt"));
 
-    gitui_lib::work::unstage(&state, &["a.txt".to_string()]).unwrap();
+    gitnoob_lib::work::unstage(&state, &["a.txt".to_string()]).unwrap();
     assert!(refs::status(&state).unwrap().staged.is_empty());
 
-    gitui_lib::work::discard(&state, &["a.txt".to_string()]).unwrap();
+    gitnoob_lib::work::discard(&state, &["a.txt".to_string()]).unwrap();
     assert_eq!(
         std::fs::read_to_string(sandbox.root.join("a.txt")).unwrap(),
         "one\n"
@@ -601,7 +601,7 @@ fn checkout_of_a_remote_branch_creates_a_tracking_branch() {
         .root
         .parent()
         .unwrap()
-        .join(format!("gitui-test-track-origin-{}.git", std::process::id()));
+        .join(format!("gitnoob-test-track-origin-{}.git", std::process::id()));
     let _ = std::fs::remove_dir_all(&bare);
     let bare_arg = bare.to_string_lossy().into_owned();
     sandbox.git(&["clone", "-q", "--bare", ".", &bare_arg]);
@@ -644,7 +644,7 @@ fn handles_an_empty_repository() {
     assert_eq!(status.unstaged.len(), 1);
 
     // A first commit is diffable against the empty tree.
-    gitui_lib::work::stage(&state, &["a.txt".to_string()]).unwrap();
+    gitnoob_lib::work::stage(&state, &["a.txt".to_string()]).unwrap();
     let staged = diff::working_file_diff(&state, "a.txt", diff::Side::Staged).unwrap();
     assert!(staged
         .hunks
@@ -683,18 +683,18 @@ fn undo_and_redo_a_commit() {
 
     let state = sandbox.state();
     sandbox.write("a.txt", "one\ntwo\n");
-    gitui_lib::work::stage(&state, &["a.txt".to_string()]).unwrap();
-    gitui_lib::work::commit(&state, "Second commit", false).unwrap();
+    gitnoob_lib::work::stage(&state, &["a.txt".to_string()]).unwrap();
+    gitnoob_lib::work::commit(&state, "Second commit", false).unwrap();
 
     let after = sandbox.git(&["rev-parse", "HEAD"]).trim().to_string();
     assert_ne!(after, base);
 
-    let stacks = gitui_lib::journal::stacks(&state);
+    let stacks = gitnoob_lib::journal::stacks(&state);
     assert_eq!(stacks.undo.len(), 1);
     assert_eq!(stacks.undo[0].label, "Commit: Second commit");
     assert!(stacks.redo.is_empty());
 
-    gitui_lib::journal::undo(&state).unwrap();
+    gitnoob_lib::journal::undo(&state).unwrap();
     assert_eq!(sandbox.git(&["rev-parse", "HEAD"]).trim(), base);
     // A soft reset keeps the work staged rather than throwing it away.
     let status = refs::status(&state).unwrap();
@@ -704,11 +704,11 @@ fn undo_and_redo_a_commit() {
         "one\ntwo\n"
     );
 
-    let stacks = gitui_lib::journal::stacks(&state);
+    let stacks = gitnoob_lib::journal::stacks(&state);
     assert!(stacks.undo.is_empty());
     assert_eq!(stacks.redo.len(), 1);
 
-    gitui_lib::journal::redo(&state).unwrap();
+    gitnoob_lib::journal::redo(&state).unwrap();
     assert_eq!(sandbox.git(&["rev-parse", "HEAD"]).trim(), after);
 }
 
@@ -719,10 +719,10 @@ fn undo_of_an_amend_restores_the_original_commit() {
     let original = sandbox.git(&["rev-parse", "HEAD"]).trim().to_string();
 
     let state = sandbox.state();
-    gitui_lib::work::commit(&state, "Reworded message", true).unwrap();
+    gitnoob_lib::work::commit(&state, "Reworded message", true).unwrap();
     assert_ne!(sandbox.git(&["rev-parse", "HEAD"]).trim(), original);
 
-    gitui_lib::journal::undo(&state).unwrap();
+    gitnoob_lib::journal::undo(&state).unwrap();
     assert_eq!(sandbox.git(&["rev-parse", "HEAD"]).trim(), original);
     assert_eq!(
         sandbox.git(&["log", "-1", "--format=%s"]).trim(),
@@ -738,15 +738,15 @@ fn undo_refuses_when_a_different_branch_is_checked_out() {
     sandbox.commit("a.txt", "two\n", "Second");
     // Record a commit through the app so there is something to undo.
     sandbox.write("a.txt", "three\n");
-    gitui_lib::work::stage(&state, &["a.txt".to_string()]).unwrap();
-    gitui_lib::work::commit(&state, "Third", false).unwrap();
+    gitnoob_lib::work::stage(&state, &["a.txt".to_string()]).unwrap();
+    gitnoob_lib::work::commit(&state, "Third", false).unwrap();
 
     sandbox.git(&["checkout", "-q", "-b", "elsewhere"]);
-    let error = gitui_lib::journal::undo(&state).unwrap_err();
+    let error = gitnoob_lib::journal::undo(&state).unwrap_err();
     assert!(error.contains("elsewhere"), "unexpected message: {error}");
 
     // Refusing must not consume the step.
-    assert_eq!(gitui_lib::journal::stacks(&state).undo.len(), 1);
+    assert_eq!(gitnoob_lib::journal::stacks(&state).undo.len(), 1);
 }
 
 #[test]
@@ -754,8 +754,8 @@ fn undo_reports_when_there_is_nothing_to_do() {
     let sandbox = Sandbox::new("undoempty");
     sandbox.commit("a.txt", "one\n", "First");
     let state = sandbox.state();
-    assert!(gitui_lib::journal::undo(&state).is_err());
-    assert!(gitui_lib::journal::redo(&state).is_err());
+    assert!(gitnoob_lib::journal::undo(&state).is_err());
+    assert!(gitnoob_lib::journal::redo(&state).is_err());
 }
 
 #[test]
@@ -779,12 +779,12 @@ fn switching_branches_stashes_and_restores_local_changes() {
         "base\nlocal edit\n"
     );
     // And it is not left sitting in the stash.
-    assert!(gitui_lib::work::stash_list(&state).unwrap().is_empty());
+    assert!(gitnoob_lib::work::stash_list(&state).unwrap().is_empty());
 
     // The switch is undoable.
-    let stacks = gitui_lib::journal::stacks(&state);
+    let stacks = gitnoob_lib::journal::stacks(&state);
     assert_eq!(stacks.undo[0].label, "Switch to other");
-    gitui_lib::journal::undo(&state).unwrap();
+    gitnoob_lib::journal::undo(&state).unwrap();
     assert_eq!(refs::describe(&state).unwrap().head, "main");
 }
 
@@ -814,9 +814,9 @@ fn stash_list_reports_branch_and_message() {
     sandbox.write("new.txt", "fresh\n");
 
     let state = sandbox.state();
-    gitui_lib::work::stash_push(&state, Some("my work in progress"), true).unwrap();
+    gitnoob_lib::work::stash_push(&state, Some("my work in progress"), true).unwrap();
 
-    let stashes = gitui_lib::work::stash_list(&state).unwrap();
+    let stashes = gitnoob_lib::work::stash_list(&state).unwrap();
     assert_eq!(stashes.len(), 1);
     assert_eq!(stashes[0].index, 0);
     assert_eq!(stashes[0].message, "my work in progress");
@@ -825,7 +825,7 @@ fn stash_list_reports_branch_and_message() {
     assert_eq!(stashes[0].oid.len(), 40);
 
     // The stash commit is diffable like any other, which is how the UI shows it.
-    let oid = gitui_lib::work::stash_oid(&state, 0).unwrap();
+    let oid = gitnoob_lib::work::stash_oid(&state, 0).unwrap();
     let detail = diff::commit_detail(&state, &oid).unwrap();
     assert!(detail.files.iter().any(|f| f.path == "a.txt"));
 }
@@ -837,22 +837,22 @@ fn stash_apply_keeps_the_entry_and_drop_removes_it() {
     sandbox.write("a.txt", "one\nedited\n");
 
     let state = sandbox.state();
-    gitui_lib::work::stash_push(&state, Some("keep me"), false).unwrap();
+    gitnoob_lib::work::stash_push(&state, Some("keep me"), false).unwrap();
     assert_eq!(
         std::fs::read_to_string(sandbox.root.join("a.txt")).unwrap(),
         "one\n"
     );
 
-    gitui_lib::work::stash_apply(&state, 0).unwrap();
+    gitnoob_lib::work::stash_apply(&state, 0).unwrap();
     assert_eq!(
         std::fs::read_to_string(sandbox.root.join("a.txt")).unwrap(),
         "one\nedited\n"
     );
     // Apply, unlike pop, leaves the entry in place.
-    assert_eq!(gitui_lib::work::stash_list(&state).unwrap().len(), 1);
+    assert_eq!(gitnoob_lib::work::stash_list(&state).unwrap().len(), 1);
 
-    gitui_lib::work::stash_drop(&state, 0).unwrap();
-    assert!(gitui_lib::work::stash_list(&state).unwrap().is_empty());
+    gitnoob_lib::work::stash_drop(&state, 0).unwrap();
+    assert!(gitnoob_lib::work::stash_list(&state).unwrap().is_empty());
 }
 
 #[test]
@@ -862,8 +862,8 @@ fn a_stash_can_become_a_branch() {
     sandbox.write("a.txt", "one\nwork\n");
 
     let state = sandbox.state();
-    gitui_lib::work::stash_push(&state, Some("rescue this"), false).unwrap();
-    gitui_lib::work::stash_branch(&state, 0, "rescued").unwrap();
+    gitnoob_lib::work::stash_push(&state, Some("rescue this"), false).unwrap();
+    gitnoob_lib::work::stash_branch(&state, 0, "rescued").unwrap();
 
     assert_eq!(refs::describe(&state).unwrap().head, "rescued");
     assert_eq!(
@@ -871,7 +871,7 @@ fn a_stash_can_become_a_branch() {
         "one\nwork\n"
     );
     // `git stash branch` consumes the entry.
-    assert!(gitui_lib::work::stash_list(&state).unwrap().is_empty());
+    assert!(gitnoob_lib::work::stash_list(&state).unwrap().is_empty());
 }
 
 #[test]
@@ -884,7 +884,7 @@ fn pull_stashes_local_work_and_puts_it_back() {
         .root
         .parent()
         .unwrap()
-        .join(format!("gitui-test-pull-origin-{}.git", std::process::id()));
+        .join(format!("gitnoob-test-pull-origin-{}.git", std::process::id()));
     let _ = std::fs::remove_dir_all(&bare);
     let bare_arg = bare.to_string_lossy().into_owned();
     sandbox.git(&["clone", "-q", "--bare", ".", &bare_arg]);
@@ -893,7 +893,7 @@ fn pull_stashes_local_work_and_puts_it_back() {
     sandbox.git(&["branch", "--set-upstream-to=origin/main", "main"]);
 
     let clone = sandbox.root.parent().unwrap().join(format!(
-        "gitui-test-pull-clone-{}",
+        "gitnoob-test-pull-clone-{}",
         std::process::id()
     ));
     let _ = std::fs::remove_dir_all(&clone);
@@ -928,7 +928,7 @@ fn pull_stashes_local_work_and_puts_it_back() {
         std::fs::read_to_string(sandbox.root.join("a.txt")).unwrap(),
         "one\nlocal edit\n"
     );
-    assert!(gitui_lib::work::stash_list(&state).unwrap().is_empty());
+    assert!(gitnoob_lib::work::stash_list(&state).unwrap().is_empty());
 
     let _ = std::fs::remove_dir_all(&bare);
     let _ = std::fs::remove_dir_all(&clone);
@@ -941,7 +941,7 @@ fn parses_forge_remotes_and_reports_status() {
     sandbox.git(&["remote", "add", "origin", "git@gitlab.bigbridge.nl:team/sub/app.git"]);
 
     let state = sandbox.state();
-    let status = gitui_lib::forge::status(&state);
+    let status = gitnoob_lib::forge::status(&state);
     let slug = status.slug.expect("the remote should have parsed");
     assert_eq!(slug.host, "gitlab.bigbridge.nl");
     assert_eq!(slug.owner, "team/sub");
@@ -965,7 +965,7 @@ fn stages_and_discards_one_hunk_at_a_time() {
     let state = sandbox.state();
 
     // Stage only the first region.
-    gitui_lib::work::apply_hunk(&state, "a.txt", 0, gitui_lib::work::HunkAction::Stage).unwrap();
+    gitnoob_lib::work::apply_hunk(&state, "a.txt", 0, gitnoob_lib::work::HunkAction::Stage).unwrap();
 
     let staged = diff::working_file_diff(&state, "a.txt", diff::Side::Staged).unwrap();
     let staged_added: Vec<String> = staged
@@ -988,13 +988,13 @@ fn stages_and_discards_one_hunk_at_a_time() {
     assert_eq!(unstaged_added, vec!["second addition".to_string()]);
 
     // Take it back out again.
-    gitui_lib::work::apply_hunk(&state, "a.txt", 0, gitui_lib::work::HunkAction::Unstage).unwrap();
+    gitnoob_lib::work::apply_hunk(&state, "a.txt", 0, gitnoob_lib::work::HunkAction::Unstage).unwrap();
     assert!(refs::status(&state).unwrap().staged.is_empty());
 
     // Discarding the remaining region leaves the other edit alone.
     let before = std::fs::read_to_string(sandbox.root.join("a.txt")).unwrap();
     assert!(before.contains("first addition") && before.contains("second addition"));
-    gitui_lib::work::apply_hunk(&state, "a.txt", 1, gitui_lib::work::HunkAction::Discard).unwrap();
+    gitnoob_lib::work::apply_hunk(&state, "a.txt", 1, gitnoob_lib::work::HunkAction::Discard).unwrap();
     let after = std::fs::read_to_string(sandbox.root.join("a.txt")).unwrap();
     assert!(after.contains("first addition"));
     assert!(!after.contains("second addition"));
@@ -1006,7 +1006,7 @@ fn hunk_staging_refuses_when_there_is_nothing_to_stage() {
     sandbox.commit("a.txt", "one\n", "Base");
     let state = sandbox.state();
     let error =
-        gitui_lib::work::apply_hunk(&state, "a.txt", 0, gitui_lib::work::HunkAction::Stage)
+        gitnoob_lib::work::apply_hunk(&state, "a.txt", 0, gitnoob_lib::work::HunkAction::Stage)
             .unwrap_err();
     assert!(error.contains("No unstaged changes"), "unexpected: {error}");
 }
@@ -1029,10 +1029,10 @@ fn cherry_picking_several_commits_applies_them_oldest_first() {
 
     // Newest first on purpose: applying them in this order would conflict, so a
     // clean result is the proof that they were reordered.
-    gitui_lib::work::cherry_pick(
+    gitnoob_lib::work::cherry_pick(
         &state,
         &[third, second, first],
-        gitui_lib::work::CherryPickOptions::default(),
+        gitnoob_lib::work::CherryPickOptions::default(),
     )
     .unwrap();
 
@@ -1057,10 +1057,10 @@ fn cherry_picking_without_committing_leaves_the_change_staged() {
     let state = sandbox.state();
     let head_before = sandbox.git(&["rev-parse", "HEAD"]).trim().to_string();
 
-    gitui_lib::work::cherry_pick(
+    gitnoob_lib::work::cherry_pick(
         &state,
         &[oid],
-        gitui_lib::work::CherryPickOptions {
+        gitnoob_lib::work::CherryPickOptions {
             no_commit: true,
             record_origin: false,
         },
@@ -1083,10 +1083,10 @@ fn recording_the_origin_names_the_commit_it_came_from() {
 
     sandbox.git(&["checkout", "-q", "main"]);
     let state = sandbox.state();
-    gitui_lib::work::cherry_pick(
+    gitnoob_lib::work::cherry_pick(
         &state,
         &[oid.clone()],
-        gitui_lib::work::CherryPickOptions {
+        gitnoob_lib::work::CherryPickOptions {
             no_commit: false,
             record_origin: true,
         },
@@ -1105,10 +1105,10 @@ fn cherry_picking_nothing_is_refused() {
     let sandbox = Sandbox::new("cherrynone");
     sandbox.commit("a.txt", "one\n", "Base");
     let state = sandbox.state();
-    let error = gitui_lib::work::cherry_pick(
+    let error = gitnoob_lib::work::cherry_pick(
         &state,
         &[],
-        gitui_lib::work::CherryPickOptions::default(),
+        gitnoob_lib::work::CherryPickOptions::default(),
     )
     .unwrap_err();
     assert!(error.contains("No commits"), "unexpected: {error}");
@@ -1138,7 +1138,7 @@ fn the_graph_marks_commits_the_upstream_does_not_have() {
         .root
         .parent()
         .unwrap()
-        .join(format!("gitui-test-unpushed-origin-{}.git", std::process::id()));
+        .join(format!("gitnoob-test-unpushed-origin-{}.git", std::process::id()));
     let _ = std::fs::remove_dir_all(&bare);
     let bare_arg = bare.to_string_lossy().into_owned();
     sandbox.git(&["clone", "-q", "--bare", ".", &bare_arg]);
@@ -1192,4 +1192,124 @@ fn repository_info_reports_the_identity_a_commit_would_use() {
 
     let info = refs::describe(&sandbox.state()).unwrap();
     assert_eq!(info.author, "AVMG20");
+}
+
+#[test]
+fn deleting_a_merged_branch_costs_nothing() {
+    let sandbox = Sandbox::new("delmerged");
+    sandbox.commit("a.txt", "one\n", "Base");
+    sandbox.git(&["checkout", "-q", "-b", "topic"]);
+    sandbox.commit("b.txt", "two\n", "Topic work");
+    sandbox.git(&["checkout", "-q", "main"]);
+    sandbox.git(&["merge", "-q", "--no-ff", "-m", "Merge topic", "topic"]);
+
+    let preview = refs::deletion_preview(&sandbox.state(), "topic").unwrap();
+    assert!(preview.merged, "HEAD can reach it, so nothing is lost");
+    assert_eq!(preview.unpushed, 0);
+    assert!(preview.remotes.is_empty());
+    assert!(!preview.is_head);
+}
+
+#[test]
+fn deleting_an_unmerged_branch_is_flagged() {
+    let sandbox = Sandbox::new("delunmerged");
+    sandbox.commit("a.txt", "one\n", "Base");
+    sandbox.git(&["checkout", "-q", "-b", "topic"]);
+    sandbox.commit("b.txt", "two\n", "Only here");
+    sandbox.git(&["checkout", "-q", "main"]);
+
+    let preview = refs::deletion_preview(&sandbox.state(), "topic").unwrap();
+    assert!(!preview.merged, "the commit is reachable from nowhere else");
+    assert!(preview.upstream.is_none());
+}
+
+#[test]
+fn a_branch_that_also_lives_on_a_remote_is_reported() {
+    let sandbox = Sandbox::new("delremote");
+    sandbox.commit("a.txt", "one\n", "Base");
+    sandbox.git(&["checkout", "-q", "-b", "topic"]);
+    sandbox.commit("b.txt", "two\n", "Topic work");
+
+    let bare = sandbox
+        .root
+        .parent()
+        .unwrap()
+        .join(format!("gitnoob-test-delremote-origin-{}.git", std::process::id()));
+    let _ = std::fs::remove_dir_all(&bare);
+    let bare_arg = bare.to_string_lossy().into_owned();
+    sandbox.git(&["clone", "-q", "--bare", ".", &bare_arg]);
+    sandbox.git(&["remote", "add", "origin", &bare_arg]);
+    sandbox.git(&["fetch", "-q", "origin"]);
+    sandbox.git(&["branch", "-q", "--set-upstream-to=origin/topic", "topic"]);
+    // One commit made after the clone, so the remote copy is behind.
+    sandbox.commit("c.txt", "three\n", "Not pushed");
+    sandbox.git(&["checkout", "-q", "main"]);
+
+    let preview = refs::deletion_preview(&sandbox.state(), "topic").unwrap();
+    assert_eq!(preview.remotes, vec!["origin/topic".to_string()]);
+    assert_eq!(preview.upstream.as_deref(), Some("origin/topic"));
+    assert_eq!(preview.unpushed, 1, "the commit made after the clone");
+
+    let _ = std::fs::remove_dir_all(&bare);
+}
+
+#[test]
+fn the_checked_out_branch_is_reported_as_such() {
+    let sandbox = Sandbox::new("delhead");
+    sandbox.commit("a.txt", "one\n", "Base");
+    // A second branch on the same commit must not be mistaken for HEAD.
+    sandbox.git(&["branch", "sibling"]);
+
+    let state = sandbox.state();
+    assert!(refs::deletion_preview(&state, "main").unwrap().is_head);
+    assert!(!refs::deletion_preview(&state, "sibling").unwrap().is_head);
+}
+
+#[test]
+fn switching_branches_leaves_untouched_edits_alone() {
+    let sandbox = Sandbox::new("switchclean");
+    sandbox.commit("a.txt", "one\n", "Base");
+    sandbox.git(&["checkout", "-q", "-b", "other"]);
+    sandbox.commit("b.txt", "other\n", "Only on other");
+    sandbox.git(&["checkout", "-q", "main"]);
+
+    // An edit to a file neither branch changes: git can carry it across, so
+    // there is no reason to stash and pop it.
+    sandbox.write("free.txt", "work in progress\n");
+    sandbox.git(&["add", "free.txt"]);
+
+    let state = sandbox.state();
+    refs::checkout(&state, "other").unwrap();
+
+    assert_eq!(refs::describe(&state).unwrap().head, "other");
+    // Still staged, not round-tripped through a stash, which would have made it
+    // unstaged.
+    let status = refs::status(&state).unwrap();
+    assert!(status.staged.iter().any(|e| e.path == "free.txt"));
+    assert!(sandbox.git(&["stash", "list"]).trim().is_empty(), "nothing was stashed");
+}
+
+#[test]
+fn switching_branches_stashes_only_when_the_edit_is_in_the_way() {
+    let sandbox = Sandbox::new("switchcollide");
+    sandbox.commit("a.txt", "one\n", "Base");
+    sandbox.git(&["checkout", "-q", "-b", "other"]);
+    sandbox.commit("a.txt", "other version\n", "Change a.txt on other");
+    sandbox.git(&["checkout", "-q", "main"]);
+
+    // An edit to the very file the other branch changes: git refuses, so the
+    // stash is earned.
+    sandbox.write("a.txt", "my own edit\n");
+
+    let state = sandbox.state();
+    // The switch happens, but the edit cannot be put back: it and the branch
+    // both changed the same file. That is reported rather than swallowed, and
+    // the work stays in the stash.
+    let error = refs::checkout(&state, "other").unwrap_err();
+    assert!(error.contains("safe in the stash"), "unexpected: {error}");
+    assert_eq!(refs::describe(&state).unwrap().head, "other");
+    assert!(
+        !sandbox.git(&["stash", "list"]).trim().is_empty(),
+        "the stash is kept when the pop conflicts"
+    );
 }

@@ -5,7 +5,7 @@ export default defineNuxtConfig({
   css: ['~/assets/css/main.css'],
   app: {
     head: {
-      title: 'gitui',
+      title: 'gitnoob',
       meta: [{ name: 'viewport', content: 'width=device-width, initial-scale=1' }]
     }
   },
