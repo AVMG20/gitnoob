@@ -1,7 +1,22 @@
 <script setup lang="ts">
 import { computed } from 'vue'
-import { ChevronDown, ChevronRight, Folder } from 'lucide-vue-next'
-import { buildRows, useFileView, type FileEntry } from '~/composables/useFileView'
+import {
+  ArrowRight,
+  ChevronDown,
+  ChevronRight,
+  Folder,
+  Minus,
+  Pencil,
+  Plus
+} from 'lucide-vue-next'
+import {
+  buildRows,
+  change,
+  useFileView,
+  type Change,
+  type FileEntry,
+  type Tally
+} from '~/composables/useFileView'
 
 const props = defineProps<{
   files: FileEntry[]
@@ -10,12 +25,18 @@ const props = defineProps<{
   empty?: string
   /** Draggable rows, for moving files between staged and unstaged. */
   draggable?: boolean
+  /**
+   * What the button on a hovered row does — "Stage file", say. Unset, and no
+   * button appears.
+   */
+  action?: string
 }>()
 const emit = defineEmits<{
   select: [string]
   menu: [MouseEvent, FileEntry]
   dragstart: [DragEvent, FileEntry]
   dragend: []
+  act: [FileEntry]
 }>()
 
 const view = useFileView()
@@ -36,18 +57,29 @@ function indent(depth: number, file = false) {
 
 const STEP = 16
 
+/**
+ * What happened to a file, drawn rather than lettered.
+ *
+ * Git's own letters have to be learned — and `?` for a new file reads as
+ * something being wrong with it rather than as something being new. A pencil
+ * and a plus do not need a legend.
+ */
+const MARKS: Record<Change, { icon: typeof Pencil; label: string }> = {
+  added: { icon: Plus, label: 'New file' },
+  modified: { icon: Pencil, label: 'Edited' },
+  deleted: { icon: Minus, label: 'Deleted' },
+  renamed: { icon: ArrowRight, label: 'Renamed' }
+}
+
 function mark(kind: string) {
-  return (
-    {
-      added: 'A',
-      modified: 'M',
-      deleted: 'D',
-      renamed: 'R',
-      copied: 'C',
-      untracked: '?',
-      typechange: 'T'
-    }[kind] ?? '·'
-  )
+  return MARKS[change(kind)]
+}
+
+/** A folder's counts, in a fixed order and with the empty ones left out. */
+function counted(tally: Tally) {
+  return (Object.keys(MARKS) as Change[])
+    .filter((key) => tally[key] > 0)
+    .map((key) => ({ key, count: tally[key], icon: MARKS[key].icon, label: MARKS[key].label }))
 }
 </script>
 
@@ -63,7 +95,19 @@ function mark(kind: string) {
         <component :is="row.collapsed ? ChevronRight : ChevronDown" :size="12" class="chev" />
         <Folder :size="12" class="folder" />
         <span class="name truncate">{{ row.name }}</span>
-        <span class="count faint">{{ row.count }}</span>
+        <!-- What is inside, summed, and only while it is folded away: with the
+             folder open the files below say it themselves, in more detail. -->
+        <template v-if="row.collapsed">
+          <span
+            v-for="part in counted(row.tally ?? { added: 0, modified: 0, deleted: 0, renamed: 0 })"
+            :key="part.key"
+            class="tally"
+            :class="part.key"
+            :title="`${part.count} ${part.label.toLowerCase()}`"
+          >
+            <component :is="part.icon" :size="10" :stroke-width="2.25" />{{ part.count }}
+          </span>
+        </template>
       </button>
 
       <div
@@ -78,10 +122,28 @@ function mark(kind: string) {
         @dragstart="row.entry && emit('dragstart', $event, row.entry)"
         @dragend="emit('dragend')"
       >
-        <span class="mark" :class="row.entry?.kind">{{ mark(row.entry?.kind ?? '') }}</span>
+        <component
+          :is="mark(row.entry?.kind ?? '').icon"
+          :size="12"
+          :stroke-width="2"
+          class="mark"
+          :class="change(row.entry?.kind ?? '')"
+        >
+          <title>{{ mark(row.entry?.kind ?? '').label }}</title>
+        </component>
         <span class="name truncate">{{ row.name }}</span>
         <span v-if="row.entry?.additions" class="plus">+{{ row.entry.additions }}</span>
         <span v-if="row.entry?.deletions" class="minus">−{{ row.entry.deletions }}</span>
+        <!-- The whole file in one click, without going through the menu. It
+             appears on hover rather than sitting on every row: a list of forty
+             files with forty buttons on it is a list nobody can read. -->
+        <button
+          v-if="props.action && row.entry"
+          class="act"
+          @click.stop="row.entry && emit('act', row.entry)"
+        >
+          {{ props.action }}
+        </button>
       </div>
     </template>
 
@@ -121,7 +183,10 @@ function mark(kind: string) {
   color: var(--text-faint);
 }
 
+/* A folder's name gives up the rest of the row, so its counts sit against the
+   name rather than out at the far edge where they belong to nothing. */
 .dir .name {
+  flex: 0 1 auto;
   color: var(--text-dim);
 }
 
@@ -130,35 +195,67 @@ function mark(kind: string) {
   min-width: 0;
 }
 
-.count {
-  font-size: 10.5px;
-}
-
 .mark {
   flex: none;
-  width: 12px;
-  text-align: center;
-  font-family: var(--mono);
+}
+
+/* The icon carries the colour and the number carries the count. Colouring both
+   made a folder's summary louder than the folder. */
+.tally {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  flex: none;
+  color: var(--text-dim);
   font-size: 11px;
-  font-weight: 700;
-  color: var(--text-faint);
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
 }
 
+/* A plus is two thin strokes around a lot of empty space, so at the green the
+   other marks are drawn in it reads as muted. It gets a brighter one. */
 .mark.added,
-.mark.untracked {
-  color: var(--green);
+.tally.added svg {
+  color: #86f5b4;
 }
 
-.mark.deleted {
+.mark.deleted,
+.tally.deleted svg {
   color: var(--red);
 }
 
-.mark.modified {
-  color: var(--accent);
+.mark.modified,
+.tally.modified svg {
+  color: var(--amber);
 }
 
-.mark.renamed {
+.mark.renamed,
+.tally.renamed svg {
   color: var(--purple);
+}
+
+/* The same ghost button the panel heads use, so a row's button belongs to this
+   window rather than to the one it was borrowed from. */
+.act {
+  display: none;
+  flex: none;
+  padding: 1px 7px;
+  margin: -2px 0;
+  border: 1px solid var(--line);
+  border-radius: 4px;
+  background: var(--bg-raised);
+  color: var(--text-dim);
+  font-size: 11px;
+  white-space: nowrap;
+}
+
+.row:hover .act {
+  display: block;
+}
+
+.act:hover {
+  background: var(--bg-hover);
+  color: var(--text);
 }
 
 .plus {

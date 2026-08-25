@@ -39,6 +39,33 @@ export interface FileEntry {
   deletions?: number
 }
 
+/** The four things that can have happened to a file, for counting purposes. */
+export type Change = 'added' | 'modified' | 'deleted' | 'renamed'
+
+export type Tally = Record<Change, number>
+
+/**
+ * Which of the four a git status letter belongs to.
+ *
+ * A file git has never seen is an addition waiting to happen, and a file whose
+ * mode changed has been edited; neither deserves a count of its own in a
+ * folder's summary.
+ */
+export function change(kind: string): Change {
+  switch (kind) {
+    case 'added':
+    case 'untracked':
+    case 'copied':
+      return 'added'
+    case 'deleted':
+      return 'deleted'
+    case 'renamed':
+      return 'renamed'
+    default:
+      return 'modified'
+  }
+}
+
 export interface Row {
   key: string
   depth: number
@@ -50,6 +77,8 @@ export interface Row {
   entry?: FileEntry
   /** Files inside, for a directory row. */
   count?: number
+  /** What happened inside, for a directory row: how many of each kind. */
+  tally?: Tally
   collapsed?: boolean
 }
 
@@ -103,6 +132,17 @@ export function buildRows(files: FileEntry[], mode: 'tree' | 'path', collapsed: 
   const total = (node: Node): number =>
     node.files.length + [...node.dirs.values()].reduce((sum, dir) => sum + total(dir), 0)
 
+  /** What happened anywhere below a folder, so a folded one still says so. */
+  const tally = (node: Node): Tally => {
+    const counts: Tally = { added: 0, modified: 0, deleted: 0, renamed: 0 }
+    for (const entry of node.files) counts[change(entry.kind)]++
+    for (const dir of node.dirs.values()) {
+      const inside = tally(dir)
+      for (const key of Object.keys(counts) as Change[]) counts[key] += inside[key]
+    }
+    return counts
+  }
+
   const rows: Row[] = []
 
   const walk = (node: Node, depth: number) => {
@@ -124,6 +164,7 @@ export function buildRows(files: FileEntry[], mode: 'tree' | 'path', collapsed: 
         name: label,
         path: joined.path,
         count: total(joined),
+        tally: tally(joined),
         collapsed: isCollapsed
       })
       if (!isCollapsed) walk(joined, depth + 1)

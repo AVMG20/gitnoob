@@ -222,7 +222,9 @@ function fileMenu(event: MouseEvent, path: string, side: 'staged' | 'unstaged', 
         :selected="selected?.side === 'unstaged' ? selected.path : null"
         empty="Nothing changed."
         draggable
+        action="Stage file"
         @select="(path) => show(path, 'unstaged')"
+        @act="(entry) => git.stage([entry.path])"
         @menu="(event, entry) => fileMenu(event, entry.path, 'unstaged', entry.kind)"
         @dragstart="
           (event, entry) => drag.begin(event, { kind: 'file', path: entry.path, staged: false })
@@ -259,7 +261,9 @@ function fileMenu(event: MouseEvent, path: string, side: 'staged' | 'unstaged', 
         :selected="selected?.side === 'staged' ? selected.path : null"
         empty="Drag files here, or stage them below."
         draggable
+        action="Unstage file"
         @select="(path) => show(path, 'staged')"
+        @act="(entry) => git.unstage([entry.path])"
         @menu="(event, entry) => fileMenu(event, entry.path, 'staged', entry.kind)"
         @dragstart="
           (event, entry) => drag.begin(event, { kind: 'file', path: entry.path, staged: true })
