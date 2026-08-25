@@ -1,8 +1,9 @@
 <script setup lang="ts">
 import { computed, ref, watch } from 'vue'
-import { Sparkles } from 'lucide-vue-next'
+import { ChevronDown, ChevronRight, Sparkles } from 'lucide-vue-next'
 import { useGit, type ConflictBlock, type ConflictFile, type Resolution } from '~/composables/useGit'
 import { useAi } from '~/composables/useAi'
+import { highlightWhole, languageFor } from '~/composables/useHighlight'
 
 const git = useGit()
 const store = git.store
@@ -61,6 +62,76 @@ const explanation = computed(() => {
   }
   return `Git could not merge this file line by line — it is binary, or a merge driver took a whole side — so there is nothing to pick through here. Choose a side, or keep the file exactly as it stands on disk.`
 })
+
+const language = computed(() => (path.value ? languageFor(path.value) : null))
+
+/** One line as it is drawn: its number down the side, its code coloured. */
+interface Row {
+  num: number
+  html: string
+}
+
+/** A run of lines that belong together: either untouched context, or one side
+    of one conflict, which carries the index its checkbox acts on. */
+interface Segment {
+  kind: 'context' | 'chunk'
+  index: number
+  rows: Row[]
+}
+
+/**
+ * One side of the file, coloured and numbered.
+ *
+ * The whole side is highlighted in one pass rather than a line at a time,
+ * because the things a line cannot know about itself — an open block comment, a
+ * string that runs on, the `<script>` block that turns a `.vue` file into
+ * JavaScript — are exactly the ones a merge lands in the middle of.
+ *
+ * The numbers are that side's own: the context and this side's chunks are
+ * precisely the file as it stands on that branch, so counting them off gives
+ * the line number you would find there.
+ */
+function sideOf(side: 'ours' | 'theirs' | 'base'): Segment[] {
+  const blocks = file.value?.blocks ?? []
+  const segments: Segment[] = []
+  const source: string[] = []
+
+  for (const block of blocks) {
+    const lines = block.kind === 'context' ? block.lines : block[side]
+    segments.push({
+      kind: block.kind === 'context' ? 'context' : 'chunk',
+      index: block.kind === 'context' ? -1 : block.index,
+      rows: lines.map((line) => ({ num: 0, html: line }))
+    })
+    source.push(...lines)
+  }
+
+  const coloured = highlightWhole(source.join('\n'), language.value)
+  let at = 0
+  let number = 0
+  for (const segment of segments) {
+    for (const row of segment.rows) {
+      row.num = ++number
+      row.html = coloured[at++] ?? ''
+    }
+  }
+  return segments
+}
+
+const ourSide = computed(() => sideOf('ours'))
+const theirSide = computed(() => sideOf('theirs'))
+const baseSide = computed(() => (showBase.value && hasBase.value ? sideOf('base') : []))
+
+/** The result pane, coloured and numbered the same way. */
+const resultRows = computed<Row[]>(() => {
+  if (!result.value) return []
+  const lines = result.value.replace(/\n$/, '').split('\n')
+  const coloured = highlightWhole(lines.join('\n'), language.value)
+  return lines.map((_, i) => ({ num: i + 1, html: coloured[i] ?? '' }))
+})
+
+/** The result pane folds away for anyone who would rather have the height. */
+const showResult = ref(true)
 
 async function keepAsIs() {
   if (!path.value) return
@@ -281,52 +352,59 @@ watch(
                 This file is not on this side — it was deleted.
               </div>
               <template
-                v-for="(block, bi) in wholeFile && !stages?.ours ? [] : file?.blocks ?? []"
-                :key="`o${bi}`"
+                v-for="(segment, si) in wholeFile && !stages?.ours ? [] : ourSide"
+                :key="`o${si}`"
               >
-                <div v-if="block.kind === 'context'" class="ctx">
-                  <div v-for="(line, li) in block.lines" :key="li" class="line">{{ line || ' ' }}</div>
+                <div v-if="segment.kind === 'context'" class="ctx">
+                  <div v-for="row in segment.rows" :key="row.num" class="line">
+                    <span class="num">{{ row.num }}</span>
+                    <code v-html="row.html || ' '" />
+                  </div>
                 </div>
-                <div v-else class="chunk" :class="{ off: !choices[block.index]?.take_ours }">
+                <div v-else class="chunk" :class="{ off: !choices[segment.index]?.take_ours }">
                   <label class="chunk-head">
                     <input
                       type="checkbox"
-                      :checked="choices[block.index]?.take_ours"
-                      @change="set(block.index, { take_ours: ($event.target as HTMLInputElement).checked })"
+                      :checked="choices[segment.index]?.take_ours"
+                      @change="set(segment.index, { take_ours: ($event.target as HTMLInputElement).checked })"
                     />
                     Take ours
                     <button
-                      v-if="choices[block.index]?.take_ours && choices[block.index]?.take_theirs && !choices[block.index]?.custom"
+                      v-if="choices[segment.index]?.take_ours && choices[segment.index]?.take_theirs && !choices[segment.index]?.custom"
                       class="order"
                       title="Swap the order the two sides are written in"
-                      @click.prevent="set(block.index, { ours_first: !choices[block.index].ours_first })"
+                      @click.prevent="set(segment.index, { ours_first: !choices[segment.index].ours_first })"
                     >
-                      {{ choices[block.index].ours_first ? 'first' : 'second' }}
+                      {{ choices[segment.index].ours_first ? 'first' : 'second' }}
                     </button>
                     <button
                       v-if="ai.configured.value"
                       class="order ai"
                       :disabled="thinking !== null"
                       title="Ask the model to merge these two sides"
-                      @click.prevent="aiResolve(block.index)"
+                      @click.prevent="aiResolve(segment.index)"
                     >
-                      <Spinner v-if="thinking === block.index" :size="10" />
+                      <Spinner v-if="thinking === segment.index" :size="10" />
                       <Sparkles v-else :size="10" />
                       AI
                     </button>
                     <button
-                      v-if="choices[block.index]?.custom"
+                      v-if="choices[segment.index]?.custom"
                       class="order"
                       title="Drop the edit and go back to the checkboxes"
-                      @click.prevent="set(block.index, { custom: null })"
+                      @click.prevent="set(segment.index, { custom: null })"
                     >
                       undo edit
                     </button>
                   </label>
-                  <div v-for="(line, li) in block.ours" :key="li" class="line ours-line">
-                    {{ line || ' ' }}
+                  <div v-for="row in segment.rows" :key="row.num" class="line ours-line">
+                    <span class="num">{{ row.num }}</span>
+                    <code v-html="row.html || ' '" />
                   </div>
-                  <div v-if="!block.ours.length" class="line faint">(nothing on this side)</div>
+                  <div v-if="!segment.rows.length" class="line empty faint">
+                    <span class="num" />
+                    <code>(nothing on this side)</code>
+                  </div>
                 </div>
               </template>
             </div>
@@ -336,14 +414,23 @@ watch(
           <div v-if="showBase && hasBase" class="pane">
             <div class="pane-head base">Base <span class="faint">merge base</span></div>
             <div class="pane-body">
-              <template v-for="(block, bi) in file?.blocks ?? []" :key="`b${bi}`">
-                <div v-if="block.kind === 'context'" class="ctx">
-                  <div v-for="(line, li) in block.lines" :key="li" class="line">{{ line || ' ' }}</div>
+              <template v-for="(segment, si) in baseSide" :key="`b${si}`">
+                <div v-if="segment.kind === 'context'" class="ctx">
+                  <div v-for="row in segment.rows" :key="row.num" class="line">
+                    <span class="num">{{ row.num }}</span>
+                    <code v-html="row.html || ' '" />
+                  </div>
                 </div>
                 <div v-else class="chunk neutral">
                   <div class="chunk-head faint">Before either change</div>
-                  <div v-for="(line, li) in block.base" :key="li" class="line">{{ line || ' ' }}</div>
-                  <div v-if="!block.base.length" class="line faint">(added on both sides)</div>
+                  <div v-for="row in segment.rows" :key="row.num" class="line">
+                    <span class="num">{{ row.num }}</span>
+                    <code v-html="row.html || ' '" />
+                  </div>
+                  <div v-if="!segment.rows.length" class="line empty faint">
+                    <span class="num" />
+                    <code>(added on both sides)</code>
+                  </div>
                 </div>
               </template>
             </div>
@@ -359,33 +446,40 @@ watch(
                 This file is not on this side — it was deleted.
               </div>
               <template
-                v-for="(block, bi) in wholeFile && !stages?.theirs ? [] : file?.blocks ?? []"
-                :key="`t${bi}`"
+                v-for="(segment, si) in wholeFile && !stages?.theirs ? [] : theirSide"
+                :key="`t${si}`"
               >
-                <div v-if="block.kind === 'context'" class="ctx">
-                  <div v-for="(line, li) in block.lines" :key="li" class="line">{{ line || ' ' }}</div>
+                <div v-if="segment.kind === 'context'" class="ctx">
+                  <div v-for="row in segment.rows" :key="row.num" class="line">
+                    <span class="num">{{ row.num }}</span>
+                    <code v-html="row.html || ' '" />
+                  </div>
                 </div>
-                <div v-else class="chunk" :class="{ off: !choices[block.index]?.take_theirs }">
+                <div v-else class="chunk" :class="{ off: !choices[segment.index]?.take_theirs }">
                   <label class="chunk-head">
                     <input
                       type="checkbox"
-                      :checked="choices[block.index]?.take_theirs"
-                      @change="set(block.index, { take_theirs: ($event.target as HTMLInputElement).checked })"
+                      :checked="choices[segment.index]?.take_theirs"
+                      @change="set(segment.index, { take_theirs: ($event.target as HTMLInputElement).checked })"
                     />
                     Take theirs
                     <button
-                      v-if="choices[block.index]?.take_ours && choices[block.index]?.take_theirs"
+                      v-if="choices[segment.index]?.take_ours && choices[segment.index]?.take_theirs"
                       class="order"
                       title="Swap the order the two sides are written in"
-                      @click.prevent="set(block.index, { ours_first: !choices[block.index].ours_first })"
+                      @click.prevent="set(segment.index, { ours_first: !choices[segment.index].ours_first })"
                     >
-                      {{ choices[block.index].ours_first ? 'second' : 'first' }}
+                      {{ choices[segment.index].ours_first ? 'second' : 'first' }}
                     </button>
                   </label>
-                  <div v-for="(line, li) in block.theirs" :key="li" class="line theirs-line">
-                    {{ line || ' ' }}
+                  <div v-for="row in segment.rows" :key="row.num" class="line theirs-line">
+                    <span class="num">{{ row.num }}</span>
+                    <code v-html="row.html || ' '" />
                   </div>
-                  <div v-if="!block.theirs.length" class="line faint">(nothing on this side)</div>
+                  <div v-if="!segment.rows.length" class="line empty faint">
+                    <span class="num" />
+                    <code>(nothing on this side)</code>
+                  </div>
                 </div>
               </template>
             </div>
@@ -393,12 +487,21 @@ watch(
         </div>
 
         <!-- Pane 3: exactly what will be written to disk. -->
-        <div class="output">
-          <div class="pane-head result">
+        <div class="output" :class="{ folded: !showResult }">
+          <button class="pane-head result" @click="showResult = !showResult">
+            <component :is="showResult ? ChevronDown : ChevronRight" :size="12" />
             Result <span class="faint">what gets written</span>
+            <span v-if="resultRows.length" class="faint count">
+              {{ resultRows.length }} lines
+            </span>
             <span v-if="choices.some((c) => c.custom)" class="edited">includes AI or hand edits</span>
+          </button>
+          <div v-if="showResult" class="pane-body out-body">
+            <div v-for="row in resultRows" :key="row.num" class="line">
+              <span class="num">{{ row.num }}</span>
+              <code v-html="row.html || ' '" />
+            </div>
           </div>
-          <pre class="out-body">{{ result }}</pre>
         </div>
       </div>
     </template>
@@ -424,10 +527,16 @@ watch(
   color: var(--text-faint);
 }
 
+/* A grid row is `auto` by default, which means "as tall as what is in it" —
+   so the panes grew to the height of the file and pushed the result pane off
+   the bottom of the window instead of scrolling. Every box between here and a
+   pane's own scrollbar has to be allowed to be shorter than its contents. */
 .conflicts {
   display: grid;
   grid-template-columns: 210px minmax(0, 1fr);
   min-width: 0;
+  min-height: 0;
+  overflow: hidden;
 }
 
 .clear {
@@ -477,10 +586,16 @@ watch(
   max-width: 100%;
 }
 
+/* Laid out as a column rather than fixed rows: the explanation above the panes
+   comes and goes with the file, and a grid with three rows and four children
+   silently gave the fourth a row of its own — which is what pushed the result
+   pane out of the window. */
 .work {
-  display: grid;
-  grid-template-rows: auto minmax(0, 1.4fr) minmax(0, 1fr);
+  display: flex;
+  flex-direction: column;
   min-width: 0;
+  min-height: 0;
+  overflow: hidden;
 }
 
 .toolbar {
@@ -531,9 +646,15 @@ watch(
   cursor: pointer;
 }
 
+.toolbar,
+.explain {
+  flex: none;
+}
+
 .panes {
   display: grid;
   grid-template-columns: 1fr 1fr;
+  flex: 1;
   min-height: 0;
   border-bottom: 1px solid var(--line);
 }
@@ -590,19 +711,45 @@ watch(
 
 .pane-body {
   overflow: auto;
+  min-height: 0;
   font-family: var(--mono);
   font-size: 12px;
   line-height: 1.5;
 }
 
+/* The number sits in a column of its own so the code starts at the same place
+   on both sides, and it is not selectable: copying a side out of the resolver
+   should give code, not code with a number welded to every line. */
 .line {
-  white-space: pre;
-  padding: 0 10px;
+  display: flex;
+  align-items: flex-start;
   tab-size: 4;
 }
 
-.ctx .line {
+.num {
+  flex: none;
+  width: 44px;
+  padding-right: 10px;
+  text-align: right;
   color: var(--text-faint);
+  opacity: 0.6;
+  user-select: none;
+}
+
+.line code {
+  flex: 1;
+  min-width: 0;
+  padding-right: 10px;
+  white-space: pre;
+  font: inherit;
+}
+
+.ctx .line code {
+  color: var(--text-dim);
+}
+
+.line.empty code {
+  font-style: italic;
 }
 
 .chunk {
@@ -666,10 +813,34 @@ watch(
   background: rgba(169, 123, 240, 0.1);
 }
 
+/* The result keeps a third of the height and folds away to its heading, which
+   is the whole point of it sitting at the bottom: it is there to be glanced at
+   while the choices above it are being made. */
 .output {
-  display: grid;
-  grid-template-rows: auto minmax(0, 1fr);
+  display: flex;
+  flex-direction: column;
+  flex: 0 1 34%;
   min-height: 0;
+}
+
+.output.folded {
+  flex: none;
+}
+
+.pane-head.result {
+  width: 100%;
+  text-align: left;
+  cursor: pointer;
+}
+
+.pane-head.result:hover {
+  background: var(--bg-active);
+}
+
+.count {
+  text-transform: none;
+  letter-spacing: 0;
+  font-weight: 400;
 }
 
 .edited {
@@ -682,13 +853,6 @@ watch(
 }
 
 .out-body {
-  margin: 0;
-  padding: 4px 10px;
-  overflow: auto;
-  font-family: var(--mono);
-  font-size: 12px;
-  line-height: 1.5;
-  white-space: pre;
-  tab-size: 4;
+  padding: 4px 0;
 }
 </style>
