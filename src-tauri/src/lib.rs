@@ -111,6 +111,23 @@ async fn working_file_diff(
     diff::working_file_diff(&state, &path, side)
 }
 
+/// The whole file, for the view that shows the changes in place rather than
+/// pulled out into hunks.
+#[tauri::command]
+async fn file_text(
+    path: String,
+    commit: Option<String>,
+    side: Option<diff::Side>,
+    state: State<'_, AppState>,
+) -> Result<String, String> {
+    diff::file_text(
+        &state,
+        &path,
+        commit.as_deref(),
+        matches!(side, Some(diff::Side::Staged)),
+    )
+}
+
 // --- branches ---------------------------------------------------------------
 
 #[tauri::command]
@@ -821,6 +838,7 @@ pub fn run() {
             commit_detail,
             commit_file_diff,
             working_file_diff,
+            file_text,
             checkout,
             create_branch,
             delete_branch,

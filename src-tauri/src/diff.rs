@@ -287,6 +287,59 @@ fn status_name(status: Delta) -> &'static str {
     }
 }
 
+/// How much of a file is worth sending to the window to read whole.
+///
+/// The file view exists to be read; past this a file is generated, and the diff
+/// view — which only ever sends what changed — is the one that can show it.
+const MAX_FILE_BYTES: usize = 2 * 1024 * 1024;
+
+/// The whole text of one file, for the view that shows a file rather than a
+/// diff of it.
+///
+/// Which copy depends on what is being looked at: a commit's blob, the staged
+/// copy in the index, or the file as it currently sits on disk — the same three
+/// sides the diff view works from, so the marks line up with the text.
+pub fn file_text(
+    state: &AppState,
+    path: &str,
+    at: Option<&str>,
+    staged: bool,
+) -> Result<String, String> {
+    let repo = state.repo()?;
+    let bytes = match at {
+        Some(oid) => {
+            let commit = repo.find_commit(parse_oid(oid)?).map_err(err)?;
+            let entry = commit
+                .tree()
+                .map_err(err)?
+                .get_path(std::path::Path::new(path))
+                .map_err(|_| format!("{path} is not in that commit"))?;
+            entry
+                .to_object(&repo)
+                .and_then(|object| object.peel_to_blob())
+                .map_err(err)?
+                .content()
+                .to_vec()
+        }
+        None if staged => {
+            let index = repo.index().map_err(err)?;
+            let entry = index
+                .get_path(std::path::Path::new(path), 0)
+                .ok_or_else(|| format!("{path} is not staged"))?;
+            repo.find_blob(entry.id).map_err(err)?.content().to_vec()
+        }
+        None => {
+            let file = state.path()?.join(path);
+            std::fs::read(&file).map_err(|e| format!("Could not read {path}: {e}"))?
+        }
+    };
+
+    if bytes.len() > MAX_FILE_BYTES {
+        return Err(format!("{path} is too large to show whole"));
+    }
+    String::from_utf8(bytes).map_err(|_| format!("{path} is not text"))
+}
+
 fn parse_oid(s: &str) -> Result<Oid, String> {
     Oid::from_str(s).map_err(|_| format!("Not a valid object id: {s}"))
 }

@@ -475,6 +475,16 @@ export function useGit() {
   const workingFileDiff = (path: string, side: 'staged' | 'unstaged') =>
     guard('Load diff', () => invoke<FileDiff>('working_file_diff', { path, side }))
 
+  /**
+   * The whole file, for the view that marks the changes in place.
+   *
+   * Unguarded: a file that cannot be read whole — a binary, or something the
+   * size of a lockfile — is an ordinary answer here, and the viewer says so
+   * where the file would have been rather than in a passing notice.
+   */
+  const fileText = (path: string, commit?: string | null, side?: 'staged' | 'unstaged' | null) =>
+    invoke<string>('file_text', { path, commit: commit ?? null, side: side ?? null })
+
   async function run<T>(label: string, command: string, args: Record<string, unknown> = {}) {
     const result = await guard(label, () => invoke<T>(command, args))
     // Refresh whether or not it worked. A git command that fails can still have
@@ -504,6 +514,7 @@ export function useGit() {
     selectStash,
     commitFileDiff,
     workingFileDiff,
+    fileText,
     run,
     report,
 

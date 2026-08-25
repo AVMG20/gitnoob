@@ -2,16 +2,20 @@
 import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
 import { Check, Copy, FolderOpen, Minus, Undo2, X } from 'lucide-vue-next'
 import { copyText, useGit, type FileDiff } from '~/composables/useGit'
-import { languageFor } from '~/composables/useHighlight'
+import { labelFor } from '~/composables/useHighlight'
+import { diffMode } from '~/composables/useDiffMode'
 
 const git = useGit()
 const store = git.store
 
 const diff = ref<FileDiff | null>(null)
 const loading = ref(false)
+/** The file itself, for the whole-file view. Only read when that view is on. */
+const text = ref<string | null>(null)
+const textError = ref<string | null>(null)
 
 const target = computed(() => store.viewer)
-const language = computed(() => (target.value ? languageFor(target.value.path) : null))
+const language = computed(() => (target.value ? labelFor(target.value.path) : null))
 const stats = computed(() => {
   const lines = (diff.value?.hunks ?? []).flatMap((hunk) => hunk.lines)
   return {
@@ -27,8 +31,29 @@ async function load() {
   diff.value = current.commit
     ? await git.commitFileDiff(current.commit, current.path)
     : await git.workingFileDiff(current.path, current.side ?? 'unstaged')
+  await loadText()
   loading.value = false
 }
+
+/**
+ * Reads the file itself, which only the whole-file view needs.
+ *
+ * Deferred until that view is asked for: the diff view already has everything
+ * it shows, and reading a file to throw it away is a cost on every click.
+ */
+async function loadText() {
+  const current = target.value
+  if (!current || diffMode.mode !== 'file') return
+  textError.value = null
+  try {
+    text.value = await git.fileText(current.path, current.commit, current.side ?? 'unstaged')
+  } catch (error) {
+    text.value = null
+    textError.value = String(error)
+  }
+}
+
+watch(() => diffMode.mode, loadText)
 
 function close() {
   store.viewer = null
@@ -69,6 +94,27 @@ onUnmounted(() => window.removeEventListener('keydown', onKey))
 
       <span class="grow" />
 
+      <!-- Two ways to read the same change: the patch, or the file with the
+           change marked in it. Which one you prefer is remembered. -->
+      <span class="modes">
+        <button
+          class="seg"
+          :class="{ on: diffMode.mode === 'diff' }"
+          title="The changed lines, in hunks"
+          @click="diffMode.mode = 'diff'"
+        >
+          Diff
+        </button>
+        <button
+          class="seg"
+          :class="{ on: diffMode.mode === 'file' }"
+          title="The whole file, with the changes marked down the side"
+          @click="diffMode.mode = 'file'"
+        >
+          File
+        </button>
+      </span>
+
       <!-- Discard left, stage right, matching the hunk buttons in the diff
            below: the destructive one is never where the hand already is. -->
       <template v-if="!target.commit">
@@ -105,7 +151,15 @@ onUnmounted(() => window.removeEventListener('keydown', onKey))
     </header>
 
     <div class="body">
+      <FileView
+        v-if="diffMode.mode === 'file'"
+        :diff="diff"
+        :text="text"
+        :loading="loading"
+        :error="textError"
+      />
       <DiffView
+        v-else
         :diff="diff"
         :loading="loading"
         :side="target.commit ? null : (target.side ?? 'unstaged')"
@@ -140,6 +194,30 @@ onUnmounted(() => window.removeEventListener('keydown', onKey))
 
 .grow {
   flex: 1;
+}
+
+/* The same segmented control the file panel uses for path and tree. */
+.modes {
+  display: flex;
+  flex: none;
+  border: 1px solid var(--line);
+  border-radius: 5px;
+  overflow: hidden;
+}
+
+.seg {
+  padding: 1px 7px;
+  font-size: 10.5px;
+  color: var(--text-faint);
+}
+
+.seg:hover {
+  color: var(--text);
+}
+
+.seg.on {
+  background: var(--bg-active);
+  color: var(--text);
 }
 
 .plus {
