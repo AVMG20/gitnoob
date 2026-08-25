@@ -125,6 +125,78 @@ function shelve<T extends { name: string }>(items: T[], scope: string): Shelf<T>
   return rows
 }
 
+// --- section heights
+
+type Section = 'locals' | 'remotes' | 'reviews' | 'tags' | 'stashes'
+
+const SIZES_KEY = 'gitnoob:sidebar-sizes'
+
+/**
+ * Heights the user has dragged a section to, in pixels.
+ *
+ * Left empty, every open section takes an equal share of the sidebar and gives
+ * back whatever it does not need — which is the right guess often enough, and
+ * wrong exactly when someone cares about one list more than the others. A
+ * dragged height pins that section and the rest share what is left.
+ */
+const sizes = reactive<Partial<Record<Section, number>>>(readSizes())
+
+function readSizes(): Partial<Record<Section, number>> {
+  try {
+    return JSON.parse(localStorage.getItem(SIZES_KEY) ?? '{}')
+  } catch {
+    return {}
+  }
+}
+
+function saveSizes() {
+  try {
+    localStorage.setItem(SIZES_KEY, JSON.stringify(sizes))
+  } catch {
+    // A window that cannot remember the layout still lays it out.
+  }
+}
+
+function sizeOf(section: Section) {
+  const height = sizes[section]
+  return height ? { height: `${height}px`, flex: 'none' } : undefined
+}
+
+/**
+ * Drags the divider under a section to set its height.
+ *
+ * The grip resizes the section above it, which is the one the pointer just
+ * left — the same rule every split view uses.
+ */
+function grab(event: PointerEvent, section: Section) {
+  const grip = event.currentTarget as HTMLElement
+  const group = grip.previousElementSibling as HTMLElement | null
+  if (!group) return
+
+  const startY = event.clientY
+  const startHeight = group.getBoundingClientRect().height
+  grip.setPointerCapture(event.pointerId)
+
+  const move = (moved: PointerEvent) => {
+    sizes[section] = Math.max(40, startHeight + moved.clientY - startY)
+  }
+  const done = () => {
+    grip.releasePointerCapture(event.pointerId)
+    grip.removeEventListener('pointermove', move)
+    grip.removeEventListener('pointerup', done)
+    saveSizes()
+  }
+  grip.addEventListener('pointermove', move)
+  grip.addEventListener('pointerup', done)
+  event.preventDefault()
+}
+
+/** Double-clicking a divider hands the section back to the shared layout. */
+function resetSize(section: Section) {
+  delete sizes[section]
+  saveSizes()
+}
+
 const head = computed(() => store.repo?.head ?? '')
 const locals = computed(() => (store.refs?.locals ?? []).filter((b) => match(b.name)))
 const localShelf = computed(() => shelve(locals.value, 'local'))
@@ -478,7 +550,7 @@ function stashMenu(event: MouseEvent, index: number, message: string) {
         Local
         <span class="count">{{ locals.length }}</span>
       </button>
-      <div v-if="open.locals" class="group">
+      <div v-if="open.locals" class="group" :style="sizeOf('locals')">
         <template v-for="row in localShelf" :key="row.key">
           <button
             v-if="row.kind === 'folder'"
@@ -531,6 +603,13 @@ function stashMenu(event: MouseEvent, index: number, message: string) {
           </div>
         </template>
       </div>
+      <div
+        v-if="open.locals"
+        class="grip"
+        title="Drag to resize · double-click to reset"
+        @pointerdown="grab($event, 'locals')"
+        @dblclick="resetSize('locals')"
+      />
 
       <!-- Remote -->
       <button class="section-title toggle" @click="open.remotes = !open.remotes">
@@ -539,7 +618,7 @@ function stashMenu(event: MouseEvent, index: number, message: string) {
         Remote
         <span class="count">{{ store.refs?.remotes.length ?? 0 }}</span>
       </button>
-      <div v-if="open.remotes" class="group">
+      <div v-if="open.remotes" class="group" :style="sizeOf('remotes')">
         <div v-for="group in remoteGroups" :key="group.remote">
           <div class="remote-name">
             <Cloud :size="11" /> {{ group.remote }}
@@ -580,6 +659,13 @@ function stashMenu(event: MouseEvent, index: number, message: string) {
         </div>
         <p v-if="!remoteGroups.length" class="none faint">No remote branches.</p>
       </div>
+      <div
+        v-if="open.remotes"
+        class="grip"
+        title="Drag to resize · double-click to reset"
+        @pointerdown="grab($event, 'remotes')"
+        @dblclick="resetSize('remotes')"
+      />
 
       <!-- Pull requests -->
       <template v-if="forge.store.status && forge.store.status.kind !== 'none'">
@@ -599,7 +685,7 @@ function stashMenu(event: MouseEvent, index: number, message: string) {
             <Plus :size="13" />
           </button>
         </div>
-        <div v-if="open.reviews" class="group">
+        <div v-if="open.reviews" class="group" :style="sizeOf('reviews')">
           <div
             v-for="review in forge.store.reviews"
             :key="review.number"
@@ -649,6 +735,13 @@ function stashMenu(event: MouseEvent, index: number, message: string) {
             {{ forge.store.loading ? 'Loading…' : 'Nothing open.' }}
           </p>
         </div>
+        <div
+          v-if="open.reviews"
+          class="grip"
+          title="Drag to resize · double-click to reset"
+          @pointerdown="grab($event, 'reviews')"
+          @dblclick="resetSize('reviews')"
+        />
       </template>
 
       <!-- Tags -->
@@ -658,7 +751,7 @@ function stashMenu(event: MouseEvent, index: number, message: string) {
         Tags
         <span class="count">{{ tags.length }}</span>
       </button>
-      <div v-if="open.tags" class="group">
+      <div v-if="open.tags" class="group" :style="sizeOf('tags')">
         <div
           v-for="tag in tags"
           :key="tag.name"
@@ -670,6 +763,13 @@ function stashMenu(event: MouseEvent, index: number, message: string) {
         </div>
         <p v-if="!tags.length" class="none faint">No tags.</p>
       </div>
+      <div
+        v-if="open.tags"
+        class="grip"
+        title="Drag to resize · double-click to reset"
+        @pointerdown="grab($event, 'tags')"
+        @dblclick="resetSize('tags')"
+      />
 
       <!-- Stashes -->
       <button class="section-title toggle" @click="open.stashes = !open.stashes">
@@ -678,7 +778,7 @@ function stashMenu(event: MouseEvent, index: number, message: string) {
         Stashes
         <span class="count">{{ stashes.length }}</span>
       </button>
-      <div v-if="open.stashes" class="group">
+      <div v-if="open.stashes" class="group" :style="sizeOf('stashes')">
         <div
           v-for="stash in stashes"
           :key="stash.index"
@@ -704,6 +804,13 @@ function stashMenu(event: MouseEvent, index: number, message: string) {
         </div>
         <p v-if="!stashes.length" class="none faint">Nothing stashed.</p>
       </div>
+      <div
+        v-if="open.stashes"
+        class="grip"
+        title="Drag to resize · double-click to reset"
+        @pointerdown="grab($event, 'stashes')"
+        @dblclick="resetSize('stashes')"
+      />
     </div>
 
     <PromptDialog
@@ -780,15 +887,38 @@ function stashMenu(event: MouseEvent, index: number, message: string) {
   flex: none;
 }
 
+/* Every open section asks for the same share of the sidebar, and `max-content`
+   caps it at what it actually holds — so a section with one merge request in it
+   takes one row and hands the rest back to the branch lists, rather than the
+   longest list taking the most simply because it is longest. */
 .group {
   padding-top: 2px;
-  /* Each section gives up height in proportion to how much it has, so the long
-     one shrinks and the short one is left alone; the floor is a single row, so
-     nothing is squeezed to a sliver and nothing short is padded out. */
-  flex: 0 1 auto;
-  min-height: 28px;
+  flex: 1 1 0;
+  min-height: 40px;
+  max-height: max-content;
   overflow-y: auto;
   scrollbar-width: thin;
+}
+
+/* The divider under a section is also its handle. Two pixels of line with a
+   wider reach around it, so it is easy to grab without being a band of empty
+   space between every pair of sections. */
+.grip {
+  flex: none;
+  height: 7px;
+  margin: -3px 0;
+  cursor: row-resize;
+  position: relative;
+  z-index: 1;
+}
+
+.grip:hover::after,
+.grip:active::after {
+  content: '';
+  position: absolute;
+  inset: 3px 0;
+  background: var(--accent);
+  opacity: 0.55;
 }
 
 /* One indent scale for the whole tree. A row's glyph sits in the same column as
