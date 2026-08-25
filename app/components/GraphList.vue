@@ -1146,7 +1146,7 @@ onUnmounted(() => {
   font-size: 11px;
   font-weight: 600;
   color: var(--accent);
-  background: rgba(79, 156, 249, 0.16);
+  background: color-mix(in srgb, var(--accent) 16%, transparent);
 }
 
 .wip {
@@ -1205,12 +1205,12 @@ onUnmounted(() => {
 /* A marked row reads as part of a set without competing with the one selected
    row, which is the one the right panel is showing. */
 .row.marked {
-  background: rgba(79, 156, 249, 0.13);
+  background: color-mix(in srgb, var(--accent) 13%, transparent);
   box-shadow: inset 2px 0 0 var(--accent);
 }
 
 .row.marked.on {
-  background: rgba(79, 156, 249, 0.2);
+  background: color-mix(in srgb, var(--accent) 20%, transparent);
 }
 
 .row.dim {
@@ -1224,7 +1224,7 @@ onUnmounted(() => {
 .row.drop {
   outline: 1px solid var(--accent);
   outline-offset: -1px;
-  background: rgba(79, 156, 249, 0.14);
+  background: color-mix(in srgb, var(--accent) 14%, transparent);
 }
 
 .cell {
@@ -1322,7 +1322,7 @@ onUnmounted(() => {
 .mark {
   background: rgba(240, 168, 60, 0.32);
   border-radius: 2px;
-  color: #fff;
+  color: var(--amber-soft);
 }
 
 .col-author {
@@ -1378,8 +1378,8 @@ onUnmounted(() => {
 /* The branch you are on: brighter, outlined, and ticked. Everything else on
    the same commit stays flat, so the eye lands on this one. */
 .chip-current {
-  background: rgba(79, 156, 249, 0.32);
-  color: #cfe4ff;
+  background: color-mix(in srgb, var(--accent) 32%, transparent);
+  color: var(--accent-soft);
   box-shadow: inset 0 0 0 1px var(--accent);
 }
 
@@ -1395,33 +1395,33 @@ onUnmounted(() => {
 }
 
 .chip-local {
-  background: rgba(79, 156, 249, 0.18);
-  color: #8dc0fb;
+  background: color-mix(in srgb, var(--accent) 18%, transparent);
+  color: var(--accent-soft);
 }
 
 .chip-remote {
   background: rgba(169, 123, 240, 0.16);
-  color: #c4a4f6;
+  color: var(--purple-soft);
 }
 
 .chip-tag {
   background: rgba(240, 168, 60, 0.16);
-  color: #f2bd6e;
+  color: var(--amber-soft);
 }
 
 .chip-head {
   background: rgba(87, 193, 132, 0.18);
-  color: #7ed3a5;
+  color: var(--green-soft);
 }
 
 .chip-wip {
   background: rgba(240, 168, 60, 0.16);
-  color: #f2bd6e;
+  color: var(--amber-soft);
 }
 
 .chip-conflict {
   background: rgba(224, 87, 109, 0.2);
-  color: #ef8d9c;
+  color: var(--red-soft);
 }
 
 .more,

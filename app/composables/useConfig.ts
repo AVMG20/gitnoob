@@ -62,7 +62,7 @@ const store = reactive({
   /** Which secrets exist, keyed by keychain key. Never holds a value. */
   secrets: {} as Record<string, boolean>,
   settingsOpen: false,
-  settingsSection: 'profiles' as 'profiles' | 'ai' | 'behaviour'
+  settingsSection: 'profiles' as 'profiles' | 'ai' | 'appearance' | 'behaviour'
 })
 
 function apply(config: Config) {

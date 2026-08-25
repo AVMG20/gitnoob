@@ -219,7 +219,7 @@ function counted(tally: Tally) {
    other marks are drawn in it reads as muted. It gets a brighter one. */
 .mark.added,
 .tally.added svg {
-  color: #86f5b4;
+  color: var(--green-soft);
 }
 
 .mark.deleted,

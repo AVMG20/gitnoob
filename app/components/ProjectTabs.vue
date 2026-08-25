@@ -103,7 +103,7 @@ function onDrop(target: string) {
   align-items: stretch;
   gap: 2px;
   padding: 0 6px 0 4px;
-  background: #10141a;
+  background: var(--bg-deep);
   border-bottom: 1px solid var(--line);
   min-height: 38px;
 }

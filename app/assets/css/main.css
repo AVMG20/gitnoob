@@ -1,22 +1,290 @@
+/*
+ * Themes. `:root` carries Slate, the default, and every other theme overrides
+ * the same variable set through `data-theme` on <html>. Beyond the surface
+ * colours each theme states what sits on top of its accent and danger fills
+ * (white on a blue that is dark enough for it, near-black otherwise) and a
+ * small palette of softened shades — the pale reds and greens of diff
+ * annotations have to become deep reds and greens to stay legible on white.
+ */
 :root {
   --bg: #14181d;
   --bg-panel: #191e24;
   --bg-raised: #1f252d;
   --bg-hover: #252c35;
   --bg-active: #2b3a4a;
+  --bg-deep: #10141a;
   --line: #2a323b;
   --line-soft: #222931;
   --text: #d7dee6;
   --text-dim: #8b98a5;
   --text-faint: #5f6b78;
   --accent: #4f9cf9;
-  --green: #57c184;
+  --on-accent: #0d1218;
+  --accent-hover: #6aabfb;
   --red: #e0576d;
+  --on-danger: #1a0d10;
+  --danger-hover: #e97183;
+  --green: #57c184;
   --amber: #f0a83c;
   --purple: #a97bf0;
+  --red-soft: #ef8d9c;
+  --amber-soft: #f2bd6e;
+  --green-soft: #8ad9ae;
+  --accent-soft: #8dc0fb;
+  --purple-soft: #c4a4f6;
+  --scrollbar: #333c47;
+  --scrollbar-hover: #43505f;
   --row-h: 27px;
   --font: -apple-system, BlinkMacSystemFont, 'Segoe UI', system-ui, sans-serif;
   --mono: ui-monospace, SFMono-Regular, 'SF Mono', Menlo, Consolas, monospace;
+}
+
+/* Paper — plain white, blue accent. */
+[data-theme='paper'] {
+  --bg: #ffffff;
+  --bg-panel: #f7f8fa;
+  --bg-raised: #edeef1;
+  --bg-hover: #e6e8ec;
+  --bg-active: #d9e7fa;
+  --bg-deep: #eef0f4;
+  --line: #d7dce3;
+  --line-soft: #e4e8ed;
+  --text: #23292f;
+  --text-dim: #59636e;
+  --text-faint: #8b949f;
+  --accent: #2f7fe0;
+  --on-accent: #ffffff;
+  --accent-hover: #286fc4;
+  --red: #d4455c;
+  --on-danger: #ffffff;
+  --danger-hover: #bf3a50;
+  --green: #2e9e5b;
+  --amber: #c9821f;
+  --purple: #8a5cf0;
+  --red-soft: #c2334d;
+  --amber-soft: #a06a15;
+  --green-soft: #1e7a44;
+  --accent-soft: #2b6fc0;
+  --purple-soft: #7a4fd1;
+  --scrollbar: #c6cdd6;
+  --scrollbar-hover: #adb6c1;
+}
+
+/* Mist — the same light idea one step greyer and cooler. */
+[data-theme='mist'] {
+  --bg: #eff1f5;
+  --bg-panel: #e6e9ef;
+  --bg-raised: #dde1e9;
+  --bg-hover: #d3d8e2;
+  --bg-active: #c6dbf4;
+  --bg-deep: #e2e6ee;
+  --line: #c9cfda;
+  --line-soft: #d7dce5;
+  --text: #2a313a;
+  --text-dim: #5c6672;
+  --text-faint: #8d97a3;
+  --accent: #3979dd;
+  --on-accent: #ffffff;
+  --accent-hover: #3269c4;
+  --red: #dc4b61;
+  --on-danger: #ffffff;
+  --danger-hover: #c74156;
+  --green: #2f9e63;
+  --amber: #c9871f;
+  --purple: #8d5ef0;
+  --red-soft: #b83a52;
+  --amber-soft: #a4741f;
+  --green-soft: #23784c;
+  --accent-soft: #2f6cc9;
+  --purple-soft: #8356e0;
+  --scrollbar: #c2c9d4;
+  --scrollbar-hover: #a9b2bf;
+}
+
+/* Sand — light again, but warm: cream paper and terracotta. */
+[data-theme='sand'] {
+  --bg: #faf7f2;
+  --bg-panel: #f3eee6;
+  --bg-raised: #ebe4d8;
+  --bg-hover: #e2dacc;
+  --bg-active: #eee2cc;
+  --bg-deep: #f1ece2;
+  --line: #dcd3c2;
+  --line-soft: #e6dfd1;
+  --text: #33302a;
+  --text-dim: #6b6455;
+  --text-faint: #9a9280;
+  --accent: #c25f3a;
+  --on-accent: #ffffff;
+  --accent-hover: #ad5231;
+  --red: #cc4554;
+  --on-danger: #ffffff;
+  --danger-hover: #b73b49;
+  --green: #3d8f5f;
+  --amber: #b97f24;
+  --purple: #7d56d6;
+  --red-soft: #b23a49;
+  --amber-soft: #9a6a15;
+  --green-soft: #2c7a4d;
+  --accent-soft: #ad5030;
+  --purple-soft: #6f4cc4;
+  --scrollbar: #d4c9b6;
+  --scrollbar-hover: #bfb29c;
+}
+
+/* Fjord — the default's depth pushed towards navy. */
+[data-theme='fjord'] {
+  --bg: #161a24;
+  --bg-panel: #1a1f2c;
+  --bg-raised: #202636;
+  --bg-hover: #262e41;
+  --bg-active: #2f3b57;
+  --bg-deep: #12151e;
+  --line: #2b3245;
+  --line-soft: #232939;
+  --text: #d6dceb;
+  --text-dim: #8a92ab;
+  --text-faint: #5d6480;
+  --accent: #7aa2f7;
+  --on-accent: #10131c;
+  --accent-hover: #8db1fb;
+  --red: #e0708a;
+  --on-danger: #1a0d10;
+  --danger-hover: #e9879b;
+  --green: #62c78f;
+  --amber: #f0a83c;
+  --purple: #ab7df5;
+  --red-soft: #ef94a6;
+  --amber-soft: #f2bd6e;
+  --green-soft: #8fdcaa;
+  --accent-soft: #a3c1fb;
+  --purple-soft: #c3a7f8;
+  --scrollbar: #333b52;
+  --scrollbar-hover: #434d6b;
+}
+
+/* Pine — as dark as Void, but green-black with a green accent. */
+[data-theme='pine'] {
+  --bg: #0e1310;
+  --bg-panel: #121814;
+  --bg-raised: #17201a;
+  --bg-hover: #1d2820;
+  --bg-active: #27392c;
+  --bg-deep: #0a0e0b;
+  --line: #202b23;
+  --line-soft: #19221b;
+  --text: #cfdcd3;
+  --text-dim: #83988b;
+  --text-faint: #57685d;
+  --accent: #4fd18b;
+  --on-accent: #06170d;
+  --accent-hover: #63dfa0;
+  --red: #e0576d;
+  --on-danger: #1a0d10;
+  --danger-hover: #e97183;
+  --green: #57c184;
+  --amber: #f0a83c;
+  --purple: #a97bf0;
+  --red-soft: #e58a99;
+  --amber-soft: #e8b163;
+  --green-soft: #82d3a8;
+  --accent-soft: #7fdca8;
+  --purple-soft: #b395ee;
+  --scrollbar: #1f2b23;
+  --scrollbar-hover: #2d3d32;
+}
+
+/* Dusk — the default's warmth, turned up. */
+[data-theme='dusk'] {
+  --bg: #1d1a16;
+  --bg-panel: #232019;
+  --bg-raised: #2a2620;
+  --bg-hover: #322d26;
+  --bg-active: #413a2c;
+  --bg-deep: #171410;
+  --line: #34302a;
+  --line-soft: #2b2722;
+  --text: #e2dcd2;
+  --text-dim: #a29a8d;
+  --text-faint: #736a5e;
+  --accent: #e3943a;
+  --on-accent: #1a1206;
+  --accent-hover: #efa75b;
+  --red: #e5697d;
+  --on-danger: #1a0d10;
+  --danger-hover: #ea7b8c;
+  --green: #6fca8f;
+  --amber: #f0a83c;
+  --purple: #b58af2;
+  --red-soft: #f0909f;
+  --amber-soft: #f4c078;
+  --green-soft: #93dcae;
+  --accent-soft: #eeb27a;
+  --purple-soft: #c9a8f7;
+  --scrollbar: #39342c;
+  --scrollbar-hover: #4a443a;
+}
+
+/* Ink — darker and neutral, the accent kept. */
+[data-theme='ink'] {
+  --bg: #0d0f12;
+  --bg-panel: #12151a;
+  --bg-raised: #181c22;
+  --bg-hover: #1e232b;
+  --bg-active: #26303e;
+  --bg-deep: #080a0d;
+  --line: #222833;
+  --line-soft: #1a1f26;
+  --text: #ccd4dc;
+  --text-dim: #7f8b98;
+  --text-faint: #56606c;
+  --accent: #4f9cf9;
+  --on-accent: #0d1218;
+  --accent-hover: #6aabfb;
+  --red: #e0576d;
+  --on-danger: #1a0d10;
+  --danger-hover: #e97183;
+  --green: #57c184;
+  --amber: #f0a83c;
+  --purple: #a97bf0;
+  --red-soft: #e58a99;
+  --amber-soft: #e8b163;
+  --green-soft: #7fcda3;
+  --accent-soft: #7fb4f0;
+  --purple-soft: #b395ee;
+  --scrollbar: #252b34;
+  --scrollbar-hover: #333c47;
+}
+
+/* Void — black, with the accent swapped for cyan. */
+[data-theme='void'] {
+  --bg: #000000;
+  --bg-panel: #0a0c0f;
+  --bg-raised: #12151a;
+  --bg-hover: #1a1e24;
+  --bg-active: #232d3b;
+  --bg-deep: #000000;
+  --line: #1b2027;
+  --line-soft: #14181d;
+  --text: #d7dee6;
+  --text-dim: #8b98a5;
+  --text-faint: #56606c;
+  --accent: #35bec9;
+  --on-accent: #05272b;
+  --accent-hover: #4fd2de;
+  --red: #e0576d;
+  --on-danger: #1a0d10;
+  --danger-hover: #e97183;
+  --green: #4fd18b;
+  --amber: #f0a83c;
+  --purple: #a97bf0;
+  --red-soft: #ee8ea0;
+  --amber-soft: #f0b868;
+  --green-soft: #7fd8a6;
+  --accent-soft: #6fc6d8;
+  --purple-soft: #c4a4f6;
+  --scrollbar: #1d232b;
+  --scrollbar-hover: #2c3540;
 }
 
 * {
@@ -74,14 +342,14 @@ textarea {
 }
 
 ::-webkit-scrollbar-thumb {
-  background: #333c47;
+  background: var(--scrollbar);
   border-radius: 5px;
   border: 2px solid transparent;
   background-clip: content-box;
 }
 
 ::-webkit-scrollbar-thumb:hover {
-  background: #43505f;
+  background: var(--scrollbar-hover);
   background-clip: content-box;
 }
 
@@ -111,24 +379,24 @@ textarea {
 
 .btn-primary {
   background: var(--accent);
-  color: #0d1218;
+  color: var(--on-accent);
   font-weight: 600;
 }
 
 .btn-primary:hover:not(:disabled) {
-  background: #6aabfb;
-  color: #0d1218;
+  background: var(--accent-hover);
+  color: var(--on-accent);
 }
 
 .btn-danger {
   background: var(--red);
-  color: #1a0d10;
+  color: var(--on-danger);
   font-weight: 600;
 }
 
 .btn-danger:hover:not(:disabled) {
-  background: #e97183;
-  color: #1a0d10;
+  background: var(--danger-hover);
+  color: var(--on-danger);
 }
 
 .btn-ghost {
@@ -177,36 +445,65 @@ textarea {
 }
 
 /* Syntax colours in the spirit of Darcula, the JetBrains dark scheme, so code
-   in a diff reads the way it does in the editor it came from. */
+   in a diff reads the way it does in the editor it came from. The light themes
+   override the palette below with JetBrains' light scheme. */
+:root {
+  --hl-keyword: #cc7832;
+  --hl-string: #6a8759;
+  --hl-number: #6897bb;
+  --hl-comment: #7f8c8d;
+  --hl-title: #ffc66d;
+  --hl-attr: #9876aa;
+  --hl-meta: #bbb529;
+  --hl-name: #e8bf6a;
+  --hl-built_in: #a9b7c6;
+  --hl-deletion: #cf7d7d;
+}
+
+[data-theme='paper'],
+[data-theme='mist'],
+[data-theme='sand'] {
+  --hl-keyword: #0033b3;
+  --hl-string: #067d17;
+  --hl-number: #1750eb;
+  --hl-comment: #8c8c8c;
+  --hl-title: #104ec0;
+  --hl-attr: #871094;
+  --hl-meta: #9e880d;
+  --hl-name: #0f68a0;
+  --hl-built_in: #7a3e9d;
+  --hl-deletion: #cc5b5b;
+}
+
 .hljs-keyword,
 .hljs-literal,
 .hljs-selector-tag,
 .hljs-type {
-  color: #cc7832;
+  color: var(--hl-keyword);
 }
 
 .hljs-string,
 .hljs-regexp,
 .hljs-addition {
-  color: #6a8759;
+  color: var(--hl-string);
 }
 
 .hljs-number,
 .hljs-symbol,
 .hljs-bullet {
-  color: #6897bb;
+  color: var(--hl-number);
 }
 
 .hljs-comment,
 .hljs-quote {
-  color: #7f8c8d;
+  color: var(--hl-comment);
   font-style: italic;
 }
 
 .hljs-title,
 .hljs-title.function_,
 .hljs-section {
-  color: #ffc66d;
+  color: var(--hl-title);
 }
 
 .hljs-variable,
@@ -214,27 +511,27 @@ textarea {
 .hljs-attr,
 .hljs-attribute,
 .hljs-selector-attr {
-  color: #9876aa;
+  color: var(--hl-attr);
 }
 
 .hljs-meta,
 .hljs-doctag {
-  color: #bbb529;
+  color: var(--hl-meta);
 }
 
 .hljs-name,
 .hljs-selector-class,
 .hljs-selector-id {
-  color: #e8bf6a;
+  color: var(--hl-name);
 }
 
 .hljs-built_in,
 .hljs-class .hljs-title {
-  color: #a9b7c6;
+  color: var(--hl-built_in);
 }
 
 .hljs-deletion {
-  color: #cf7d7d;
+  color: var(--hl-deletion);
 }
 
 .hljs-emphasis {

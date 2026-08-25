@@ -127,7 +127,7 @@ onMounted(async () => {
   border-radius: 7px;
   font-size: 12.5px;
   line-height: 1.55;
-  color: #f3a1ad;
+  color: var(--red-soft);
   background: rgba(224, 87, 109, 0.08);
   border: 1px solid rgba(224, 87, 109, 0.35);
 }

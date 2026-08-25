@@ -384,7 +384,7 @@ watch(
 }
 
 .down {
-  background: rgba(79, 156, 249, 0.16);
+  background: color-mix(in srgb, var(--accent) 16%, transparent);
   color: var(--accent);
 }
 

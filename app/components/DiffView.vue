@@ -142,11 +142,11 @@ const paint = (code: string) => painted.value(code)
 .hunk-btn:hover:not(:disabled) {
   color: var(--text);
   border-color: var(--accent);
-  background: rgba(79, 156, 249, 0.14);
+  background: color-mix(in srgb, var(--accent) 14%, transparent);
 }
 
 .hunk-btn.danger:hover:not(:disabled) {
-  color: #ef8d9c;
+  color: var(--red-soft);
   border-color: var(--red);
   background: rgba(224, 87, 109, 0.14);
 }
@@ -193,7 +193,7 @@ const paint = (code: string) => painted.value(code)
 }
 
 .add .sign {
-  color: #8ad9ae;
+  color: var(--green-soft);
 }
 
 .del {
@@ -201,7 +201,7 @@ const paint = (code: string) => painted.value(code)
 }
 
 .del .sign {
-  color: #ef8d9c;
+  color: var(--red-soft);
 }
 
 /* The row tint carries which side a line is on, so the syntax colours stay

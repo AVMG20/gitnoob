@@ -7,6 +7,7 @@ import { useConfig } from '~/composables/useConfig'
 import { useForge } from '~/composables/useForge'
 import { useAi } from '~/composables/useAi'
 import { usePanes } from '~/composables/usePanes'
+import { useTheme } from '~/composables/useTheme'
 
 const git = useGit()
 const store = git.store
@@ -14,6 +15,8 @@ const config = useConfig()
 const forge = useForge()
 const ai = useAi()
 const { layout } = usePanes()
+// Applied as a side effect of loading the composable, before the first paint.
+useTheme()
 
 const ready = ref(false)
 let fetchTimer: number | undefined

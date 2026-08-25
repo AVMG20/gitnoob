@@ -6,6 +6,7 @@ import {
   Github,
   Gitlab,
   KeyRound,
+  Palette,
   Plus,
   Settings2,
   Sparkles,
@@ -28,12 +29,14 @@ import { useForge } from '~/composables/useForge'
 import { useAi } from '~/composables/useAi'
 import { useGit } from '~/composables/useGit'
 import { describeKey, useSsh } from '~/composables/useSsh'
+import { useTheme } from '~/composables/useTheme'
 
 const config = useConfig()
 const forge = useForge()
 const ssh = useSsh()
 const ai = useAi()
 const git = useGit()
+const { theme, themes, setTheme } = useTheme()
 
 const section = computed(() => config.store.settingsSection)
 
@@ -211,14 +214,21 @@ onMounted(async () => {
         </button>
         <button
           class="nav-item"
+          :class="{ on: section === 'appearance' }"
+          @click="config.store.settingsSection = 'appearance'"
+        >
+          <Palette :size="15" /> Appearance
+        </button>
+        <button
+          class="nav-item"
           :class="{ on: section === 'behaviour' }"
           @click="config.store.settingsSection = 'behaviour'"
         >
           <Settings2 :size="15" /> Behaviour
         </button>
         <p class="nav-note faint">
-          Profiles hold their own forge, identity and open projects. Everything under AI and
-          Behaviour is shared across all of them.
+          Profiles hold their own forge, identity and open projects. Everything under AI,
+          Appearance and Behaviour is shared across all of them.
         </p>
       </nav>
 
@@ -485,6 +495,32 @@ onMounted(async () => {
           </p>
         </section>
 
+        <!-- Appearance -->
+        <section v-else-if="section === 'appearance'">
+          <h2>Appearance</h2>
+          <p class="dim intro">
+            Nine themes: three light, three semi-dark, three dark. The choice is shared.
+          </p>
+
+          <div class="themes">
+            <button
+              v-for="one in themes"
+              :key="one.id"
+              class="theme"
+              :class="{ on: one.id === theme }"
+              @click="setTheme(one.id)"
+            >
+              <span class="swatch" :style="{ background: one.swatch[0] }">
+                <span class="chip" :style="{ background: one.swatch[1] }"></span>
+                <span class="chip text" :style="{ background: one.swatch[2] }"></span>
+              </span>
+              <span class="theme-name">{{ one.name }}</span>
+              <span class="faint small">{{ one.kind }}</span>
+              <Check v-if="one.id === theme" :size="13" class="tick" />
+            </button>
+          </div>
+        </section>
+
         <!-- Behaviour -->
         <section v-else>
           <h2>Behaviour</h2>
@@ -595,7 +631,7 @@ onMounted(async () => {
 }
 
 .nav {
-  background: #151a20;
+  background: var(--bg-deep);
   border-right: 1px solid var(--line);
   padding: 12px 8px;
   display: flex;
@@ -680,6 +716,66 @@ h3 {
   gap: 5px;
 }
 
+.themes {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(150px, 1fr));
+  gap: 10px;
+}
+
+.theme {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 4px;
+  padding: 9px 10px;
+  background: var(--bg-raised);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  text-align: left;
+}
+
+.theme:hover {
+  background: var(--bg-hover);
+}
+
+.theme.on {
+  border-color: var(--accent);
+}
+
+.swatch {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  width: 100%;
+  height: 34px;
+  padding: 0 7px;
+  border-radius: 5px;
+  border: 1px solid var(--line);
+}
+
+.chip {
+  width: 16px;
+  height: 9px;
+  border-radius: 3px;
+}
+
+.chip.text {
+  flex: none;
+  margin-left: auto;
+}
+
+.theme-name {
+  font-weight: 600;
+}
+
+.tick {
+  position: absolute;
+  right: 8px;
+  top: 8px;
+  color: var(--accent);
+}
+
 .entry {
   display: flex;
   align-items: center;
@@ -691,7 +787,7 @@ h3 {
 }
 
 .entry.active {
-  border-color: rgba(79, 156, 249, 0.5);
+  border-color: color-mix(in srgb, var(--accent) 50%, transparent);
 }
 
 .entry-icon {
@@ -722,7 +818,7 @@ h3 {
 }
 
 .tiny.danger {
-  color: #ef8d9c;
+  color: var(--red-soft);
 }
 
 .add {
@@ -853,7 +949,7 @@ select {
 .choice.on {
   border-color: var(--accent);
   color: var(--text);
-  background: rgba(79, 156, 249, 0.12);
+  background: color-mix(in srgb, var(--accent) 12%, transparent);
 }
 
 .editor-actions {

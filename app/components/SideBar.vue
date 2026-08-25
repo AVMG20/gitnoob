@@ -1200,7 +1200,7 @@ function stashMenu(event: MouseEvent, index: number, message: string) {
 }
 
 .row.on .name {
-  color: #fff;
+  color: var(--text);
   font-weight: 600;
 }
 
@@ -1222,7 +1222,7 @@ function stashMenu(event: MouseEvent, index: number, message: string) {
 .row.drop {
   outline: 1px solid var(--accent);
   outline-offset: -1px;
-  background: rgba(79, 156, 249, 0.16);
+  background: color-mix(in srgb, var(--accent) 16%, transparent);
 }
 
 /* A folder is a button, so it has to be talked out of looking like one. */
@@ -1263,7 +1263,7 @@ function stashMenu(event: MouseEvent, index: number, message: string) {
 }
 
 .glyph.remote {
-  color: #a58bd8;
+  color: var(--purple-soft);
 }
 
 .glyph.tag {

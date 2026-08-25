@@ -207,7 +207,7 @@ onUnmounted(() => window.removeEventListener('keydown', onKey))
 }
 
 .item.danger {
-  color: #ef8d9c;
+  color: var(--red-soft);
 }
 
 .item.off {

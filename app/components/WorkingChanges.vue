@@ -410,7 +410,7 @@ function fileMenu(event: MouseEvent, path: string, side: 'staged' | 'unstaged', 
   gap: 8px;
   padding: 6px 12px;
   font-size: 12px;
-  color: #f2bd6e;
+  color: var(--amber-soft);
   background: rgba(240, 168, 60, 0.1);
   border-bottom: 1px solid var(--line-soft);
 }
@@ -431,7 +431,7 @@ function fileMenu(event: MouseEvent, path: string, side: 'staged' | 'unstaged', 
   text-align: left;
   padding: 3px 12px;
   font-size: 11.5px;
-  color: #ef8d9c;
+  color: var(--red-soft);
 }
 
 .conflict-file:hover {
@@ -449,7 +449,7 @@ function fileMenu(event: MouseEvent, path: string, side: 'staged' | 'unstaged', 
 }
 
 .group.drop {
-  background: rgba(79, 156, 249, 0.1);
+  background: color-mix(in srgb, var(--accent) 10%, transparent);
   outline: 1px dashed var(--accent);
   outline-offset: -3px;
 }

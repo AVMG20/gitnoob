@@ -167,7 +167,7 @@ onMounted(async () => {
 
 .mode.on {
   border-color: var(--accent);
-  background: rgba(79, 156, 249, 0.1);
+  background: color-mix(in srgb, var(--accent) 10%, transparent);
 }
 
 .mode.on.danger {
@@ -242,7 +242,7 @@ onMounted(async () => {
   border-radius: 7px;
   font-size: 12px;
   line-height: 1.5;
-  color: #f2bd6e;
+  color: var(--amber-soft);
   background: rgba(240, 168, 60, 0.08);
   border: 1px solid rgba(240, 168, 60, 0.3);
 }
@@ -254,7 +254,7 @@ onMounted(async () => {
 }
 
 .dirty.bad {
-  color: #ef8d9c;
+  color: var(--red-soft);
   background: rgba(224, 87, 109, 0.08);
   border-color: rgba(224, 87, 109, 0.35);
 }

@@ -696,11 +696,11 @@ watch(
 }
 
 .pane-head.ours {
-  color: #8dc0fb;
+  color: var(--accent-soft);
 }
 
 .pane-head.theirs {
-  color: #c4a4f6;
+  color: var(--purple-soft);
 }
 
 .pane-head.base {
@@ -814,7 +814,7 @@ watch(
 }
 
 .ours-line {
-  background: rgba(79, 156, 249, 0.1);
+  background: color-mix(in srgb, var(--accent) 10%, transparent);
 }
 
 .theirs-line {

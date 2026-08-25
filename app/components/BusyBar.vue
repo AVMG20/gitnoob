@@ -38,7 +38,7 @@ const label = computed(() => {
   position: absolute;
   inset: 0;
   overflow: hidden;
-  background: rgba(79, 156, 249, 0.14);
+  background: color-mix(in srgb, var(--accent) 14%, transparent);
 }
 
 /* An indeterminate sweep: git gives no progress, so pretending otherwise would
