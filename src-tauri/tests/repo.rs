@@ -1356,27 +1356,58 @@ fn switching_branches_leaves_untouched_edits_alone() {
 }
 
 #[test]
-fn switching_branches_stashes_only_when_the_edit_is_in_the_way() {
+fn switching_branches_is_refused_when_an_edit_is_in_the_way() {
     let sandbox = Sandbox::new("switchcollide");
     sandbox.commit("a.txt", "one\n", "Base");
     sandbox.git(&["checkout", "-q", "-b", "other"]);
     sandbox.commit("a.txt", "other version\n", "Change a.txt on other");
     sandbox.git(&["checkout", "-q", "main"]);
 
-    // An edit to the very file the other branch changes: git refuses, so the
-    // stash is earned.
+    // An edit to the very file the other branch changes. Stashing it and
+    // putting it back would land in a conflicted tree with no merge to abort,
+    // which is not a place a click on a branch name should lead.
     sandbox.write("a.txt", "my own edit\n");
 
     let state = sandbox.state();
-    // The switch happens, but the edit cannot be put back: it and the branch
-    // both changed the same file. That is reported rather than swallowed, and
-    // the work stays in the stash.
     let error = refs::checkout(&state, "other").unwrap_err();
-    assert!(error.contains("safe in the stash"), "unexpected: {error}");
-    assert_eq!(refs::describe(&state).unwrap().head, "other");
+
+    assert!(error.contains("1 file"), "should count them: {error}");
+    assert!(error.contains("a.txt"), "should name it: {error}");
     assert!(
-        !sandbox.git(&["stash", "list"]).trim().is_empty(),
-        "the stash is kept when the pop conflicts"
+        error.contains("Commit, stash, or discard"),
+        "should say what to do: {error}"
+    );
+    assert_eq!(
+        refs::describe(&state).unwrap().head,
+        "main",
+        "a refused switch stays put"
+    );
+    assert_eq!(
+        std::fs::read_to_string(sandbox.root.join("a.txt")).unwrap(),
+        "my own edit\n",
+        "the edit is left exactly as it was"
+    );
+    assert!(
+        sandbox.git(&["stash", "list"]).trim().is_empty(),
+        "nothing should have been stashed behind the user's back"
+    );
+}
+
+#[test]
+fn switching_branches_with_nothing_open_just_switches() {
+    let sandbox = Sandbox::new("switchclean");
+    sandbox.commit("a.txt", "one\n", "Base");
+    sandbox.git(&["checkout", "-q", "-b", "other"]);
+    sandbox.commit("a.txt", "other version\n", "Change a.txt on other");
+    sandbox.git(&["checkout", "-q", "main"]);
+
+    let state = sandbox.state();
+    refs::checkout(&state, "other").unwrap();
+
+    assert_eq!(refs::describe(&state).unwrap().head, "other");
+    assert_eq!(
+        std::fs::read_to_string(sandbox.root.join("a.txt")).unwrap(),
+        "other version\n"
     );
 }
 

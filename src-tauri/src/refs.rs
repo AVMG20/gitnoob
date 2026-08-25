@@ -6,7 +6,6 @@ use serde::Serialize;
 use crate::git_cmd;
 use crate::journal::{self, Mode};
 use crate::state::AppState;
-use crate::work;
 
 #[derive(Serialize)]
 pub struct RepoInfo {
@@ -395,28 +394,15 @@ pub fn checkout(state: &AppState, name: &str) -> Result<String, String> {
     // branch change whenever they do not collide with what that change touches,
     // and that is the common case — stashing every time churns the working tree,
     // loses the staged/unstaged split, and risks a conflicted pop for nothing.
-    let plain = git_cmd::run_checked(&path, &borrowed);
-    let (out, restored) = match plain {
-        Ok(message) => (message, None),
+    let out = match git_cmd::run_checked(&path, &borrowed) {
+        Ok(message) => message,
         Err(error) if !refused_over_local_changes(&error) => return Err(error),
-        Err(error) => {
-            // It collided. Now the stash is worth it.
-            let held = work::stash_before(state, &format!("switching to {name}"))?;
-            if !held.stashed {
-                // Auto-stash is off, or there was nothing to stash; either way
-                // retrying would fail the same way. Report what git said.
-                return Err(error);
-            }
-            match git_cmd::run_checked(&path, &borrowed) {
-                Ok(message) => (message, work::restore_after(state, held)?),
-                Err(again) => {
-                    // Put the changes back before reporting, so a failed switch
-                    // leaves the working tree as it was.
-                    let _ = work::restore_after(state, held);
-                    return Err(again);
-                }
-            }
-        }
+        // The edits are in the way of the switch. Stashing them and putting them
+        // back afterwards would usually work and occasionally leave a conflicted
+        // tree with no merge to abort — a mess the user never asked for, arrived
+        // at by a click that said nothing about stashing. Say what is in the way
+        // and let them decide.
+        Err(error) => return Err(in_the_way(name, &error)),
     };
 
     let landed = journal::current_branch(state);
@@ -435,11 +421,7 @@ pub fn checkout(state: &AppState, name: &str) -> Result<String, String> {
         }
     }
 
-    let mut message = out;
-    if let Some(note) = restored {
-        message = format!("{}\n{note}", message.trim());
-    }
-    Ok(message)
+    Ok(out)
 }
 
 /// Whether git turned a checkout down because uncommitted work was in the way,
@@ -449,6 +431,46 @@ fn refused_over_local_changes(error: &str) -> bool {
     error.contains("would be overwritten by checkout")
         || error.contains("Please commit your changes or stash them")
         || error.contains("would be overwritten by merge")
+}
+
+/// The refusal, in terms of the files rather than of git's plumbing.
+///
+/// Git names the files it would have overwritten in the middle of a paragraph
+/// about merging and stashing. The files are the useful part — they are what
+/// has to be dealt with — so they are counted, listed, and followed by the
+/// three things that deal with them.
+fn in_the_way(name: &str, error: &str) -> String {
+    let files: Vec<&str> = error
+        .lines()
+        .map(str::trim)
+        .filter(|line| {
+            !line.is_empty()
+                && !line.starts_with("error:")
+                && !line.starts_with("Please")
+                && !line.starts_with("Aborting")
+                && !line.starts_with("fatal:")
+                && !line.starts_with("warning:")
+        })
+        .collect();
+
+    if files.is_empty() {
+        return format!(
+            "Cannot switch to {name}: your open changes are in the way. Commit, stash, or \
+             discard them first."
+        );
+    }
+
+    let count = files.len();
+    let listed = if count > 6 {
+        format!("{}\n…and {} more", files[..6].join("\n"), count - 6)
+    } else {
+        files.join("\n")
+    };
+    format!(
+        "Cannot switch to {name}: {count} {} would be overwritten.\n{listed}\nCommit, stash, or \
+         discard your changes first.",
+        if count == 1 { "file" } else { "files" }
+    )
 }
 
 pub fn create_branch(state: &AppState, name: &str, start: Option<&str>, checkout: bool) -> Result<String, String> {
