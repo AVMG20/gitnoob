@@ -382,6 +382,222 @@ pub fn abort_merge(state: &AppState) -> Result<String, String> {
     git_cmd::run_checked(&path, &["merge", "--abort"])
 }
 
+/// Merges one branch into another, whichever one is checked out.
+///
+/// Git only ever merges into the branch you are standing on, which is why
+/// merging two other branches normally means checking one out, merging, and
+/// remembering to come back. Dropping one branch onto another says what is
+/// wanted plainly enough that none of that should be the user's problem.
+///
+/// Three cases, cheapest first: the target is already checked out and this is
+/// an ordinary merge; the target is merely behind, so its ref is moved with no
+/// working tree involved at all; or the two have diverged, and the merge has to
+/// be made somewhere — so it is made on the target and we come home after.
+pub fn merge_into(
+    state: &AppState,
+    source: &str,
+    target: &str,
+    no_ff: bool,
+) -> Result<MergeOutcome, String> {
+    if journal::current_branch(state).as_deref() == Some(target) {
+        return merge(state, source, no_ff);
+    }
+
+    if !no_ff && can_fast_forward(state, target, source)? {
+        return fast_forward_ref(state, source, target);
+    }
+
+    merge_by_visiting(state, source, target, no_ff)
+}
+
+/// Moves a branch that is strictly behind straight to where the other one is.
+///
+/// `git fetch . <source>:<target>` updates the ref and nothing else: the
+/// working tree is not touched, so open changes are beside the point and there
+/// is no way to end up somewhere unexpected. Git refuses the refspec unless it
+/// really is a fast-forward, which makes this safe even if the ancestry check
+/// above were wrong.
+fn fast_forward_ref(state: &AppState, source: &str, target: &str) -> Result<MergeOutcome, String> {
+    let path = state.path()?;
+    let before = branch_oid(state, target);
+    let out = git_cmd::run(&path, &["fetch", ".", &format!("{source}:{target}")])?;
+    let after = branch_oid(state, target);
+
+    if out.ok {
+        journal::record(
+            state,
+            "merge",
+            format!("Fast-forward {target} to {source}"),
+            Some(target.to_string()),
+            before,
+            after,
+            Mode::Hard,
+            true,
+        );
+    }
+
+    Ok(MergeOutcome {
+        ok: out.ok,
+        message: if out.ok {
+            format!("{target} fast-forwarded to {source}")
+        } else {
+            out.stderr.trim().to_string()
+        },
+        conflicts: Vec::new(),
+    })
+}
+
+/// Merges into a branch by going there and coming back.
+///
+/// Conflicts are the one thing that cannot be hidden: an unfinished merge lives
+/// in the working tree, so leaving would abandon it. In that case we stay on the
+/// target and say so — the resolver opens on a branch the user is actually
+/// standing on, which is the only state where finishing the merge makes sense.
+fn merge_by_visiting(
+    state: &AppState,
+    source: &str,
+    target: &str,
+    no_ff: bool,
+) -> Result<MergeOutcome, String> {
+    let path = state.path()?;
+    let original = journal::current_branch(state)
+        .ok_or_else(|| "HEAD is detached; check out a branch first".to_string())?;
+
+    let held = work::stash_before(state, &format!("merging {source} into {target}"))?;
+
+    let switched = git_cmd::run(&path, &["checkout", target, "--"])?;
+    if !switched.ok {
+        let _ = work::restore_after(state, held);
+        return Ok(MergeOutcome {
+            ok: false,
+            message: format!(
+                "{}\n\nCould not step onto {target} to merge into it. Commit or stash your \
+                 changes, or turn auto-stash on in settings.",
+                switched.stderr.trim()
+            ),
+            conflicts: Vec::new(),
+        });
+    }
+
+    let mut outcome = merge(state, source, no_ff)?;
+
+    if !outcome.conflicts.is_empty() {
+        outcome.message = format!(
+            "{}\n\nYou are on {target} with the merge half-done. Resolve it here, then switch \
+             back to {original}.",
+            outcome.message.trim()
+        );
+        // The stash belongs to the branch it was taken from, and putting it
+        // back on top of a conflicted tree would tangle the two.
+        if held.stashed {
+            outcome.message = format!(
+                "{}\nYour open changes are still stashed.",
+                outcome.message.trim()
+            );
+        }
+        return Ok(outcome);
+    }
+
+    let back = git_cmd::run(&path, &["checkout", &original, "--"])?;
+    if !back.ok {
+        outcome.ok = false;
+        outcome.message = format!(
+            "{}\n\nCould not return to {original} — you are on {target}.",
+            outcome.message.trim()
+        );
+        return Ok(outcome);
+    }
+
+    if outcome.ok {
+        outcome.message = format!("{source} merged into {target}");
+    }
+    match work::restore_after(state, held) {
+        Ok(Some(note)) => outcome.message = format!("{}\n{note}", outcome.message.trim()),
+        Err(error) => {
+            outcome.ok = false;
+            outcome.message = format!("{}\n{error}", outcome.message.trim());
+        }
+        Ok(None) => {}
+    }
+    Ok(outcome)
+}
+
+/// Rebases a branch onto another without asking the user to stand on it first.
+///
+/// `git rebase <onto> <branch>` checks the branch out itself, so the trip is
+/// git's rather than ours; all this adds is the way home and the stash around
+/// it. As with a merge, a conflict keeps us there, because that is where the
+/// rebase has to be finished.
+pub fn rebase_branch(
+    state: &AppState,
+    branch: &str,
+    onto: &str,
+) -> Result<MergeOutcome, String> {
+    let path = state.path()?;
+    let original = journal::current_branch(state)
+        .ok_or_else(|| "HEAD is detached; check out a branch first".to_string())?;
+    let held = work::stash_before(state, &format!("rebasing {branch} onto {onto}"))?;
+
+    let before = branch_oid(state, branch);
+    let out = git_cmd::run(
+        &path,
+        &["-c", "merge.conflictStyle=diff3", "rebase", onto, branch],
+    )?;
+    let conflicts = crate::conflict::list(state).unwrap_or_default();
+
+    let mut outcome = MergeOutcome {
+        ok: out.ok && conflicts.is_empty(),
+        message: format!("{}\n{}", out.stdout.trim(), out.stderr.trim())
+            .trim()
+            .to_string(),
+        conflicts,
+    };
+
+    if !outcome.conflicts.is_empty() {
+        outcome.message = format!(
+            "{}\n\nYou are on {branch} with the rebase half-done. Resolve it here, then switch \
+             back to {original}.",
+            outcome.message.trim()
+        );
+        return Ok(outcome);
+    }
+
+    if outcome.ok {
+        journal::record(
+            state,
+            "rebase",
+            format!("Rebase {branch} onto {onto}"),
+            Some(branch.to_string()),
+            before,
+            branch_oid(state, branch),
+            Mode::Hard,
+            true,
+        );
+        outcome.message = format!("{branch} rebased onto {onto}");
+    }
+
+    if original != branch {
+        let back = git_cmd::run(&path, &["checkout", &original, "--"])?;
+        if !back.ok {
+            outcome.ok = false;
+            outcome.message = format!(
+                "{}\n\nCould not return to {original} — you are on {branch}.",
+                outcome.message.trim()
+            );
+            return Ok(outcome);
+        }
+    }
+    match work::restore_after(state, held) {
+        Ok(Some(note)) => outcome.message = format!("{}\n{note}", outcome.message.trim()),
+        Err(error) => {
+            outcome.ok = false;
+            outcome.message = format!("{}\n{error}", outcome.message.trim());
+        }
+        Ok(None) => {}
+    }
+    Ok(outcome)
+}
+
 /// Commits in `head` that are not in `base` — the `base..head` range.
 fn range(state: &AppState, base: &str, head: &str, limit: usize) -> Result<Vec<CommitSummary>, String> {
     let repo = state.repo()?;

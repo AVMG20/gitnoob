@@ -759,6 +759,34 @@ export function useGit() {
       await refresh()
       return outcome
     },
+    /**
+     * Merges one branch into another, neither of which need be checked out.
+     *
+     * Git merges into where you stand, which makes "merge these two" a chore of
+     * checking out, merging and remembering to come back. The other side works
+     * out which of those steps are actually needed, so this is the one to call
+     * whenever the target is named rather than implied.
+     */
+    mergeInto: async (source: string, target: string, noFf = false) => {
+      const outcome = await guard('Merge', () =>
+        invoke<MergeOutcome>('merge_into', { source, target, noFf })
+      )
+      if (outcome) {
+        note(`Merge ${source} into ${target}: ${outcome.message}`, outcome.ok ? 'info' : 'error')
+      }
+      await refresh()
+      return outcome
+    },
+    rebaseBranch: async (branch: string, onto: string) => {
+      const outcome = await guard('Rebase', () =>
+        invoke<MergeOutcome>('rebase_branch', { branch, onto })
+      )
+      if (outcome) {
+        note(`Rebase ${branch} onto ${onto}: ${outcome.message}`, outcome.ok ? 'info' : 'error')
+      }
+      await refresh()
+      return outcome
+    },
     abortMerge: () => run<string>('Abort merge', 'abort_merge'),
     /** The way out of a conflicted auto-stash, which no abort can undo. */
     undoRestore: () => run<string>('Undo the switch', 'undo_restore'),

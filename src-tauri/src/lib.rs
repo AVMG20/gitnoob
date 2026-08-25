@@ -464,6 +464,27 @@ async fn rebase(onto: String, state: State<'_, AppState>) -> Result<remote::Merg
     remote::rebase(&state, &onto)
 }
 
+/// Merges one branch into another, whichever one happens to be checked out.
+#[tauri::command]
+async fn merge_into(
+    source: String,
+    target: String,
+    no_ff: Option<bool>,
+    state: State<'_, AppState>,
+) -> Result<remote::MergeOutcome, String> {
+    remote::merge_into(&state, &source, &target, no_ff.unwrap_or(false))
+}
+
+/// Rebases a branch onto another without the user standing on it first.
+#[tauri::command]
+async fn rebase_branch(
+    branch: String,
+    onto: String,
+    state: State<'_, AppState>,
+) -> Result<remote::MergeOutcome, String> {
+    remote::rebase_branch(&state, &branch, &onto)
+}
+
 #[tauri::command]
 async fn abort_rebase(state: State<'_, AppState>) -> Result<String, String> {
     remote::abort_rebase(&state)
@@ -926,6 +947,8 @@ pub fn run() {
             push_preview,
             push,
             merge,
+            merge_into,
+            rebase_branch,
             abort_merge,
             rebase,
             abort_rebase,

@@ -232,10 +232,7 @@ async function onDropOnBranch(event: MouseEvent, target: string, targetIsRemote:
               label: `Fast-forward ${source} → ${target}`,
               icon: GitMerge,
               hint: `${target} moves, no merge commit`,
-              action: async () => {
-                if (target !== head.value) await git.checkout(target)
-                await git.merge(source, false)
-              }
+              action: () => git.mergeInto(source, target, false)
             }
           ]
         : []),
@@ -244,8 +241,7 @@ async function onDropOnBranch(event: MouseEvent, target: string, targetIsRemote:
         icon: GitMerge,
         hint: fastForward ? `${target} changes, forced merge commit` : `${target} changes`,
         action: async () => {
-          if (target !== head.value) await git.checkout(target)
-          const outcome = await git.merge(source, fastForward)
+          const outcome = await git.mergeInto(source, target, fastForward)
           if (outcome?.conflicts.length) store.resolving = outcome.conflicts[0]
         }
       },
@@ -259,8 +255,7 @@ async function onDropOnBranch(event: MouseEvent, target: string, targetIsRemote:
               hint: `${behind} ${behind === 1 ? 'commit' : 'commits'} rewritten`,
               danger: true,
               action: async () => {
-                if (target !== head.value) await git.checkout(target)
-                const outcome = await git.rebase(source)
+                const outcome = await git.rebaseBranch(target, source)
                 if (outcome?.conflicts.length) store.resolving = outcome.conflicts[0]
               }
             }
@@ -298,9 +293,11 @@ function localMenu(event: MouseEvent, name: string, upstream: string | null) {
         action: () => git.pullBranch(name)
       },
       { separator: true, label: '' },
-      // Both of these move history between two branches, in opposite
-      // directions, and "merge" alone does not say which way. Name both
-      // branches and say which one ends up changed.
+      // All three move history between two branches, in different directions,
+      // and "merge" alone does not say which way. Name both branches and say
+      // which one ends up changed. The second direction is the one git makes
+      // awkward — it merges into where you stand and nowhere else — so it is
+      // offered here and the switching is done out of sight.
       {
         label: `Merge ${name} → ${head.value}`,
         icon: GitMerge,
@@ -308,6 +305,16 @@ function localMenu(event: MouseEvent, name: string, upstream: string | null) {
         disabled: isHead,
         action: async () => {
           const outcome = await git.merge(name, false)
+          if (outcome?.conflicts.length) store.resolving = outcome.conflicts[0]
+        }
+      },
+      {
+        label: `Merge ${head.value} → ${name}`,
+        icon: GitMerge,
+        hint: `${name} changes`,
+        disabled: isHead,
+        action: async () => {
+          const outcome = await git.mergeInto(head.value, name, false)
           if (outcome?.conflicts.length) store.resolving = outcome.conflicts[0]
         }
       },

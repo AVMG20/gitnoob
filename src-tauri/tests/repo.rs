@@ -2035,3 +2035,146 @@ fn undoing_a_pushed_commit_says_the_remote_still_has_it() {
 
     let _ = std::fs::remove_dir_all(&bare);
 }
+
+// --- merging into a branch you are not standing on ---------------------------
+
+/// Two branches that have each moved on, with no overlap in what they touched.
+fn diverged(tag: &str) -> Sandbox {
+    let sandbox = Sandbox::new(tag);
+    sandbox.commit("shared.txt", "base\n", "First");
+    sandbox.git(&["checkout", "-q", "-b", "side"]);
+    sandbox.commit("theirs.txt", "side\n", "On side");
+    sandbox.git(&["checkout", "-q", "main"]);
+    sandbox.commit("ours.txt", "main\n", "On main");
+    sandbox
+}
+
+fn head_of(sandbox: &Sandbox, branch: &str) -> String {
+    sandbox.git(&["rev-parse", branch]).trim().to_string()
+}
+
+fn current(state: &AppState) -> String {
+    refs::describe(state).unwrap().head
+}
+
+#[test]
+fn merging_into_a_branch_that_is_only_behind_moves_its_ref() {
+    let sandbox = Sandbox::new("ff-ref");
+    sandbox.commit("a.txt", "one\n", "First");
+    sandbox.git(&["branch", "old"]);
+    sandbox.commit("b.txt", "two\n", "Second");
+    // Open work that must survive untouched: a fast-forward has no business
+    // going near the working tree.
+    sandbox.write("dirty.txt", "in progress\n");
+
+    let state = sandbox.state();
+    let outcome = remote::merge_into(&state, "main", "old", false).unwrap();
+
+    assert!(outcome.ok, "{}", outcome.message);
+    assert!(outcome.conflicts.is_empty());
+    assert_eq!(head_of(&sandbox, "old"), head_of(&sandbox, "main"));
+    assert_eq!(current(&state), "main", "should never have left main");
+    assert_eq!(
+        std::fs::read_to_string(sandbox.root.join("dirty.txt")).unwrap(),
+        "in progress\n"
+    );
+    // Nothing was stashed, because nothing needed to be.
+    assert!(sandbox.git(&["stash", "list"]).trim().is_empty());
+}
+
+#[test]
+fn merging_into_a_diverged_branch_visits_it_and_comes_back() {
+    let sandbox = diverged("visit");
+    let state = sandbox.state();
+    let before_main = head_of(&sandbox, "main");
+
+    let outcome = remote::merge_into(&state, "main", "side", false).unwrap();
+
+    assert!(outcome.ok, "{}", outcome.message);
+    assert_eq!(current(&state), "main", "should have come home");
+    assert_eq!(head_of(&sandbox, "main"), before_main, "main must not move");
+    // side now holds both sides of the history.
+    let log = sandbox.git(&["log", "--format=%s", "side"]);
+    assert!(log.contains("On main"), "{log}");
+    assert!(log.contains("On side"), "{log}");
+    // And the working tree is main's again: side's file is not here.
+    assert!(!sandbox.root.join("theirs.txt").exists());
+}
+
+#[test]
+fn merging_into_another_branch_puts_open_changes_back_afterwards() {
+    let sandbox = diverged("carry");
+    sandbox.write("ours.txt", "edited but not committed\n");
+    let state = sandbox.state();
+
+    let outcome = remote::merge_into(&state, "main", "side", false).unwrap();
+
+    assert!(outcome.ok, "{}", outcome.message);
+    assert_eq!(current(&state), "main");
+    assert_eq!(
+        std::fs::read_to_string(sandbox.root.join("ours.txt")).unwrap(),
+        "edited but not committed\n",
+        "the open edit should be back in the tree"
+    );
+    assert!(
+        sandbox.git(&["stash", "list"]).trim().is_empty(),
+        "the stash it took should have been used up"
+    );
+}
+
+#[test]
+fn merging_into_the_branch_you_are_on_is_an_ordinary_merge() {
+    let sandbox = diverged("here");
+    let state = sandbox.state();
+
+    let outcome = remote::merge_into(&state, "side", "main", false).unwrap();
+
+    assert!(outcome.ok, "{}", outcome.message);
+    assert_eq!(current(&state), "main");
+    assert!(sandbox.root.join("theirs.txt").exists(), "side's file should be here now");
+}
+
+#[test]
+fn a_conflicting_merge_leaves_you_on_the_branch_that_needs_resolving() {
+    let sandbox = Sandbox::new("stuck");
+    sandbox.commit("a.txt", "base\n", "First");
+    sandbox.git(&["checkout", "-q", "-b", "side"]);
+    sandbox.commit("a.txt", "their version\n", "On side");
+    sandbox.git(&["checkout", "-q", "main"]);
+    sandbox.commit("a.txt", "our version\n", "On main");
+
+    let state = sandbox.state();
+    let outcome = remote::merge_into(&state, "main", "side", false).unwrap();
+
+    assert!(!outcome.ok);
+    assert_eq!(outcome.conflicts, vec!["a.txt".to_string()]);
+    assert_eq!(
+        current(&state),
+        "side",
+        "a half-done merge cannot be carried off the branch"
+    );
+    assert!(outcome.message.contains("Resolve it here"), "{}", outcome.message);
+
+    // And the way out is the one the resolver offers.
+    remote::abort_merge(&state).unwrap();
+}
+
+#[test]
+fn rebasing_a_branch_you_are_not_on_replays_it_and_comes_back() {
+    let sandbox = diverged("rebase-away");
+    sandbox.write("ours.txt", "still editing\n");
+    let state = sandbox.state();
+
+    let outcome = remote::rebase_branch(&state, "side", "main").unwrap();
+
+    assert!(outcome.ok, "{}", outcome.message);
+    assert_eq!(current(&state), "main", "should have come home");
+    assert_eq!(
+        std::fs::read_to_string(sandbox.root.join("ours.txt")).unwrap(),
+        "still editing\n"
+    );
+    // side is now a straight line on top of main: no merge commit, and main's
+    // commit is in its history.
+    let log = sandbox.git(&["log", "--format=%s", "side"]);
+    assert_eq!(log.lines().collect::<Vec<_>>(), vec!["On side", "On main", "First"]);
+}
