@@ -91,7 +91,14 @@ jobs:
               name: `gitnoob ${version}`,
               body,
               draft: true,
-              prerelease: false
+              // A prerelease as well as a draft, and this is the flag that
+              // matters: `releases/latest/download/…` — the URL every
+              // installed copy asks for updates through — skips prereleases,
+              // so an unfinished release cannot become the one they read. A
+              // draft alone was not enough. v0.2.0 went public with no assets
+              // while its builds were still running, and every copy checking
+              // for an update got a 404 from the endpoint.
+              prerelease: true
             })
             return data.id
 
@@ -183,10 +190,36 @@ jobs:
       - uses: actions/github-script@v7
         with:
           script: |
-            await github.rest.repos.updateRelease({
+            const release_id = ${{ needs.draft.outputs.release_id }}
+
+            // Publishing is the one irreversible step, so it checks rather
+            // than trusts. Every job reported success; that is not the same as
+            // every artifact having arrived, and latest.json is the file the
+            // updater in every installed copy will ask for by name.
+            const assets = await github.paginate(github.rest.repos.listReleaseAssets, {
               owner: context.repo.owner,
               repo: context.repo.repo,
-              release_id: ${{ needs.draft.outputs.release_id }},
-              draft: false,
-              make_latest: 'true'
+              release_id,
+              per_page: 100
             })
+            const names = assets.map((one) => one.name)
+            const wanted = ['latest.json', '.dmg', '-setup.exe', '.AppImage']
+            const missing = wanted.filter(
+              (want) => !names.some((name) => name.endsWith(want) || name === want)
+            )
+            if (missing.length) {
+              core.setFailed(
+                `Not publishing: the release is missing ${missing.join(', ')}. ` +
+                  `It has: ${names.join(', ') || '(nothing)'}`
+              )
+            } else {
+              await github.rest.repos.updateRelease({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                release_id,
+                draft: false,
+                prerelease: false,
+                make_latest: 'true'
+              })
+              core.notice(`Published ${names.length} assets`)
+            }
