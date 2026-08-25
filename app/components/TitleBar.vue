@@ -329,22 +329,25 @@ watch(
   margin: 0 5px;
 }
 
+/* A filled pill, so the arrow and the digit have to sit square inside it:
+   even padding, one line box, and no nudging the glyph off centre. */
 .up,
 .down {
   display: inline-flex;
   align-items: center;
-  gap: 1px;
-  padding-left: 4px;
+  gap: 2px;
+  padding: 2px 7px;
+  border-radius: 999px;
   font-size: 11px;
+  line-height: 1;
   font-variant-numeric: tabular-nums;
 }
 
-/* Same nudge as the sidebar, for the same reason: Lucide's padded viewBox
-   leaves the arrow high and tight against the digit once the two boxes are
-   centred against each other. */
+/* Lucide draws on a padded 24-unit grid, so the arrow carries a sliver of its
+   own space on the left; claw it back so the pill looks evenly filled. */
 .up svg,
 .down svg {
-  transform: translate(-1px, 1px);
+  margin-left: -2px;
 }
 
 .up {
