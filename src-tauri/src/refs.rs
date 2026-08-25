@@ -586,7 +586,30 @@ fn err(e: git2::Error) -> String {
 
 pub fn rename_branch(state: &AppState, from: &str, to: &str) -> Result<String, String> {
     let root = state.path()?;
-    git_cmd::run_checked(&root, &["branch", "-m", from, to])?;
+    // On a case-insensitive filesystem (the default on macOS and Windows) git
+    // refuses a rename that changes only the letter case of a branch name: its
+    // "already exists" check finds the very branch being renamed. Going through
+    // a temporary name sidesteps it. HEAD follows the branch through both hops,
+    // so the checked-out branch ends up on the new name either way.
+    if from != to && from.eq_ignore_ascii_case(to) {
+        let repo = state.repo()?;
+        let mut suffix = 0;
+        let temp = loop {
+            let candidate = if suffix == 0 {
+                format!("renaming-{to}")
+            } else {
+                format!("renaming-{to}-{suffix}")
+            };
+            if repo.find_branch(&candidate, BranchType::Local).is_err() {
+                break candidate;
+            }
+            suffix += 1;
+        };
+        git_cmd::run_checked(&root, &["branch", "-m", from, &temp])?;
+        git_cmd::run_checked(&root, &["branch", "-m", &temp, to])?;
+    } else {
+        git_cmd::run_checked(&root, &["branch", "-m", from, to])?;
+    }
     Ok(format!("Renamed {from} to {to}"))
 }
 
