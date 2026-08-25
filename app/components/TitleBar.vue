@@ -16,6 +16,7 @@ import {
 } from 'lucide-vue-next'
 import { useGit, type CommitSummary } from '~/composables/useGit'
 import { useConfig } from '~/composables/useConfig'
+import { useShortcuts } from '~/composables/useShortcuts'
 
 const git = useGit()
 const store = git.store
@@ -49,6 +50,22 @@ function push() {
   if (!head.value) return
   return git.pushBranch(head.value.name, !head.value.upstream)
 }
+
+// The toolbar's own actions, bound to the keyboard. It is mounted for as long
+// as a repository is open, which is exactly as long as these should fire.
+useShortcuts({
+  'repo.fetch': () => !store.busy && void git.fetch(),
+  'repo.pull': () => !store.busy && void git.pull(),
+  'repo.push': () => !store.busy && void push(),
+  'repo.refresh': () => !store.busy && void git.refresh(),
+  'repo.settings': () => config.openSettings('profiles'),
+  'branch.create': () => {
+    if (!store.busy) showBranch.value = true
+  },
+  'stash.push': () => !store.busy && void git.stashPush(),
+  'history.undo': () => !store.busy && nextUndo.value && void git.undo(),
+  'history.redo': () => !store.busy && nextRedo.value && void git.redo()
+})
 
 // --- a refused push
 const blocked = computed(() => store.pushBlocked)

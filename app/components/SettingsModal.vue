@@ -6,6 +6,7 @@ import {
   Github,
   Gitlab,
   KeyRound,
+  Keyboard,
   Palette,
   Plus,
   Settings2,
@@ -30,6 +31,8 @@ import { useAi } from '~/composables/useAi'
 import { useGit } from '~/composables/useGit'
 import { describeKey, useSsh } from '~/composables/useSsh'
 import { useTheme } from '~/composables/useTheme'
+import { SHORTCUTS, SHORTCUT_GROUPS, keyLabel } from '~/composables/useShortcuts'
+import { useColumns } from '~/composables/useColumns'
 
 const config = useConfig()
 const forge = useForge()
@@ -37,8 +40,17 @@ const ssh = useSsh()
 const ai = useAi()
 const git = useGit()
 const { theme, themes, setTheme } = useTheme()
+const cols = useColumns()
 
 const section = computed(() => config.store.settingsSection)
+
+/** The keyboard, grouped the way the list is written, with empty groups gone. */
+const shortcutGroups = computed(() =>
+  SHORTCUT_GROUPS.map((group) => ({
+    group,
+    rows: SHORTCUTS.filter((one) => one.group === group)
+  })).filter((one) => one.rows.length)
+)
 
 // --- profiles
 const editing = ref<Profile | null>(null)
@@ -218,6 +230,13 @@ onMounted(async () => {
           @click="config.store.settingsSection = 'appearance'"
         >
           <Palette :size="15" /> Appearance
+        </button>
+        <button
+          class="nav-item"
+          :class="{ on: section === 'shortcuts' }"
+          @click="config.store.settingsSection = 'shortcuts'"
+        >
+          <Keyboard :size="15" /> Shortcuts
         </button>
         <button
           class="nav-item"
@@ -518,6 +537,42 @@ onMounted(async () => {
               <span class="faint small">{{ one.kind }}</span>
               <Check v-if="one.id === theme" :size="13" class="tick" />
             </button>
+          </div>
+
+          <h3 class="sub">Columns in the commit list</h3>
+          <p class="dim intro">
+            Which columns are drawn. Drag the line between two headings to resize one, and
+            double-click that line to put it back. Right-clicking the headings offers the same
+            list.
+          </p>
+          <div class="cols">
+            <label v-for="column in cols.columns" :key="column.id" class="check">
+              <input type="checkbox" :checked="cols.state.shown[column.id]"
+                     @change="cols.toggle(column.id)" />
+              <span>{{ column.label }}</span>
+            </label>
+          </div>
+          <button class="btn tiny" @click="cols.resetWidths()">Reset the widths</button>
+        </section>
+
+        <!-- Shortcuts -->
+        <section v-else-if="section === 'shortcuts'">
+          <h2>Shortcuts</h2>
+          <p class="dim intro">
+            Every key the window listens for, and where it has to be pressed. None of them fire
+            while a dialog is open, or while the caret is in a box that takes text.
+          </p>
+
+          <div v-for="one in shortcutGroups" :key="one.group" class="keys-group">
+            <h3>{{ one.group }}</h3>
+            <div v-for="row in one.rows" :key="row.id" class="keys-row">
+              <kbd class="keys">{{ keyLabel(row.keys) }}</kbd>
+              <span class="keys-what">
+                {{ row.label }}
+                <span v-if="row.note" class="faint small block">{{ row.note }}</span>
+              </span>
+              <span class="faint small keys-where">{{ row.where }}</span>
+            </div>
           </div>
         </section>
 
@@ -976,5 +1031,68 @@ select {
   margin-top: 3px;
   font-size: 11.5px;
   line-height: 1.5;
+}
+
+/* The keyboard page. Three columns — the key, what it does, where it works —
+   so a row is read across rather than as a sentence to parse. */
+.keys-group {
+  margin-bottom: 18px;
+}
+
+.keys-group h3 {
+  font-size: 11px;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--text-faint);
+  margin: 0 0 6px;
+}
+
+.keys-row {
+  display: grid;
+  grid-template-columns: 96px 1fr 190px;
+  gap: 12px;
+  align-items: baseline;
+  padding: 5px 0;
+  border-top: 1px solid var(--line);
+  font-size: 12.5px;
+}
+
+.keys {
+  font-family: inherit;
+  font-size: 11.5px;
+  font-weight: 600;
+  text-align: center;
+  padding: 2px 6px;
+  border-radius: 4px;
+  border: 1px solid var(--line);
+  background: var(--bg-raised);
+  color: var(--text);
+  white-space: nowrap;
+}
+
+.keys-what {
+  min-width: 0;
+}
+
+.keys-where {
+  text-align: right;
+}
+
+.sub {
+  font-size: 13px;
+  margin: 22px 0 4px;
+}
+
+/* The four column names sit in a row: they are one choice, not four settings
+   stacked down the page. */
+.cols {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px 20px;
+  margin-bottom: 10px;
+}
+
+.cols .check {
+  margin-bottom: 0;
 }
 </style>

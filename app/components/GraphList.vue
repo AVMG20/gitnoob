@@ -31,6 +31,8 @@ import {
 import { avatarFor, initials, tint } from '~/composables/useAvatars'
 import { useContextMenu } from '~/composables/useContextMenu'
 import { useDragDrop } from '~/composables/useDragDrop'
+import { useShortcuts } from '~/composables/useShortcuts'
+import { useColumns, type ColumnId } from '~/composables/useColumns'
 
 const git = useGit()
 const store = git.store
@@ -83,6 +85,68 @@ const lanes = computed(() =>
   Math.min(MAX_LANES, Math.max(2, ...store.rows.map((row) => row.width)))
 )
 const graphWidth = computed(() => lanes.value * LANE + 8 + PAD)
+
+// --- columns
+//
+// The graph is the one column with a width of its own: it is as wide as the
+// lanes in view need, until the user says otherwise. The rest carry a number
+// from the start, and the message column takes whatever is left.
+const cols = useColumns()
+const NATURAL: Record<ColumnId, () => number> = {
+  refs: () => 124,
+  graph: () => graphWidth.value,
+  author: () => 130,
+  date: () => 88
+}
+const width = (id: ColumnId) => cols.widthOf(id, NATURAL[id]())
+const box = (id: ColumnId) => ({ width: `${width(id)}px` })
+
+/**
+ * Drags one edge. `sign` is which way the pointer has to move to make the
+ * column wider: the columns to the left of the message grow rightwards, the two
+ * to its right grow leftwards, so both edges push against the message column
+ * rather than against the window.
+ */
+const resizing = ref<ColumnId | null>(null)
+
+function startResize(event: PointerEvent, id: ColumnId, sign: 1 | -1) {
+  event.preventDefault()
+  event.stopPropagation()
+  const from = event.clientX
+  const start = width(id)
+  resizing.value = id
+
+  const move = (moved: PointerEvent) => cols.setWidth(id, start + sign * (moved.clientX - from))
+  const stop = () => {
+    resizing.value = null
+    window.removeEventListener('pointermove', move)
+    window.removeEventListener('pointerup', stop)
+    document.body.style.cursor = ''
+    document.body.style.userSelect = ''
+  }
+
+  document.body.style.cursor = 'col-resize'
+  document.body.style.userSelect = 'none'
+  window.addEventListener('pointermove', move)
+  window.addEventListener('pointerup', stop)
+}
+
+/** Right-clicking the headings says which columns there are, and drops them. */
+function columnMenu(event: MouseEvent) {
+  menu.show(
+    event,
+    [
+      ...cols.columns.map((column) => ({
+        label: column.label,
+        icon: cols.state.shown[column.id] ? Check : undefined,
+        action: () => cols.toggle(column.id)
+      })),
+      { label: '', separator: true },
+      { label: 'Reset the widths', icon: Undo2, action: () => cols.resetWidths() }
+    ],
+    'Columns'
+  )
+}
 
 const matches = computed(() =>
   store.query.trim() ? store.rows.filter((row) => rowMatches(row, store.query)) : []
@@ -287,17 +351,18 @@ function covered() {
   return !!document.querySelector('.scrim, .overlay')
 }
 
+// Search and its two step keys are the graph's, but they are wanted from
+// wherever the hands are, so they are bound centrally rather than here. The
+// rest below move the selection and belong to the list itself.
+useShortcuts({
+  'graph.search': () => openSearch(),
+  'graph.next': () => step(1),
+  'graph.previous': () => step(-1)
+})
+
 function onKey(event: KeyboardEvent) {
-  if ((event.metaKey || event.ctrlKey) && event.key === 'f') {
-    event.preventDefault()
-    openSearch()
-  }
   if (event.key === 'Escape' && searchOpen.value) {
     closeSearch()
-  }
-  if ((event.metaKey || event.ctrlKey) && event.key === 'g') {
-    event.preventDefault()
-    step(event.shiftKey ? -1 : 1)
   }
 
   if (typing(event) || covered() || event.metaKey || event.ctrlKey || event.altKey) return
@@ -758,9 +823,19 @@ onUnmounted(() => {
 
     <!-- Column headings, so the branch strip on the left reads as a column
          rather than as labels that drifted away from their commits. -->
-    <div class="colhead">
-      <span class="col-refs">Branch / tag</span>
-      <span class="cell-head" :style="{ width: `${graphWidth}px` }">Graph</span>
+    <div class="colhead" @contextmenu="columnMenu($event)">
+      <template v-if="cols.state.shown.refs">
+        <span class="col-refs" :style="box('refs')">Branch / tag</span>
+        <span class="grip" :class="{ active: resizing === 'refs' }" title="Drag to resize, double-click to reset"
+              @pointerdown="startResize($event, 'refs', 1)"
+              @dblclick="cols.resetWidth('refs')" />
+      </template>
+      <template v-if="cols.state.shown.graph">
+        <span class="cell-head" :style="box('graph')">Graph</span>
+        <span class="grip" :class="{ active: resizing === 'graph' }" title="Drag to resize, double-click to reset"
+              @pointerdown="startResize($event, 'graph', 1)"
+              @dblclick="cols.resetWidth('graph')" />
+      </template>
       <span class="col-msg">Commit message</span>
       <!-- Lives here rather than beside the search box, which is not always on
            screen to hold it. -->
@@ -768,8 +843,18 @@ onUnmounted(() => {
         {{ marked.length }} selected
         <X :size="11" />
       </button>
-      <span class="col-author">Author</span>
-      <span class="col-date">Date</span>
+      <template v-if="cols.state.shown.author">
+        <span class="grip" :class="{ active: resizing === 'author' }" title="Drag to resize, double-click to reset"
+              @pointerdown="startResize($event, 'author', -1)"
+              @dblclick="cols.resetWidth('author')" />
+        <span class="col-author" :style="box('author')">Author</span>
+      </template>
+      <template v-if="cols.state.shown.date">
+        <span class="grip" :class="{ active: resizing === 'date' }" title="Drag to resize, double-click to reset"
+              @pointerdown="startResize($event, 'date', -1)"
+              @dblclick="cols.resetWidth('date')" />
+        <span class="col-date" :style="box('date')">Date</span>
+      </template>
     </div>
 
     <!-- The working tree, always the top row and selected by default. -->
@@ -779,7 +864,8 @@ onUnmounted(() => {
       @click="git.select(WIP)"
       @contextmenu="wipMenu($event)"
     >
-      <span class="col-refs" />
+      <span v-if="cols.state.shown.refs" class="col-refs" :style="box('refs')" />
+      <span v-if="cols.state.shown.graph" class="cell-box" :style="box('graph')">
       <svg class="cell" :width="graphWidth" :height="ROW" :viewBox="`0 0 ${graphWidth} ${ROW}`">
         <path
           v-if="store.rows.length"
@@ -800,6 +886,7 @@ onUnmounted(() => {
           :stroke-dasharray="dirty || conflicts ? '' : '2 2'"
         />
       </svg>
+      </span>
       <span class="col-msg">
         <span v-if="conflicts" class="chip chip-conflict">{{ conflicts }} conflicted</span>
         <span v-else-if="dirty" class="chip chip-wip">uncommitted</span>
@@ -814,8 +901,10 @@ onUnmounted(() => {
       <!-- Whoever a commit made here would be authored by, rather than "you":
            with a profile per context, which identity is in force is the thing
            worth showing. -->
-      <span class="col-author faint truncate">{{ store.repo?.author || 'no author set' }}</span>
-      <span class="col-date faint">now</span>
+      <span v-if="cols.state.shown.author" class="col-author faint truncate" :style="box('author')">
+        {{ store.repo?.author || 'no author set' }}
+      </span>
+      <span v-if="cols.state.shown.date" class="col-date faint" :style="box('date')">now</span>
     </div>
 
     <div ref="viewport" class="viewport" @scroll.passive="onScroll">
@@ -851,7 +940,7 @@ onUnmounted(() => {
           <!-- Refs live in their own column with a line running to the node,
                so a tip is found by scanning one narrow strip rather than by
                reading the start of every message. -->
-          <span class="col-refs">
+          <span v-if="cols.state.shown.refs" class="col-refs" :style="box('refs')">
             <!-- Only the first chip is drawn; the rest live behind a counter
                  that lists them, so a commit with five refs takes the same
                  width as one with a single branch. -->
@@ -872,7 +961,10 @@ onUnmounted(() => {
               @dblclick.stop="checkoutRef(chip)"
             >
               <Check v-if="chip.head" :size="11" :stroke-width="3" class="glyph" />
-              <span class="truncate">{{ chip.name }}</span>
+              <!-- Cut in the middle. Four chips reading `origin/ASANA-1216293…`
+                   are the same chip as far as the eye is concerned; the digits
+                   that differ are at the end. -->
+              <MidTruncate :text="chip.name" />
               <component
                 :is="chip.kind === 'remote' ? Cloud : chip.kind === 'tag' ? Tag : MonitorDot"
                 :size="11"
@@ -895,6 +987,7 @@ onUnmounted(() => {
             />
           </span>
 
+          <span v-if="cols.state.shown.graph" class="cell-box" :style="box('graph')">
           <svg
             class="cell"
             :width="graphWidth"
@@ -1011,6 +1104,7 @@ onUnmounted(() => {
               </title>
             </g>
           </svg>
+          </span>
 
           <span class="col-msg">
             <span class="summary truncate">
@@ -1022,8 +1116,15 @@ onUnmounted(() => {
               >
             </span>
           </span>
-          <span class="col-author truncate">{{ item.row.author }}</span>
-          <span class="col-date faint" :title="new Date(item.row.time * 1000).toLocaleString()">
+          <span v-if="cols.state.shown.author" class="col-author truncate" :style="box('author')">
+            {{ item.row.author }}
+          </span>
+          <span
+            v-if="cols.state.shown.date"
+            class="col-date faint"
+            :style="box('date')"
+            :title="new Date(item.row.time * 1000).toLocaleString()"
+          >
             {{ relativeTime(item.row.time) }}
           </span>
         </div>
@@ -1232,12 +1333,24 @@ onUnmounted(() => {
   display: block;
 }
 
+/* Holds the graph at whatever width the user gave the column. The svg keeps its
+   own size — scaling it would thin the lines and move the nodes off the rows —
+   so a narrowed column hides the lanes on the right rather than squeezing them
+   together. */
+.cell-box {
+  flex: none;
+  overflow: hidden;
+  display: block;
+  height: 100%;
+}
+
 /* The branch strip. The chips start at the left edge, where the eye already is
    for every other column, and a leader carries the line from the chip across to
    the graph rather than the chips being pushed over to meet it. */
 .col-refs {
   flex: none;
-  width: 124px;
+  /* The width is set on the element: it is the user's, and the heading, the
+     working-tree row and every commit row have to agree on it. */
   display: flex;
   align-items: center;
   justify-content: flex-start;
@@ -1290,6 +1403,39 @@ onUnmounted(() => {
 
 .cell-head {
   flex: none;
+  overflow: hidden;
+}
+
+/* The strip between two headings. It is wider than it looks: a four-pixel
+   target is a fight, so it reaches into the gap on both sides and draws a line
+   only when the pointer is on it. */
+.grip {
+  flex: none;
+  width: 9px;
+  margin: 0 -9px 0 -1px;
+  align-self: stretch;
+  cursor: col-resize;
+  position: relative;
+  z-index: 2;
+}
+
+.grip::after {
+  content: '';
+  position: absolute;
+  inset: 2px auto 2px 4px;
+  width: 1px;
+  background: var(--text-faint);
+  opacity: 0;
+}
+
+.grip:hover::after,
+.grip.active::after {
+  opacity: 0.7;
+}
+
+.grip.active::after {
+  background: var(--accent);
+  opacity: 1;
 }
 
 /* The heading reads left to right; only the chips below it hug the graph. */
@@ -1326,14 +1472,12 @@ onUnmounted(() => {
 }
 
 .col-author {
-  width: 130px;
   flex: none;
   color: var(--text-dim);
   font-size: 12px;
 }
 
 .col-date {
-  width: 88px;
   flex: none;
   text-align: right;
   font-size: 12px;
@@ -1354,6 +1498,15 @@ onUnmounted(() => {
   /* Double-clicking a chip checks it out; without this the second click
      selects the name instead of reading as a gesture. */
   user-select: none;
+}
+
+/* In the branch column the chip is whatever the column leaves it, rather than
+   a fixed 180px that a narrowed column would clip mid-word. The 180 still holds
+   for the chips in the message column, which are labels of a known length. */
+.col-refs .chip {
+  flex: 0 1 auto;
+  min-width: 0;
+  max-width: 100%;
 }
 
 /* A ref that is not the one we are on can be checked out from here, so it

@@ -7,6 +7,7 @@ import { Download, FolderOpen, FolderPlus, GitBranch, Plus, X } from 'lucide-vue
 import { useConfig } from '~/composables/useConfig'
 import { useGit } from '~/composables/useGit'
 import { useContextMenu } from '~/composables/useContextMenu'
+import { useShortcuts } from '~/composables/useShortcuts'
 
 const emit = defineEmits<{ open: [string]; clone: []; init: [] }>()
 
@@ -71,6 +72,29 @@ async function close(path: string) {
     git.store.rows = []
   }
 }
+
+/** Moves along the strip, wrapping, so the keys never dead-end. */
+function step(by: number) {
+  const paths = config.projects.value.map((p) => p.path)
+  if (paths.length < 2) return
+  const at = paths.indexOf(config.activeProject.value ?? '')
+  const next = paths[(at + by + paths.length) % paths.length]
+  if (next) emit('open', next)
+}
+
+useShortcuts({
+  'project.open': () => void pick(),
+  'project.close': () => {
+    const path = config.activeProject.value
+    if (path) void close(path)
+  },
+  'project.next': () => step(1),
+  'project.previous': () => step(-1),
+  'project.nth': (index: number) => {
+    const path = config.projects.value[index]?.path
+    if (path && path !== config.activeProject.value) emit('open', path)
+  }
+})
 
 function onDrop(target: string) {
   const from = dragging.value

@@ -57,12 +57,14 @@ export interface Config {
 
 export const OPENROUTER_SECRET = 'openrouter'
 
+export type SettingsSection = 'profiles' | 'ai' | 'appearance' | 'shortcuts' | 'behaviour'
+
 const store = reactive({
   config: null as Config | null,
   /** Which secrets exist, keyed by keychain key. Never holds a value. */
   secrets: {} as Record<string, boolean>,
   settingsOpen: false,
-  settingsSection: 'profiles' as 'profiles' | 'ai' | 'appearance' | 'behaviour'
+  settingsSection: 'profiles' as SettingsSection
 })
 
 function apply(config: Config) {
@@ -116,7 +118,7 @@ export function useConfig() {
     setSecret,
     hasSecret: (key: string | null | undefined) => (key ? store.secrets[key] === true : false),
 
-    openSettings(section: 'profiles' | 'ai' | 'behaviour' = 'profiles') {
+    openSettings(section: SettingsSection = 'profiles') {
       store.settingsSection = section
       store.settingsOpen = true
     },

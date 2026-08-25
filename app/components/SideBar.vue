@@ -792,7 +792,9 @@ function stashMenu(event: MouseEvent, index: number, message: string) {
             @drop.prevent="onDropOnBranch($event, row.item.name, false)"
           >
             <GitBranch :size="13" class="glyph" :class="{ current: row.item.is_head }" />
-            <span class="name truncate">{{ row.label }}</span>
+            <!-- Cut in the middle: these names share a prefix far more often
+                 than they share an ending, so the end is what tells them apart. -->
+            <MidTruncate class="name" :text="row.label" />
             <!-- A text arrow at this size sits so close to the digit that "↑1"
                  reads as "11", so the arrow is a glyph with a gap of its own. -->
             <span
@@ -876,7 +878,7 @@ function stashMenu(event: MouseEvent, index: number, message: string) {
               @dragend="drag.end()"
             >
               <GitBranch :size="13" class="glyph remote" />
-              <span class="name truncate">{{ row.label }}</span>
+              <MidTruncate class="name" :text="row.label" />
             </div>
           </template>
         </div>
@@ -982,7 +984,7 @@ function stashMenu(event: MouseEvent, index: number, message: string) {
           @contextmenu="tagMenu($event, tag.name, tag.oid)"
         >
           <Tag :size="12" class="glyph tag" />
-          <span class="name truncate">{{ tag.name }}</span>
+          <MidTruncate class="name" :text="tag.name" />
         </div>
         <p v-if="!tags.length" class="none faint">No tags.</p>
       </div>
