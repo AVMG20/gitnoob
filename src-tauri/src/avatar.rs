@@ -28,7 +28,7 @@ const FACE: u32 = 64;
 /// there" answers recorded by an older, shorter search are not trusted: the
 /// address that had no picture last week may simply not have been asked of the
 /// forge yet.
-const LOOKUP: u32 = 2;
+const LOOKUP: u32 = 3;
 
 /// How long to believe that an email has no picture before asking again. A
 /// person who signs up for a gravatar today should not have to reinstall to be
