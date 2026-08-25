@@ -1910,3 +1910,23 @@ fn an_ordinary_diff_is_not_reported_as_truncated() {
     let diff = diff::working_file_diff(&state, "a.txt", diff::Side::Unstaged).unwrap();
     assert_eq!(diff.truncated, 0);
 }
+
+/// A file git has never seen has nothing to diff against, and the naive answer
+/// — a delta with no hunks — is indistinguishable from "this file is unchanged".
+#[test]
+fn a_new_file_shows_its_whole_contents_as_added() {
+    let sandbox = Sandbox::new("untracked");
+    sandbox.commit("a.txt", "one\n", "First");
+    sandbox.write("new.txt", "hello\nworld\n");
+
+    let state = sandbox.state();
+    let diff = diff::working_file_diff(&state, "new.txt", diff::Side::Unstaged).unwrap();
+    let added: Vec<&str> = diff
+        .hunks
+        .iter()
+        .flat_map(|hunk| &hunk.lines)
+        .filter(|line| line.origin == '+')
+        .map(|line| line.content.as_str())
+        .collect();
+    assert_eq!(added, vec!["hello", "world"]);
+}

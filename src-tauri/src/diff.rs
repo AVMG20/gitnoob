@@ -116,8 +116,13 @@ pub fn working_file_diff(state: &AppState, path: &str, side: Side) -> Result<Fil
     let repo = state.repo()?;
     let mut opts = base_options();
     opts.pathspec(path);
-    // Untracked files have nothing to diff against, so show them whole.
-    opts.include_untracked(true).recurse_untracked_dirs(true);
+    // Untracked files have nothing to diff against, so show them whole. Listing
+    // them is not enough on its own: without the content flag the file appears
+    // in the diff with no hunks, which reads as "no changes" for a file that is
+    // entirely new.
+    opts.include_untracked(true)
+        .recurse_untracked_dirs(true)
+        .show_untracked_content(true);
 
     let diff = match side {
         Side::Unstaged => repo.diff_index_to_workdir(None, Some(&mut opts)),
