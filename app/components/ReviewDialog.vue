@@ -205,6 +205,13 @@ const ready = computed(
 
 <template>
   <AppModal :title="`New ${label}`" :width="560" @close="emit('close')">
+    <!-- ⌘/Ctrl+Enter from anywhere in the form, since the description is a
+         textarea and Enter belongs to it. -->
+    <div
+      class="keys"
+      @keydown.meta.enter.prevent="submit(false)"
+      @keydown.ctrl.enter.prevent="submit(false)"
+    >
     <p v-if="!locals.length" class="hint bad">
       This repository has no branches to merge yet.
     </p>
@@ -310,6 +317,8 @@ const ready = computed(
       <p v-if="error" class="hint bad">{{ error }}</p>
     </template>
 
+    </div>
+
     <template #footer>
       <button class="btn btn-ghost" @click="emit('close')">Cancel</button>
       <button
@@ -332,6 +341,11 @@ const ready = computed(
 </template>
 
 <style scoped>
+/* The wrapper exists only to catch ⌘Enter; it must not change the layout. */
+.keys {
+  display: contents;
+}
+
 .ends {
   display: flex;
   align-items: flex-end;

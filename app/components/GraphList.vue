@@ -248,6 +248,45 @@ function closeSearch() {
   searchBox.value?.blur()
 }
 
+/** Every row the selection can land on, the working-changes row included. */
+const selectable = computed(() => [WIP, ...store.rows.map((row) => row.oid)])
+
+/**
+ * Walks the selection up and down the list.
+ *
+ * The graph is a list, and a list you can only click through is a list you
+ * cannot read with your hands on the keyboard. The working-changes row counts
+ * as the first entry, since that is where the eye starts.
+ */
+function move(by: number) {
+  const list = selectable.value
+  if (!list.length) return
+  const at = list.indexOf(store.selected)
+  const next = list[Math.min(list.length - 1, Math.max(0, at < 0 ? 0 : at + by))]
+  if (!next || next === store.selected) return
+  git.select(next)
+  if (next === WIP) viewport.value?.scrollTo({ top: 0, behavior: 'smooth' })
+  else scrollTo(next)
+}
+
+/** True when the keystroke belongs to whatever is being written in. */
+function typing(event: KeyboardEvent) {
+  const element = event.target as HTMLElement | null
+  if (!element) return false
+  return element.isContentEditable || ['INPUT', 'TEXTAREA', 'SELECT'].includes(element.tagName)
+}
+
+/**
+ * True while something sits on top of the graph.
+ *
+ * A dialog, a menu and a picker all draw their own scrim, and the conflict
+ * resolver its own overlay. Whichever it is, the keys belong to it and not to
+ * the list underneath.
+ */
+function covered() {
+  return !!document.querySelector('.scrim, .overlay')
+}
+
 function onKey(event: KeyboardEvent) {
   if ((event.metaKey || event.ctrlKey) && event.key === 'f') {
     event.preventDefault()
@@ -259,6 +298,36 @@ function onKey(event: KeyboardEvent) {
   if ((event.metaKey || event.ctrlKey) && event.key === 'g') {
     event.preventDefault()
     step(event.shiftKey ? -1 : 1)
+  }
+
+  if (typing(event) || covered() || event.metaKey || event.ctrlKey || event.altKey) return
+  // A page is what the window shows, less a row so the eye keeps its place.
+  const page = Math.max(1, Math.floor(height.value / ROW) - 1)
+  switch (event.key) {
+    case 'ArrowDown':
+      event.preventDefault()
+      move(1)
+      break
+    case 'ArrowUp':
+      event.preventDefault()
+      move(-1)
+      break
+    case 'PageDown':
+      event.preventDefault()
+      move(page)
+      break
+    case 'PageUp':
+      event.preventDefault()
+      move(-page)
+      break
+    case 'Home':
+      event.preventDefault()
+      move(-selectable.value.length)
+      break
+    case 'End':
+      event.preventDefault()
+      move(selectable.value.length)
+      break
   }
 }
 
@@ -658,20 +727,26 @@ onUnmounted(() => {
     <div v-if="searchOpen" class="head">
       <span class="search">
         <Search :size="13" class="faint" />
+        <!-- The arrows walk the matches, which is what the eye expects of a
+             field with a "1 of 9" beside it. Enter does the same, since in a
+             search box it has nothing else to do. -->
         <input
           ref="searchBox"
           v-model="store.query"
           type="search"
           placeholder="Search messages, authors, hashes"
+          @keydown.down.prevent="step(1)"
+          @keydown.up.prevent="step(-1)"
+          @keydown.enter.prevent="step($event.shiftKey ? -1 : 1)"
         />
         <template v-if="store.query.trim()">
           <span class="count" :class="{ none: !matches.length }">
             {{ matches.length ? `${hit + 1} of ${matches.length}` : 'no matches' }}
           </span>
-          <button class="step" :disabled="!matches.length" title="Previous (⇧⌘G)" @click="step(-1)">
+          <button class="step" :disabled="!matches.length" title="Previous (↑ or ⇧⌘G)" @click="step(-1)">
             <ChevronUp :size="13" />
           </button>
-          <button class="step" :disabled="!matches.length" title="Next (⌘G)" @click="step(1)">
+          <button class="step" :disabled="!matches.length" title="Next (↓ or ⌘G)" @click="step(1)">
             <ChevronDown :size="13" />
           </button>
         </template>

@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, nextTick, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue'
+import { computed, reactive, ref } from 'vue'
 import { invoke } from '@tauri-apps/api/core'
 import {
   Archive,
@@ -9,6 +9,8 @@ import {
   Cloud,
   Copy,
   Download,
+  Eye,
+  EyeOff,
   ExternalLink,
   Folder,
   FolderOpen,
@@ -28,12 +30,14 @@ import { copyText, relativeTime, useGit } from '~/composables/useGit'
 import { useContextMenu } from '~/composables/useContextMenu'
 import { useDragDrop } from '~/composables/useDragDrop'
 import { useForge } from '~/composables/useForge'
+import { useConfig } from '~/composables/useConfig'
 
 const git = useGit()
 const store = git.store
 const menu = useContextMenu()
 const drag = useDragDrop()
 const forge = useForge()
+const config = useConfig()
 
 const open = reactive({ locals: true, remotes: true, tags: false, stashes: true, reviews: true })
 const filter = ref('')
@@ -135,18 +139,32 @@ const SIZES_KEY = 'gitnoob:sidebar-sizes'
 const MIN_SECTION = 40
 
 /**
- * Heights the user has dragged a section to, in pixels.
+ * Heights the user has dragged sections to, in pixels, by profile.
  *
- * Left empty, every open section takes an equal share of the sidebar and gives
- * back whatever it does not need — which is the right guess often enough, and
- * wrong exactly when someone cares about one list more than the others. A
- * dragged height pins that section and the rest share what is left.
+ * Undragged, a section is as tall as what is in it and no taller than the cap
+ * in the stylesheet — three merge requests take three rows, forty remote
+ * branches take the cap and scroll inside it. Nothing is squeezed to make the
+ * column fit: the sidebar scrolls when the sections together are taller than
+ * it, which is the one thing a person can predict.
+ *
+ * Kept per profile because the sizes follow the work. The repositories on one
+ * account tend to look alike — a wall of remote branches at work, none of them
+ * at home — and a size dragged for one is the wrong size for the other.
  */
-const sizes = reactive<Partial<Record<Section, number>>>(readSizes())
+const sizes = reactive<Record<string, Partial<Record<Section, number>>>>(readSizes())
 
-function readSizes(): Partial<Record<Section, number>> {
+/** Which set of heights is in play: the active profile's, or a shared one. */
+const profileKey = computed(() => config.profile.value?.id ?? 'default')
+
+function readSizes(): Record<string, Partial<Record<Section, number>>> {
   try {
-    return JSON.parse(localStorage.getItem(SIZES_KEY) ?? '{}')
+    const saved = JSON.parse(localStorage.getItem(SIZES_KEY) ?? '{}')
+    // Heights used to be stored for everyone at once. Anything in that shape is
+    // read as the shared set rather than thrown away.
+    if (Object.values(saved).some((value) => typeof value === 'number')) {
+      return { default: saved }
+    }
+    return saved
   } catch {
     return {}
   }
@@ -160,56 +178,19 @@ function saveSizes() {
   }
 }
 
-const scrollEl = ref<HTMLElement | null>(null)
-
-/**
- * Shrinks pinned sections until the sidebar itself no longer scrolls.
- *
- * Two scrollbars inside one another is the worst of both: the wheel picks one
- * of them and it is never the one meant. The sections already scroll, so the
- * column of them must always fit — a height that would push it over is simply
- * not allowed, whether it was dragged there or arrived by the window getting
- * shorter.
- *
- * Reading `scrollHeight` forces the layout, so each pass sees the effect of the
- * last; the guard is there because a floor of forty pixels each can be more
- * than a very short window has, and there is nothing to be done about that.
- */
-function fit() {
-  const el = scrollEl.value
-  if (!el) return
-  for (let pass = 0; pass < 12; pass++) {
-    const over = el.scrollHeight - el.clientHeight
-    if (over <= 0) return
-    const pinned = (Object.keys(sizes) as Section[]).filter((key) => (sizes[key] ?? 0) > MIN_SECTION)
-    if (!pinned.length) return
-    const share = Math.ceil(over / pinned.length)
-    for (const key of pinned) {
-      sizes[key] = Math.max(MIN_SECTION, (sizes[key] ?? 0) - share)
-    }
-  }
-}
-
-onMounted(() => {
-  fit()
-  window.addEventListener('resize', fit)
-})
-
-// Folding a section open hands its rows back into the column, which can be
-// what tips it over.
-watch(open, () => nextTick(fit), { deep: true })
-onBeforeUnmount(() => window.removeEventListener('resize', fit))
-
 function sizeOf(section: Section) {
-  const height = sizes[section]
-  return height ? { height: `${height}px`, flex: 'none' } : undefined
+  const height = sizes[profileKey.value]?.[section]
+  // `max-height` is what caps an undragged section; a dragged one has said what
+  // it wants, so the cap comes off and the height stands.
+  return height ? { height: `${height}px`, maxHeight: 'none' } : undefined
 }
 
 /**
  * Drags the divider under a section to set its height.
  *
  * The grip resizes the section above it, which is the one the pointer just
- * left — the same rule every split view uses.
+ * left — the same rule every split view uses. Nothing else moves: the sections
+ * below keep their heights and the sidebar scrolls if that no longer fits.
  */
 function grab(event: PointerEvent, section: Section) {
   const grip = event.currentTarget as HTMLElement
@@ -221,10 +202,8 @@ function grab(event: PointerEvent, section: Section) {
   grip.setPointerCapture(event.pointerId)
 
   const move = (moved: PointerEvent) => {
-    sizes[section] = Math.max(MIN_SECTION, startHeight + moved.clientY - startY)
-    // Dragging past what is left does nothing rather than pushing the column
-    // out of the window: the drag stops where the space does.
-    fit()
+    const bag = sizes[profileKey.value] ?? (sizes[profileKey.value] = {})
+    bag[section] = Math.max(MIN_SECTION, startHeight + moved.clientY - startY)
   }
   const done = () => {
     grip.releasePointerCapture(event.pointerId)
@@ -237,17 +216,80 @@ function grab(event: PointerEvent, section: Section) {
   event.preventDefault()
 }
 
-/** Double-clicking a divider hands the section back to the shared layout. */
+/** Double-clicking a divider gives a section its ordinary height back. */
 function resetSize(section: Section) {
-  delete sizes[section]
+  delete sizes[profileKey.value]?.[section]
   saveSizes()
+}
+
+// --- branches put out of the way
+
+const HIDDEN_KEY = 'gitnoob:hidden-branches'
+
+/**
+ * Branches the user has dimmed, by repository path.
+ *
+ * Kept rather than removed from the list: a branch you have stopped working on
+ * is still one you check out again, and a list that hides things outright
+ * leaves you wondering where they went. Dimmed, it stays where it was and stops
+ * competing for the eye with the branches actually in play.
+ *
+ * By repository because branch names only mean anything inside one.
+ */
+const hidden = reactive<Record<string, string[]>>(readHidden())
+
+function readHidden(): Record<string, string[]> {
+  try {
+    return JSON.parse(localStorage.getItem(HIDDEN_KEY) ?? '{}')
+  } catch {
+    return {}
+  }
+}
+
+const repoKey = computed(() => store.repo?.path ?? '')
+
+function isHidden(name: string) {
+  return (hidden[repoKey.value] ?? []).includes(name)
+}
+
+function toggleHidden(name: string) {
+  const key = repoKey.value
+  if (!key) return
+  const list = hidden[key] ?? []
+  hidden[key] = list.includes(name) ? list.filter((one) => one !== name) : [...list, name]
+  if (!hidden[key].length) delete hidden[key]
+  try {
+    localStorage.setItem(HIDDEN_KEY, JSON.stringify(hidden))
+  } catch {
+    // A window that cannot remember it still dims it for this session.
+  }
 }
 
 const head = computed(() => store.repo?.head ?? '')
 const locals = computed(() => (store.refs?.locals ?? []).filter((b) => match(b.name)))
 const localShelf = computed(() => shelve(locals.value, 'local'))
 const tags = computed(() => (store.refs?.tags ?? []).filter((t) => match(t.name)))
-const stashes = computed(() => store.stashes)
+const stashes = computed(() =>
+  store.stashes.filter((stash) => match(`${stash.message} ${stash.branch ?? ''}`))
+)
+
+/**
+ * Reviews matching the filter.
+ *
+ * Searched by everything shown on the row and by the branch behind it: people
+ * look for a merge request by its number as often as by its title, and by the
+ * branch more often than either.
+ */
+const reviews = computed(() =>
+  forge.store.reviews.filter((review) =>
+    match(`!${review.number} ${review.title} ${review.source_branch} ${review.author}`)
+  )
+)
+
+/** How many remote branches the filter left, across every remote. */
+const remoteCount = computed(() =>
+  remoteGroups.value.reduce((sum, group) => sum + group.branches.length, 0)
+)
 
 const remoteGroups = computed(() => {
   const groups = new Map<string, { name: string; oid: string }[]>()
@@ -457,6 +499,13 @@ function localMenu(event: MouseEvent, name: string, upstream: string | null) {
         action: () => copyText(name, 'Branch')
       },
       {
+        // Nothing happens to the branch itself; this is about the list.
+        label: isHidden(name) ? 'Undim in the list' : 'Dim in the list',
+        icon: isHidden(name) ? Eye : EyeOff,
+        hint: isHidden(name) ? '' : 'still there, just quiet',
+        action: () => toggleHidden(name)
+      },
+      {
         label: 'Rename…',
         icon: Pencil,
         action: () =>
@@ -585,10 +634,17 @@ function stashMenu(event: MouseEvent, index: number, message: string) {
   <aside class="side">
     <div class="filter">
       <Search :size="13" class="faint" />
-      <input v-model="filter" type="search" placeholder="Filter branches" />
+      <!-- Esc empties the box rather than leaving a filter applied over a list
+           nobody is looking at any more. -->
+      <input
+        v-model="filter"
+        type="search"
+        placeholder="Filter branches, requests, stashes"
+        @keydown.esc.prevent="filter = ''"
+      />
     </div>
 
-    <div ref="scrollEl" class="scroll">
+    <div class="scroll">
       <!-- Local -->
       <button class="section-title toggle" @click="open.locals = !open.locals">
         <ChevronRight :size="12" class="chev" :class="{ down: open.locals }" />
@@ -613,6 +669,7 @@ function stashMenu(event: MouseEvent, index: number, message: string) {
             class="row"
             :class="{
               on: row.item.is_head,
+              dim: isHidden(row.item.name),
               drop: drag.state.over === `branch:${row.item.name}`
             }"
             :style="{ paddingLeft: `calc(var(--indent) + ${row.depth * 14}px)` }"
@@ -662,7 +719,7 @@ function stashMenu(event: MouseEvent, index: number, message: string) {
         <ChevronRight :size="12" class="chev" :class="{ down: open.remotes }" />
         <Cloud :size="12" class="mark" />
         Remote
-        <span class="count">{{ store.refs?.remotes.length ?? 0 }}</span>
+        <span class="count">{{ remoteCount }}</span>
       </button>
       <div v-if="open.remotes" class="group" :style="sizeOf('remotes')">
         <div v-for="group in remoteGroups" :key="group.remote">
@@ -720,7 +777,7 @@ function stashMenu(event: MouseEvent, index: number, message: string) {
             <ChevronRight :size="12" class="chev" :class="{ down: open.reviews }" />
             <GitPullRequest :size="12" class="mark" />
             {{ forge.label.value }}
-            <span class="count">{{ forge.store.reviews.length }}</span>
+            <span class="count">{{ reviews.length }}</span>
           </button>
           <button
             class="head-action"
@@ -733,7 +790,7 @@ function stashMenu(event: MouseEvent, index: number, message: string) {
         </div>
         <div v-if="open.reviews" class="group" :style="sizeOf('reviews')">
           <div
-            v-for="review in forge.store.reviews"
+            v-for="review in reviews"
             :key="review.number"
             class="row"
             :class="{ on: review.is_current }"
@@ -777,7 +834,7 @@ function stashMenu(event: MouseEvent, index: number, message: string) {
             }}
           </p>
           <p v-else-if="forge.store.error" class="err">{{ forge.store.error }}</p>
-          <p v-else-if="!forge.store.reviews.length" class="none faint">
+          <p v-else-if="!reviews.length" class="none faint">
             {{ forge.store.loading ? 'Loading…' : 'Nothing open.' }}
           </p>
         </div>
@@ -916,13 +973,11 @@ function stashMenu(event: MouseEvent, index: number, message: string) {
   outline: none;
 }
 
-/* Each section scrolls inside itself rather than pushing the ones below it off
-   the bottom. The headings are the map of the sidebar — Local, Remote, Reviews,
-   Tags, Stashes — and a repository with forty remote branches used to bury all
-   of them under one list. Laid out as a column, every section keeps its heading
-   in view and gives up height in proportion to how much it has; the outer
-   scroll is left as the last resort, for when even the floors below do not fit.
-   */
+/* The sections are stacked at the height they ask for and the sidebar scrolls
+   when they do not all fit. Sharing the height out between them instead meant
+   every section changed size whenever the window did, or whenever a section was
+   folded open — five lists all shrinking at once to avoid one scrollbar, and
+   none of them left tall enough to read. */
 .scroll {
   display: flex;
   flex-direction: column;
@@ -936,15 +991,16 @@ function stashMenu(event: MouseEvent, index: number, message: string) {
   flex: none;
 }
 
-/* Every open section asks for the same share of the sidebar, and `max-content`
-   caps it at what it actually holds — so a section with one merge request in it
-   takes one row and hands the rest back to the branch lists, rather than the
-   longest list taking the most simply because it is longest. */
+/* As tall as what is in it, up to a cap: a section with three merge requests
+   takes three rows, and one with forty branches takes the cap and scrolls
+   inside itself rather than burying every heading below it. The cap is about
+   nine rows — enough to work in, short enough that the usual five sections fit
+   an ordinary window without the sidebar scrolling at all. Dragging a divider
+   replaces both the height and the cap. */
 .group {
   padding-top: 2px;
-  flex: 1 1 0;
-  min-height: 40px;
-  max-height: max-content;
+  flex: none;
+  max-height: 250px;
   overflow-y: auto;
   scrollbar-width: thin;
 }
@@ -1101,6 +1157,21 @@ function stashMenu(event: MouseEvent, index: number, message: string) {
 .row.on .name {
   color: #fff;
   font-weight: 600;
+}
+
+/* Dimmed on purpose: the branch is still listed, still right-clickable, and
+   still checks out — it has simply stopped asking to be read. Enough contrast
+   left to scan, little enough that the eye passes over it. */
+.row.dim .name,
+.row.dim .glyph,
+.row.dim .tick,
+.row.dim .no-upstream {
+  opacity: 0.42;
+}
+
+.row.dim:hover .name,
+.row.dim:hover .glyph {
+  opacity: 0.75;
 }
 
 .row.drop {

@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onMounted, ref, watch } from 'vue'
+import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
 import {
   Check,
   ExternalLink,
@@ -175,7 +175,15 @@ async function patchAi(patch: Record<string, unknown>) {
   await ai.refreshStatus()
 }
 
+/** Esc closes it, the way it closes every other window in the app. */
+function onKey(event: KeyboardEvent) {
+  if (event.key === 'Escape') config.closeSettings()
+}
+
+onUnmounted(() => window.removeEventListener('keydown', onKey))
+
 onMounted(async () => {
+  window.addEventListener('keydown', onKey)
   tokenKey.value = await config.forgeSecretKey()
   await config.refreshSecrets()
   await ssh.loadKeys()

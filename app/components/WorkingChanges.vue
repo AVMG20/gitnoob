@@ -345,6 +345,7 @@ function fileMenu(event: MouseEvent, path: string, side: 'staged' | 'unstaged', 
           rows="4"
           placeholder="Summary on the first line, why it changed below"
           @keydown.meta.enter="commit"
+          @keydown.ctrl.enter="commit"
         />
         <span
           v-if="subject.length"
