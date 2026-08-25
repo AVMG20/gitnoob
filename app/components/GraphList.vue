@@ -141,25 +141,20 @@ function face(row: GraphRow) {
  * and leaves neither end of it clearly in a lane.
  */
 /**
- * Whether the history forks or comes back together at this commit.
+ * Whether two lines become one at this commit.
  *
- * Two shapes count. A merge is a commit with more than one parent: its line
- * splits going down. A branch point is a commit more than one line comes into
- * from above, which is a lane-changing segment ending at the node.
+ * A merge, and only a merge. It is the busiest node in the picture — the one
+ * row where several lines arrive at once — so it is drawn as a plain dot rather
+ * than a face: the junction reads as a junction, and the lines meeting there
+ * are not hidden behind a picture.
  *
- * What does not count is the far end of either — the tip of a branch whose only
- * parent happens to sit in another lane. A line leaves it sideways, but nothing
- * forked or merged there, and dotting both ends of every elbow would mark the
- * plumbing rather than the history.
- *
- * These are the rows where the shape of the history changed, which at a glance
- * is worth more than whose commit it was, so they are drawn as a plain dot
- * instead of a face: the junction reads as a junction, and the lines meeting
- * there are not hidden behind a picture.
+ * A branch point is left as an ordinary commit even though it is a junction of
+ * a kind. The line leaving it says so already, and there is one of them for
+ * every branch ever made from the trunk: dotting those turns a column of faces
+ * into a column of dots and buys nothing the elbow was not showing.
  */
 function junction(row: GraphRow) {
-  if (row.parents.length > 1) return true
-  return row.segments.some((segment) => segment.x1 !== segment.x2 && segment.y2 === 1)
+  return row.parents.length > 1
 }
 
 function path(segment: Segment) {

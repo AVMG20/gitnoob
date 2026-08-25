@@ -155,6 +155,72 @@ fn reports_staged_and_unstaged_changes_separately() {
     assert!(status.conflicted.is_empty());
 }
 
+/// A branch whose tip is newer than HEAD must not take the trunk's column.
+///
+/// The walk reaches the newest commit first, so first come first served hands
+/// lane 0 to whichever branch happens to have been committed to last, and the
+/// line the user is standing on is pushed sideways around it — which reads as
+/// the branch and the trunk trading places rather than as a branch leaving.
+#[test]
+fn the_checked_out_line_keeps_the_leftmost_lane() {
+    let sandbox = Sandbox::new("trunk-lane");
+    sandbox.commit("a.txt", "1\n", "Root");
+    sandbox.commit("a.txt", "2\n", "Second");
+    sandbox.git(&["checkout", "-q", "-b", "topic"]);
+    sandbox.commit("t.txt", "t\n", "Topic work");
+    sandbox.git(&["checkout", "-q", "main"]);
+    sandbox.git(&["merge", "-q", "--no-ff", "-m", "Merge topic", "topic"]);
+    // Committed after the merge, so this branch's tip is the newest commit in
+    // the repository while main stays checked out.
+    sandbox.git(&["checkout", "-q", "-b", "later"]);
+    sandbox.commit("l.txt", "l\n", "Newer than HEAD");
+    sandbox.commit("l.txt", "l2\n", "Newer still");
+    sandbox.git(&["checkout", "-q", "main"]);
+
+    let page = graph::build(&sandbox.state(), 500).unwrap();
+
+    let merge = page
+        .rows
+        .iter()
+        .find(|row| row.summary == "Merge topic")
+        .expect("the merge commit should be in the graph");
+    assert_eq!(merge.lane, 0, "HEAD's line belongs in the leftmost lane");
+
+    // The newer branch sits beside the trunk rather than in it, and runs
+    // straight down its own lane: no row of it steps sideways on the way.
+    let newer: Vec<&graph::GraphRow> = page
+        .rows
+        .iter()
+        .filter(|row| row.summary.starts_with("Newer"))
+        .collect();
+    assert_eq!(newer.len(), 2);
+    for row in &newer {
+        assert!(row.lane > 0, "a branch must not take the trunk's column");
+        for segment in &row.segments {
+            if segment.x1 == row.lane || segment.x2 == row.lane {
+                assert_eq!(
+                    segment.x1, segment.x2,
+                    "a branch keeps its lane until the commit it rejoins"
+                );
+            }
+        }
+    }
+
+    // Nothing is drawn in the reserved lane above the row that claims it: the
+    // trunk has no line before its own newest commit.
+    let above: Vec<&graph::GraphRow> = page
+        .rows
+        .iter()
+        .take_while(|row| row.summary != "Merge topic")
+        .collect();
+    for row in &above {
+        assert!(
+            row.segments.iter().all(|s| s.x1 != 0 && s.x2 != 0),
+            "the reserved lane carries no line until the walk reaches it"
+        );
+    }
+}
+
 /// The graph is the piece most likely to be quietly wrong, so this asserts the
 /// invariants a renderer depends on rather than an exact picture.
 #[test]

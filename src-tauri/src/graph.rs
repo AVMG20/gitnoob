@@ -85,6 +85,21 @@ pub fn build(state: &AppState, limit: usize) -> Result<GraphPage, String> {
     let mut rows: Vec<GraphRow> = Vec::with_capacity(limit.min(4096));
     let mut has_more = false;
 
+    // The line the user is standing on takes the leftmost lane, whatever order
+    // the walk happens to reach it in. Left to first come first served, a branch
+    // whose tip is merely newer than HEAD takes the trunk's column, and the
+    // trunk is then drawn stepping sideways around it on its way down — which
+    // reads as the branch and the trunk swapping places rather than as a branch
+    // leaving. The lane is only reserved: nothing is drawn in it until the
+    // commit itself turns up, since above that row there is no line to draw.
+    let mut reserved = None;
+    if let Some(head) = repo.head().ok().and_then(|reference| reference.target()) {
+        lanes.push(Some(head));
+        colors.push(next_color);
+        next_color += 1;
+        reserved = Some(0);
+    }
+
     for oid in walk {
         let oid = oid.map_err(err)?;
         if rows.len() >= limit {
@@ -95,6 +110,7 @@ pub fn build(state: &AppState, limit: usize) -> Result<GraphPage, String> {
 
         let lanes_before = lanes.clone();
         let colors_before = colors.clone();
+        let reserved_before = reserved;
 
         // 1. Claim a lane.
         let lane = match lanes.iter().position(|l| *l == Some(oid)) {
@@ -108,6 +124,9 @@ pub fn build(state: &AppState, limit: usize) -> Result<GraphPage, String> {
             }
         };
         let color = colors[lane];
+        if reserved == Some(lane) {
+            reserved = None;
+        }
 
         // 2. Release any other lane that was also waiting for this commit —
         //    several children merging back into one line.
@@ -123,12 +142,14 @@ pub fn build(state: &AppState, limit: usize) -> Result<GraphPage, String> {
         match parents.split_first() {
             None => lanes[lane] = None,
             Some((first, rest)) => {
-                match lanes.iter().position(|l| *l == Some(*first)) {
-                    // Already awaited elsewhere: let the lines converge there.
-                    Some(existing) if existing != lane => lanes[lane] = None,
-                    Some(_) => {}
-                    None => lanes[lane] = Some(*first),
-                }
+                // The lane carries on to the first parent even when another
+                // lane is already waiting for that same commit. Both hold it
+                // until the row it lands on, where they meet at its node —
+                // which is the row the branch actually rejoined. Collapsing the
+                // duplicate here instead would move the join a row early and
+                // draw the branch sliding into its neighbour's column before
+                // there is anything there to join.
+                lanes[lane] = Some(*first);
                 for parent in rest {
                     if lanes.iter().any(|l| *l == Some(*parent)) {
                         continue;
@@ -145,8 +166,24 @@ pub fn build(state: &AppState, limit: usize) -> Result<GraphPage, String> {
         let lanes_after = lanes.clone();
 
         // 4. Turn the before/after tables into segments.
+        // Where a line ends up, preferring the lane it is already in. Two lines
+        // waiting for the same commit both hold it, so a plain search finds
+        // whichever comes first and would draw a line that is staying put as
+        // stepping into its neighbour.
+        let find = |want: &Oid, prefer: usize| -> Option<usize> {
+            if lanes_after.get(prefer).and_then(|slot| slot.as_ref()) == Some(want) {
+                return Some(prefer);
+            }
+            lanes_after.iter().position(|slot| slot.as_ref() == Some(want))
+        };
+
         let mut segments = Vec::new();
         for (x, slot) in lanes_before.iter().enumerate() {
+            // A lane still only reserved holds a commit the walk has not
+            // reached, so there is no line above this row to come down from.
+            if reserved_before == Some(x) {
+                continue;
+            }
             let Some(waiting) = slot else { continue };
             if *waiting == oid {
                 // Incoming line ends at this row's node.
@@ -157,7 +194,7 @@ pub fn build(state: &AppState, limit: usize) -> Result<GraphPage, String> {
                     y2: 1,
                     color: colors_before[x],
                 });
-            } else if let Some(to) = lanes_after.iter().position(|l| l.as_ref() == Some(waiting)) {
+            } else if let Some(to) = find(waiting, x) {
                 // A line that just passes this row by.
                 segments.push(Segment {
                     x1: x,
@@ -169,7 +206,7 @@ pub fn build(state: &AppState, limit: usize) -> Result<GraphPage, String> {
             }
         }
         for (i, parent) in parents.iter().enumerate() {
-            let Some(to) = lanes_after.iter().position(|l| l.as_ref() == Some(parent)) else {
+            let Some(to) = find(parent, if i == 0 { lane } else { usize::MAX }) else {
                 continue;
             };
             segments.push(Segment {

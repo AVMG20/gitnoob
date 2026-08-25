@@ -10,6 +10,8 @@ import {
   Copy,
   Download,
   ExternalLink,
+  Folder,
+  FolderOpen,
   GitBranch,
   GitMerge,
   GitPullRequest,
@@ -49,8 +51,80 @@ const prompt = ref<{
 const match = (name: string) =>
   !filter.value.trim() || name.toLowerCase().includes(filter.value.trim().toLowerCase())
 
+/**
+ * Folders the user has shut. Everything starts open, so a window that has never
+ * been touched shows branches rather than a wall of closed folders.
+ */
+const shut = reactive(new Set<string>())
+
+function toggleFolder(path: string) {
+  if (shut.has(path)) shut.delete(path)
+  else shut.add(path)
+}
+
+/** A folder heading or a branch, at a depth, ready for one flat `v-for`. */
+type Shelf<T> =
+  | { kind: 'folder'; key: string; path: string; label: string; depth: number; shut: boolean }
+  | { kind: 'branch'; key: string; item: T; label: string; depth: number }
+
+/**
+ * Sorts branch names into the folders their slashes already describe.
+ *
+ * `feature/login` and `feature/signup` are two branches in one place, and a
+ * project that names them that way ends up with a column of near-identical
+ * prefixes, each one pushing the part that differs off the right-hand edge. The
+ * folder carries the shared half, and a branch is listed under it by the part
+ * that tells it apart.
+ *
+ * The list is flat, with a depth on each row, rather than a component nesting
+ * itself: the rows are drag targets and menu targets, and keeping them siblings
+ * keeps that wiring in one place.
+ *
+ * While a filter is typed every folder is open — someone searching wants what
+ * they searched for, not the folder it happens to live in.
+ */
+function shelve<T extends { name: string }>(items: T[], scope: string): Shelf<T>[] {
+  const rows: Shelf<T>[] = []
+  const searching = !!filter.value.trim()
+  const sorted = [...items].sort((a, b) => a.name.localeCompare(b.name))
+  let trail: string[] = []
+  // The depth of the shut folder currently hiding rows, if any.
+  let hidden: number | null = null
+
+  for (const item of sorted) {
+    const parts = item.name.split('/')
+    const dirs = parts.slice(0, -1)
+
+    let same = 0
+    while (same < dirs.length && same < trail.length && dirs[same] === trail[same]) same++
+    if (hidden !== null && hidden >= same) hidden = null
+    trail = trail.slice(0, same)
+
+    for (let i = same; i < dirs.length; i++) {
+      trail.push(dirs[i]!)
+      if (hidden !== null) continue
+      const path = `${scope}:${trail.join('/')}`
+      const closed = !searching && shut.has(path)
+      rows.push({ kind: 'folder', key: `folder:${path}`, path, label: dirs[i]!, depth: i, shut: closed })
+      if (closed) hidden = i
+    }
+
+    if (hidden === null) {
+      rows.push({
+        kind: 'branch',
+        key: `branch:${scope}:${item.name}`,
+        item,
+        label: parts[parts.length - 1]!,
+        depth: dirs.length
+      })
+    }
+  }
+  return rows
+}
+
 const head = computed(() => store.repo?.head ?? '')
 const locals = computed(() => (store.refs?.locals ?? []).filter((b) => match(b.name)))
+const localShelf = computed(() => shelve(locals.value, 'local'))
 const tags = computed(() => (store.refs?.tags ?? []).filter((t) => match(t.name)))
 const stashes = computed(() => store.stashes)
 
@@ -391,40 +465,56 @@ function stashMenu(event: MouseEvent, index: number, message: string) {
         <span class="count">{{ locals.length }}</span>
       </button>
       <div v-if="open.locals" class="group">
-        <div
-          v-for="branch in locals"
-          :key="branch.name"
-          class="row"
-          :class="{
-            on: branch.is_head,
-            drop: drag.state.over === `branch:${branch.name}`
-          }"
-          :title="`${branch.name}${branch.upstream ? ` → ${branch.upstream}` : ' (no upstream)'}`"
-          draggable="true"
-          @dblclick="git.checkout(branch.name)"
-          @contextmenu="localMenu($event, branch.name, branch.upstream)"
-          @dragstart="drag.begin($event, { kind: 'branch', name: branch.name, remote: false })"
-          @dragend="drag.end()"
-          @dragover="drag.hover($event, `branch:${branch.name}`, ['branch', 'commit', 'stash'])"
-          @dragleave="drag.leave(`branch:${branch.name}`)"
-          @drop.prevent="onDropOnBranch($event, branch.name, false)"
-        >
-          <GitBranch :size="13" class="glyph" :class="{ current: branch.is_head }" />
-          <span class="name truncate">{{ branch.name }}</span>
-          <!-- A text arrow at this size sits so close to the digit that "↑1"
-               reads as "11", so the arrow is a glyph with a gap of its own. -->
-          <span v-if="branch.ahead" class="tick up" :title="`${branch.ahead} ahead of the upstream`">
-            <ArrowUp :size="11" :stroke-width="2.5" />{{ branch.ahead }}
-          </span>
-          <span
-            v-if="branch.behind"
-            class="tick down"
-            :title="`${branch.behind} behind the upstream`"
+        <template v-for="row in localShelf" :key="row.key">
+          <button
+            v-if="row.kind === 'folder'"
+            class="row folder"
+            :style="{ paddingLeft: `calc(var(--indent) + ${row.depth * 14}px)` }"
+            @click="toggleFolder(row.path)"
           >
-            <ArrowDown :size="11" :stroke-width="2.5" />{{ branch.behind }}
-          </span>
-          <Cloud v-if="!branch.upstream" :size="11" class="faint no-upstream" />
-        </div>
+            <ChevronRight :size="11" class="chev" :class="{ down: !row.shut }" />
+            <component :is="row.shut ? Folder : FolderOpen" :size="13" class="glyph" />
+            <span class="name truncate">{{ row.label }}</span>
+          </button>
+          <div
+            v-else
+            class="row"
+            :class="{
+              on: row.item.is_head,
+              drop: drag.state.over === `branch:${row.item.name}`
+            }"
+            :style="{ paddingLeft: `calc(var(--indent) + ${row.depth * 14}px)` }"
+            :title="`${row.item.name}${row.item.upstream ? ` → ${row.item.upstream}` : ' (no upstream)'}`"
+            draggable="true"
+            @dblclick="git.checkout(row.item.name)"
+            @contextmenu="localMenu($event, row.item.name, row.item.upstream)"
+            @dragstart="drag.begin($event, { kind: 'branch', name: row.item.name, remote: false })"
+            @dragend="drag.end()"
+            @dragover="drag.hover($event, `branch:${row.item.name}`, ['branch', 'commit', 'stash'])"
+            @dragleave="drag.leave(`branch:${row.item.name}`)"
+            @drop.prevent="onDropOnBranch($event, row.item.name, false)"
+          >
+            <GitBranch :size="13" class="glyph" :class="{ current: row.item.is_head }" />
+            <span class="name truncate">{{ row.label }}</span>
+            <!-- A text arrow at this size sits so close to the digit that "↑1"
+                 reads as "11", so the arrow is a glyph with a gap of its own. -->
+            <span
+              v-if="row.item.ahead"
+              class="tick up"
+              :title="`${row.item.ahead} ahead of the upstream`"
+            >
+              <ArrowUp :size="11" :stroke-width="2.5" />{{ row.item.ahead }}
+            </span>
+            <span
+              v-if="row.item.behind"
+              class="tick down"
+              :title="`${row.item.behind} behind the upstream`"
+            >
+              <ArrowDown :size="11" :stroke-width="2.5" />{{ row.item.behind }}
+            </span>
+            <Cloud v-if="!row.item.upstream" :size="11" class="faint no-upstream" />
+          </div>
+        </template>
       </div>
 
       <!-- Remote -->
@@ -439,26 +529,39 @@ function stashMenu(event: MouseEvent, index: number, message: string) {
           <div class="remote-name">
             <Cloud :size="11" /> {{ group.remote }}
           </div>
-          <div
-            v-for="branch in group.branches"
-            :key="branch.name"
-            class="row indent"
-            :class="{ drop: drag.state.over === `remote:${group.remote}/${branch.name}` }"
-            draggable="true"
-            @dblclick="git.checkout(`${group.remote}/${branch.name}`)"
-            @contextmenu="remoteMenu($event, group.remote, branch.name)"
-            @dragstart="
-              drag.begin($event, {
-                kind: 'branch',
-                name: `${group.remote}/${branch.name}`,
-                remote: true
-              })
-            "
-            @dragend="drag.end()"
-          >
-            <GitBranch :size="13" class="glyph remote" />
-            <span class="name truncate">{{ branch.name }}</span>
-          </div>
+          <template v-for="row in shelve(group.branches, `remote:${group.remote}`)" :key="row.key">
+            <button
+              v-if="row.kind === 'folder'"
+              class="row folder indent"
+              :style="{ paddingLeft: `calc(var(--indent-2) + ${row.depth * 14}px)` }"
+              @click="toggleFolder(row.path)"
+            >
+              <ChevronRight :size="11" class="chev" :class="{ down: !row.shut }" />
+              <component :is="row.shut ? Folder : FolderOpen" :size="13" class="glyph" />
+              <span class="name truncate">{{ row.label }}</span>
+            </button>
+            <div
+              v-else
+              class="row indent"
+              :class="{ drop: drag.state.over === `remote:${group.remote}/${row.item.name}` }"
+              :style="{ paddingLeft: `calc(var(--indent-2) + ${row.depth * 14}px)` }"
+              :title="`${group.remote}/${row.item.name}`"
+              draggable="true"
+              @dblclick="git.checkout(`${group.remote}/${row.item.name}`)"
+              @contextmenu="remoteMenu($event, group.remote, row.item.name)"
+              @dragstart="
+                drag.begin($event, {
+                  kind: 'branch',
+                  name: `${group.remote}/${row.item.name}`,
+                  remote: true
+                })
+              "
+              @dragend="drag.end()"
+            >
+              <GitBranch :size="13" class="glyph remote" />
+              <span class="name truncate">{{ row.label }}</span>
+            </div>
+          </template>
         </div>
         <p v-if="!remoteGroups.length" class="none faint">No remote branches.</p>
       </div>
@@ -699,6 +802,24 @@ function stashMenu(event: MouseEvent, index: number, message: string) {
   outline: 1px solid var(--accent);
   outline-offset: -1px;
   background: rgba(79, 156, 249, 0.16);
+}
+
+/* A folder is a button, so it has to be talked out of looking like one. */
+.row.folder {
+  width: 100%;
+  background: none;
+  border: 0;
+  font: inherit;
+  color: inherit;
+  text-align: left;
+}
+
+.row.folder:hover {
+  background: var(--bg-hover);
+}
+
+.row.folder .glyph {
+  color: var(--text-dim);
 }
 
 .row.stash {
