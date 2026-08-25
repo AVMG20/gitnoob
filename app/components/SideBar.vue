@@ -225,34 +225,38 @@ async function onDropOnBranch(event: MouseEvent, target: string, targetIsRemote:
   menu.show(
     event,
     [
-      // The cheap answer first, when there is one.
-      ...(fastForward
-        ? [
-            {
-              label: `Fast-forward ${source} → ${target}`,
-              icon: GitMerge,
-              hint: `${target} moves, no merge commit`,
-              action: () => git.mergeInto(source, target, false)
-            }
-          ]
-        : []),
+      // Merge first: it is what the gesture means nine times in ten, and a
+      // menu that puts a special case above the ordinary one makes the reader
+      // check both every time.
       {
-        label: `Merge ${source} → ${target}`,
+        label: `Merge ${source} into ${target}`,
         icon: GitMerge,
-        hint: fastForward ? `${target} changes, forced merge commit` : `${target} changes`,
+        hint: fastForward ? 'forces a merge commit' : '',
         action: async () => {
           const outcome = await git.mergeInto(source, target, fastForward)
           if (outcome?.conflicts.length) store.resolving = outcome.conflicts[0]
         }
       },
+      // Offered only when it is on the table: the target has nothing of its
+      // own, so it can simply be moved forward.
+      ...(fastForward
+        ? [
+            {
+              label: `Fast-forward ${target} to ${source}`,
+              icon: GitMerge,
+              hint: 'no merge commit',
+              action: () => git.mergeInto(source, target, false)
+            }
+          ]
+        : []),
       // Rebasing a branch that has nothing of its own is a fast-forward with
       // extra steps, so it is only worth offering once the two have diverged.
       ...(behind > 0
         ? [
             {
-              label: `Rebase ${target} → onto ${source}`,
+              label: `Rebase ${target} onto ${source}`,
               icon: GitBranch,
-              hint: `${behind} ${behind === 1 ? 'commit' : 'commits'} rewritten`,
+              hint: `${behind} rewritten`,
               danger: true,
               action: async () => {
                 const outcome = await git.rebaseBranch(target, source)
@@ -299,9 +303,9 @@ function localMenu(event: MouseEvent, name: string, upstream: string | null) {
       // awkward — it merges into where you stand and nowhere else — so it is
       // offered here and the switching is done out of sight.
       {
-        label: `Merge ${name} → ${head.value}`,
+        label: `Merge ${name} into ${head.value}`,
         icon: GitMerge,
-        hint: `${head.value} changes`,
+        hint: '',
         disabled: isHead,
         action: async () => {
           const outcome = await git.merge(name, false)
@@ -309,9 +313,9 @@ function localMenu(event: MouseEvent, name: string, upstream: string | null) {
         }
       },
       {
-        label: `Merge ${head.value} → ${name}`,
+        label: `Merge ${head.value} into ${name}`,
         icon: GitMerge,
-        hint: `${name} changes`,
+        hint: '',
         disabled: isHead,
         action: async () => {
           const outcome = await git.mergeInto(head.value, name, false)
@@ -319,9 +323,9 @@ function localMenu(event: MouseEvent, name: string, upstream: string | null) {
         }
       },
       {
-        label: `Rebase ${head.value} → onto ${name}`,
+        label: `Rebase ${head.value} onto ${name}`,
         icon: GitBranch,
-        hint: `${head.value} rewritten`,
+        hint: 'rewrites history',
         disabled: isHead,
         action: async () => {
           const outcome = await git.rebase(name)
@@ -502,7 +506,7 @@ function stashMenu(event: MouseEvent, index: number, message: string) {
             @dragstart="drag.begin($event, { kind: 'branch', name: row.item.name, remote: false })"
             @dragend="drag.end()"
             @dragover="drag.hover($event, `branch:${row.item.name}`, ['branch', 'commit', 'stash'])"
-            @dragleave="drag.leave(`branch:${row.item.name}`)"
+            @dragleave="drag.leave($event, `branch:${row.item.name}`)"
             @drop.prevent="onDropOnBranch($event, row.item.name, false)"
           >
             <GitBranch :size="13" class="glyph" :class="{ current: row.item.is_head }" />
@@ -554,7 +558,6 @@ function stashMenu(event: MouseEvent, index: number, message: string) {
             <div
               v-else
               class="row indent"
-              :class="{ drop: drag.state.over === `remote:${group.remote}/${row.item.name}` }"
               :style="{ paddingLeft: `calc(var(--indent-2) + ${row.depth * 14}px)` }"
               :title="`${group.remote}/${row.item.name}`"
               draggable="true"

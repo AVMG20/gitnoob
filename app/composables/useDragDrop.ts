@@ -43,7 +43,18 @@ export function useDragDrop() {
       state.over = id
       return true
     },
-    leave(id: string) {
+    /**
+     * Clears the highlight when the pointer really has left the zone.
+     *
+     * `dragleave` also fires when the pointer crosses from a row onto the icon
+     * or the label inside it, which is not leaving at all — taking it at face
+     * value makes the highlight flicker off and on as the pointer moves across
+     * a row. The element being entered says which it is.
+     */
+    leave(event: DragEvent, id: string) {
+      const zone = event.currentTarget as HTMLElement | null
+      const entering = event.relatedTarget as Node | null
+      if (zone && entering && zone.contains(entering)) return
       if (state.over === id) state.over = null
     },
     /** Returns the payload if this zone accepts it, and clears the drag. */

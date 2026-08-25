@@ -738,7 +738,7 @@ onUnmounted(() => {
           "
           @dragend="drag.end()"
           @dragover="drag.hover($event, `commit:${item.row.oid}`, ['branch'])"
-          @dragleave="drag.leave(`commit:${item.row.oid}`)"
+          @dragleave="drag.leave($event, `commit:${item.row.oid}`)"
           @drop.prevent="onDropOnRow(item.row)"
         >
           <!-- Refs live in their own column with a line running to the node,

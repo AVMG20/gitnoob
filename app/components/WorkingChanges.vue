@@ -225,7 +225,7 @@ function fileMenu(event: MouseEvent, path: string, side: 'staged' | 'unstaged', 
       class="group"
       :class="{ drop: drag.state.over === 'zone:unstaged' }"
       @dragover="drag.hover($event, 'zone:unstaged', ['file'])"
-      @dragleave="drag.leave('zone:unstaged')"
+      @dragleave="drag.leave($event, 'zone:unstaged')"
       @drop.prevent="
         (() => {
           const payload = drag.take(['file'])
@@ -281,7 +281,7 @@ function fileMenu(event: MouseEvent, path: string, side: 'staged' | 'unstaged', 
       class="group"
       :class="{ drop: drag.state.over === 'zone:staged' }"
       @dragover="drag.hover($event, 'zone:staged', ['file'])"
-      @dragleave="drag.leave('zone:staged')"
+      @dragleave="drag.leave($event, 'zone:staged')"
       @drop.prevent="
         (() => {
           const payload = drag.take(['file'])
