@@ -30,6 +30,7 @@ reqwest = { version = "0.12", default-features = false, features = [
   "rustls-tls",
   "gzip",
 ] }
+sha2 = { version = "0.10", default-features = false }
 
 # Tokens live in the OS keychain, never in the config file. The backing store
 # differs per platform, so each one picks its own keyring feature.

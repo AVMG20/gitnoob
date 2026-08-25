@@ -23,6 +23,7 @@ import {
   type ForgeKind,
   type Profile
 } from '~/composables/useConfig'
+import { forgetAvatars } from '~/composables/useAvatars'
 import { useForge } from '~/composables/useForge'
 import { useAi } from '~/composables/useAi'
 import { useGit } from '~/composables/useGit'
@@ -518,6 +519,25 @@ onMounted(async () => {
               <span class="faint block">
                 Uncommitted work is stashed, the operation runs, then the work comes back. Without
                 this, git refuses and you tidy up by hand.
+              </span>
+            </span>
+          </label>
+
+          <label class="check">
+            <input
+              type="checkbox"
+              :checked="config.settings.value?.show_avatars"
+              @change="
+                patchGlobal({ show_avatars: ($event.target as HTMLInputElement).checked });
+                forgetAvatars()
+              "
+            />
+            <span>
+              <strong>Show a picture for each author</strong>
+              <span class="faint block">
+                Looked up from the author's email address on GitHub and Gravatar — and on GitLab
+                for a GitLab project — then kept on this machine. Off, and initials are drawn
+                instead and nothing leaves the app.
               </span>
             </span>
           </label>

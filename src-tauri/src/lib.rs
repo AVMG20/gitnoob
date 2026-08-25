@@ -1,4 +1,5 @@
 pub mod ai;
+pub mod avatar;
 pub mod conflict;
 pub mod config;
 pub mod diff;
@@ -719,6 +720,14 @@ async fn forge_create_review(
     forge::create_review(&state, title, body, target, draft.unwrap_or(false)).await
 }
 
+// --- authors ----------------------------------------------------------------
+
+/// The picture for one commit author, or `None` when there is none to find.
+#[tauri::command]
+async fn avatar(email: String, state: State<'_, AppState>) -> Result<Option<String>, String> {
+    avatar::find(&state, &email).await
+}
+
 // --- AI ---------------------------------------------------------------------
 
 #[tauri::command]
@@ -887,6 +896,7 @@ pub fn run() {
             forge_check,
             forge_reviews,
             forge_create_review,
+            avatar,
             ai_status,
             ai_models,
             ai_commit_message,

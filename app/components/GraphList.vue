@@ -28,6 +28,7 @@ import {
   type ResetMode,
   type Segment
 } from '~/composables/useGit'
+import { avatarFor, initials, tint } from '~/composables/useAvatars'
 import { useContextMenu } from '~/composables/useContextMenu'
 import { useDragDrop } from '~/composables/useDragDrop'
 
@@ -40,6 +41,10 @@ const ROW = 27
 const LANE = 14
 const OVERSCAN = 12
 const MAX_LANES = 14
+/** Half the width of a commit node — the author's face sits inside it. */
+const NODE = 9
+/** Room at the left edge for the first lane's node and its ring. */
+const PAD = 5
 
 const viewport = ref<HTMLElement | null>(null)
 const searchBox = ref<HTMLInputElement | null>(null)
@@ -65,7 +70,7 @@ const total = computed(() => store.rows.length)
 const lanes = computed(() =>
   Math.min(MAX_LANES, Math.max(2, ...store.rows.map((row) => row.width)))
 )
-const graphWidth = computed(() => lanes.value * LANE + 8)
+const graphWidth = computed(() => lanes.value * LANE + 8 + PAD)
 
 const matches = computed(() =>
   store.query.trim() ? store.rows.filter((row) => rowMatches(row, store.query)) : []
@@ -90,8 +95,25 @@ const conflicts = computed(() => store.status?.conflicted.length ?? 0)
 const headLane = computed(() => store.rows[0]?.lane ?? 0)
 const headColor = computed(() => store.rows[0]?.color ?? 0)
 
-const x = (lane: number) => Math.min(lane, MAX_LANES - 1) * LANE + LANE / 2
+const x = (lane: number) => Math.min(lane, MAX_LANES - 1) * LANE + LANE / 2 + PAD
+
 const y = (level: number) => (level === 0 ? 0 : level === 1 ? ROW / 2 : ROW)
+
+/**
+ * What to draw inside a commit's node.
+ *
+ * The picture if there is one, the author's initials on their own colour if
+ * there is not, and — for the moment between asking and knowing — the colour
+ * alone, so nothing flickers from letters into a face.
+ */
+function face(row: GraphRow) {
+  const picture = avatarFor(row.email)
+  return {
+    picture: picture ?? null,
+    letters: picture === null ? initials(row.author, row.email) : '',
+    tint: tint(row.email)
+  }
+}
 
 function path(segment: Segment) {
   const x1 = x(segment.x1)
@@ -676,22 +698,69 @@ onUnmounted(() => {
               v-if="item.row.unpushed"
               :cx="x(item.row.lane)"
               :cy="ROW / 2"
-              r="6.5"
+              :r="NODE + 3"
               fill="none"
               :stroke="laneColor(item.row.color)"
               stroke-width="1.5"
               opacity="0.55"
             />
-            <circle
-              :cx="x(item.row.lane)"
-              :cy="ROW / 2"
-              :r="item.row.parents.length > 1 ? 3.4 : 4"
-              :fill="item.row.parents.length > 1 ? 'var(--bg)' : laneColor(item.row.color)"
-              :stroke="laneColor(item.row.color)"
-              stroke-width="1.8"
-            >
-              <title v-if="item.row.unpushed">Not pushed yet</title>
-            </circle>
+            <!-- The node is the author's face. Who wrote a run of commits is
+                 then read down the column at a glance, rather than one line of
+                 the author column at a time.
+
+                 The lane's colour stays, as the ring around it: it is what ties
+                 the node to the lines running into it. -->
+            <g>
+              <clipPath :id="`node-${item.row.oid}`">
+                <circle :cx="x(item.row.lane)" :cy="ROW / 2" :r="NODE" />
+              </clipPath>
+              <!-- The lines behind are knocked out first, so a face is never
+                   drawn over by whatever passes through its lane. -->
+              <circle
+                :cx="x(item.row.lane)"
+                :cy="ROW / 2"
+                :r="NODE"
+                :fill="face(item.row).picture ? 'var(--bg)' : face(item.row).tint"
+              />
+              <image
+                v-if="face(item.row).picture"
+                :href="face(item.row).picture ?? undefined"
+                :x="x(item.row.lane) - NODE"
+                :y="ROW / 2 - NODE"
+                :width="NODE * 2"
+                :height="NODE * 2"
+                :clip-path="`url(#node-${item.row.oid})`"
+                preserveAspectRatio="xMidYMid slice"
+              />
+              <text
+                v-else-if="face(item.row).letters"
+                :x="x(item.row.lane)"
+                :y="ROW / 2"
+                text-anchor="middle"
+                dominant-baseline="central"
+                font-size="7.5"
+                font-weight="700"
+                fill="#fff"
+              >
+                {{ face(item.row).letters }}
+              </text>
+              <!-- Every node is the same size, merge or not. A merge used to be
+                   drawn hollow, back when a node was a dot; a second ring inside
+                   this one only crops the face and makes it look shrunken, and
+                   the two lines running into the node already say it is a
+                   merge. -->
+              <circle
+                :cx="x(item.row.lane)"
+                :cy="ROW / 2"
+                :r="NODE"
+                fill="none"
+                :stroke="laneColor(item.row.color)"
+                stroke-width="2"
+              />
+              <title>
+                {{ item.row.author }}{{ item.row.unpushed ? ' · not pushed yet' : '' }}
+              </title>
+            </g>
           </svg>
 
           <span class="col-msg">

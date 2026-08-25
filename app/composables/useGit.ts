@@ -21,6 +21,8 @@ export interface RepoInfo {
   state: string
   /** This repository's effective `user.name`; empty when git has none. */
   author: string
+  /** The matching `user.email`, which the author's picture is looked up by. */
+  author_email: string
 }
 
 export interface LocalBranch {

@@ -45,6 +45,7 @@ export interface GlobalSettings {
   auto_fetch_on_open: boolean
   auto_fetch_minutes: number
   auto_stash: boolean
+  show_avatars: boolean
 }
 
 export interface Config {

@@ -59,6 +59,12 @@ impl AppState {
         self.config.lock().unwrap().clone()
     }
 
+    /// Where settings live, and with them anything else worth keeping between
+    /// runs — the cached author pictures, for one.
+    pub fn config_dir(&self) -> PathBuf {
+        self.config_dir.lock().unwrap().clone()
+    }
+
     /// Mutates the config and writes it out in one step, so what is in memory
     /// and what is on disk cannot drift.
     pub fn update_config<T>(&self, edit: impl FnOnce(&mut Config) -> T) -> Result<T, String> {

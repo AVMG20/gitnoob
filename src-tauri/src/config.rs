@@ -91,6 +91,10 @@ pub struct Global {
     /// Stash uncommitted work before a branch switch or pull, then put it back.
     #[serde(default = "yes")]
     pub auto_stash: bool,
+    /// Look up a picture for each commit author. Off, and the window draws
+    /// initials instead and asks nobody anything.
+    #[serde(default = "yes")]
+    pub show_avatars: bool,
 }
 
 #[derive(Serialize, Deserialize, Clone)]
@@ -165,6 +169,7 @@ impl Default for Global {
             auto_fetch_on_open: true,
             auto_fetch_minutes: default_fetch_minutes(),
             auto_stash: true,
+            show_avatars: true,
         }
     }
 }

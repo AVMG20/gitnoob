@@ -67,13 +67,16 @@ function fileMenu(event: MouseEvent, path: string) {
         <pre v-if="detail.body" class="body">{{ detail.body }}</pre>
 
         <div class="who">
+          <Avatar :name="detail.author" :email="detail.email" :size="28" />
           <div>
-            <span class="dim">{{ detail.author }}</span>
-            <span class="faint"> &lt;{{ detail.email }}&gt;</span>
-          </div>
-          <div class="faint">{{ fullTime(detail.time) }}</div>
-          <div v-if="detail.committer !== detail.author" class="faint">
-            committed by {{ detail.committer }}
+            <div>
+              <span class="dim">{{ detail.author }}</span>
+              <span class="faint"> &lt;{{ detail.email }}&gt;</span>
+            </div>
+            <div class="faint">{{ fullTime(detail.time) }}</div>
+            <div v-if="detail.committer !== detail.author" class="faint">
+              committed by {{ detail.committer }}
+            </div>
           </div>
         </div>
 
@@ -190,6 +193,9 @@ h3 {
 }
 
 .who {
+  display: flex;
+  align-items: flex-start;
+  gap: 9px;
   margin-top: 11px;
   font-size: 12px;
   line-height: 1.5;

@@ -19,6 +19,9 @@ pub struct RepoInfo {
     /// `user.name`, which is local config if it has one and global otherwise.
     /// Empty when git has no name to use, which is worth showing as such.
     pub author: String,
+    /// The address those commits would carry, which is what a picture for the
+    /// person is looked up by.
+    pub author_email: String,
 }
 
 #[derive(Serialize)]
@@ -100,11 +103,14 @@ pub fn describe(state: &AppState) -> Result<RepoInfo, String> {
 
     // `snapshot` resolves the whole chain — local, global, system — the same way
     // a commit would.
-    let author = repo
-        .config()
-        .and_then(|mut c| c.snapshot())
-        .and_then(|c| c.get_string("user.name"))
-        .unwrap_or_default();
+    let settings = repo.config().and_then(|mut c| c.snapshot());
+    let field = |key: &str| {
+        settings
+            .as_ref()
+            .ok()
+            .and_then(|c| c.get_string(key).ok())
+            .unwrap_or_default()
+    };
 
     Ok(RepoInfo {
         path: path.to_string_lossy().into_owned(),
@@ -112,7 +118,8 @@ pub fn describe(state: &AppState) -> Result<RepoInfo, String> {
         head,
         detached,
         state: format!("{:?}", repo.state()),
-        author,
+        author: field("user.name"),
+        author_email: field("user.email"),
     })
 }
 
