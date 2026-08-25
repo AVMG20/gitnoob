@@ -53,6 +53,10 @@ const MAX_LANES = 14
 const NODE = 8
 /** Room at the left edge for the first lane's node and its ring. */
 const PAD = 6
+/** How tightly a line turns where it changes lane. */
+const ELBOW = 7
+/** Half the width of the dot drawn where lines join or part. */
+const JOINT = 5
 
 const viewport = ref<HTMLElement | null>(null)
 const searchBox = ref<HTMLInputElement | null>(null)
@@ -124,21 +128,64 @@ function face(row: GraphRow) {
 }
 
 /**
- * One line segment, drawn as a lane change rather than a diagonal.
+ * One line segment: straight runs joined by a corner, never a diagonal.
  *
- * A line leaves its lane going straight down and arrives in the next one going
- * straight down too, with the sideways move happening in between: the eye
- * follows a column and a step off it far more easily than a slope. Pulling the
- * control points past the midpoint is what flattens the middle into that step.
+ * A line belongs to a lane, and the whole point of the picture is to show which
+ * one. So it travels its lane vertically and does its sideways move in one
+ * place — against the node the move is about — turning through a rounded corner
+ * rather than sloping across. Two lines running side by side then stay legible
+ * as two columns, and a departure or a merge is a corner the eye can land on.
+ *
+ * A curve between the two points instead sweeps out of one lane and into the
+ * other over the whole segment, which reads as a bulge rather than a junction
+ * and leaves neither end of it clearly in a lane.
  */
+/**
+ * Whether the history forks or comes back together at this commit.
+ *
+ * Two shapes count. A merge is a commit with more than one parent: its line
+ * splits going down. A branch point is a commit more than one line comes into
+ * from above, which is a lane-changing segment ending at the node.
+ *
+ * What does not count is the far end of either — the tip of a branch whose only
+ * parent happens to sit in another lane. A line leaves it sideways, but nothing
+ * forked or merged there, and dotting both ends of every elbow would mark the
+ * plumbing rather than the history.
+ *
+ * These are the rows where the shape of the history changed, which at a glance
+ * is worth more than whose commit it was, so they are drawn as a plain dot
+ * instead of a face: the junction reads as a junction, and the lines meeting
+ * there are not hidden behind a picture.
+ */
+function junction(row: GraphRow) {
+  if (row.parents.length > 1) return true
+  return row.segments.some((segment) => segment.x1 !== segment.x2 && segment.y2 === 1)
+}
+
 function path(segment: Segment) {
   const x1 = x(segment.x1)
   const x2 = x(segment.x2)
   const y1 = y(segment.y1)
   const y2 = y(segment.y2)
   if (x1 === x2) return `M${x1},${y1} L${x2},${y2}`
-  const bend = (y2 - y1) * 0.62
-  return `M${x1},${y1} C${x1},${y1 + bend} ${x2},${y2 - bend} ${x2},${y2}`
+
+  const dir = Math.sign(x2 - x1)
+  const r = Math.min(ELBOW, Math.abs(x2 - x1) / 2, Math.abs(y2 - y1))
+
+  // Arriving at this row's node: down the lane it came from, then across.
+  if (segment.y2 === 1) {
+    return `M${x1},${y1} L${x1},${y2 - r} Q${x1},${y2} ${x1 + dir * r},${y2} L${x2},${y2}`
+  }
+  // Leaving this row's node: across at the node's own height, then down.
+  if (segment.y1 === 1) {
+    return `M${x1},${y1} L${x2 - dir * r},${y1} Q${x2},${y1} ${x2},${y1 + r} L${x2},${y2}`
+  }
+  // Passing the row by while its lane shifts: down, across, down again.
+  const mid = (y1 + y2) / 2
+  return (
+    `M${x1},${y1} L${x1},${mid - r} Q${x1},${mid} ${x1 + dir * r},${mid} ` +
+    `L${x2 - dir * r},${mid} Q${x2},${mid} ${x2},${mid + r} L${x2},${y2}`
+  )
 }
 
 function onScroll() {
@@ -720,7 +767,7 @@ onUnmounted(() => {
                  colour, so the boundary between what the remote has and what is
                  still only here has to be a difference in shape. -->
             <circle
-              v-if="item.row.unpushed"
+              v-if="item.row.unpushed && !junction(item.row)"
               :cx="x(item.row.lane)"
               :cy="ROW / 2"
               :r="NODE + 3"
@@ -729,13 +776,31 @@ onUnmounted(() => {
               stroke-width="1.5"
               opacity="0.55"
             />
+            <!-- Where the history forked or came back together. Hollow while
+                 the commit is only here, filled once the remote has it, which
+                 is the same distinction the bigger nodes draw as a ring. -->
+            <g v-if="junction(item.row)">
+              <circle
+                :cx="x(item.row.lane)"
+                :cy="ROW / 2"
+                :r="JOINT"
+                :fill="item.row.unpushed ? 'var(--bg)' : laneColor(item.row.color)"
+                :stroke="laneColor(item.row.color)"
+                stroke-width="2"
+              />
+              <title>
+                {{ item.row.author }} · a branch joins or parts here{{
+                  item.row.unpushed ? ' · not pushed yet' : ''
+                }}
+              </title>
+            </g>
             <!-- The node is the author's face. Who wrote a run of commits is
                  then read down the column at a glance, rather than one line of
                  the author column at a time.
 
                  The lane's colour stays, as the ring around it: it is what ties
                  the node to the lines running into it. -->
-            <g>
+            <g v-else>
               <clipPath :id="`node-${item.row.oid}`">
                 <circle :cx="x(item.row.lane)" :cy="ROW / 2" :r="NODE" />
               </clipPath>
