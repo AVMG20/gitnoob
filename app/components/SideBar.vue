@@ -13,6 +13,7 @@ import {
   GitBranch,
   GitMerge,
   GitPullRequest,
+  HardDrive,
   Hash,
   Pencil,
   Search,
@@ -205,6 +206,11 @@ function localMenu(event: MouseEvent, name: string, upstream: string | null) {
       // that destroys something.
       { label: 'Check out', icon: GitBranch, disabled: isHead, action: () => git.checkout(name) },
       {
+        label: upstream ? `Push to ${upstream}` : 'Push and set upstream',
+        icon: Upload,
+        action: () => git.pushBranch(name, !upstream)
+      },
+      {
         // Works on a branch you are not standing on, open changes and all:
         // the backend moves the ref directly when it can, and visits the
         // branch and comes back when it cannot.
@@ -213,11 +219,6 @@ function localMenu(event: MouseEvent, name: string, upstream: string | null) {
         disabled: !upstream,
         hint: upstream ? '' : 'no upstream',
         action: () => git.pullBranch(name)
-      },
-      {
-        label: upstream ? `Push to ${upstream}` : 'Push and set upstream',
-        icon: Upload,
-        action: () => git.pushBranch(name, !upstream)
       },
       { separator: true, label: '' },
       // Both of these move history between two branches, in opposite
@@ -385,10 +386,11 @@ function stashMenu(event: MouseEvent, index: number, message: string) {
       <!-- Local -->
       <button class="section-title toggle" @click="open.locals = !open.locals">
         <ChevronRight :size="12" class="chev" :class="{ down: open.locals }" />
+        <HardDrive :size="12" class="mark" />
         Local
         <span class="count">{{ locals.length }}</span>
       </button>
-      <div v-if="open.locals">
+      <div v-if="open.locals" class="group">
         <div
           v-for="branch in locals"
           :key="branch.name"
@@ -428,10 +430,11 @@ function stashMenu(event: MouseEvent, index: number, message: string) {
       <!-- Remote -->
       <button class="section-title toggle" @click="open.remotes = !open.remotes">
         <ChevronRight :size="12" class="chev" :class="{ down: open.remotes }" />
+        <Cloud :size="12" class="mark" />
         Remote
         <span class="count">{{ store.refs?.remotes.length ?? 0 }}</span>
       </button>
-      <template v-if="open.remotes">
+      <div v-if="open.remotes" class="group">
         <div v-for="group in remoteGroups" :key="group.remote">
           <div class="remote-name">
             <Cloud :size="11" /> {{ group.remote }}
@@ -457,16 +460,18 @@ function stashMenu(event: MouseEvent, index: number, message: string) {
             <span class="name truncate">{{ branch.name }}</span>
           </div>
         </div>
-      </template>
+        <p v-if="!remoteGroups.length" class="none faint">No remote branches.</p>
+      </div>
 
       <!-- Pull requests -->
       <template v-if="forge.usable.value">
         <button class="section-title toggle" @click="open.reviews = !open.reviews">
           <ChevronRight :size="12" class="chev" :class="{ down: open.reviews }" />
+          <GitPullRequest :size="12" class="mark" />
           {{ forge.label.value }}
           <span class="count">{{ forge.store.reviews.length }}</span>
         </button>
-        <div v-if="open.reviews">
+        <div v-if="open.reviews" class="group">
           <div
             v-for="review in forge.store.reviews"
             :key="review.number"
@@ -507,10 +512,11 @@ function stashMenu(event: MouseEvent, index: number, message: string) {
       <!-- Tags -->
       <button class="section-title toggle" @click="open.tags = !open.tags">
         <ChevronRight :size="12" class="chev" :class="{ down: open.tags }" />
+        <Tag :size="12" class="mark" />
         Tags
         <span class="count">{{ tags.length }}</span>
       </button>
-      <div v-if="open.tags">
+      <div v-if="open.tags" class="group">
         <div
           v-for="tag in tags"
           :key="tag.name"
@@ -526,10 +532,11 @@ function stashMenu(event: MouseEvent, index: number, message: string) {
       <!-- Stashes -->
       <button class="section-title toggle" @click="open.stashes = !open.stashes">
         <ChevronRight :size="12" class="chev" :class="{ down: open.stashes }" />
+        <Archive :size="12" class="mark" />
         Stashes
         <span class="count">{{ stashes.length }}</span>
       </button>
-      <div v-if="open.stashes">
+      <div v-if="open.stashes" class="group">
         <div
           v-for="stash in stashes"
           :key="stash.index"
@@ -615,13 +622,41 @@ function stashMenu(event: MouseEvent, index: number, message: string) {
   padding-bottom: 14px;
 }
 
+/* One indent scale for the whole tree. A row's glyph sits in the same column as
+   its section's icon, so a name lines up under the name of the thing it belongs
+   to, and a remote's branches step in once more under the remote. */
+.side {
+  --pad: 8px;
+  --indent: 26px;
+  --indent-2: 40px;
+}
+
+/* A line above each heading rather than below it, so the rule always sits
+   between two sections. Under the heading it would cut a section off from its
+   own rows, and a collapsed section would leave a line under nothing. */
 .toggle {
   width: 100%;
+  padding-left: var(--pad);
   text-align: left;
+}
+
+.scroll > .toggle:not(:first-child) {
+  margin-top: 8px;
+  padding-top: 10px;
+  border-top: 1px solid var(--line-soft);
 }
 
 .toggle:hover {
   color: var(--text-dim);
+}
+
+.mark {
+  flex: none;
+  opacity: 0.75;
+}
+
+.group {
+  padding-top: 2px;
 }
 
 .chev {
@@ -641,8 +676,8 @@ function stashMenu(event: MouseEvent, index: number, message: string) {
 .row {
   display: flex;
   align-items: center;
-  gap: 7px;
-  padding: 3px 10px 3px 12px;
+  gap: 6px;
+  padding: 3px 10px 3px var(--indent);
   cursor: default;
   user-select: none;
 }
@@ -673,7 +708,7 @@ function stashMenu(event: MouseEvent, index: number, message: string) {
 }
 
 .indent {
-  padding-left: 22px;
+  padding-left: var(--indent-2);
 }
 
 .glyph {
@@ -747,15 +782,15 @@ function stashMenu(event: MouseEvent, index: number, message: string) {
 .remote-name {
   display: flex;
   align-items: center;
-  gap: 5px;
-  padding: 4px 10px 2px 14px;
+  gap: 6px;
+  padding: 5px 10px 2px var(--indent);
   font-size: 11px;
   color: var(--text-faint);
 }
 
 .none,
 .err {
-  padding: 4px 12px 6px;
+  padding: 3px 12px 5px var(--indent);
   font-size: 11.5px;
   margin: 0;
 }
