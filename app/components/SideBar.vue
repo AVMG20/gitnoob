@@ -900,26 +900,38 @@ function stashMenu(event: MouseEvent, index: number, message: string) {
   scrollbar-width: thin;
 }
 
-/* The divider under a section is also its handle. Two pixels of line with a
-   wider reach around it, so it is easy to grab without being a band of empty
-   space between every pair of sections. */
+/* The divider between two sections is also the handle for the one above it, so
+   the grip draws that line itself rather than hovering in the space above it:
+   it stands in for the heading's own rule, and takes the same height as the
+   margin and padding it replaces. */
 .grip {
   flex: none;
-  height: 7px;
-  margin: -3px 0;
+  height: 18px;
   cursor: row-resize;
   position: relative;
-  z-index: 1;
 }
 
-.grip:hover::after,
-.grip:active::after {
+.grip::before {
   content: '';
   position: absolute;
-  inset: 3px 0;
-  background: var(--accent);
-  opacity: 0.55;
+  left: 0;
+  right: 0;
+  top: 8px;
+  height: 1px;
+  background: var(--line-soft);
 }
+
+.grip:hover::before,
+.grip:active::before {
+  height: 2px;
+  background: var(--accent);
+}
+
+/* The last one has no section under it to divide from. */
+.grip:last-child::before {
+  display: none;
+}
+
 
 /* One indent scale for the whole tree. A row's glyph sits in the same column as
    its section's icon, so a name lines up under the name of the thing it belongs
@@ -1162,5 +1174,14 @@ function stashMenu(event: MouseEvent, index: number, message: string) {
 
 .err {
   color: var(--red);
+}
+/* A heading that follows a grip has had its rule drawn for it, so it drops the
+   one it would otherwise carry. Last in the sheet, to outrank the rule above
+   that gives every heading but the first a line of its own. */
+.scroll > .grip + .toggle,
+.scroll > .grip + .head-row {
+  margin-top: 0;
+  padding-top: 0;
+  border-top: none;
 }
 </style>
