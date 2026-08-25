@@ -446,6 +446,12 @@ function commitMenu(event: MouseEvent, row: GraphRow) {
   // is nearly always what was meant by "go here" — it keeps HEAD attached,
   // where checking the commit out by hash does not. So the named refs go above
   // the hash-level entries, without replacing them.
+  // Branch names on this commit, local first: what someone means by "copy the
+  // branch name" is the branch, not the tag sitting beside it.
+  const branchNames = row.labels
+    .filter((label) => label.kind === 'local' || label.kind === 'remote')
+    .map((label) => label.name)
+
   const namedCheckouts = refChips(row)
     .filter((chip) => !chip.head)
     .map((chip) => ({
@@ -549,6 +555,32 @@ function commitMenu(event: MouseEvent, row: GraphRow) {
         hint: row.short,
         action: () => copyText(row.short, 'Hash')
       },
+      // Only for a commit that carries refs, since only then is there a name to
+      // copy. One ref copies itself; several ask which, rather than guessing and
+      // being wrong half the time.
+      ...(branchNames.length === 1
+        ? [
+            {
+              label: 'Copy branch name',
+              icon: Copy,
+              hint: branchNames[0]!,
+              action: () => copyText(branchNames[0]!, 'Branch')
+            }
+          ]
+        : []),
+      ...(branchNames.length > 1
+        ? [
+            {
+              label: 'Copy branch name',
+              icon: Copy,
+              children: branchNames.map((name) => ({
+                label: name,
+                icon: Copy,
+                action: () => copyText(name, 'Branch')
+              }))
+            }
+          ]
+        : []),
       {
         label: 'Copy message',
         icon: FileText,
