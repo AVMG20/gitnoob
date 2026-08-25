@@ -266,7 +266,6 @@ pub fn new_id() -> String {
 
 // --- secrets ---------------------------------------------------------------
 
-#[cfg(not(debug_assertions))]
 const SERVICE: &str = "dev.gitnoob.app";
 
 /// The config directory, for the development token file. Set once at startup.
@@ -356,11 +355,36 @@ fn dev_file() -> Option<PathBuf> {
 }
 
 #[cfg(debug_assertions)]
+fn dev_all() -> HashMap<String, String> {
+    dev_file()
+        .and_then(|path| fs::read_to_string(path).ok())
+        .and_then(|text| serde_json::from_str(&text).ok())
+        .unwrap_or_default()
+}
+
+/// Reads the development file, falling back to the keychain the first time.
+///
+/// A build that has never been asked for a key takes whatever the installed app
+/// left there, so switching to the file store does not sign the user out of
+/// profiles they set up. That costs one authorisation dialog per key, once. A
+/// key that turns out not to be in the keychain either is written down as
+/// empty, which counts as an answer: the question is not asked twice.
+#[cfg(debug_assertions)]
 fn store_get(key: &str) -> Option<String> {
-    let text = fs::read_to_string(dev_file()?).ok()?;
-    serde_json::from_str::<HashMap<String, String>>(&text)
-        .ok()?
-        .remove(key)
+    if let Some(known) = dev_all().get(key) {
+        return Some(known.clone());
+    }
+    let adopted = match keyring::Entry::new(SERVICE, key).map(|entry| entry.get_password()) {
+        Ok(Ok(found)) => found,
+        // The keychain has nothing under that name, which is an answer.
+        Ok(Err(keyring::Error::NoEntry)) => String::new(),
+        // Refused, or no keychain at all. Write nothing down: the user may have
+        // dismissed the dialog by reflex, and a token they own should not be
+        // out of reach for the rest of the build's life because of it.
+        _ => return None,
+    };
+    let _ = store_set(key, Some(&adopted));
+    Some(adopted)
 }
 
 #[cfg(debug_assertions)]
@@ -368,10 +392,7 @@ fn store_set(key: &str, value: Option<&str>) -> Result<(), String> {
     let Some(path) = dev_file() else {
         return Err("No config directory to keep tokens in".to_string());
     };
-    let mut all: HashMap<String, String> = fs::read_to_string(&path)
-        .ok()
-        .and_then(|text| serde_json::from_str(&text).ok())
-        .unwrap_or_default();
+    let mut all = dev_all();
     match value {
         Some(value) => all.insert(key.to_string(), value.to_string()),
         None => all.remove(key),
