@@ -102,8 +102,7 @@ pub fn build(state: &AppState, limit: usize) -> Result<GraphPage, String> {
         });
     }
 
-    let head = repo.head().ok().and_then(|reference| reference.target());
-    let plotted = plot(&commits, head);
+    let plotted = plot(&commits, trunk_tip(&repo));
 
     let rows = commits
         .into_iter()
@@ -159,24 +158,33 @@ pub struct Place {
 }
 
 /// Turns a list of commits, newest first, into the lines to draw.
-fn plot(commits: &[Commit], head: Option<Oid>) -> Vec<Place> {
+///
+/// `anchor` is the commit whose line owns the leftmost column — the trunk's tip.
+fn plot(commits: &[Commit], anchor: Option<Oid>) -> Vec<Place> {
     let mut lanes: Vec<Option<Oid>> = Vec::new();
     let mut colors: Vec<usize> = Vec::new();
     let mut next_color = 0usize;
     let mut places: Vec<Place> = Vec::with_capacity(commits.len());
 
-    // The line the user is standing on takes the leftmost lane, whatever order
-    // the walk happens to reach it in. Left to first come first served, a branch
-    // whose tip is merely newer than HEAD takes the trunk's column, and the
-    // trunk is then drawn stepping sideways around it on its way down — which
-    // reads as the branch and the trunk swapping places rather than as a branch
-    // leaving. The lane is only reserved: nothing is drawn in it until the
-    // commit itself turns up, since above that row there is no line to draw.
+    // The trunk takes the leftmost lane, whatever order the walk happens to
+    // reach it in. Left to first come first served, a branch whose tip is merely
+    // newer takes the trunk's column, and the trunk is then drawn stepping
+    // sideways around it on its way down — which reads as the branch and the
+    // trunk swapping places rather than as a branch leaving.
+    //
+    // It is the trunk that is anchored here and not HEAD, because HEAD moves.
+    // Pinning the column to wherever you are standing means the whole graph
+    // slides sideways, redrawing history that has not changed, every time you
+    // stand somewhere else: a checkout, or a commit that makes your branch the
+    // newest one. Pinning it to `main` gives every other branch a fixed edge to
+    // be read against, and leaves the picture still when only you have moved.
+    //
+    // The lane is only reserved: nothing is drawn in it until the commit itself
+    // turns up, since above that row there is no line to draw.
     let mut reserved = None;
-    if let Some(head) = head {
-        lanes.push(Some(head));
-        colors.push(next_color);
-        next_color += 1;
+    if let Some(anchor) = anchor {
+        lanes.push(Some(anchor));
+        colors.push(TRUNK_COLOR);
         reserved = Some(0);
     }
 
@@ -187,14 +195,19 @@ fn plot(commits: &[Commit], head: Option<Oid>) -> Vec<Place> {
         let colors_before = colors.clone();
         let reserved_before = reserved;
 
-        // 1. Claim a lane.
+        // 1. Claim a lane. Scanning from the left means a commit that both the
+        //    trunk and a branch built on it are waiting for is drawn on the
+        //    trunk, which is the line it belongs to.
         let lane = match lanes.iter().position(|l| *l == Some(oid)) {
             Some(i) => i,
             None => {
                 let i = alloc(&mut lanes, &mut colors);
+                // Coloured before it is filled: an empty lane still carries
+                // whatever colour last ran through it, and a lane counted as
+                // live would rule that colour out for the line about to take
+                // the lane over.
+                colors[i] = pick_color(&lanes, &colors, &mut next_color);
                 lanes[i] = Some(oid);
-                colors[i] = next_color;
-                next_color += 1;
                 i
             }
         };
@@ -230,9 +243,8 @@ fn plot(commits: &[Commit], head: Option<Oid>) -> Vec<Place> {
                         continue;
                     }
                     let i = alloc(&mut lanes, &mut colors);
+                    colors[i] = pick_color(&lanes, &colors, &mut next_color);
                     lanes[i] = Some(*parent);
-                    colors[i] = next_color;
-                    next_color += 1;
                 }
             }
         }
@@ -354,7 +366,68 @@ fn unpushed_commits(repo: &git2::Repository, limit: usize) -> HashSet<String> {
     out
 }
 
+/// The tip of the branch this repository is organised around.
+///
+/// `main` and `master` are looked for locally and then on a remote, so a clone
+/// that has never checked the default branch out still has a trunk. A
+/// repository that uses neither name falls back to whatever HEAD is on: the
+/// column is then no steadier than HEAD is, but it is still steadier than
+/// handing it to whichever branch was committed to last.
+fn trunk_tip(repo: &git2::Repository) -> Option<Oid> {
+    for name in [
+        "refs/heads/main",
+        "refs/heads/master",
+        "refs/remotes/origin/main",
+        "refs/remotes/origin/master",
+    ] {
+        if let Some(oid) = repo.find_reference(name).ok().and_then(|r| r.target()) {
+            return Some(oid);
+        }
+    }
+    repo.head().ok().and_then(|h| h.target())
+}
+
+/// How many colours the frontend cycles through. Kept in step with
+/// `LANE_COLORS` there, which is where they are actually chosen.
+const PALETTE: usize = 10;
+/// The trunk's colour. Nothing else is given it while the trunk is alive — the
+/// leftmost lane holds a commit from before the first row onwards, so it is
+/// always in the "already taken" set below — and so the column that never moves
+/// never changes shade either.
+const TRUNK_COLOR: usize = 0;
+
+/// Picks a colour for a lane that has just opened.
+///
+/// Walking the palette in order keeps neighbours apart until it wraps, at which
+/// point two lines running side by side can come out the same shade — which is
+/// exactly when the colour was carrying the most weight. So the search steps
+/// past any colour a live lane is already wearing, and only repeats one when
+/// there are more lines on screen than there are colours to tell them apart.
+fn pick_color(lanes: &[Option<Oid>], colors: &[usize], next: &mut usize) -> usize {
+    let taken: HashSet<usize> = lanes
+        .iter()
+        .enumerate()
+        .filter(|(_, lane)| lane.is_some())
+        .map(|(i, _)| colors[i])
+        .collect();
+
+    for step in 0..PALETTE {
+        let candidate = (*next + step) % PALETTE;
+        if !taken.contains(&candidate) {
+            *next = candidate + 1;
+            return candidate;
+        }
+    }
+    let candidate = *next % PALETTE;
+    *next += 1;
+    candidate
+}
+
 /// Returns the index of a reusable empty lane, appending one if none is free.
+///
+/// The trunk's column is never among them: it holds the trunk's tip from before
+/// the first row and the trunk's own history from then on, so it is never empty
+/// for anything else to move into.
 fn alloc(lanes: &mut Vec<Option<Oid>>, colors: &mut Vec<usize>) -> usize {
     match lanes.iter().position(|l| l.is_none()) {
         Some(i) => i,
@@ -406,8 +479,8 @@ mod tests {
     /// one, in the same lane and the same colour. Where that fails the user
     /// sees exactly what a broken graph looks like: a line that stops in
     /// mid-air, or a stub that starts from nothing.
-    fn faults(commits: &[Commit], head: Option<Oid>) -> Vec<String> {
-        let places = plot(commits, head);
+    fn faults(commits: &[Commit], anchor: Option<Oid>) -> Vec<String> {
+        let places = plot(commits, anchor);
         let mut out = Vec::new();
 
         // Two lines can leave a row in the same lane and colour — a branch
@@ -471,8 +544,8 @@ mod tests {
         out
     }
 
-    fn check(commits: &[Commit], head: Option<Oid>) {
-        let faults = faults(commits, head);
+    fn check(commits: &[Commit], anchor: Option<Oid>) {
+        let faults = faults(commits, anchor);
         assert!(faults.is_empty(), "{}", faults.join("\n"));
     }
 
@@ -545,6 +618,49 @@ mod tests {
                 "row {row} drops the line the merge put into HEAD's lane"
             );
         }
+    }
+
+    #[test]
+    fn keeps_the_trunk_in_the_leftmost_lane() {
+        // A branch off 4 whose tip, 1, is newer than the trunk's tip, 2. Being
+        // first in the list must not win the branch the trunk's column: that is
+        // the shape that made the whole graph slide sideways the moment
+        // somebody committed to a branch.
+        let history = [
+            commit(1, &[4]),
+            commit(2, &[3]),
+            commit(3, &[4]),
+            commit(4, &[]),
+        ];
+        check(&history, Some(id(2)));
+
+        let places = plot(&history, Some(id(2)));
+        assert_eq!(places[0].lane, 1, "the newer branch took the trunk's column");
+        assert_eq!(places[1].lane, 0, "the trunk is not in the leftmost column");
+        assert_eq!(places[2].lane, 0);
+        assert_eq!(places[1].color, TRUNK_COLOR);
+    }
+
+    #[test]
+    fn keeps_lines_that_share_a_row_in_different_colours() {
+        // Four lines leave the merge at once. A colour that repeats among them
+        // is a colour saying two lines are one.
+        let history = [
+            commit(1, &[2, 3, 4, 5]),
+            commit(2, &[6]),
+            commit(3, &[6]),
+            commit(4, &[6]),
+            commit(5, &[6]),
+            commit(6, &[]),
+        ];
+        let places = plot(&history, Some(id(1)));
+        let colours: HashSet<usize> = places[0]
+            .segments
+            .iter()
+            .filter(|s| s.y2 == 2)
+            .map(|s| s.color)
+            .collect();
+        assert_eq!(colours.len(), 4, "two of the four lines share a colour");
     }
 
     #[test]

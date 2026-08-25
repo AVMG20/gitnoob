@@ -826,6 +826,20 @@ export function useGit() {
   }
 }
 
+/**
+ * The colours the graph's lines are drawn in, in the order they are handed out.
+ *
+ * The whole job of a lane colour is that two lines running side by side are
+ * told apart at a glance, so every entry has to be an unmistakably different
+ * hue rather than a lighter version of one already in the list. The greyed
+ * slate and the dull gold that used to sit at the end failed that twice over:
+ * against this background they read as a line that had been dimmed on purpose,
+ * and next to the blue at the top the pale blue at the bottom read as the same
+ * line.
+ *
+ * Index 0 is the trunk's, and the backend holds it back from every other line.
+ * Its `PALETTE` counts these, so the two lists have to stay the same length.
+ */
 export const LANE_COLORS = [
   '#4f9cf9',
   '#f0a83c',
@@ -833,13 +847,28 @@ export const LANE_COLORS = [
   '#e0576d',
   '#a97bf0',
   '#35bec9',
-  '#d98cc4',
-  '#8ea6bd',
-  '#c9b356',
-  '#6fb3e0'
+  '#f07ab8',
+  '#8fd14f',
+  '#f2724b',
+  '#7d8cf8'
 ]
 
-export const laneColor = (index: number) => LANE_COLORS[index % LANE_COLORS.length]
+/** The modulo keeps the index in range, which the checker cannot work out. */
+export const laneColor = (index: number): string => LANE_COLORS[index % LANE_COLORS.length]!
+
+/**
+ * A lane's colour at a given opacity.
+ *
+ * The chips in the branch column are filled with the colour of the line they
+ * name, which only reads as a fill rather than as a block of paint if it is
+ * mostly background. `color-mix` would do it in CSS, but the colour arrives
+ * bound per element rather than as a class, so handing over the finished rgba
+ * saves the stylesheet from having to know about lanes at all.
+ */
+export function laneTint(index: number, alpha: number) {
+  const value = parseInt(laneColor(index).slice(1), 16)
+  return `rgba(${(value >> 16) & 255}, ${(value >> 8) & 255}, ${value & 255}, ${alpha})`
+}
 
 export function relativeTime(seconds: number) {
   const diff = Date.now() / 1000 - seconds
