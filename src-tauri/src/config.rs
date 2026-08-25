@@ -1,5 +1,7 @@
+use std::collections::HashMap;
 use std::fs;
 use std::path::{Path, PathBuf};
+use std::sync::Mutex;
 
 use serde::{Deserialize, Serialize};
 
@@ -266,24 +268,66 @@ pub fn new_id() -> String {
 
 const SERVICE: &str = "dev.gitnoob.app";
 
+/// Secrets read since the app started, including the ones that were not there.
+///
+/// The keychain asks the user to authorise a read whenever it does not
+/// recognise the program doing it, and one refresh reads the same token four
+/// times over — the forge status, the account, the review list and the AI
+/// settings all want it. That is four dialogs for one branch switch, which is
+/// the difference between an app you can use and one you cannot. Reading each
+/// key once a run makes it at most one.
+static CACHED: Mutex<Option<HashMap<String, Option<String>>>> = Mutex::new(None);
+
+fn cached(key: &str) -> Option<Option<String>> {
+    CACHED
+        .lock()
+        .unwrap()
+        .as_ref()
+        .and_then(|seen| seen.get(key).cloned())
+}
+
+/// Records what the keychain said, so it is not asked again this run. Also the
+/// write-through for [`secret_set`]: a token replaced in settings has to be the
+/// one every later read sees.
+fn cache(key: &str, value: Option<String>) {
+    CACHED
+        .lock()
+        .unwrap()
+        .get_or_insert_with(HashMap::new)
+        .insert(key.to_string(), value);
+}
+
 /// Stores a secret in the OS keychain. An empty value deletes the entry.
 pub fn secret_set(key: &str, value: &str) -> Result<(), String> {
     let entry = keyring::Entry::new(SERVICE, key).map_err(|e| e.to_string())?;
     if value.is_empty() {
         return match entry.delete_credential() {
-            Ok(()) => Ok(()),
-            Err(keyring::Error::NoEntry) => Ok(()),
+            Ok(()) => {
+                cache(key, None);
+                Ok(())
+            }
+            Err(keyring::Error::NoEntry) => {
+                cache(key, None);
+                Ok(())
+            }
             Err(e) => Err(e.to_string()),
         };
     }
-    entry.set_password(value).map_err(|e| e.to_string())
+    entry.set_password(value).map_err(|e| e.to_string())?;
+    cache(key, Some(value.to_string()));
+    Ok(())
 }
 
 pub fn secret_get(key: &str) -> Option<String> {
-    keyring::Entry::new(SERVICE, key)
+    if let Some(known) = cached(key) {
+        return known;
+    }
+    let found = keyring::Entry::new(SERVICE, key)
         .ok()
         .and_then(|entry| entry.get_password().ok())
-        .filter(|value| !value.is_empty())
+        .filter(|value| !value.is_empty());
+    cache(key, found.clone());
+    found
 }
 
 /// Keychain key for a profile's forge token.
