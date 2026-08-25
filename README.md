@@ -20,6 +20,7 @@ without stuttering. Search it by message, author or hash.
 
 **Changing things.** Stage and unstage by file or by hunk, discard, commit,
 amend. Fetch, pull, push, merge, rebase, cherry-pick, revert, reset, tag, stash.
+Manage the remotes themselves: add one, change its address, rename it, remove it.
 Drag a branch onto another to fast-forward, merge or rebase it; drag a commit
 onto a branch to cherry-pick; drag a stash onto a branch to apply it there.
 Undo and redo, with a history menu that refuses when the branch has moved on.
@@ -130,13 +131,13 @@ app
 
 ## Testing
 
-`cargo test` runs 132: unit tests over the parts with fiddly rules (remote URL
+`cargo test` runs 133: unit tests over the parts with fiddly rules (remote URL
 parsing, one-hunk patch rebuilding, SSH command building, transport-failure
 explanations, AI answer parsing) and integration tests against real
 repositories built with the `git` CLI — graph lane invariants, divergence
 reporting, every conflict-resolution combination, undo and redo, auto-stash,
 cherry-picking out of order, empty repositories, detached HEAD, CRLF files,
-cloning and creating repositories.
+cloning and creating repositories, managing remotes against a bare one.
 
 The frontend has no tests yet, which is the largest gap in the project.
 `npm run typecheck` runs, and currently reports 59 errors across six components

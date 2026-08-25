@@ -208,6 +208,64 @@ fn refuses_folder_names_that_cannot_exist() {
 }
 
 #[test]
+fn manages_the_remotes_themselves() {
+    let sandbox = Sandbox::new("remote-manage");
+    sandbox.commit("a.txt", "one\n", "First");
+    let state = sandbox.state();
+
+    // A real remote to fetch from: the same setup `git push` tests use.
+    let origin = scratch("remote-origin");
+    git_at(&origin, &["init", "-q", "--bare", "-b", "main", "."]);
+    sandbox.git(&["push", "-q", origin.to_string_lossy().as_ref(), "main"]);
+
+    // Add, and the address reads back.
+    assert!(remote::remote_add(&state, "upstream", origin.to_string_lossy().as_ref()).is_ok());
+    assert_eq!(
+        remote::remote_url(&state, "upstream").unwrap(),
+        origin.to_string_lossy().as_ref()
+    );
+
+    // A duplicate name is refused by git itself.
+    assert!(remote::remote_add(&state, "upstream", "/elsewhere.git").is_err());
+    // So is a name git will not accept.
+    assert!(remote::remote_add(&state, "not a name", "/x.git").is_err());
+    assert!(remote::remote_add(&state, "-dash", "/x.git").is_err());
+    assert!(remote::remote_add(&state, "ok", "   ").is_err());
+
+    // Changing the address, to somewhere that does not answer: git accepts an
+    // address without ever contacting it, which is exactly what an edit of the
+    // destination should do.
+    assert!(remote::remote_set_url(&state, "upstream", "/somewhere/widget.git").is_ok());
+    assert_eq!(
+        remote::remote_url(&state, "upstream").unwrap(),
+        "/somewhere/widget.git"
+    );
+    assert!(remote::remote_set_url(&state, "upstream", origin.to_string_lossy().as_ref()).is_ok());
+
+    // Renaming moves the remote-tracking branches with the name.
+    sandbox.git(&["fetch", "-q", "upstream"]);
+    assert!(remote::remote_rename(&state, "upstream", "source").is_ok());
+    let names: Vec<String> = remote::remotes(&state).unwrap();
+    assert!(names.contains(&"source".to_string()) && !names.contains(&"upstream".to_string()));
+    assert!(
+        sandbox
+            .git(&["rev-parse", "--verify", "refs/remotes/source/main"])
+            .trim()
+            .len()
+            > 0
+    );
+
+    // Removing takes the tracking branches and nothing else.
+    assert!(remote::remote_remove(&state, "source").is_ok());
+    assert!(!remote::remotes(&state).unwrap().contains(&"source".to_string()));
+    assert!(!sandbox.git_may_fail(&["rev-parse", "--verify", "refs/remotes/source/main"]));
+    // The local branch and its commit are untouched.
+    assert_eq!(sandbox.git(&["rev-parse", "--abbrev-ref", "HEAD"]).trim(), "main");
+
+    let _ = std::fs::remove_dir_all(&origin);
+}
+
+#[test]
 fn lists_branches_with_ahead_and_behind_counts() {
     let sandbox = Sandbox::new("refs");
     sandbox.commit("a.txt", "one\n", "First");

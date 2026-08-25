@@ -237,9 +237,13 @@ all.
       offers the list as a searchable picker whenever the profile has a token.
       Works with nothing open — `forge_status` asks only the config — because
       the whole point is choosing a repository before one exists locally
-- [ ] Manage remotes: add one, rename one, change a URL, remove one. `remotes`
+- [x] Manage remotes: add one, rename one, change a URL, remove one. `remotes`
       only lists them, and a repository cloned over HTTPS cannot be moved to ssh
       without dropping to the command line
+      — done: the Remote section header has a `+`, and right-clicking a remote
+      offers fetch, change address, rename, copy and remove. Remove asks for the
+      name typed back and says what stays behind; rename says the tracking
+      branches move with the name
 - [ ] Check out a pull request's branch, and read its diff. Reviews can be
       listed and opened in a browser, which is where the app stops
 - [ ] Compare two branches directly — what is on one and not the other, as a
@@ -310,15 +314,16 @@ See the README, which is now the one place the build notes live.
 
 ## Verification
 
-`cargo test` runs 132 and they pass: 47 unit (remote URL parsing, API bases, URL
+`cargo test` runs 133 and they pass: 47 unit (remote URL parsing, API bases, URL
 encoding, AI answer parsing, reasoning levels, one-hunk patch rebuilding, SSH
 command building, transport-failure explanations, git command rendering, clone
-folder naming) and 85 integration against real repositories built with the git
+folder naming) and 86 integration against real repositories built with the git
 CLI — graph lane invariants, divergence reporting, every conflict-resolution
 combination, undo and redo, auto-stash, stash operations, cherry-picking several
 commits out of order, empty repository, detached HEAD, tracking-branch checkout,
 CRLF files, a pull across a divergence, an oversized diff, cloning from a local
-remote, and creating a repository with a first commit.
+remote, creating a repository with a first commit, and adding, editing, renaming
+and removing a remote against a bare one.
 
 `npm run typecheck` runs and reports 59 errors in six components, all
 pre-existing. `npm run generate` builds the bundle clean.

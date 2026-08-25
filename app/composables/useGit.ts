@@ -606,6 +606,17 @@ export function useGit() {
     reveal: (path: string) => guard('Reveal', () => invoke('reveal', { path })),
     revealLabel: `Reveal in ${fileManagerName()}`,
 
+    /** The address a remote fetches from, for the edit form. */
+    remoteUrl: (name: string) =>
+      guard('Read remote', () => invoke<string>('remote_url', { remote: name })),
+    remoteAdd: (name: string, url: string) =>
+      run<string>('Add remote', 'remote_add', { name, url }),
+    remoteSetUrl: (name: string, url: string) =>
+      run<string>('Change remote address', 'remote_set_url', { name, url }),
+    remoteRename: (from: string, to: string) =>
+      run<string>('Rename remote', 'remote_rename', { from, to }),
+    remoteRemove: (name: string) => run<string>('Remove remote', 'remote_remove', { name }),
+
     stage: (paths: string[]) => run<string>('Stage', 'stage', { paths }),
     stageAll: () => run<string>('Stage all', 'stage_all'),
     unstage: (paths: string[]) => run<string>('Unstage', 'unstage', { paths }),

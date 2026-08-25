@@ -240,6 +240,38 @@ fn remotes(state: State<'_, AppState>) -> Result<Vec<String>, String> {
     remote::remotes(&state)
 }
 
+// --- managing the remotes themselves ----------------------------------------
+
+/// The address a remote fetches from, shown when it is about to be edited.
+#[tauri::command]
+fn remote_url(remote: String, state: State<'_, AppState>) -> Result<String, String> {
+    remote::remote_url(&state, &remote)
+}
+
+#[tauri::command]
+async fn remote_add(name: String, url: String, state: State<'_, AppState>) -> Result<String, String> {
+    remote::remote_add(&state, &name, &url)
+}
+
+#[tauri::command]
+async fn remote_set_url(
+    name: String,
+    url: String,
+    state: State<'_, AppState>,
+) -> Result<String, String> {
+    remote::remote_set_url(&state, &name, &url)
+}
+
+#[tauri::command]
+async fn remote_rename(from: String, to: String, state: State<'_, AppState>) -> Result<String, String> {
+    remote::remote_rename(&state, &from, &to)
+}
+
+#[tauri::command]
+async fn remote_remove(name: String, state: State<'_, AppState>) -> Result<String, String> {
+    remote::remote_remove(&state, &name)
+}
+
 #[tauri::command]
 fn can_fast_forward(
     branch: String,
@@ -1007,6 +1039,11 @@ pub fn run() {
             stale_branches,
             add_to_gitignore,
             remotes,
+            remote_url,
+            remote_add,
+            remote_set_url,
+            remote_rename,
+            remote_remove,
             can_fast_forward,
             branch_relation,
             delete_remote_branch,
