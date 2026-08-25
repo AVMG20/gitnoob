@@ -335,10 +335,36 @@ textarea {
   resize: vertical;
 }
 
-/* Scrollbars: visible enough to grab, quiet enough to ignore. */
+/* Scrollbars: visible enough to grab, quiet enough to ignore.
+ *
+ * Said twice, because there are two ways to ask. `scrollbar-width` and
+ * `scrollbar-color` are the standard ones, and a browser that understands them
+ * switches that scroller to its own rendering and ignores every
+ * `::-webkit-scrollbar` rule below — so an element that set only
+ * `scrollbar-width: thin`, meaning to make our bar narrower, was really opting
+ * out of our bar altogether and getting the platform's, arrow buttons and all.
+ * Both properties are inherited, so declaring them here covers every scroller
+ * in the window and anything wanting a different bar overrides them locally.
+ */
+:root {
+  scrollbar-width: thin;
+  scrollbar-color: var(--scrollbar) transparent;
+}
+
 ::-webkit-scrollbar {
   width: 10px;
   height: 10px;
+}
+
+/* The stepper arrows at the ends. Nothing here is a document long enough to be
+   read a line at a time by clicking, and they are the half of the platform
+   scrollbar that dates it most. */
+::-webkit-scrollbar-button {
+  display: none;
+}
+
+::-webkit-scrollbar-corner {
+  background: transparent;
 }
 
 ::-webkit-scrollbar-thumb {

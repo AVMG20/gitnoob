@@ -21,6 +21,7 @@ import {
   copyText,
   highlight,
   laneColor,
+  laneTint,
   relativeTime,
   rowMatches,
   useGit,
@@ -28,6 +29,15 @@ import {
   type ResetMode,
   type Segment
 } from '~/composables/useGit'
+import {
+  chipTitle,
+  describeChip,
+  ghostTitle,
+  hiddenRefs,
+  lineChips,
+  refChips,
+  type RefChip
+} from '~/composables/useRefChips'
 import { avatarFor, initials, tint } from '~/composables/useAvatars'
 import { useContextMenu } from '~/composables/useContextMenu'
 import { useDragDrop } from '~/composables/useDragDrop'
@@ -160,16 +170,51 @@ const last = computed(() =>
 const window_ = computed(() =>
   store.rows
     .slice(first.value, last.value)
-    .map((row, i) => ({ row, top: (first.value + i) * ROW }))
+    .map((row, i) => ({ row, index: first.value + i, top: (first.value + i) * ROW }))
 )
 
 const dirty = computed(
   () => (store.status?.staged.length ?? 0) + (store.status?.unstaged.length ?? 0)
 )
 const conflicts = computed(() => store.status?.conflicted.length ?? 0)
-/** The WIP node sits on whichever lane the newest commit is on. */
-const headLane = computed(() => store.rows[0]?.lane ?? 0)
-const headColor = computed(() => store.rows[0]?.color ?? 0)
+
+/**
+ * The commit HEAD is on, and where in the list it sits.
+ *
+ * The working tree hangs off this commit, not off the newest one: those were
+ * the same row only while you happened to be standing on the tip of the newest
+ * branch. Check something older out and the WIP node was left drawn on a lane
+ * belonging to a line it has nothing to do with.
+ */
+const headIndex = computed(() =>
+  store.rows.findIndex((row) => row.labels.some((label) => label.head))
+)
+const headRow = computed(() => (headIndex.value >= 0 ? store.rows[headIndex.value] : null))
+const headLane = computed(() => headRow.value?.lane ?? store.rows[0]?.lane ?? 0)
+const headColor = computed(() => headRow.value?.color ?? store.rows[0]?.color ?? 0)
+
+/**
+ * How far down this row the dotted line from the working tree runs.
+ *
+ * It leaves the WIP node pinned above the list and ends at the commit HEAD is
+ * on, so however far you have scrolled there is a thread back to where you are
+ * standing — which is the one thing a graph of a dozen branches otherwise makes
+ * you hunt for. Nothing is drawn past that commit: below it the line is history
+ * the graph is already drawing properly.
+ */
+function headTrace(index: number) {
+  if (headIndex.value < 0 || index > headIndex.value) return 0
+  return index === headIndex.value ? ROW / 2 : ROW
+}
+
+/** True while the commit HEAD is on is scrolled out of the window. */
+const headOffScreen = computed(() => {
+  if (headIndex.value < 0) return false
+  const top = headIndex.value * ROW
+  return top + ROW < scrollTop.value || top > scrollTop.value + height.value
+})
+/** Which way to send the eye — and the scroll — to reach it. */
+const headBelow = computed(() => headIndex.value * ROW > scrollTop.value)
 
 const x = (lane: number) => Math.min(lane, MAX_LANES - 1) * LANE + LANE / 2 + PAD
 
@@ -403,80 +448,26 @@ function openReset(oid: string, mode: ResetMode) {
 
 // --- ref chips
 
-/** One label in the branch column, after folding and ordering. */
-interface RefChip {
-  key: string
-  name: string
-  kind: string
-  head: boolean
-  /** Remote branches for this same name sitting on this same commit. */
-  remotes: string[]
-}
+/**
+ * Which branch each row in the list belongs to.
+ *
+ * Recomputed for the whole list rather than per row, because the answer for
+ * one row depends on every row above it.
+ */
+const lineOwners = computed(() => lineChips(store.rows))
 
 /**
- * Turns a commit's refs into the chips to draw.
+ * The chip to ghost on a row, if any: at most one, handed back as a list so the
+ * template can loop it the way it loops the real one.
  *
- * A branch that has not moved since its last push carries both `main` and
- * `origin/main` on one commit, and drawing two chips says nothing the one chip
- * cannot: the name is the same, and the only fact worth adding is that the
- * remote is here too. So a local branch absorbs the remotes tracking its name
- * and wears a cloud beside its screen. Remotes with no local of that name, and
- * tags, keep chips of their own.
- *
- * Order puts the checked-out branch first, then the other locals, then
- * remote-only branches, then tags — which is also the order of how likely you
- * are to be looking for it.
+ * A row that is the tip of something has a chip of its own and gets nothing
+ * here — the ghost answers "what is this commit on?", which that row already
+ * answers.
  */
-function refChips(row: GraphRow): RefChip[] {
-  const locals = row.labels.filter((l) => l.kind === 'local')
-  const remotes = row.labels.filter((l) => l.kind === 'remote')
-  const rest = row.labels.filter((l) => l.kind !== 'local' && l.kind !== 'remote')
-
-  const absorbed = new Set<string>()
-  const fromLocals = locals.map((local) => {
-    // `origin/feature/x` tracks `feature/x`: split on the first slash only.
-    const mine = remotes.filter((r) => r.name.slice(r.name.indexOf('/') + 1) === local.name)
-    for (const remote of mine) absorbed.add(remote.name)
-    return {
-      key: `local:${local.name}`,
-      name: local.name,
-      kind: 'local',
-      head: local.head,
-      remotes: mine.map((r) => r.name)
-    }
-  })
-
-  const orphanRemotes = remotes
-    .filter((r) => !absorbed.has(r.name))
-    .map((r) => ({ key: `remote:${r.name}`, name: r.name, kind: 'remote', head: false, remotes: [] }))
-
-  const others = rest.map((l) => ({
-    key: `${l.kind}:${l.name}`,
-    name: l.name,
-    kind: l.kind,
-    head: l.head,
-    remotes: []
-  }))
-
-  return [
-    ...fromLocals.filter((c) => c.head),
-    ...fromLocals.filter((c) => !c.head),
-    ...orphanRemotes,
-    ...others
-  ]
-}
-
-/** What one chip is, spelled out, for a tooltip or a menu row. */
-function describeChip(chip: RefChip): string {
-  const where = chip.remotes.length ? ` — also on ${chip.remotes.join(', ')}` : ''
-  if (chip.head) return `${chip.name} — checked out${where}`
-  return `${chip.name}${where}`
-}
-
-/** The tooltip on a chip, which also says what double-clicking it would do. */
-function chipTitle(chip: RefChip): string {
-  if (chip.head) return describeChip(chip)
-  return `${describeChip(chip)}\nDouble-click to check out`
+function ghostChips(row: GraphRow, index: number): RefChip[] {
+  if (row.labels.length) return []
+  const chip = lineOwners.value[index]
+  return chip ? [chip] : []
 }
 
 /** What checking a ref out would do, said before it happens. */
@@ -492,19 +483,46 @@ function chipIcon(chip: RefChip) {
 }
 
 /**
+ * A branch chip wears the colour of the line it names.
+ *
+ * The chip, the leader running out of it and the lane it lands in are then one
+ * colour and read as one thing, so the strip on the left says which line each
+ * name belongs to without the eye having to trace the leader across. Colouring
+ * every branch the same blue instead made the column a list of names that
+ * happened to be near the graph.
+ *
+ * Tags keep their own gold. A tag is not a line — it is a marker left on a
+ * commit — and painting it the colour of whichever line the commit landed in
+ * would be saying something about it that is not true.
+ */
+function chipStyle(row: GraphRow, chip: RefChip) {
+  if (chip.kind === 'tag') return undefined
+  return {
+    background: laneTint(row.color, chip.head ? 0.28 : 0.15),
+    color: chip.head ? '#fff' : laneColor(row.color),
+    // An outline rather than a box-shadow, drawn just inside the edge so it
+    // costs no layout: box-shadow is what the hover ring is made of, and an
+    // inline one would win against it and leave the hover with nothing to say.
+    outline: `1px solid ${laneTint(row.color, chip.head ? 0.9 : 0.3)}`,
+    outlineOffset: '-1px'
+  }
+}
+
+/**
  * Checks a ref out, unless it is already the one we are on.
  *
  * Shared by the double-click on a chip and the menu rows, so both refuse the
  * same no-op rather than one of them running a checkout that changes nothing.
+ *
+ * Nothing else is refused here. Standing this off while the app was busy looked
+ * careful and was not: `busy` counts every call in flight, and the first click
+ * of the double-click is itself one — it asks for the commit to show on the
+ * right. So the guard was true by the time the second click arrived, every
+ * time, and checking a branch out from its label stopped working altogether.
  */
 function checkoutRef(chip: RefChip) {
   if (chip.head) return
   git.checkout(chip.name)
-}
-
-/** The refs a commit carries beyond the one on show. */
-function hiddenRefs(row: GraphRow) {
-  return refChips(row).slice(1)
 }
 
 /** Lists every ref on a commit, each one checkout-able. */
@@ -921,18 +939,8 @@ onUnmounted(() => {
             drop: drag.state.over === `commit:${item.row.oid}`
           }"
           :style="{ top: `${item.top}px` }"
-          draggable="true"
           @click="onRowClick($event, item.row)"
           @contextmenu="commitMenu($event, item.row)"
-          @dragstart="
-            drag.begin($event, {
-              kind: 'commit',
-              oid: item.row.oid,
-              short: item.row.short,
-              summary: item.row.summary
-            })
-          "
-          @dragend="drag.end()"
           @dragover="drag.hover($event, `commit:${item.row.oid}`, ['branch'])"
           @dragleave="drag.leave($event, `commit:${item.row.oid}`)"
           @drop.prevent="onDropOnRow(item.row)"
@@ -941,22 +949,12 @@ onUnmounted(() => {
                so a tip is found by scanning one narrow strip rather than by
                reading the start of every message. -->
           <span v-if="cols.state.shown.refs" class="col-refs" :style="box('refs')">
-            <!-- Only the first chip is drawn; the rest live behind a counter
-                 that lists them, so a commit with five refs takes the same
-                 width as one with a single branch. -->
-            <button
-              v-if="hiddenRefs(item.row).length"
-              class="more-refs"
-              :title="hiddenRefs(item.row).map(describeChip).join('\n')"
-              @click.stop="refsMenu($event, item.row)"
-            >
-              +{{ hiddenRefs(item.row).length }}
-            </button>
             <span
               v-for="chip in refChips(item.row).slice(0, 1)"
               :key="chip.key"
               class="chip"
               :class="[`chip-${chip.kind}`, { 'chip-current': chip.head, 'chip-live': !chip.head }]"
+              :style="chipStyle(item.row, chip)"
               :title="chipTitle(chip)"
               @dblclick.stop="checkoutRef(chip)"
             >
@@ -978,6 +976,51 @@ onUnmounted(() => {
                 class="glyph"
               />
             </span>
+            <!-- Only the first chip is drawn; the rest live behind a counter
+                 that lists them, so a commit with five refs takes the same
+                 width as one with a single branch.
+
+                 After the chip, not before it. In front, the counter indented
+                 the name behind it by its own width, so the one row in ten that
+                 carries several refs was the one row whose name did not start
+                 where every other name in the column starts. -->
+            <button
+              v-if="hiddenRefs(item.row).length"
+              class="more-refs"
+              :title="hiddenRefs(item.row).map(describeChip).join('\n')"
+              @click.stop="refsMenu($event, item.row)"
+            >
+              +{{ hiddenRefs(item.row).length }}
+            </button>
+            <!-- The branch this commit is on, for the rows that are not the tip
+                 of anything. Hidden until the pointer is on the row: printed at
+                 full strength it would be the same name repeated down a hundred
+                 rows, which is noise rather than an answer.
+
+                 The same chip as a real ref otherwise, and checked out by the
+                 same double-click — one gesture for "put me on that branch"
+                 wherever the name is read, rather than a second one to learn
+                 for the rows in between. The tick is left off: this commit is
+                 on that branch, but it is not where the branch is. -->
+            <template
+              v-for="chip in ghostChips(item.row, item.index)"
+              :key="chip.key"
+            >
+              <span
+                class="chip ghost"
+                :class="[`chip-${chip.kind}`, { 'chip-live': !chip.head }]"
+                :style="chipStyle(item.row, { ...chip, head: false })"
+                :title="ghostTitle(chip)"
+                @dblclick.stop="checkoutRef(chip)"
+              >
+                <MidTruncate :text="chip.name" />
+                <component :is="chipIcon(chip)" :size="11" class="glyph" />
+              </span>
+              <span
+                class="ghost-leader"
+                :style="{ background: laneColor(item.row.color) }"
+              />
+            </template>
             <!-- Carries the leader on from the chip to the edge of the column,
                  where the graph's own line picks it up and runs to the node. -->
             <span
@@ -994,6 +1037,31 @@ onUnmounted(() => {
             :height="ROW"
             :viewBox="`0 0 ${graphWidth} ${ROW}`"
           >
+            <!-- The thread back to where you are standing: the working tree at
+                 the top of the list, down its lane, to the commit HEAD is on.
+                 Drawn under everything else, so where a real line already
+                 occupies the lane the real line is what you see and the dots
+                 only show through the stretches that are empty. -->
+            <path
+              v-if="headTrace(item.index)"
+              :d="`M${x(headLane)},0 L${x(headLane)},${headTrace(item.index)}`"
+              :stroke="laneColor(headColor)"
+              stroke-width="2"
+              stroke-dasharray="2 3"
+              stroke-linecap="round"
+              opacity="0.55"
+              fill="none"
+            />
+            <!-- The ghost label's half of the leader, carrying it across to the
+                 node so the name and the line it names are joined up. -->
+            <path
+              v-if="ghostChips(item.row, item.index).length"
+              class="ghost-leader"
+              :d="`M0,${ROW / 2} L${x(item.row.lane)},${ROW / 2}`"
+              :stroke="laneColor(item.row.color)"
+              stroke-width="1.2"
+              fill="none"
+            />
             <!-- The leader from the column to the node. Drawn here rather than
                  in the column because only the graph knows which lane the
                  commit landed in. -->
@@ -1107,7 +1175,12 @@ onUnmounted(() => {
           </span>
 
           <span class="col-msg">
-            <span class="summary truncate">
+            <!-- The message in full on hover. A narrowed message column cuts
+                 most summaries off, and the alternative to reading it here is
+                 selecting the commit to see it in the panel — which throws away
+                 whatever was selected to answer a question about a row you were
+                 only passing over. -->
+            <span class="summary truncate" :title="item.row.summary">
               <span
                 v-for="(part, i) in highlight(item.row.summary, store.query)"
                 :key="i"
@@ -1138,6 +1211,25 @@ onUnmounted(() => {
       <div v-else-if="total === 0" class="empty dim">No commits yet.</div>
     </div>
 
+    <!-- Where you are, when where you are has scrolled away. Checking out
+         something old and then reading history leaves the one row that answers
+         "and where am I in all this?" off the screen, with nothing but the
+         scrollbar to say which direction it went. -->
+    <button
+      v-if="headOffScreen && headRow"
+      class="to-head"
+      :style="{
+        color: laneColor(headColor),
+        backgroundImage: `linear-gradient(${laneTint(headColor, 0.18)}, ${laneTint(headColor, 0.18)})`,
+        boxShadow: `inset 0 0 0 1px ${laneTint(headColor, 0.4)}`
+      }"
+      :title="`Scroll to ${headRow.short} — the commit you are on`"
+      @click="scrollTo(headRow.oid)"
+    >
+      <component :is="headBelow ? ChevronDown : ChevronUp" :size="12" />
+      <span class="truncate">{{ store.repo?.detached ? 'HEAD' : store.repo?.head }}</span>
+    </button>
+
     <ResetDialog
       v-if="resetTarget"
       :oid="resetTarget.oid"
@@ -1166,6 +1258,33 @@ onUnmounted(() => {
   min-width: 0;
   min-height: 0;
   background: var(--bg);
+  /* Holds the "back to HEAD" pill, which floats over the list rather than
+     inside it: a child of the scroller would scroll away with everything else,
+     and it is wanted precisely when things have scrolled away. */
+  position: relative;
+}
+
+.to-head {
+  position: absolute;
+  right: 14px;
+  bottom: 12px;
+  z-index: 2;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  max-width: 180px;
+  padding: 3px 9px 3px 6px;
+  border-radius: 11px;
+  font-size: 11px;
+  font-weight: 600;
+  /* Sits over rows of text, so it needs a ground of its own to be read against.
+     The lane tint bound to it is translucent by design and goes on top of this
+     as a background image, rather than replacing it. */
+  background-color: var(--bg-panel);
+}
+
+.to-head:hover {
+  filter: brightness(1.25);
 }
 
 .head {
@@ -1370,6 +1489,22 @@ onUnmounted(() => {
   opacity: 0.45;
 }
 
+/* The ghost's own leader rather than `.leader` with a modifier beside it: the
+   two want different opacities, they are the same weight of selector, and the
+   one declared later wins whatever the markup says. Sharing the class put a
+   visible leader on every row in the list. */
+.ghost-leader {
+  flex: 1;
+  min-width: 4px;
+  height: 1.2px;
+  opacity: 0;
+  transition: opacity 90ms ease;
+}
+
+.row:hover .ghost-leader {
+  opacity: 0.3;
+}
+
 /* The counter for the refs not on show. Deliberately quiet: it is a way in,
    not a label competing with the branch beside it. */
 .more-refs {
@@ -1507,6 +1642,39 @@ onUnmounted(() => {
   flex: 0 1 auto;
   min-width: 0;
   max-width: 100%;
+  /* Held a shade back at rest and brought forward under the pointer. A column
+     of names at full strength beside a column of commit messages competes with
+     the messages for the eye; a column held back reads as an index you glance
+     at, and the row you are actually on still comes forward. */
+  opacity: 0.8;
+  transition: opacity 90ms ease;
+}
+
+.row:hover .col-refs .chip,
+.row.on .col-refs .chip {
+  opacity: 1;
+}
+
+/* The branch a commit is on, for the rows that mark no tip of their own. The
+   same chip as a real ref, one step back: it is the answer to a question asked
+   by pointing, and it must not be mistaken at a glance for a ref that is
+   actually sitting on this commit.
+
+   Written at the weight of `.col-refs .chip` and after it, because a plain
+   `.ghost` loses to it and the label would then be printed down every row in
+   the list. */
+.col-refs .ghost {
+  opacity: 0;
+  font-weight: 500;
+}
+
+.row:hover .col-refs .ghost {
+  opacity: 0.62;
+}
+
+/* Under the pointer it is a button and says so, at full strength. */
+.col-refs .ghost:hover {
+  opacity: 1;
 }
 
 /* A ref that is not the one we are on can be checked out from here, so it
