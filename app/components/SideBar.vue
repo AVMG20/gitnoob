@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, reactive, ref } from 'vue'
+import { computed, nextTick, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue'
 import { invoke } from '@tauri-apps/api/core'
 import {
   Archive,
@@ -131,6 +131,9 @@ type Section = 'locals' | 'remotes' | 'reviews' | 'tags' | 'stashes'
 
 const SIZES_KEY = 'gitnoob:sidebar-sizes'
 
+/** A section dragged below this is not worth the scrollbar it would need. */
+const MIN_SECTION = 40
+
 /**
  * Heights the user has dragged a section to, in pixels.
  *
@@ -157,6 +160,46 @@ function saveSizes() {
   }
 }
 
+const scrollEl = ref<HTMLElement | null>(null)
+
+/**
+ * Shrinks pinned sections until the sidebar itself no longer scrolls.
+ *
+ * Two scrollbars inside one another is the worst of both: the wheel picks one
+ * of them and it is never the one meant. The sections already scroll, so the
+ * column of them must always fit — a height that would push it over is simply
+ * not allowed, whether it was dragged there or arrived by the window getting
+ * shorter.
+ *
+ * Reading `scrollHeight` forces the layout, so each pass sees the effect of the
+ * last; the guard is there because a floor of forty pixels each can be more
+ * than a very short window has, and there is nothing to be done about that.
+ */
+function fit() {
+  const el = scrollEl.value
+  if (!el) return
+  for (let pass = 0; pass < 12; pass++) {
+    const over = el.scrollHeight - el.clientHeight
+    if (over <= 0) return
+    const pinned = (Object.keys(sizes) as Section[]).filter((key) => (sizes[key] ?? 0) > MIN_SECTION)
+    if (!pinned.length) return
+    const share = Math.ceil(over / pinned.length)
+    for (const key of pinned) {
+      sizes[key] = Math.max(MIN_SECTION, (sizes[key] ?? 0) - share)
+    }
+  }
+}
+
+onMounted(() => {
+  fit()
+  window.addEventListener('resize', fit)
+})
+
+// Folding a section open hands its rows back into the column, which can be
+// what tips it over.
+watch(open, () => nextTick(fit), { deep: true })
+onBeforeUnmount(() => window.removeEventListener('resize', fit))
+
 function sizeOf(section: Section) {
   const height = sizes[section]
   return height ? { height: `${height}px`, flex: 'none' } : undefined
@@ -178,7 +221,10 @@ function grab(event: PointerEvent, section: Section) {
   grip.setPointerCapture(event.pointerId)
 
   const move = (moved: PointerEvent) => {
-    sizes[section] = Math.max(40, startHeight + moved.clientY - startY)
+    sizes[section] = Math.max(MIN_SECTION, startHeight + moved.clientY - startY)
+    // Dragging past what is left does nothing rather than pushing the column
+    // out of the window: the drag stops where the space does.
+    fit()
   }
   const done = () => {
     grip.releasePointerCapture(event.pointerId)
@@ -542,7 +588,7 @@ function stashMenu(event: MouseEvent, index: number, message: string) {
       <input v-model="filter" type="search" placeholder="Filter branches" />
     </div>
 
-    <div class="scroll">
+    <div ref="scrollEl" class="scroll">
       <!-- Local -->
       <button class="section-title toggle" @click="open.locals = !open.locals">
         <ChevronRight :size="12" class="chev" :class="{ down: open.locals }" />
