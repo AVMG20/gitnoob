@@ -226,11 +226,49 @@ fn step(state: &AppState, entry: &Entry, direction: Direction) -> Result<String,
             };
             git_cmd::run_checked(&root, &["reset", flag, oid])?;
             Ok(match direction {
-                Direction::Back => format!("Undid: {}", entry.label),
+                Direction::Back => {
+                    let mut said = format!("Undid: {}", entry.label);
+                    // Undoing moves the branch here; it cannot move the remote,
+                    // which still has the commit. Left unsaid, the window simply
+                    // reports the branch as behind — and pulling, the obvious
+                    // thing to do about that, brings the undone commit back.
+                    if let Some(remote) = still_published(state, entry) {
+                        said.push_str(&format!(
+                            " — but {remote} still has it. Push to undo it there too; pull, and the commit comes back."
+                        ));
+                    }
+                    said
+                }
                 Direction::Forward => format!("Redid: {}", entry.label),
             })
         }
     }
+}
+
+/// The upstream that still carries the commit an undo has just moved off, if
+/// there is one.
+///
+/// An undo is local by definition — it moves a branch, and a branch is the only
+/// thing it can move. Whether that matters depends on whether the commit ever
+/// left this machine.
+pub fn still_published(state: &AppState, entry: &Entry) -> Option<String> {
+    let root = state.path().ok()?;
+    let undone = entry.after.as_deref()?;
+    let branch = entry.branch.clone().or_else(|| current_branch(state))?;
+
+    let upstream = git_cmd::run(
+        &root,
+        &["rev-parse", "--abbrev-ref", &format!("{branch}@{{upstream}}")],
+    )
+    .ok()
+    .filter(|out| out.ok)
+    .map(|out| out.stdout.trim().to_string())
+    .filter(|name| !name.is_empty())?;
+
+    let contains = git_cmd::run(&root, &["merge-base", "--is-ancestor", undone, &upstream])
+        .map(|out| out.ok)
+        .unwrap_or(false);
+    contains.then_some(upstream)
 }
 
 fn now() -> i64 {

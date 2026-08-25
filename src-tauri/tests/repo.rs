@@ -9,7 +9,7 @@ use std::process::Command;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
 use gitnoob_lib::state::AppState;
-use gitnoob_lib::{conflict, diff, graph, refs, remote};
+use gitnoob_lib::{conflict, diff, graph, journal, refs, remote, work};
 
 static COUNTER: AtomicUsize = AtomicUsize::new(0);
 
@@ -1929,4 +1929,43 @@ fn a_new_file_shows_its_whole_contents_as_added() {
         .map(|line| line.content.as_str())
         .collect();
     assert_eq!(added, vec!["hello", "world"]);
+}
+
+/// Undo moves a branch, and a branch is all it can move. When the commit it
+/// moved off has already been pushed, saying only "undid" leaves the window
+/// reporting the branch as behind — and pulling, the obvious thing to do about
+/// that, brings the undone commit straight back.
+#[test]
+fn undoing_a_pushed_commit_says_the_remote_still_has_it() {
+    let sandbox = Sandbox::new("undopush");
+    sandbox.commit("a.txt", "one\n", "Shared base");
+
+    let bare = sandbox.root.parent().unwrap().join(format!(
+        "gitnoob-test-undo-origin-{}.git",
+        std::process::id()
+    ));
+    let _ = std::fs::remove_dir_all(&bare);
+    let bare_arg = bare.to_string_lossy().into_owned();
+    sandbox.git(&["clone", "-q", "--bare", ".", &bare_arg]);
+    sandbox.git(&["remote", "add", "origin", &bare_arg]);
+    sandbox.git(&["fetch", "-q", "origin"]);
+    sandbox.git(&["branch", "--set-upstream-to=origin/main", "main"]);
+
+    let state = sandbox.state();
+
+    // A commit that stays here is undone without ceremony.
+    sandbox.write("a.txt", "two\n");
+    sandbox.git(&["add", "a.txt"]);
+    work::commit(&state, "Local only", false).unwrap();
+    let said = journal::undo(&state).unwrap();
+    assert!(!said.contains("origin/main"), "{said}");
+
+    // One that has been pushed cannot be undone there by a reset here.
+    journal::redo(&state).unwrap();
+    sandbox.git(&["push", "-q", "origin", "main"]);
+    let said = journal::undo(&state).unwrap();
+    assert!(said.contains("origin/main"), "{said}");
+    assert!(said.contains("Push to undo it there"), "{said}");
+
+    let _ = std::fs::remove_dir_all(&bare);
 }
