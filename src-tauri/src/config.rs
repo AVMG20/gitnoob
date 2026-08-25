@@ -416,3 +416,221 @@ pub fn forge_key(profile_id: &str) -> String {
 }
 
 pub const OPENROUTER_KEY: &str = "openrouter";
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    static COUNTER: AtomicUsize = AtomicUsize::new(0);
+
+    /// A config directory of its own, removed when the test ends. Nothing here
+    /// may touch the real one: it holds the user's whole setup.
+    struct Dir(PathBuf);
+
+    impl Dir {
+        fn new(tag: &str) -> Self {
+            let root = std::env::temp_dir().join(format!(
+                "gitnoob-config-{tag}-{}-{}",
+                std::process::id(),
+                COUNTER.fetch_add(1, Ordering::SeqCst)
+            ));
+            let _ = fs::remove_dir_all(&root);
+            fs::create_dir_all(&root).unwrap();
+            Dir(root)
+        }
+
+        fn path(&self) -> &Path {
+            &self.0
+        }
+    }
+
+    impl Drop for Dir {
+        fn drop(&mut self) {
+            let _ = fs::remove_dir_all(&self.0);
+        }
+    }
+
+    #[test]
+    fn a_first_run_gets_a_profile_that_is_already_active() {
+        let dir = Dir::new("first-run");
+        let config = load(dir.path());
+        assert_eq!(config.profiles.len(), 1);
+        assert!(
+            config.active().is_some(),
+            "a config whose active id names nothing has no profile to open projects under"
+        );
+    }
+
+    #[test]
+    fn what_was_saved_is_what_comes_back() {
+        let dir = Dir::new("round-trip");
+        let mut config = Config::default();
+        let profile = config.profiles.first_mut().unwrap();
+        profile.name = "Work".into();
+        profile.forge = ForgeKind::GitLab;
+        profile.host = "gitlab.example.com".into();
+        profile.git_email = Some("me@example.com".into());
+        profile.ssh_key = Some("/home/me/.ssh/id_work".into());
+        profile.projects = vec![Project {
+            path: "/repos/widget".into(),
+            name: "widget".into(),
+        }];
+        profile.active_project = Some("/repos/widget".into());
+        config.global.auto_fetch_minutes = 7;
+        config.global.auto_stash = false;
+
+        save(dir.path(), &config).unwrap();
+        let read = load(dir.path());
+
+        let back = read.active().expect("the active profile should survive a save");
+        assert_eq!(back.name, "Work");
+        assert_eq!(back.forge, ForgeKind::GitLab);
+        assert_eq!(back.host, "gitlab.example.com");
+        assert_eq!(back.ssh_key.as_deref(), Some("/home/me/.ssh/id_work"));
+        assert_eq!(back.projects.len(), 1);
+        assert_eq!(back.active_project.as_deref(), Some("/repos/widget"));
+        assert_eq!(read.global.auto_fetch_minutes, 7);
+        assert!(!read.global.auto_stash);
+    }
+
+    #[test]
+    fn saving_leaves_no_half_written_file_behind() {
+        let dir = Dir::new("atomic");
+        save(dir.path(), &Config::default()).unwrap();
+        save(dir.path(), &Config::default()).unwrap();
+        assert!(file_path(dir.path()).is_file());
+        assert!(
+            !dir.path().join("config.json.tmp").exists(),
+            "the file written beside the target should have been renamed over it"
+        );
+    }
+
+    /// Overwriting a config that failed to parse would throw away every profile
+    /// on the machine, which is the one thing this file must never do.
+    #[test]
+    fn a_config_that_will_not_parse_is_moved_aside_rather_than_lost() {
+        let dir = Dir::new("corrupt");
+        let broken = "{ \"profiles\": [ oh dear";
+        fs::write(file_path(dir.path()), broken).unwrap();
+
+        let config = load(dir.path());
+        assert_eq!(config.profiles.len(), 1, "the app still opens on defaults");
+
+        let kept = dir.path().join("config.json.broken");
+        assert_eq!(
+            fs::read_to_string(&kept).unwrap(),
+            broken,
+            "the original text has to be recoverable, byte for byte"
+        );
+        assert!(!file_path(dir.path()).exists());
+    }
+
+    /// Every field added since a config was written carries a `serde(default)`.
+    /// Without one, adding a setting would make every older config unparseable
+    /// and send it to `.broken` on the next launch.
+    #[test]
+    fn a_config_written_by_an_older_version_keeps_its_profiles() {
+        let dir = Dir::new("older");
+        // A profile and a global block as they were before ssh keys, avatars,
+        // the fetch interval and the AI settings existed.
+        fs::write(
+            file_path(dir.path()),
+            r#"{
+              "version": 1,
+              "active_profile": "abc",
+              "global": { "ai": {} },
+              "profiles": [{ "id": "abc", "name": "Personal" }]
+            }"#,
+        )
+        .unwrap();
+
+        let config = load(dir.path());
+        let profile = config.active().expect("the profile should still be found");
+        assert_eq!(profile.name, "Personal");
+        assert_eq!(profile.forge, ForgeKind::None);
+        assert!(profile.projects.is_empty());
+        assert!(profile.ssh_key.is_none());
+        // The fields it never had take the values a new install would get.
+        assert!(config.global.show_avatars);
+        assert_eq!(config.global.auto_fetch_minutes, default_fetch_minutes());
+        assert_eq!(config.global.graph_page_size, default_page_size());
+    }
+
+    #[test]
+    fn the_config_from_the_old_app_name_is_adopted_once() {
+        let parent = Dir::new("rename");
+        let previous = parent.path().join("dev.gitui.app");
+        fs::create_dir_all(&previous).unwrap();
+        fs::write(
+            previous.join("config.json"),
+            r#"{"version":1,"active_profile":"old","global":{"ai":{}},
+                "profiles":[{"id":"old","name":"From before the rename"}]}"#,
+        )
+        .unwrap();
+
+        let now = parent.path().join("dev.gitnoob.app");
+        let config = load(&now);
+        assert_eq!(
+            config.active().map(|p| p.name.as_str()),
+            Some("From before the rename")
+        );
+        assert!(
+            previous.join("config.json").is_file(),
+            "the old file is copied, not moved, so a wrong call is recoverable"
+        );
+    }
+
+    #[test]
+    fn a_config_that_already_exists_is_not_replaced_by_the_old_one() {
+        let parent = Dir::new("rename-existing");
+        let previous = parent.path().join("dev.gitui.app");
+        fs::create_dir_all(&previous).unwrap();
+        fs::write(
+            previous.join("config.json"),
+            r#"{"version":1,"active_profile":"old","global":{"ai":{}},
+                "profiles":[{"id":"old","name":"Stale"}]}"#,
+        )
+        .unwrap();
+
+        let now = parent.path().join("dev.gitnoob.app");
+        fs::create_dir_all(&now).unwrap();
+        let mut current = Config::default();
+        current.profiles[0].name = "Current".into();
+        save(&now, &current).unwrap();
+
+        assert_eq!(load(&now).active().map(|p| p.name.as_str()), Some("Current"));
+    }
+
+    #[test]
+    fn the_active_profile_is_the_one_the_id_names() {
+        let mut config = Config::default();
+        let second = Profile::new("Work", ForgeKind::GitHub);
+        let id = second.id.clone();
+        config.profiles.push(second);
+        config.active_profile = Some(id);
+        assert_eq!(config.active().map(|p| p.name.as_str()), Some("Work"));
+
+        config.active_mut().unwrap().name = "Renamed".into();
+        assert_eq!(config.active().map(|p| p.name.as_str()), Some("Renamed"));
+
+        // A deleted profile leaves the id behind; nothing may claim to be it.
+        config.active_profile = Some("gone".into());
+        assert!(config.active().is_none());
+    }
+
+    #[test]
+    fn a_profile_starts_on_its_forges_own_host() {
+        assert_eq!(Profile::new("A", ForgeKind::GitHub).host, "github.com");
+        assert_eq!(Profile::new("B", ForgeKind::GitLab).host, "gitlab.com");
+        assert_eq!(Profile::new("C", ForgeKind::None).host, "");
+    }
+
+    /// Tokens are keyed by profile, so two profiles on the same forge do not
+    /// read each other's.
+    #[test]
+    fn forge_keys_are_per_profile() {
+        assert_eq!(forge_key("abc"), "forge:abc");
+        assert_ne!(forge_key("abc"), forge_key("def"));
+    }
+}

@@ -604,6 +604,153 @@ fn push_preview_reports_divergence_and_what_a_force_would_drop() {
     let _ = std::fs::remove_dir_all(&bare);
 }
 
+/// A bare repository beside the sandbox, added as `origin`.
+///
+/// The preview is well covered; the push it previews was not run against
+/// anything until these tests. Returns the path so the caller can read the
+/// remote's own refs — the only honest way to say a push arrived.
+fn bare_origin(sandbox: &Sandbox, tag: &str) -> PathBuf {
+    let bare = scratch(&format!("{tag}-origin")).join("origin.git");
+    let arg = bare.to_string_lossy().into_owned();
+    git_at(bare.parent().unwrap(), &["init", "-q", "--bare", "-b", "main", &arg]);
+    sandbox.git(&["remote", "add", "origin", &arg]);
+    bare
+}
+
+/// What the remote thinks a branch points at, or `None` when it has no such ref.
+fn remote_tip(bare: &Path, branch: &str) -> Option<String> {
+    let out = Command::new("git")
+        .args(["rev-parse", &format!("refs/heads/{branch}")])
+        .current_dir(bare)
+        .output()
+        .expect("git should be on PATH");
+    out.status
+        .success()
+        .then(|| String::from_utf8_lossy(&out.stdout).trim().to_string())
+}
+
+#[test]
+fn a_first_push_sets_the_upstream_and_lands_on_the_remote() {
+    let sandbox = Sandbox::new("push-first");
+    sandbox.commit("a.txt", "one\n", "First");
+    let bare = bare_origin(&sandbox, "push-first");
+    let state = sandbox.state();
+
+    let out = remote::push(&state, "origin", "main", false, true).unwrap();
+    assert!(out.ok, "push failed: {}", out.stderr);
+    // The command is the log's teaching, so it has to read the way it would be
+    // typed — and it must never carry a bare --force.
+    assert!(out.argv.contains(&"--set-upstream".to_string()));
+    assert!(!out.argv.iter().any(|arg| arg == "--force"));
+
+    assert_eq!(
+        remote_tip(&bare, "main").as_deref(),
+        Some(sandbox.git(&["rev-parse", "HEAD"]).trim()),
+        "the remote should be at the commit that was pushed"
+    );
+    assert_eq!(
+        sandbox.git(&["rev-parse", "--abbrev-ref", "main@{upstream}"]).trim(),
+        "origin/main",
+        "--set-upstream should have recorded the tracking branch"
+    );
+}
+
+#[test]
+fn a_push_that_would_rewrite_history_is_refused_without_force() {
+    let sandbox = Sandbox::new("push-refused");
+    sandbox.commit("a.txt", "one\n", "Base");
+    sandbox.commit("a.txt", "two\n", "Published");
+    let bare = bare_origin(&sandbox, "push-refused");
+    let state = sandbox.state();
+    assert!(remote::push(&state, "origin", "main", false, true).unwrap().ok);
+    let published = remote_tip(&bare, "main").unwrap();
+
+    // Rewrite the tip. The remote still has the commit that just went.
+    sandbox.git(&["reset", "-q", "--hard", "HEAD~1"]);
+    sandbox.commit("a.txt", "different\n", "Rewritten");
+
+    let refused = remote::push(&state, "origin", "main", false, false).unwrap();
+    assert!(!refused.ok, "a non-fast-forward push should be refused");
+    assert_eq!(
+        remote_tip(&bare, "main"),
+        Some(published),
+        "a refused push must leave the remote where it was"
+    );
+}
+
+#[test]
+fn a_force_push_uses_a_lease_and_takes_the_branch_back() {
+    let sandbox = Sandbox::new("push-force");
+    sandbox.commit("a.txt", "one\n", "Base");
+    sandbox.commit("a.txt", "two\n", "Published");
+    let bare = bare_origin(&sandbox, "push-force");
+    let state = sandbox.state();
+    assert!(remote::push(&state, "origin", "main", false, true).unwrap().ok);
+
+    sandbox.git(&["reset", "-q", "--hard", "HEAD~1"]);
+    sandbox.commit("a.txt", "different\n", "Rewritten");
+
+    let forced = remote::push(&state, "origin", "main", true, false).unwrap();
+    assert!(forced.ok, "force push failed: {}", forced.stderr);
+    assert!(
+        forced.argv.contains(&"--force-with-lease".to_string()),
+        "the lease is the whole safety of this operation: {:?}",
+        forced.argv
+    );
+    assert!(
+        !forced.argv.iter().any(|arg| arg == "--force"),
+        "a bare --force would overwrite work the lease is there to protect"
+    );
+    assert_eq!(
+        remote_tip(&bare, "main").as_deref(),
+        Some(sandbox.git(&["rev-parse", "HEAD"]).trim())
+    );
+}
+
+/// The lease is not decoration: a remote that moved since the last fetch has to
+/// stop even a force push.
+#[test]
+fn a_force_push_is_refused_when_the_remote_moved_behind_our_back() {
+    let sandbox = Sandbox::new("push-lease");
+    sandbox.commit("a.txt", "one\n", "Base");
+    let bare = bare_origin(&sandbox, "push-lease");
+    let state = sandbox.state();
+    assert!(remote::push(&state, "origin", "main", false, true).unwrap().ok);
+
+    // Somebody else pushes. We never fetch, so our lease is stale.
+    let theirs = scratch("push-lease-other");
+    let clone = theirs.join("clone");
+    git_at(
+        &theirs,
+        &[
+            "clone",
+            "-q",
+            bare.to_string_lossy().as_ref(),
+            clone.to_string_lossy().as_ref(),
+        ],
+    );
+    git_at(&clone, &["config", "user.name", "Other"]);
+    git_at(&clone, &["config", "user.email", "other@example.com"]);
+    git_at(&clone, &["config", "commit.gpgsign", "false"]);
+    std::fs::write(clone.join("b.txt"), "theirs\n").unwrap();
+    git_at(&clone, &["add", "--all"]);
+    git_at(&clone, &["commit", "-q", "-m", "Their commit"]);
+    git_at(&clone, &["push", "-q", "origin", "main"]);
+    let theirs_tip = remote_tip(&bare, "main").unwrap();
+
+    sandbox.commit("a.txt", "ours\n", "Our commit");
+    let refused = remote::push(&state, "origin", "main", true, false).unwrap();
+    assert!(
+        !refused.ok,
+        "the lease should refuse a force push over a remote we have not seen"
+    );
+    assert_eq!(
+        remote_tip(&bare, "main"),
+        Some(theirs_tip),
+        "their commit must still be the tip"
+    );
+}
+
 #[test]
 fn push_preview_flags_a_branch_with_no_upstream() {
     let sandbox = Sandbox::new("upstream");
