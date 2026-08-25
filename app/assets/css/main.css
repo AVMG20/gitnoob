@@ -287,6 +287,117 @@
   --scrollbar-hover: #2c3540;
 }
 
+/*
+ * Jade, Crimson and Ember — Void again in three other colours. Same black page
+ * and the same steps up out of it, with the surfaces carrying a trace of the
+ * accent's own hue so the window is lit by it rather than tinted afterwards.
+ *
+ * Each of the three lands on a colour this app already spends on meaning, and
+ * says so rather than letting the two blur: an added line is green, a warning
+ * is amber, and a button that destroys something is red. Where the accent
+ * collides, it is the accent that moves.
+ */
+
+/* Jade — the accent goes to spring green and the additions to a yellower one,
+   so a selected row and a line you added are not the same colour. */
+[data-theme='jade'] {
+  --bg: #000000;
+  --bg-panel: #070b08;
+  --bg-raised: #0f1610;
+  --bg-hover: #161f18;
+  --bg-active: #1c3a28;
+  --bg-deep: #000000;
+  --line: #18251b;
+  --line-soft: #111a13;
+  --text: #d4e0d7;
+  --text-dim: #899a8e;
+  --text-faint: #556056;
+  --accent: #2fe08a;
+  --on-accent: #00220f;
+  --accent-hover: #55e9a1;
+  --red: #e0576d;
+  --on-danger: #1a0d10;
+  --danger-hover: #e97183;
+  --green: #7bc96f;
+  --amber: #f0a83c;
+  --purple: #a97bf0;
+  --red-soft: #ee8ea0;
+  --amber-soft: #f0b868;
+  --green-soft: #a3d79b;
+  --accent-soft: #6fdcab;
+  --scrollbar: #1b2a1f;
+  --purple-soft: #c4a4f6;
+  --scrollbar-hover: #294032;
+}
+
+/* Crimson — the hardest of the three, because red is what this app fills a
+   button with when the button destroys something. The accent is warm, a
+   scarlet with orange in it; danger stays cool and deeper. A primary fill and
+   a destructive one are then a difference in warmth rather than in shade,
+   which is as far apart as two reds get. If they ever read as one button, the
+   answer is to stop leaning on colour there and mark the destructive one. */
+[data-theme='crimson'] {
+  --bg: #000000;
+  --bg-panel: #0b0708;
+  --bg-raised: #16100f;
+  --bg-hover: #1f1817;
+  --bg-active: #3d2226;
+  --bg-deep: #000000;
+  --line: #261a1b;
+  --line-soft: #1a1213;
+  --text: #e2d8d8;
+  --text-dim: #9d8d8e;
+  --text-faint: #6a5b5c;
+  --accent: #ff6b5b;
+  --on-accent: #2b0703;
+  --accent-hover: #ff8676;
+  --red: #e0455f;
+  --on-danger: #22060d;
+  --danger-hover: #ea5e75;
+  --green: #57c184;
+  --amber: #f0a83c;
+  --purple: #a97bf0;
+  --red-soft: #ef8298;
+  --amber-soft: #f0b868;
+  --green-soft: #7fcda3;
+  --accent-soft: #ff9689;
+  --purple-soft: #c4a4f6;
+  --scrollbar: #2c1e1f;
+  --scrollbar-hover: #422e30;
+}
+
+/* Ember — the accent is orange and the warnings are pulled back to yellow, so
+   the colour that means "look at this" is not the colour everything is. */
+[data-theme='ember'] {
+  --bg: #000000;
+  --bg-panel: #0a0806;
+  --bg-raised: #15110b;
+  --bg-hover: #1e1811;
+  --bg-active: #3d2c14;
+  --bg-deep: #000000;
+  --line: #251d12;
+  --line-soft: #19140d;
+  --text: #e3dbcf;
+  --text-dim: #9c9081;
+  --text-faint: #675e52;
+  --accent: #ff8c42;
+  --on-accent: #2a1002;
+  --accent-hover: #ffa263;
+  --red: #e0576d;
+  --on-danger: #1a0d10;
+  --danger-hover: #e97183;
+  --green: #57c184;
+  --amber: #e6b93f;
+  --purple: #a97bf0;
+  --red-soft: #ee8ea0;
+  --amber-soft: #ecca77;
+  --green-soft: #7fcda3;
+  --accent-soft: #ffab74;
+  --purple-soft: #c4a4f6;
+  --scrollbar: #2a2014;
+  --scrollbar-hover: #3f3120;
+}
+
 /* Plum — semi-dark, and the one theme that is not built out of greys. Every
    surface carries the same violet, so the magenta accent belongs to the room
    rather than being dropped into it. */

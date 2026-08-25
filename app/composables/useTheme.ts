@@ -8,6 +8,9 @@ export type ThemeId =
   | 'moss'
   | 'ink'
   | 'void'
+  | 'jade'
+  | 'crimson'
+  | 'ember'
   | 'pine'
   | 'obsidian'
   | 'mono'
@@ -35,6 +38,10 @@ export const THEMES: Theme[] = [
   { id: 'moss', name: 'Moss', kind: 'Semi-dark', swatch: ['#171a15', '#a3cf5c', '#d9dfd1'] },
   { id: 'ink', name: 'Ink', kind: 'Dark', swatch: ['#0d0f12', '#4f9cf9', '#ccd4dc'] },
   { id: 'void', name: 'Void', kind: 'Dark', swatch: ['#000000', '#35bec9', '#d7dee6'] },
+  // Void's own colour, then the same black under three others.
+  { id: 'jade', name: 'Jade', kind: 'Dark', swatch: ['#000000', '#2fe08a', '#d4e0d7'] },
+  { id: 'crimson', name: 'Crimson', kind: 'Dark', swatch: ['#000000', '#ff6b5b', '#e2d8d8'] },
+  { id: 'ember', name: 'Ember', kind: 'Dark', swatch: ['#000000', '#ff8c42', '#e3dbcf'] },
   { id: 'pine', name: 'Pine', kind: 'Dark', swatch: ['#0e1310', '#4fd18b', '#cfdcd3'] },
   { id: 'obsidian', name: 'Obsidian', kind: 'Dark', swatch: ['#08090b', '#8b7df7', '#d5d7dc'] },
   { id: 'mono', name: 'Mono', kind: 'Dark', swatch: ['#0a0a0a', '#e8e8e8', '#e6e6e6'] },
