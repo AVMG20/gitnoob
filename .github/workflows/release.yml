@@ -40,9 +40,24 @@ jobs:
     outputs:
       release_id: ${{ steps.create.outputs.result }}
       version: ${{ steps.version.outputs.version }}
+      notes: ${{ steps.notes.outputs.result }}
     steps:
       - id: version
         run: echo "version=${GITHUB_REF_NAME#v}" >> "$GITHUB_OUTPUT"
+
+      # The same sentence the app shows before you agree to install, kept
+      # here so the release page and the update prompt cannot drift apart.
+      - id: notes
+        uses: actions/github-script@v7
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+        with:
+          result-encoding: string
+          script: |
+            return [
+              `gitnoob ${process.env.VERSION}.`,
+              'See the release page for what changed and for the installers.'
+            ].join(' ')
 
       - id: create
         uses: actions/github-script@v7
@@ -180,6 +195,11 @@ jobs:
           releaseId: ${{ needs.draft.outputs.release_id }}
           # latest.json, the file every installed copy asks about updates.
           includeUpdaterJson: true
+          # And what it says under the version. This is a separate field from
+          # the release body the draft job writes: that one goes on the GitHub
+          # page, this one is what the app shows before you agree to install.
+          # Left unset it is an empty string, and the notes panel shows nothing.
+          releaseBody: ${{ needs.draft.outputs.notes }}
           args: ${{ matrix.args }}
 
   publish:
