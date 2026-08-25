@@ -159,7 +159,7 @@ onUnmounted(() => {
 
 <template>
   <div class="shell">
-    <ProjectTabs @open="openProject" />
+    <ProjectTabs @open="openProject" @clone="cloneOpen = true" @init="initOpen = true" />
 
     <template v-if="store.repo">
       <TitleBar />
