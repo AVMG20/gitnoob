@@ -9,7 +9,7 @@ use std::process::Command;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
 use gitnoob_lib::state::AppState;
-use gitnoob_lib::{conflict, diff, graph, journal, refs, remote, work};
+use gitnoob_lib::{conflict, create, diff, graph, journal, refs, remote, work};
 
 static COUNTER: AtomicUsize = AtomicUsize::new(0);
 
@@ -110,6 +110,159 @@ fn rejects_a_directory_outside_any_repository() {
     std::fs::create_dir_all(&root).unwrap();
     assert!(gitnoob_lib::state::discover_workdir(&root).is_err());
     let _ = std::fs::remove_dir_all(&root);
+}
+
+/// A throwaway folder to clone or create repositories in.
+fn scratch(tag: &str) -> PathBuf {
+    let root = std::env::temp_dir().join(format!(
+        "gitnoob-{}-{}-{}",
+        tag,
+        std::process::id(),
+        COUNTER.fetch_add(1, Ordering::SeqCst)
+    ));
+    std::fs::create_dir_all(&root).unwrap();
+    root
+}
+
+/// Runs git in a folder that is not a `Sandbox`, asserting it worked.
+fn git_at(dir: &Path, args: &[&str]) -> String {
+    let out = Command::new("git")
+        .args(args)
+        .current_dir(dir)
+        .output()
+        .expect("git should be on PATH");
+    assert!(
+        out.status.success(),
+        "git {:?} failed: {}",
+        args,
+        String::from_utf8_lossy(&out.stderr)
+    );
+    String::from_utf8_lossy(&out.stdout).into_owned()
+}
+
+#[test]
+fn clones_a_repository_into_a_folder_named_after_it() {
+    let origin = Sandbox::new("clone-origin");
+    origin.commit("a.txt", "one\n", "First");
+    let parent = scratch("clone-into");
+
+    let made = create::clone(origin.root.to_string_lossy().as_ref(), &parent).unwrap();
+    let dest = Path::new(&made.path);
+    assert_eq!(
+        made.name,
+        origin.root.file_name().unwrap().to_string_lossy()
+    );
+    assert_eq!(dest, parent.join(&made.name));
+    assert!(dest.join(".git").exists());
+    assert_eq!(
+        std::fs::read_to_string(dest.join("a.txt")).unwrap(),
+        "one\n",
+        "the clone should carry the files"
+    );
+    assert_eq!(git_at(dest, &["rev-parse", "--abbrev-ref", "HEAD"]).trim(), "main");
+
+    let _ = std::fs::remove_dir_all(&parent);
+}
+
+#[test]
+fn refuses_to_clone_where_a_folder_already_exists() {
+    let origin = Sandbox::new("clone-exists");
+    origin.commit("a.txt", "one\n", "First");
+    let parent = scratch("clone-exists-into");
+    let name = origin.root.file_name().unwrap().to_string_lossy().into_owned();
+    std::fs::create_dir_all(parent.join(&name)).unwrap();
+
+    let refused = create::clone(origin.root.to_string_lossy().as_ref(), &parent).unwrap_err();
+    assert!(refused.contains("already has a folder"));
+
+    let _ = std::fs::remove_dir_all(&parent);
+}
+
+#[test]
+fn creating_a_repository_makes_a_first_commit_as_the_profile() {
+    let parent = scratch("init");
+    let made = create::init(&parent, "fresh", Some(("Test".to_string(), "test@example.com".to_string())))
+        .unwrap();
+
+    let dest = Path::new(&made.path);
+    assert!(dest.join(".git").exists());
+    assert_eq!(git_at(dest, &["rev-parse", "--abbrev-ref", "HEAD"]).trim(), "main");
+    assert_eq!(git_at(dest, &["config", "--local", "user.name"]).trim(), "Test");
+    // One commit, and it carries the .gitignore.
+    assert_eq!(git_at(dest, &["rev-list", "--count", "HEAD"]).trim(), "1");
+    assert_eq!(git_at(dest, &["ls-files"]).trim(), ".gitignore");
+    assert!(made.note.is_none());
+
+    let _ = std::fs::remove_dir_all(&parent);
+}
+
+#[test]
+fn refuses_folder_names_that_cannot_exist() {
+    let parent = scratch("init-bad");
+    assert!(create::init(&parent, "a/b", None).is_err());
+    assert!(create::init(&parent, ".hidden", None).is_err());
+    assert!(create::init(&parent, "  ", None).is_err());
+    // Nothing should have been created by the refusals above.
+    assert_eq!(std::fs::read_dir(&parent).unwrap().count(), 0);
+    let _ = std::fs::remove_dir_all(&parent);
+}
+
+#[test]
+fn manages_the_remotes_themselves() {
+    let sandbox = Sandbox::new("remote-manage");
+    sandbox.commit("a.txt", "one\n", "First");
+    let state = sandbox.state();
+
+    // A real remote to fetch from: the same setup `git push` tests use.
+    let origin = scratch("remote-origin");
+    git_at(&origin, &["init", "-q", "--bare", "-b", "main", "."]);
+    sandbox.git(&["push", "-q", origin.to_string_lossy().as_ref(), "main"]);
+
+    // Add, and the address reads back.
+    assert!(remote::remote_add(&state, "upstream", origin.to_string_lossy().as_ref()).is_ok());
+    assert_eq!(
+        remote::remote_url(&state, "upstream").unwrap(),
+        origin.to_string_lossy().as_ref()
+    );
+
+    // A duplicate name is refused by git itself.
+    assert!(remote::remote_add(&state, "upstream", "/elsewhere.git").is_err());
+    // So is a name git will not accept.
+    assert!(remote::remote_add(&state, "not a name", "/x.git").is_err());
+    assert!(remote::remote_add(&state, "-dash", "/x.git").is_err());
+    assert!(remote::remote_add(&state, "ok", "   ").is_err());
+
+    // Changing the address, to somewhere that does not answer: git accepts an
+    // address without ever contacting it, which is exactly what an edit of the
+    // destination should do.
+    assert!(remote::remote_set_url(&state, "upstream", "/somewhere/widget.git").is_ok());
+    assert_eq!(
+        remote::remote_url(&state, "upstream").unwrap(),
+        "/somewhere/widget.git"
+    );
+    assert!(remote::remote_set_url(&state, "upstream", origin.to_string_lossy().as_ref()).is_ok());
+
+    // Renaming moves the remote-tracking branches with the name.
+    sandbox.git(&["fetch", "-q", "upstream"]);
+    assert!(remote::remote_rename(&state, "upstream", "source").is_ok());
+    let names: Vec<String> = remote::remotes(&state).unwrap();
+    assert!(names.contains(&"source".to_string()) && !names.contains(&"upstream".to_string()));
+    assert!(
+        sandbox
+            .git(&["rev-parse", "--verify", "refs/remotes/source/main"])
+            .trim()
+            .len()
+            > 0
+    );
+
+    // Removing takes the tracking branches and nothing else.
+    assert!(remote::remote_remove(&state, "source").is_ok());
+    assert!(!remote::remotes(&state).unwrap().contains(&"source".to_string()));
+    assert!(!sandbox.git_may_fail(&["rev-parse", "--verify", "refs/remotes/source/main"]));
+    // The local branch and its commit are untouched.
+    assert_eq!(sandbox.git(&["rev-parse", "--abbrev-ref", "HEAD"]).trim(), "main");
+
+    let _ = std::fs::remove_dir_all(&origin);
 }
 
 #[test]

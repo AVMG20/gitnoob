@@ -1,10 +1,10 @@
 <script setup lang="ts">
 import { open } from '@tauri-apps/plugin-dialog'
-import { FolderOpen, GitBranch, Settings } from 'lucide-vue-next'
+import { Download, FolderOpen, FolderPlus, GitBranch, Settings } from 'lucide-vue-next'
 import { useConfig } from '~/composables/useConfig'
 
 defineProps<{ ready: boolean }>()
-const emit = defineEmits<{ open: [string] }>()
+const emit = defineEmits<{ open: [string]; clone: []; init: [] }>()
 
 const config = useConfig()
 
@@ -27,6 +27,15 @@ async function pick() {
       <button class="btn btn-primary wide" @click="pick">
         <FolderOpen :size="15" /> Open a repository
       </button>
+
+      <div class="pair">
+        <button class="btn" @click="emit('clone')">
+          <Download :size="15" /> Clone
+        </button>
+        <button class="btn" @click="emit('init')">
+          <FolderPlus :size="15" /> New
+        </button>
+      </div>
 
       <div v-if="config.projects.value.length" class="recents">
         <div class="section-title">In this profile</div>
@@ -76,6 +85,18 @@ h1 {
   width: 100%;
   justify-content: center;
   padding: 9px;
+}
+
+.pair {
+  display: flex;
+  gap: 8px;
+  margin-top: 8px;
+}
+
+.pair .btn {
+  flex: 1;
+  justify-content: center;
+  padding: 8px;
 }
 
 .recents {

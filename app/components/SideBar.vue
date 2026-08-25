@@ -72,6 +72,8 @@ const filter = ref('')
 const deleting = ref<string | null>(null)
 /** Set while the new pull request dialog is open. */
 const creatingReview = ref(false)
+/** The remote form: `'add'`, the name being edited, or closed. */
+const remoteForm = ref<'add' | string | null>(null)
 const prompt = ref<{
   title: string
   label: string
@@ -622,6 +624,66 @@ function remoteMenu(event: MouseEvent, remote: string, name: string) {
   )
 }
 
+/** The remote itself, rather than one of its branches. */
+function remoteHeaderMenu(event: MouseEvent, remote: string) {
+  menu.show(
+    event,
+    [
+      {
+        label: 'Fetch from this remote',
+        icon: Download,
+        action: () => {
+          void git.fetch(remote)
+        }
+      },
+      { separator: true, label: '' },
+      {
+        label: 'Change address…',
+        icon: Pencil,
+        action: () => {
+          remoteForm.value = remote
+        }
+      },
+      {
+        label: 'Rename…',
+        icon: Pencil,
+        action: () => {
+          prompt.value = {
+            title: `Rename remote ${remote}`,
+            label: 'New name',
+            initial: remote,
+            confirm: 'Rename',
+            hint: 'The remote-tracking branches move with the name; local branches keep tracking them.',
+            run: (value) => {
+              if (value !== remote) void git.remoteRename(remote, value)
+            }
+          }
+        }
+      },
+      { label: 'Copy name', icon: Copy, action: () => { void copyText(remote, 'Remote') } },
+      {
+        label: `Remove ${remote}`,
+        icon: Trash2,
+        danger: true,
+        action: () => {
+          prompt.value = {
+            title: `Remove remote ${remote}?`,
+            label: 'Type the remote name to confirm',
+            confirm: 'Remove remote',
+            danger: true,
+            hint: 'Removes the remote and its remote-tracking branches. Local branches and their commits stay; adding the remote back restores the tracking branches.',
+            run: (value) => {
+              if (value === remote) void git.remoteRemove(remote)
+              else git.note('Name did not match; nothing was removed', 'error')
+            }
+          }
+        }
+      }
+    ],
+    remote
+  )
+}
+
 function tagMenu(event: MouseEvent, name: string, oid: string) {
   menu.show(
     event,
@@ -760,15 +822,28 @@ function stashMenu(event: MouseEvent, index: number, message: string) {
       />
 
       <!-- Remote -->
-      <button class="section-title toggle" @click="open.remotes = !open.remotes">
-        <ChevronRight :size="12" class="chev" :class="{ down: open.remotes }" />
-        <Cloud :size="12" class="mark" />
-        Remote
-        <span class="count">{{ remoteCount }}</span>
-      </button>
+      <div class="head-row">
+        <button class="section-title toggle" @click="open.remotes = !open.remotes">
+          <ChevronRight :size="12" class="chev" :class="{ down: open.remotes }" />
+          <Cloud :size="12" class="mark" />
+          Remote
+          <span class="count">{{ remoteCount }}</span>
+        </button>
+        <button
+          class="head-action"
+          title="Add a remote"
+          @click="remoteForm = 'add'"
+        >
+          <Plus :size="13" />
+        </button>
+      </div>
       <div v-if="open.remotes" class="group" :style="sizeOf('remotes')">
         <div v-for="group in remoteGroups" :key="group.remote">
-          <div class="remote-name">
+          <div
+            class="remote-name"
+            :title="group.remote"
+            @contextmenu="remoteHeaderMenu($event, group.remote)"
+          >
             <Cloud :size="11" /> {{ group.remote }}
           </div>
           <template v-for="row in shelve(group.branches, `remote:${group.remote}`)" :key="row.key">
@@ -979,6 +1054,11 @@ function stashMenu(event: MouseEvent, index: number, message: string) {
     />
 
     <DeleteBranchDialog v-if="deleting" :name="deleting" @close="deleting = null" />
+    <RemoteDialog
+      v-if="remoteForm !== null"
+      :name="remoteForm === 'add' ? undefined : remoteForm"
+      @close="remoteForm = null"
+    />
     <ReviewDialog v-if="creatingReview" @close="creatingReview = false" />
   </aside>
 </template>
@@ -1328,6 +1408,11 @@ function stashMenu(event: MouseEvent, index: number, message: string) {
   padding: 5px 10px 2px var(--indent);
   font-size: 11px;
   color: var(--text-faint);
+}
+
+/* Right-clickable, so it says so on the way past. */
+.remote-name:hover {
+  color: var(--text-dim);
 }
 
 .none,

@@ -3,14 +3,16 @@ import { onMounted, onUnmounted, ref } from 'vue'
 import { open } from '@tauri-apps/plugin-dialog'
 import { getCurrentWindow } from '@tauri-apps/api/window'
 import type { UnlistenFn } from '@tauri-apps/api/event'
-import { FolderOpen, GitBranch, Plus, X } from 'lucide-vue-next'
+import { Download, FolderOpen, FolderPlus, GitBranch, Plus, X } from 'lucide-vue-next'
 import { useConfig } from '~/composables/useConfig'
 import { useGit } from '~/composables/useGit'
+import { useContextMenu } from '~/composables/useContextMenu'
 
-const emit = defineEmits<{ open: [string] }>()
+const emit = defineEmits<{ open: [string]; clone: []; init: [] }>()
 
 const config = useConfig()
 const git = useGit()
+const menu = useContextMenu()
 
 const dragging = ref<string | null>(null)
 
@@ -38,6 +40,26 @@ onUnmounted(() => unlistenResize?.())
 async function pick() {
   const path = await open({ directory: true, multiple: false, title: 'Open a repository' })
   if (typeof path === 'string') emit('open', path)
+}
+
+/**
+ * The `+` is every way to end up with another repository open: pick a folder,
+ * clone one by address, or start a new one. A menu rather than three buttons,
+ * because the strip runs out of width before a fourth icon wants to live there.
+ */
+function addMenu(event: MouseEvent) {
+  menu.show(event, [
+    {
+      label: 'Open a repository…',
+      icon: FolderOpen,
+      hint: 'a folder that already is one',
+      action: () => {
+        void pick()
+      }
+    },
+    { label: 'Clone a repository…', icon: Download, action: () => emit('clone') },
+    { label: 'New repository…', icon: FolderPlus, action: () => emit('init') }
+  ])
 }
 
 async function close(path: string) {
@@ -91,7 +113,7 @@ function onDrop(target: string) {
       </button>
     </div>
 
-    <button class="icon" title="Open another repository" @click="pick">
+    <button class="icon" title="Open another repository" @click="addMenu">
       <Plus :size="15" />
     </button>
   </nav>

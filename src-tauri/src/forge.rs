@@ -80,6 +80,99 @@ pub struct Review {
     pub warning: Option<String>,
 }
 
+/// A repository the token can see, flattened to what picking one to clone
+/// needs. `full_name` keeps the forge's own nesting (`group/sub/app`).
+#[derive(Serialize, Clone, Debug)]
+pub struct ForgeRepo {
+    pub name: String,
+    pub full_name: String,
+    /// Who owns it: an account, an organisation, a group.
+    pub owner: String,
+    /// The address to clone over ssh, using the profile's key.
+    pub ssh_url: String,
+    /// The same repository over https, for a machine with no key.
+    pub https_url: String,
+    pub updated_at: String,
+}
+
+/// The repositories the active profile's token can see.
+///
+/// Not tied to whichever folder happens to be open — the point is choosing one
+/// before any of them is — so this reads the account rather than `prepare`.
+/// Pagination is followed until a page comes back short, so an account with
+/// three hundred repositories gets all of them; a page that fails ends the walk
+/// with what already arrived rather than nothing.
+pub async fn repos(state: &AppState) -> Result<Vec<ForgeRepo>, String> {
+    let (kind, host, token) = account(state)?;
+    let base = api_base(kind, &host);
+    let http = client()?;
+
+    let mut out: Vec<ForgeRepo> = Vec::new();
+    for page in 1..=10 {
+        let per_page = 100usize;
+        let url = match kind {
+            ForgeKind::GitHub => format!(
+                "{base}/user/repos?per_page={per_page}&page={page}\
+                 &sort=updated&affiliation=owner,collaborator,organization_member"
+            ),
+            ForgeKind::GitLab => format!(
+                "{base}/projects?membership=true&simple=true&per_page={per_page}&page={page}\
+                 &order_by=last_activity_at"
+            ),
+            ForgeKind::None => return Err("No forge configured".to_string()),
+        };
+        let response = http
+            .get(url)
+            .bearer_auth(&token)
+            .header("Accept", "application/vnd.github+json")
+            .send()
+            .await
+            .map_err(|e| e.to_string())?;
+        if !response.status().is_success() {
+            // The first page failing means the answer cannot be given at all;
+            // a later one failing means the walk got most of the way there.
+            if page == 1 {
+                return Err(describe(response).await);
+            }
+            break;
+        }
+        let items: Vec<serde_json::Value> = response.json().await.map_err(|e| e.to_string())?;
+        let short = items.len() < per_page;
+        for item in &items {
+            let repo = match kind {
+                ForgeKind::GitHub => ForgeRepo {
+                    name: string(item, &["name"]),
+                    full_name: string(item, &["full_name"]),
+                    owner: string(item, &["owner", "login"]),
+                    ssh_url: string(item, &["ssh_url"]),
+                    https_url: string(item, &["clone_url"]),
+                    updated_at: string(item, &["updated_at"]),
+                },
+                _ => ForgeRepo {
+                    name: string(item, &["path"]).rsplit('/').next().unwrap_or_default().to_string(),
+                    full_name: string(item, &["path_with_namespace"]),
+                    owner: string(item, &["namespace", "path"]),
+                    ssh_url: string(item, &["ssh_url_to_repo"]),
+                    https_url: string(item, &["http_url_to_repo"]),
+                    updated_at: string(item, &["last_activity_at"]),
+                },
+            };
+            // `simple=true` keeps GitLab's answer small but a fork can still
+            // arrive without an address worth cloning.
+            if !repo.ssh_url.is_empty() || !repo.https_url.is_empty() {
+                out.push(repo);
+            }
+        }
+        if short {
+            break;
+        }
+    }
+
+    out.sort_by(|a, b| b.updated_at.cmp(&a.updated_at));
+    out.dedup_by(|a, b| a.full_name == b.full_name);
+    Ok(out)
+}
+
 /// Turns a git remote URL into a slug.
 ///
 /// Handles the three shapes in the wild: `git@host:path.git`,

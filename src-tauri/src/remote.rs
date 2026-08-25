@@ -802,6 +802,77 @@ pub fn remotes(state: &AppState) -> Result<Vec<String>, String> {
     Ok(list.iter().flatten().map(|s| s.to_string()).collect())
 }
 
+// --- managing the remotes themselves ----------------------------------------
+//
+// `remotes` above only ever listed them, so a repository cloned over https
+// could not be moved to ssh — or a second remote added — without dropping to
+// the command line. All four are plain `git remote` subcommands, run through
+// the CLI wrapper so they turn up in the activity log like any other change.
+
+/// The address a remote fetches from, shown when it is about to be edited.
+pub fn remote_url(state: &AppState, remote: &str) -> Result<String, String> {
+    let path = state.path()?;
+    git_cmd::run_checked(&path, &["remote", "get-url", remote])
+        .map(|url| url.trim().to_string())
+}
+
+/// A remote name git will accept: it becomes a section header in the config
+/// and half of every `remote/branch` ref, so the same characters that break a
+/// branch break it too.
+fn valid_remote_name(name: &str) -> Result<(), String> {
+    if name.is_empty()
+        || name.starts_with('-')
+        || name.starts_with('/')
+        || name.ends_with('/')
+        || name.ends_with(".lock")
+        || name.contains("..")
+        || name.contains(['/', ' ', '~', '^', ':', '?', '*', '[', '\\'])
+    {
+        return Err(format!("\"{name}\" cannot be used as a remote name"));
+    }
+    Ok(())
+}
+
+pub fn remote_add(state: &AppState, name: &str, url: &str) -> Result<String, String> {
+    valid_remote_name(name)?;
+    let url = url.trim();
+    if url.is_empty() {
+        return Err("Give the remote an address to fetch from".to_string());
+    }
+    let path = state.path()?;
+    git_cmd::run_checked(&path, &["remote", "add", name, url])?;
+    Ok(format!("Added remote {name}"))
+}
+
+pub fn remote_set_url(state: &AppState, name: &str, url: &str) -> Result<String, String> {
+    let url = url.trim();
+    if url.is_empty() {
+        return Err("Give the remote an address to fetch from".to_string());
+    }
+    let path = state.path()?;
+    git_cmd::run_checked(&path, &["remote", "set-url", name, url])?;
+    Ok(format!("Now fetching {name} from {url}"))
+}
+
+pub fn remote_rename(state: &AppState, from: &str, to: &str) -> Result<String, String> {
+    valid_remote_name(to)?;
+    let path = state.path()?;
+    git_cmd::run_checked(&path, &["remote", "rename", from, to])?;
+    // git moves the remote-tracking branches with the name; the local branches
+    // still point at the old ones, which is worth saying rather than leaving
+    // to be discovered as upstreams that suddenly do not exist.
+    Ok(format!("Renamed remote {from} to {to}; branches tracking {from}/ now track {to}/"))
+}
+
+/// Removes a remote and its remote-tracking branches. Nothing local is touched
+/// — not the branches, not their upstream settings — so this is undoable by
+/// adding the remote back.
+pub fn remote_remove(state: &AppState, name: &str) -> Result<String, String> {
+    let path = state.path()?;
+    git_cmd::run_checked(&path, &["remote", "remove", name])?;
+    Ok(format!("Removed remote {name}"))
+}
+
 /// Whether a fast-forward alone would bring `branch` up to `onto`.
 ///
 /// Knowing this lets the drag-and-drop menu offer the cheap answer first
