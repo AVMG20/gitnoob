@@ -33,6 +33,47 @@ const dropped = computed(
 const oursLabel = computed(() => conflicts.value[0]?.ours_label || 'ours')
 const theirsLabel = computed(() => conflicts.value[0]?.theirs_label || 'theirs')
 
+/**
+ * A conflict with no markers in the file.
+ *
+ * Git only writes markers when both sides have the file and it had to merge
+ * them line by line. When one side deleted it, or a merge driver took a whole
+ * side, the file on disk reads normally and the conflict lives entirely in the
+ * index — so the side-by-side view has nothing to show and the per-region
+ * buttons have nothing to act on. Saying which case it is beats two identical
+ * panes above three buttons that quietly do nothing.
+ */
+const stages = computed(() => file.value?.stages ?? null)
+const wholeFile = computed(() => !!file.value && file.value.conflict_count === 0)
+const deletedBy = computed(() => {
+  if (!wholeFile.value || !stages.value) return null
+  if (!stages.value.ours && stages.value.theirs) return 'ours'
+  if (stages.value.ours && !stages.value.theirs) return 'theirs'
+  return null
+})
+const explanation = computed(() => {
+  if (!wholeFile.value) return null
+  if (deletedBy.value === 'ours') {
+    return `This file is gone on the branch you are on, and changed on the other side. There are no lines to merge — either bring it back with those changes, or leave it deleted.`
+  }
+  if (deletedBy.value === 'theirs') {
+    return `The other side deleted this file and you changed it. There are no lines to merge — either keep your version, or let it go.`
+  }
+  return `Git could not merge this file line by line — it is binary, or a merge driver took a whole side — so there is nothing to pick through here. Choose a side, or keep the file exactly as it stands on disk.`
+})
+
+async function keepAsIs() {
+  if (!path.value) return
+  await git.conflictResolveAsIs(path.value)
+  const next = store.status?.conflicted.find((p) => p !== path.value)
+  if (next) await load(next)
+  else {
+    path.value = null
+    file.value = null
+    store.resolving = null
+  }
+}
+
 async function load(target: string) {
   path.value = target
   // The overlay is driven by this, so keep the two in step.
@@ -172,17 +213,22 @@ watch(
         <div class="toolbar">
           <span class="file-name mono truncate">{{ path }}</span>
           <span class="stat">
-            {{ conflicts.length }} {{ conflicts.length === 1 ? 'conflict' : 'conflicts' }}
-            <template v-if="dropped">
-              · <span class="warn">{{ dropped }} set to be dropped</span>
+            <template v-if="wholeFile">whole file</template>
+            <template v-else>
+              {{ conflicts.length }} {{ conflicts.length === 1 ? 'conflict' : 'conflicts' }}
+              <template v-if="dropped">
+                · <span class="warn">{{ dropped }} set to be dropped</span>
+              </template>
             </template>
           </span>
           <span class="spacer" />
-          <button class="btn tiny" @click="takeAll('ours')">All ours</button>
-          <button class="btn tiny" @click="takeAll('theirs')">All theirs</button>
-          <button class="btn tiny" @click="takeAll('both')">All both</button>
+          <template v-if="!wholeFile">
+            <button class="btn tiny" @click="takeAll('ours')">All ours</button>
+            <button class="btn tiny" @click="takeAll('theirs')">All theirs</button>
+            <button class="btn tiny" @click="takeAll('both')">All both</button>
+          </template>
           <button
-            v-if="ai.configured.value"
+            v-if="!wholeFile && ai.configured.value"
             class="btn tiny ai"
             :disabled="thinking !== null"
             title="Ask the model to resolve every region in this file"
@@ -197,12 +243,32 @@ watch(
             Base
           </label>
           <span class="sep" />
-          <button class="btn tiny" @click="takeWholeFile('ours')">Whole file: ours</button>
-          <button class="btn tiny" @click="takeWholeFile('theirs')">Whole file: theirs</button>
-          <button class="btn btn-primary tiny" :disabled="store.busy" @click="markResolved">
+          <button class="btn tiny" :disabled="store.busy" @click="takeWholeFile('ours')">
+            {{ wholeFile && !stages?.ours ? 'Leave it deleted' : 'Whole file: ours' }}
+          </button>
+          <button class="btn tiny" :disabled="store.busy" @click="takeWholeFile('theirs')">
+            {{ wholeFile && !stages?.theirs ? 'Let it go' : 'Whole file: theirs' }}
+          </button>
+          <button
+            v-if="wholeFile"
+            class="btn btn-primary tiny"
+            :disabled="store.busy"
+            title="Stage the file exactly as it is on disk"
+            @click="keepAsIs"
+          >
+            Keep as it is
+          </button>
+          <button
+            v-else
+            class="btn btn-primary tiny"
+            :disabled="store.busy"
+            @click="markResolved"
+          >
             Mark resolved
           </button>
         </div>
+
+        <p v-if="explanation" class="explain">{{ explanation }}</p>
 
         <div class="panes" :class="{ 'with-base': showBase && hasBase }">
           <!-- Pane 1: our side. -->
@@ -211,7 +277,13 @@ watch(
               Ours <span class="mono faint">{{ oursLabel }}</span>
             </div>
             <div class="pane-body">
-              <template v-for="(block, bi) in file?.blocks ?? []" :key="`o${bi}`">
+              <div v-if="wholeFile && !stages?.ours" class="gone">
+                This file is not on this side — it was deleted.
+              </div>
+              <template
+                v-for="(block, bi) in wholeFile && !stages?.ours ? [] : file?.blocks ?? []"
+                :key="`o${bi}`"
+              >
                 <div v-if="block.kind === 'context'" class="ctx">
                   <div v-for="(line, li) in block.lines" :key="li" class="line">{{ line || ' ' }}</div>
                 </div>
@@ -283,7 +355,13 @@ watch(
               Theirs <span class="mono faint">{{ theirsLabel }}</span>
             </div>
             <div class="pane-body">
-              <template v-for="(block, bi) in file?.blocks ?? []" :key="`t${bi}`">
+              <div v-if="wholeFile && !stages?.theirs" class="gone">
+                This file is not on this side — it was deleted.
+              </div>
+              <template
+                v-for="(block, bi) in wholeFile && !stages?.theirs ? [] : file?.blocks ?? []"
+                :key="`t${bi}`"
+              >
                 <div v-if="block.kind === 'context'" class="ctx">
                   <div v-for="(line, li) in block.lines" :key="li" class="line">{{ line || ' ' }}</div>
                 </div>
@@ -328,6 +406,24 @@ watch(
 </template>
 
 <style scoped>
+/* The one thing the panes cannot say, said above them. */
+.explain {
+  margin: 0;
+  padding: 8px 12px;
+  font-size: 12px;
+  line-height: 1.55;
+  color: var(--text-dim);
+  background: var(--bg-panel);
+  border-bottom: 1px solid var(--line);
+}
+
+.gone {
+  padding: 14px 12px;
+  font-size: 12px;
+  font-style: italic;
+  color: var(--text-faint);
+}
+
 .conflicts {
   display: grid;
   grid-template-columns: 210px minmax(0, 1fr);

@@ -29,7 +29,31 @@ onUnmounted(() => window.removeEventListener('keydown', onKey))
         {{ remaining }} {{ remaining === 1 ? 'file' : 'files' }} left
       </span>
       <span class="grow" />
-      <button class="btn" :disabled="store.busy" @click="git.abortMerge()">Abort merge</button>
+      <button
+        v-if="store.progress?.restoring"
+        class="btn"
+        :disabled="store.busy"
+        title="Put the working tree back, return to the branch you came from, and restore your changes there"
+        @click="git.undoRestore()"
+      >
+        Undo the switch
+      </button>
+      <button
+        v-else-if="store.progress?.rebasing"
+        class="btn"
+        :disabled="store.busy"
+        @click="git.abortRebase()"
+      >
+        Abort rebase
+      </button>
+      <button
+        v-else-if="store.progress?.merging"
+        class="btn"
+        :disabled="store.busy"
+        @click="git.abortMerge()"
+      >
+        Abort merge
+      </button>
       <button class="btn icon" title="Close (Esc)" @click="close">
         <X :size="16" />
       </button>

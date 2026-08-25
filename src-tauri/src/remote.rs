@@ -516,6 +516,9 @@ pub struct InProgress {
     pub rebasing: bool,
     pub cherry_picking: bool,
     pub reverting: bool,
+    /// Files are conflicted but git is running nothing, which is what a `stash
+    /// pop` leaves behind. There is no merge to abort in this state.
+    pub restoring: bool,
 }
 
 pub fn in_progress(state: &AppState) -> Result<InProgress, String> {
@@ -534,12 +537,26 @@ pub fn in_progress(state: &AppState) -> Result<InProgress, String> {
         git_dir
     };
 
+    let merging = git_dir.join("MERGE_HEAD").exists();
+    let rebasing = git_dir.join("rebase-merge").exists() || git_dir.join("rebase-apply").exists();
+    let cherry_picking = git_dir.join("CHERRY_PICK_HEAD").exists();
+    let reverting = git_dir.join("REVERT_HEAD").exists();
+    let running = merging || rebasing || cherry_picking || reverting;
+
     Ok(InProgress {
-        merging: git_dir.join("MERGE_HEAD").exists(),
-        rebasing: git_dir.join("rebase-merge").exists() || git_dir.join("rebase-apply").exists(),
-        cherry_picking: git_dir.join("CHERRY_PICK_HEAD").exists(),
-        reverting: git_dir.join("REVERT_HEAD").exists(),
+        merging,
+        rebasing,
+        cherry_picking,
+        reverting,
+        restoring: !running && has_unmerged(&root),
     })
+}
+
+/// True when the index holds unmerged entries, whatever put them there.
+fn has_unmerged(root: &std::path::Path) -> bool {
+    git_cmd::run_checked(root, &["ls-files", "--unmerged"])
+        .map(|out| !out.trim().is_empty())
+        .unwrap_or(false)
 }
 
 /// Deletes a branch on the remote.

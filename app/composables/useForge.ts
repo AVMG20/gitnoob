@@ -135,6 +135,9 @@ export function useForge() {
     check,
     createReview: (title: string, body: string, target: string, draft: boolean) =>
       invoke<Review>('forge_create_review', { title, body, target, draft }),
-    open: (url: string) => invoke('open_external', { url })
+    open: (url: string) => invoke('open_external', { url }),
+    /** The forge's token-creation page, with scopes and a name pre-filled. */
+    tokenUrl: (kind: ForgeKind, host: string) =>
+      invoke<string | null>('forge_token_url', { kind, host })
   }
 }

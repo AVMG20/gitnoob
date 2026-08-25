@@ -2,6 +2,7 @@
 import { computed, onMounted, ref, watch } from 'vue'
 import {
   Check,
+  ExternalLink,
   Github,
   Gitlab,
   KeyRound,
@@ -99,6 +100,20 @@ async function remove(profile: Profile) {
   }
   await config.deleteProfile(profile.id)
   if (editing.value?.id === profile.id) editing.value = null
+}
+
+/**
+ * Opens the forge's token page with the scopes already ticked.
+ *
+ * The token is only made there, never here, so this leaves the field alone:
+ * what comes back is pasted in by hand.
+ */
+async function openTokenPage() {
+  if (!editing.value || editing.value.forge === 'none') return
+  const url = await forge.tokenUrl(editing.value.forge, editing.value.host)
+  if (!url) return
+  await forge.open(url)
+  git.note(`Opened ${FORGE_LABELS[editing.value.forge]} — create the token, then paste it here`)
 }
 
 async function testConnection() {
@@ -293,6 +308,11 @@ onMounted(async () => {
                 Settings → Developer settings → Personal access tokens, and paste it here.
                 Pushing and pulling do not need it — that is the ssh key below.
               </span>
+              <button class="btn btn-ghost token-link" @click="openTokenPage">
+                <component :is="forgeIcon(editing.forge)" :size="14" />
+                Open {{ FORGE_LABELS[editing.forge] }}'s token page
+                <ExternalLink :size="12" class="faint" />
+              </button>
               <input
                 v-model="token"
                 type="password"
@@ -743,6 +763,16 @@ select {
   border-radius: 5px;
 }
 
+
+.token-link {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  justify-content: center;
+  padding: 7px;
+  margin-bottom: 7px;
+}
 
 .key-select {
   margin-bottom: 2px;

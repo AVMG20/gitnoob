@@ -45,6 +45,16 @@ export interface RefTree {
   stashes: Stash[]
 }
 
+/** What git is part-way through, so the way out can be named correctly. */
+export interface InProgress {
+  merging: boolean
+  rebasing: boolean
+  cherry_picking: boolean
+  reverting: boolean
+  /** Conflicts with nothing running: what a failed `stash pop` leaves. */
+  restoring: boolean
+}
+
 export interface StatusEntry { path: string; kind: string }
 export interface WorkingStatus {
   staged: StatusEntry[]
@@ -253,10 +263,18 @@ export type ConflictBlock =
       theirs_label: string
     }
 
+/** Which of the three index stages a conflicted path has. */
+export interface ConflictStages {
+  base: boolean
+  ours: boolean
+  theirs: boolean
+}
+
 export interface ConflictFile {
   path: string
   blocks: ConflictBlock[]
   conflict_count: number
+  stages: ConflictStages
 }
 
 export interface Resolution {
@@ -301,8 +319,13 @@ const fields = reactive({
   history: { undo: [], redo: [] } as Stacks,
   /** Set while the resolver is open on a conflicted file. */
   resolving: null as string | null,
+  /** What git is part-way through, when it is part-way through anything. */
+  progress: null as InProgress | null,
   /** Free-text filter over the loaded commits. */
   query: '',
+  /** A commit the graph should scroll into view. Carries a sequence number so
+      asking for the same commit twice still moves the graph. */
+  revealing: null as { oid: string; seq: number } | null,
   /** When set, a file is open full width in place of the graph. */
   viewer: null as { path: string; side?: 'staged' | 'unstaged'; commit?: string } | null,
   /** Number of calls in flight; a counter rather than a flag so overlapping
@@ -316,6 +339,10 @@ const fields = reactive({
 })
 
 const logSeq = ref(0)
+
+/** Module scope, so two components asking to reveal cannot mint the same
+    sequence number and leave the second request looking like a repeat. */
+let revealSeq = 0
 
 // Everything already written reads `store.busy`; keep it as a live getter over
 // the counter rather than a second source of truth.
@@ -418,7 +445,7 @@ export function useGit() {
 
   async function refresh() {
     if (!store.repo) return
-    const [info, refs, status, page, stashes, history] = await Promise.all([
+    const [info, refs, status, page, stashes, history, progress] = await Promise.all([
       part('the repository', invoke<RepoInfo>('repo_info'), store.repo),
       part('the branches', invoke<RefTree>('ref_tree'), null),
       part('the working tree', invoke<WorkingStatus>('working_status'), null),
@@ -428,7 +455,8 @@ export function useGit() {
         null
       ),
       part('the stashes', invoke<StashEntry[]>('stash_list'), [] as StashEntry[]),
-      part('the undo history', invoke<Stacks>('history'), { undo: [], redo: [] } as Stacks)
+      part('the undo history', invoke<Stacks>('history'), { undo: [], redo: [] } as Stacks),
+      part('what git is doing', invoke<InProgress>('in_progress'), null)
     ])
     if (info) store.repo = info
     if (refs) store.refs = refs
@@ -439,6 +467,7 @@ export function useGit() {
     }
     store.stashes = stashes ?? []
     store.history = history ?? { undo: [], redo: [] }
+    store.progress = progress
 
     // An amend rewrites the commit that was open; fall back to the working tree.
     if (store.selected !== WIP && !store.rows.some((r) => r.oid === store.selected)) {
@@ -467,6 +496,19 @@ export function useGit() {
     store.detail = await guard('Load commit', () =>
       invoke<CommitDetail>('commit_detail', { oid })
     )
+  }
+
+  /**
+   * Selects a commit and asks the graph to bring it into view.
+   *
+   * What a single click on a branch does: pointing at a branch is a question
+   * about where it is and what was last put on it, which is answered without
+   * touching the working tree. Checking out stays on the double click.
+   */
+  async function revealCommit(oid: string) {
+    revealSeq += 1
+    store.revealing = { oid, seq: revealSeq }
+    await select(oid)
   }
 
   /** Opens a stash's diff in the detail panel, reusing the commit view. */
@@ -517,6 +559,7 @@ export function useGit() {
     loadMore,
     openRepo,
     select,
+    revealCommit,
     selectStash,
     commitFileDiff,
     workingFileDiff,
@@ -717,6 +760,8 @@ export function useGit() {
       return outcome
     },
     abortMerge: () => run<string>('Abort merge', 'abort_merge'),
+    /** The way out of a conflicted auto-stash, which no abort can undo. */
+    undoRestore: () => run<string>('Undo the switch', 'undo_restore'),
 
     conflictRead: (path: string) =>
       guard('Read conflict', () => invoke<ConflictFile>('conflict_read', { path })),
@@ -727,7 +772,10 @@ export function useGit() {
     conflictResolve: (path: string, choices: Resolution[]) =>
       run<string>('Resolve', 'conflict_resolve', { path, choices }),
     conflictResolveWhole: (path: string, side: 'ours' | 'theirs') =>
-      run<string>('Resolve', 'conflict_resolve_whole', { path, side })
+      run<string>('Resolve', 'conflict_resolve_whole', { path, side }),
+    /** Ends a conflict by staging the file exactly as it stands on disk. */
+    conflictResolveAsIs: (path: string) =>
+      run<string>('Resolve', 'conflict_resolve_as_is', { path })
   }
 }
 

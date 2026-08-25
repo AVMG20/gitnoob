@@ -287,6 +287,10 @@ pub fn stash_branch(state: &AppState, index: usize, name: &str) -> Result<String
 
 // --- auto-stash ------------------------------------------------------------
 
+/// Prefix every auto-stash carries, so the ones this app made can be told from
+/// the ones the user made by hand.
+pub const AUTO_STASH: &str = "gitnoob auto-stash";
+
 /// Marker returned by [`stash_before`], to be handed back to [`restore_after`].
 pub struct Held {
     pub stashed: bool,
@@ -310,7 +314,13 @@ pub fn stash_before(state: &AppState, reason: &str) -> Result<Held, String> {
         return Ok(Held { stashed: false });
     }
     let root = state.path()?;
-    let message = format!("gitnoob auto-stash: {reason}");
+    // The branch is part of the message because it is the only way back: when
+    // putting the work down again goes wrong, the way out is to return to the
+    // branch it was taken from, and by then HEAD has already moved.
+    let message = match crate::journal::current_branch(state) {
+        Some(branch) => format!("{AUTO_STASH} on {branch}: {reason}"),
+        None => format!("{AUTO_STASH}: {reason}"),
+    };
     git_cmd::run_checked(
         &root,
         &["stash", "push", "--include-untracked", "-m", &message],
@@ -331,6 +341,54 @@ pub fn restore_after(state: &AppState, held: Held) -> Result<Option<String>, Str
             "Your changes are safe in the stash, but putting them back hit a problem: {error}"
         )),
     }
+}
+
+/// The branch an auto-stash was taken on, read back out of its message.
+fn stashed_on(message: &str) -> Option<&str> {
+    let rest = message.split_once(AUTO_STASH)?.1;
+    let rest = rest.strip_prefix(" on ")?;
+    rest.split_once(':').map(|(branch, _)| branch.trim())
+}
+
+/// Undoes an auto-stash that would not go back on.
+///
+/// A `stash pop` that hits a conflict leaves files conflicted with no merge
+/// running, so "abort merge" has nothing to abort and git says so. What the
+/// user meant is: forget this, put me back where I was. The stash survives a
+/// conflicted pop untouched, which is what makes the reset safe — everything
+/// being thrown away here is still in it.
+pub fn undo_restore(state: &AppState) -> Result<String, String> {
+    let root = state.path()?;
+    let list = git_cmd::run_checked(&root, &["stash", "list"])?;
+    let top = list.lines().next().unwrap_or_default().to_string();
+    if !top.contains(AUTO_STASH) {
+        return Err(
+            "The stash this would put back is not there any more, so undoing the switch would \
+             throw the conflicted files away. Resolve them, or stash them, instead."
+                .to_string(),
+        );
+    }
+
+    // Clears the half-applied pop: conflicted files, and whatever else came
+    // out of the stash cleanly.
+    git_cmd::run_checked(&root, &["reset", "--hard", "HEAD"])?;
+
+    let home = stashed_on(&top).map(str::to_string);
+    let moved = match (&home, crate::journal::current_branch(state)) {
+        (Some(home), Some(here)) if home != &here => {
+            git_cmd::run_checked(&root, &["checkout", home, "--"])?;
+            true
+        }
+        // An older stash from before the branch was recorded, or a pull rather
+        // than a switch: there is nowhere else to go, so put the work back here.
+        _ => false,
+    };
+
+    git_cmd::run_checked(&root, &["stash", "pop"])?;
+    Ok(match (moved, home) {
+        (true, Some(branch)) => format!("Back on {branch}, with your changes"),
+        _ => "Your changes are back".to_string(),
+    })
 }
 
 // --- moving a branch and replaying commits ---------------------------------
@@ -816,5 +874,23 @@ index 1234567..89abcde 100644
     fn reports_a_hunk_that_is_no_longer_there() {
         let error = single_hunk_patch(DIFF, 7).unwrap_err();
         assert!(error.contains("2 hunks"), "unexpected message: {error}");
+    }
+
+    #[test]
+    fn reads_the_branch_out_of_an_auto_stash() {
+        // What `git stash list` actually prints: its own "On <branch>:" prefix
+        // in front of the message this app gave it.
+        assert_eq!(
+            stashed_on("stash@{0}: On main: gitnoob auto-stash on main: switching to other"),
+            Some("main")
+        );
+        // A branch with slashes in it, which is most of them.
+        assert_eq!(
+            stashed_on("stash@{0}: On x: gitnoob auto-stash on feature/ASANA-12: pulling"),
+            Some("feature/ASANA-12")
+        );
+        // Stashes from before the branch was recorded, and the user's own.
+        assert_eq!(stashed_on("stash@{0}: On main: gitnoob auto-stash: pulling"), None);
+        assert_eq!(stashed_on("stash@{0}: WIP on main: 1234567 something"), None);
     }
 }

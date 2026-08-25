@@ -205,6 +205,29 @@ fn api_base(kind: ForgeKind, host: &str) -> String {
     }
 }
 
+/// The forge's own page for creating an access token, with the scopes this
+/// app needs already ticked and a name filled in.
+///
+/// A real OAuth sign-in would need an application registered with each forge;
+/// until there is one, a link is the same number of clicks without that
+/// dependency. It only opens a page — the token still has to be pasted back.
+pub fn token_url(kind: ForgeKind, host: &str) -> Option<String> {
+    let host = if host.trim().is_empty() {
+        kind.default_host()
+    } else {
+        host.trim()
+    };
+    match kind {
+        ForgeKind::GitHub => Some(format!(
+            "https://{host}/settings/tokens/new?description=gitnoob&scopes=repo,read:org,read:user"
+        )),
+        ForgeKind::GitLab => Some(format!(
+            "https://{host}/-/user_settings/personal_access_tokens?name=gitnoob&scopes=api,read_user"
+        )),
+        ForgeKind::None => None,
+    }
+}
+
 /// Checks a token and returns the account it belongs to.
 pub async fn check(state: &AppState) -> Result<String, String> {
     let call = prepare(state)?;

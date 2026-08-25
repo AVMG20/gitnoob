@@ -480,6 +480,13 @@ fn in_progress(state: State<'_, AppState>) -> Result<remote::InProgress, String>
     remote::in_progress(&state)
 }
 
+/// Puts the tree back the way it was before an auto-stash refused to go back
+/// on, returning to the branch the work was taken from.
+#[tauri::command]
+async fn undo_restore(state: State<'_, AppState>) -> Result<String, String> {
+    work::undo_restore(&state)
+}
+
 // --- conflicts --------------------------------------------------------------
 
 #[tauri::command]
@@ -508,6 +515,12 @@ async fn conflict_resolve(
     state: State<'_, AppState>,
 ) -> Result<String, String> {
     conflict::resolve(&state, &path, &choices)
+}
+
+/// Ends a conflict by staging the file exactly as it stands on disk.
+#[tauri::command]
+async fn conflict_resolve_as_is(path: String, state: State<'_, AppState>) -> Result<String, String> {
+    conflict::resolve_as_is(&state, &path)
 }
 
 #[tauri::command]
@@ -716,6 +729,13 @@ fn forge_secret_key(state: State<'_, AppState>) -> Option<String> {
 
 // --- forge ------------------------------------------------------------------
 
+/// Where a token for this forge is created, so the settings form can link
+/// straight there instead of describing the click path.
+#[tauri::command]
+fn forge_token_url(kind: config::ForgeKind, host: String) -> Option<String> {
+    forge::token_url(kind, &host)
+}
+
 #[tauri::command]
 fn forge_status(state: State<'_, AppState>) -> forge::ForgeStatus {
     forge::status(&state)
@@ -902,11 +922,13 @@ pub fn run() {
             abort_rebase,
             continue_rebase,
             in_progress,
+            undo_restore,
             conflict_list,
             conflict_read,
             conflict_preview,
             conflict_resolve,
             conflict_resolve_whole,
+            conflict_resolve_as_is,
             config_get,
             config_set_global,
             profile_save,
@@ -920,6 +942,7 @@ pub fn run() {
             secret_set,
             secret_status,
             forge_secret_key,
+            forge_token_url,
             forge_status,
             forge_me,
             forge_check,

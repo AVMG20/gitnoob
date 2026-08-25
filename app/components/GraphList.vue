@@ -206,6 +206,19 @@ function step(by: number) {
   scrollTo(row.oid)
 }
 
+// Something outside the graph — a branch clicked in the sidebar — picked a
+// commit and wants it shown. The row may be past the loaded page, in which case
+// `scrollTo` finds nothing and the detail panel alone answers the question.
+watch(
+  () => store.revealing?.seq,
+  async () => {
+    const oid = store.revealing?.oid
+    if (!oid) return
+    await nextTick()
+    scrollTo(oid)
+  }
+)
+
 watch(
   () => store.query,
   async () => {

@@ -25,11 +25,26 @@ pub enum Block {
     },
 }
 
+/// Which of the three index stages a conflicted path actually has.
+///
+/// A file both sides edited has all three. One side deleting it leaves a hole,
+/// and that hole is the whole conflict: there is nothing to merge line by line,
+/// only a question of whether the file should exist.
+#[derive(Serialize, Clone, Copy, Default, PartialEq, Debug)]
+pub struct Stages {
+    pub base: bool,
+    pub ours: bool,
+    pub theirs: bool,
+}
+
 #[derive(Serialize)]
 pub struct ConflictFile {
     pub path: String,
     pub blocks: Vec<Block>,
     pub conflict_count: usize,
+    /// What the index holds for this path, so a file with no conflict markers
+    /// in it can still be explained rather than shown as two identical panes.
+    pub stages: Stages,
     /// How the file on disk ends its lines. Parsing throws the endings away, so
     /// writing the resolution back has to put the right ones on again.
     #[serde(skip)]
@@ -127,6 +142,30 @@ pub fn list(state: &AppState) -> Result<Vec<String>, String> {
     Ok(out)
 }
 
+/// Which stages the index holds for a conflicted path.
+pub fn stages(state: &AppState, path: &str) -> Result<Stages, String> {
+    let root = state.path()?;
+    let listed = git_cmd::run_checked(&root, &["ls-files", "--unmerged", "--", path])?;
+    Ok(parse_stages(&listed))
+}
+
+/// `<mode> <sha> <stage>\t<path>`, one line per stage that exists.
+fn parse_stages(listed: &str) -> Stages {
+    let mut found = Stages::default();
+    for line in listed.lines() {
+        let Some((meta, _)) = line.split_once('\t') else {
+            continue;
+        };
+        match meta.split_whitespace().nth(2) {
+            Some("1") => found.base = true,
+            Some("2") => found.ours = true,
+            Some("3") => found.theirs = true,
+            _ => {}
+        }
+    }
+    found
+}
+
 /// Reads a conflicted file and splits it into agreed context and conflict
 /// regions by parsing the markers git wrote into the working tree.
 pub fn read(state: &AppState, path: &str) -> Result<ConflictFile, String> {
@@ -198,6 +237,7 @@ pub fn read(state: &AppState, path: &str) -> Result<ConflictFile, String> {
         path: path.to_string(),
         blocks,
         conflict_count,
+        stages: stages(state, path)?,
         eol: detect_eol(&text),
         final_newline: text.ends_with('\n'),
     })
@@ -271,17 +311,81 @@ pub fn resolve(state: &AppState, path: &str, choices: &[Resolution]) -> Result<S
     Ok(format!("Resolved {path}"))
 }
 
-/// Resolves a whole file from one side, the `--ours` / `--theirs` shortcut.
+/// Resolves a whole file from one side.
+///
+/// `git checkout --ours` is the obvious way and it fails on the case that needs
+/// help most: when a side deleted the file it has no stage to check out, and
+/// git says "does not have our version" rather than doing the one thing that
+/// side could have meant. Taking a side that deleted the file means deleting
+/// it, so that is what happens.
 pub fn resolve_whole(state: &AppState, path: &str, side: &str) -> Result<String, String> {
     let root = state.path()?;
-    let flag = match side {
-        "ours" => "--ours",
-        "theirs" => "--theirs",
+    let found = stages(state, path)?;
+    let (kept, flag) = match side {
+        "ours" => (found.ours, "--ours"),
+        "theirs" => (found.theirs, "--theirs"),
         other => return Err(format!("Unknown side: {other}")),
     };
+
+    if !kept {
+        // `-f` because the working tree holds the other side's content, which
+        // git would otherwise refuse to throw away. That content is still in
+        // the index stage it came from until the conflict is finished.
+        git_cmd::run_checked(&root, &["rm", "-f", "--", path])?;
+        return Ok(format!("Deleted {path}, which is what {side} did to it"));
+    }
+
     git_cmd::run_checked(&root, &["checkout", flag, "--", path])?;
     git_cmd::run_checked(&root, &["add", "--", path])?;
     Ok(format!("Resolved {path} using {side}"))
+}
+
+/// Ends a conflict by keeping exactly what is on disk right now.
+///
+/// The way out when neither side is the answer: a file with no conflict markers
+/// left in it, hand-edited or written by a merge driver, is finished — staging
+/// it is all git is waiting for.
+pub fn resolve_as_is(state: &AppState, path: &str) -> Result<String, String> {
+    let root = state.path()?;
+    let full = root.join(path);
+    if !full.exists() {
+        git_cmd::run_checked(&root, &["rm", "-f", "--", path])?;
+        return Ok(format!("Deleted {path}"));
+    }
+    git_cmd::run_checked(&root, &["add", "--", path])?;
+    Ok(format!("Resolved {path} as it stands"))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn reads_which_stages_a_path_has() {
+        // Both sides edited it: base, ours, theirs.
+        let all = "100644 aaa 1\tsrc/a.rs\n100644 bbb 2\tsrc/a.rs\n100644 ccc 3\tsrc/a.rs\n";
+        assert_eq!(
+            parse_stages(all),
+            Stages { base: true, ours: true, theirs: true }
+        );
+
+        // Deleted by us, modified by them: no stage 2, and so no markers in the
+        // working tree and nothing for "all ours" to act on.
+        let deleted_by_us = "100644 aaa 1\ttests/T.php\n100644 ccc 3\ttests/T.php\n";
+        assert_eq!(
+            parse_stages(deleted_by_us),
+            Stages { base: true, ours: false, theirs: true }
+        );
+
+        // Added on both sides, with no common ancestor.
+        let add_add = "100644 bbb 2\tnew.txt\n100644 ccc 3\tnew.txt\n";
+        assert_eq!(
+            parse_stages(add_add),
+            Stages { base: false, ours: true, theirs: true }
+        );
+
+        assert_eq!(parse_stages(""), Stages::default());
+    }
 }
 
 /// Extracts the branch name a conflict marker carries, e.g. `<<<<<<< HEAD`.

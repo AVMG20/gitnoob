@@ -18,6 +18,7 @@ import {
   HardDrive,
   Hash,
   Pencil,
+  Plus,
   Search,
   Tag,
   Trash2,
@@ -38,6 +39,8 @@ const open = reactive({ locals: true, remotes: true, tags: false, stashes: true,
 const filter = ref('')
 /** The branch whose deletion is being confirmed. */
 const deleting = ref<string | null>(null)
+/** Set while the new pull request dialog is open. */
+const creatingReview = ref(false)
 const prompt = ref<{
   title: string
   label: string
@@ -486,6 +489,7 @@ function stashMenu(event: MouseEvent, index: number, message: string) {
             :style="{ paddingLeft: `calc(var(--indent) + ${row.depth * 14}px)` }"
             :title="`${row.item.name}${row.item.upstream ? ` → ${row.item.upstream}` : ' (no upstream)'}`"
             draggable="true"
+            @click="git.revealCommit(row.item.oid)"
             @dblclick="git.checkout(row.item.name)"
             @contextmenu="localMenu($event, row.item.name, row.item.upstream)"
             @dragstart="drag.begin($event, { kind: 'branch', name: row.item.name, remote: false })"
@@ -547,6 +551,7 @@ function stashMenu(event: MouseEvent, index: number, message: string) {
               :style="{ paddingLeft: `calc(var(--indent-2) + ${row.depth * 14}px)` }"
               :title="`${group.remote}/${row.item.name}`"
               draggable="true"
+              @click="git.revealCommit(row.item.oid)"
               @dblclick="git.checkout(`${group.remote}/${row.item.name}`)"
               @contextmenu="remoteMenu($event, group.remote, row.item.name)"
               @dragstart="
@@ -567,21 +572,31 @@ function stashMenu(event: MouseEvent, index: number, message: string) {
       </div>
 
       <!-- Pull requests -->
-      <template v-if="forge.usable.value">
-        <button class="section-title toggle" @click="open.reviews = !open.reviews">
-          <ChevronRight :size="12" class="chev" :class="{ down: open.reviews }" />
-          <GitPullRequest :size="12" class="mark" />
-          {{ forge.label.value }}
-          <span class="count">{{ forge.store.reviews.length }}</span>
-        </button>
+      <template v-if="forge.store.status && forge.store.status.kind !== 'none'">
+        <div class="head-row">
+          <button class="section-title toggle" @click="open.reviews = !open.reviews">
+            <ChevronRight :size="12" class="chev" :class="{ down: open.reviews }" />
+            <GitPullRequest :size="12" class="mark" />
+            {{ forge.label.value }}
+            <span class="count">{{ forge.store.reviews.length }}</span>
+          </button>
+          <button
+            class="head-action"
+            :disabled="!forge.usable.value"
+            :title="`Open a new ${forge.label.value.toLowerCase().replace(/s$/, '')} from this branch`"
+            @click="creatingReview = true"
+          >
+            <Plus :size="13" />
+          </button>
+        </div>
         <div v-if="open.reviews" class="group">
           <div
             v-for="review in forge.store.reviews"
             :key="review.number"
             class="row"
             :class="{ on: review.is_current }"
-            :title="review.title"
-            @dblclick="forge.open(review.url)"
+            :title="`${review.title}\n${review.source_branch} → ${review.target_branch}`"
+            @dblclick="git.checkout(review.source_branch)"
             @contextmenu="
               menu.show(
                 $event,
@@ -604,8 +619,22 @@ function stashMenu(event: MouseEvent, index: number, message: string) {
               {{ review.title }}
             </span>
             <span v-if="review.draft" class="tick faint">draft</span>
+            <button
+              class="row-action"
+              title="Open in the browser"
+              @click.stop="forge.open(review.url)"
+            >
+              <ExternalLink :size="12" />
+            </button>
           </div>
-          <p v-if="forge.store.error" class="err">{{ forge.store.error }}</p>
+          <p v-if="!forge.usable.value" class="none faint">
+            {{
+              forge.store.status?.has_token
+                ? 'No remote on this forge to read.'
+                : 'Add an access token to this profile in Settings to see them.'
+            }}
+          </p>
+          <p v-else-if="forge.store.error" class="err">{{ forge.store.error }}</p>
           <p v-else-if="!forge.store.reviews.length" class="none faint">
             {{ forge.store.loading ? 'Loading…' : 'Nothing open.' }}
           </p>
@@ -685,6 +714,7 @@ function stashMenu(event: MouseEvent, index: number, message: string) {
     />
 
     <DeleteBranchDialog v-if="deleting" :name="deleting" @close="deleting = null" />
+    <ReviewDialog v-if="creatingReview" @close="creatingReview = false" />
   </aside>
 </template>
 
@@ -774,6 +804,58 @@ function stashMenu(event: MouseEvent, index: number, message: string) {
 .count {
   margin-left: auto;
   font-weight: 400;
+}
+
+/* The heading keeps the rule above it, so the button beside it has to sit
+   inside that same box rather than after it. */
+.head-row {
+  display: flex;
+  align-items: center;
+}
+
+.scroll > .head-row:not(:first-child) {
+  margin-top: 8px;
+  padding-top: 10px;
+  border-top: 1px solid var(--line-soft);
+}
+
+.head-row > .toggle {
+  flex: 1;
+  min-width: 0;
+}
+
+.head-action {
+  flex: none;
+  margin-right: 6px;
+  padding: 2px 4px;
+  border-radius: 4px;
+  color: var(--text-faint);
+}
+
+.head-action:hover:not(:disabled) {
+  color: var(--text);
+  background: var(--bg-hover);
+}
+
+.head-action:disabled {
+  opacity: 0.35;
+}
+
+/* Only on the row the pointer is over: a link icon on every review would
+   compete with the titles, which are what the list is for. */
+.row-action {
+  flex: none;
+  margin-left: 2px;
+  color: var(--text-faint);
+  visibility: hidden;
+}
+
+.row:hover .row-action {
+  visibility: visible;
+}
+
+.row-action:hover {
+  color: var(--text);
 }
 
 .row {

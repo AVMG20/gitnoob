@@ -255,13 +255,41 @@ watch(
 
     <div v-if="conflicts" class="banner">
       <TriangleAlert :size="14" />
-      <span>
+      <span v-if="store.progress?.restoring">
+        {{ conflicts }} conflicted {{ conflicts === 1 ? 'file' : 'files' }}: your own changes did
+        not fit on this branch. They are still in the stash.
+      </span>
+      <span v-else>
         {{ conflicts }} conflicted {{ conflicts === 1 ? 'file' : 'files' }} to resolve
       </span>
       <button class="btn tiny" @click="store.resolving = store.status?.conflicted[0] ?? ''">
         Resolve
       </button>
-      <button class="btn tiny ghost" :disabled="store.busy" @click="git.abortMerge()">
+      <!-- The way out is whatever git is actually part-way through. Offering
+           "abort merge" for a stash that would not go back on is how you get
+           told there is no merge to abort. -->
+      <button
+        v-if="store.progress?.restoring"
+        class="btn tiny ghost"
+        :disabled="store.busy"
+        @click="git.undoRestore()"
+      >
+        Undo the switch
+      </button>
+      <button
+        v-else-if="store.progress?.rebasing"
+        class="btn tiny ghost"
+        :disabled="store.busy"
+        @click="git.abortRebase()"
+      >
+        Abort rebase
+      </button>
+      <button
+        v-else-if="store.progress?.merging"
+        class="btn tiny ghost"
+        :disabled="store.busy"
+        @click="git.abortMerge()"
+      >
         Abort merge
       </button>
     </div>
