@@ -131,17 +131,19 @@ app
 
 ## Testing
 
-`cargo test` runs 133: unit tests over the parts with fiddly rules (remote URL
+`cargo test` runs 147: unit tests over the parts with fiddly rules (remote URL
 parsing, one-hunk patch rebuilding, SSH command building, transport-failure
-explanations, AI answer parsing) and integration tests against real
-repositories built with the `git` CLI — graph lane invariants, divergence
-reporting, every conflict-resolution combination, undo and redo, auto-stash,
-cherry-picking out of order, empty repositories, detached HEAD, CRLF files,
-cloning and creating repositories, managing remotes against a bare one.
+explanations, AI answer parsing, and the config file's round trip, migrations
+and corrupt-file path) and integration tests against real repositories built
+with the `git` CLI — graph lane invariants, divergence reporting, every
+conflict-resolution combination, undo and redo, auto-stash, cherry-picking out
+of order, empty repositories, detached HEAD, CRLF files, cloning and creating
+repositories, managing remotes against a bare one, and pushing to one, force
+push and its lease included.
 
 The frontend has no tests yet, which is the largest gap in the project.
-`npm run typecheck` runs, and currently reports 59 errors across six components
-— mostly indexing that Nuxt's strict settings want guarded.
+`npm run typecheck` runs, and currently reports 79 errors across seven files —
+mostly indexing that Nuxt's strict settings want guarded.
 
 ## Known gaps
 

@@ -122,11 +122,36 @@ Every request made in this project, so nothing gets dropped between sessions.
 - [x] Slow git work moved off the main thread so the window stops freezing
 - [x] File tree as well as flat path list, with a Path/Tree toggle; single-child
       directories are joined into one row so deep trees stay readable
+- [x] The gutter marks in the file view answer for themselves: clicking the
+      bar beside a changed line shows what that line said before, and clicking
+      the wedge at a seam shows the lines that were deleted there. The old text
+      is coloured with the same grammar as the file, sits under the line that
+      replaced it (or above the seam the deletions were at), and scrolls inside
+      itself past a third of the window rather than pushing the file around.
+      Escape or a click anywhere else closes it. This meant keeping the deleted
+      text rather than only counting it — and while doing so, a run where more
+      lines went than came back now accounts for the surplus instead of dropping
+      it
 - [ ] Side-by-side diff toggle, whitespace-ignore toggle
 - [ ] Word-level highlighting inside a changed line
 - [ ] Blame and file history views
 - [ ] Command palette so every action is reachable by name
-- [ ] Keyboard shortcuts for the common actions
+- [x] Keyboard shortcuts for the common actions: fetch, pull, push, refresh,
+      new branch, stash, undo, redo, settings, open a repository, close a
+      project tab, and the nine project tabs by position. `useShortcuts.ts`
+      holds the bindings and their descriptions in one list, and the Shortcuts
+      page in settings renders that same list — so a key that changes changes in
+      one place, and the page cannot drift from what the window listens for
+- [x] Resizable columns in the commit list: drag the line between two headings,
+      double-click it to put it back. Which columns are drawn is a choice too —
+      right-click the headings, or use Appearance in settings. Widths and
+      visibility live in the browser's own storage next to the theme, because
+      they are the machine's preference rather than the profile's
+- [x] Long branch names are cut in the middle rather than at the end. Four chips
+      reading `origin/ASANA-1216293…` are the same chip as far as the eye is
+      concerned; the digits that tell them apart are at the end. Two spans do it
+      — the head shrinks and takes the ellipsis, the tail never shrinks — so the
+      cut lands where the real width puts it and nothing is measured
 - [ ] Conflict panes: synchronised scrolling and syntax highlighting
 
 ## Round 4 — the code audit, August 2026
@@ -185,15 +210,28 @@ Every request made in this project, so nothing gets dropped between sessions.
 - [ ] **Frontend tests.** 9,400 lines and no runner. Vitest with a mocked
       `invoke` would cover the store, and `GraphList`'s virtualization and the
       drag-drop target rules are the parts most likely to break silently
-- [ ] **Tests for `config.rs`.** 289 lines carrying profiles, projects, the
+- [x] **Tests for `config.rs`.** 289 lines carrying profiles, projects, the
       rename-on-corrupt path and a migration, with no test over any of it — and
       losing it loses the user's whole setup
+      — done: ten tests over a temporary config directory. A first run, a save
+      and its round trip, the temp file not being left behind, a corrupt file
+      moved aside byte for byte rather than overwritten, a config written before
+      ssh keys and avatars existed still yielding its profiles, the copy from
+      the old bundle name happening once and never over an existing file, and
+      the active profile resolving — including to nothing, when the id names a
+      profile that was deleted
 - [ ] **Tests for the forge and AI HTTP paths.** Only response parsing is
       covered. Nothing exercises a 401, a rate limit, an Enterprise base URL, a
       nested GitLab group, or pagination. A mock server would fix that
-- [ ] **A test for `push` itself.** `push_preview` is well covered; the push it
+- [x] **A test for `push` itself.** `push_preview` is well covered; the push it
       previews, including `--force-with-lease`, is never run against a bare
       remote, though the test harness already builds one
+      — done: four tests against a bare origin, reading the remote's own refs
+      rather than the push's exit code. A first push sets the upstream and
+      lands; a non-fast-forward push is refused and leaves the remote where it
+      was; a force push carries `--force-with-lease` and never a bare `--force`;
+      and the lease refuses a force push over a remote that moved since the last
+      fetch, leaving the other person's commit as the tip
 - [ ] **Clear the 59 remaining typecheck errors** (`SideBar`, `GraphList`,
       `WorkingChanges`, `ConflictView`, `CommitDetails`, `DeleteBranchDialog`),
       then make the checker a gate
@@ -314,19 +352,21 @@ See the README, which is now the one place the build notes live.
 
 ## Verification
 
-`cargo test` runs 133 and they pass: 47 unit (remote URL parsing, API bases, URL
+`cargo test` runs 147 and they pass: 57 unit (remote URL parsing, API bases, URL
 encoding, AI answer parsing, reasoning levels, one-hunk patch rebuilding, SSH
 command building, transport-failure explanations, git command rendering, clone
-folder naming) and 86 integration against real repositories built with the git
+folder naming, and the config file: its round trip, its migrations and its
+corrupt-file path) and 90 integration against real repositories built with the git
 CLI — graph lane invariants, divergence reporting, every conflict-resolution
 combination, undo and redo, auto-stash, stash operations, cherry-picking several
 commits out of order, empty repository, detached HEAD, tracking-branch checkout,
 CRLF files, a pull across a divergence, an oversized diff, cloning from a local
-remote, creating a repository with a first commit, and adding, editing, renaming
-and removing a remote against a bare one.
+remote, creating a repository with a first commit, adding, editing, renaming and
+removing a remote against a bare one, and pushing to one — a first push, a
+refused one, a force push, and a force push the lease stops.
 
-`npm run typecheck` runs and reports 59 errors in six components, all
-pre-existing. `npm run generate` builds the bundle clean.
+`npm run typecheck` runs and reports 79 errors in seven files, all pre-existing
+— this file said 59 for a while, which was never right. `npm run generate` builds the bundle clean.
 
 The UI is checked by rendering the built bundle in a browser and reading the
 console; the Tauri window itself cannot be screenshotted from this shell
