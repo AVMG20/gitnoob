@@ -750,9 +750,35 @@ function stashMenu(event: MouseEvent, index: number, message: string) {
   outline: none;
 }
 
+/* Each section scrolls inside itself rather than pushing the ones below it off
+   the bottom. The headings are the map of the sidebar — Local, Remote, Reviews,
+   Tags, Stashes — and a repository with forty remote branches used to bury all
+   of them under one list. Laid out as a column, every section keeps its heading
+   in view and gives up height in proportion to how much it has; the outer
+   scroll is left as the last resort, for when even the floors below do not fit.
+   */
 .scroll {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
   overflow-y: auto;
   padding-bottom: 14px;
+}
+
+.scroll > .toggle,
+.scroll > .head-row {
+  flex: none;
+}
+
+.group {
+  padding-top: 2px;
+  /* Each section gives up height in proportion to how much it has, so the long
+     one shrinks and the short one is left alone; the floor is a single row, so
+     nothing is squeezed to a sliver and nothing short is padded out. */
+  flex: 0 1 auto;
+  min-height: 28px;
+  overflow-y: auto;
+  scrollbar-width: thin;
 }
 
 /* One indent scale for the whole tree. A row's glyph sits in the same column as
@@ -786,10 +812,6 @@ function stashMenu(event: MouseEvent, index: number, message: string) {
 .mark {
   flex: none;
   opacity: 0.75;
-}
-
-.group {
-  padding-top: 2px;
 }
 
 .chev {
