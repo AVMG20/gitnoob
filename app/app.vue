@@ -23,6 +23,17 @@ let fetchTimer: number | undefined
 let unlisten: UnlistenFn | undefined
 let unlistenCommand: UnlistenFn | undefined
 
+/** The clone and new-repository dialogs, reachable from the welcome pane. */
+const cloneOpen = ref(false)
+const initOpen = ref(false)
+
+/** A repository that has just been cloned or created opens like any other. */
+async function made(path: string) {
+  cloneOpen.value = false
+  initOpen.value = false
+  await openProject(path)
+}
+
 /**
  * Changes seen while the app was busy.
  *
@@ -175,11 +186,19 @@ onUnmounted(() => {
       </div>
     </template>
 
-    <WelcomePane v-else :ready="ready" @open="openProject" />
+    <WelcomePane
+      v-else
+      :ready="ready"
+      @open="openProject"
+      @clone="cloneOpen = true"
+      @init="initOpen = true"
+    />
 
     <ActivityLog />
 
     <SettingsModal v-if="config.store.settingsOpen" />
+    <CloneDialog v-if="cloneOpen" @close="cloneOpen = false" @done="made" />
+    <InitDialog v-if="initOpen" @close="initOpen = false" @done="made" />
     <ConflictOverlay v-if="store.resolving !== null" />
     <ContextMenu />
   </div>

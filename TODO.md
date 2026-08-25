@@ -214,12 +214,20 @@ Every request made in this project, so nothing gets dropped between sessions.
 These are not refinements of something half-built; the app cannot do them at
 all.
 
-- [ ] Clone a repository. Today the only way in is to open a folder that is
+- [x] Clone a repository. Today the only way in is to open a folder that is
       already a repository, so a machine with no checkout has no route at all.
       This is where the profile work pays off: clone from the work GitLab over
       the work key, from personal GitHub over the personal key, without
       choosing either by hand
-- [ ] Create a repository, with a first commit and a `.gitignore`
+      — done: `clone_repo` runs `git clone` through the CLI wrapper, so the
+      profile's `GIT_SSH_COMMAND` and the machine's credential helper are in
+      force; the folder is named after the repository and the destination
+      checked before anything is fetched. Reached from the welcome pane
+- [x] Create a repository, with a first commit and a `.gitignore`
+      — done: `init_repo` runs `git init -b main`, writes a starter
+      `.gitignore` and commits it as the profile's identity; with no identity
+      anywhere, the `.gitignore` is left untracked in the changes panel and the
+      reason is said in the log
 - [ ] List the repositories a profile's token can see, so cloning is picking
       one from a list rather than pasting a URL. `forge.rs` already
       authenticates and reads pull requests; it has never asked for `/user/repos`
@@ -297,14 +305,15 @@ See the README, which is now the one place the build notes live.
 
 ## Verification
 
-`cargo test` runs 99 and they pass: 29 unit (remote URL parsing, API bases, URL
+`cargo test` runs 132 and they pass: 47 unit (remote URL parsing, API bases, URL
 encoding, AI answer parsing, reasoning levels, one-hunk patch rebuilding, SSH
-command building, transport-failure explanations, git command rendering) and 70
-integration against real repositories built with the git CLI — graph lane
-invariants, divergence reporting, every conflict-resolution combination, undo
-and redo, auto-stash, stash operations, cherry-picking several commits out of
-order, empty repository, detached HEAD, tracking-branch checkout, CRLF files,
-a pull across a divergence, and an oversized diff.
+command building, transport-failure explanations, git command rendering, clone
+folder naming) and 85 integration against real repositories built with the git
+CLI — graph lane invariants, divergence reporting, every conflict-resolution
+combination, undo and redo, auto-stash, stash operations, cherry-picking several
+commits out of order, empty repository, detached HEAD, tracking-branch checkout,
+CRLF files, a pull across a divergence, an oversized diff, cloning from a local
+remote, and creating a repository with a first commit.
 
 `npm run typecheck` runs and reports 59 errors in six components, all
 pre-existing. `npm run generate` builds the bundle clean.

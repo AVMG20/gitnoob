@@ -2,6 +2,7 @@ pub mod ai;
 pub mod avatar;
 pub mod conflict;
 pub mod config;
+pub mod create;
 pub mod diff;
 pub mod forge;
 pub mod git_cmd;
@@ -63,6 +64,51 @@ fn startup_repo() -> Option<String> {
         .skip(1)
         // Skip anything that looks like a flag; only a bare path names a repo.
         .find(|arg| !arg.starts_with('-'))
+}
+
+/// Clones a repository into a folder named after it.
+///
+/// A clone is the slowest thing the app does, so it runs on the blocking pool
+/// rather than the thread that would otherwise be drawing the window. Being a
+/// git CLI run, the profile's key and the machine's credential helper are
+/// already in force.
+#[tauri::command]
+async fn clone_repo(url: String, parent: String) -> Result<create::NewRepo, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let parent = PathBuf::from(&parent);
+        if !parent.is_dir() {
+            return Err(format!("{} is not a folder", parent.display()));
+        }
+        create::clone(&url, &parent)
+    })
+    .await
+    .map_err(|e| format!("The clone did not finish: {e}"))?
+}
+
+/// Creates a new repository with a first commit and a starter `.gitignore`,
+/// committing as the active profile where one has an identity.
+#[tauri::command]
+async fn init_repo(
+    name: String,
+    parent: String,
+    state: State<'_, AppState>,
+) -> Result<create::NewRepo, String> {
+    // Read here rather than inside the closure: `State` cannot cross into the
+    // blocking pool, and the config is small.
+    let identity = state.config().active().and_then(|profile| {
+        let name = profile.git_name.clone().filter(|s| !s.trim().is_empty());
+        let email = profile.git_email.clone().filter(|s| !s.trim().is_empty());
+        Some((name?, email?))
+    });
+    tauri::async_runtime::spawn_blocking(move || {
+        let parent = PathBuf::from(&parent);
+        if !parent.is_dir() {
+            return Err(format!("{} is not a folder", parent.display()));
+        }
+        create::init(&parent, &name, identity)
+    })
+    .await
+    .map_err(|e| format!("Creating the repository did not finish: {e}"))?
 }
 
 #[tauri::command]
@@ -934,6 +980,8 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             open_repo,
             startup_repo,
+            clone_repo,
+            init_repo,
             repo_info,
             ref_tree,
             working_status,

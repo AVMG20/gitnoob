@@ -25,6 +25,14 @@ export interface RepoInfo {
   author_email: string
 }
 
+/** A repository that has just been cloned or created. */
+export interface NewRepo {
+  path: string
+  name: string
+  /** Why there is no first commit, when there is not one. */
+  note: string | null
+}
+
 export interface LocalBranch {
   name: string
   oid: string
