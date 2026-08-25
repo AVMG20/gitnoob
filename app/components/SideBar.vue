@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, reactive, ref } from 'vue'
+import { computed, reactive, ref, watch } from 'vue'
 import { invoke } from '@tauri-apps/api/core'
 import {
   Archive,
@@ -39,7 +39,34 @@ const drag = useDragDrop()
 const forge = useForge()
 const config = useConfig()
 
-const open = reactive({ locals: true, remotes: true, tags: false, stashes: true, reviews: true })
+const SECTIONS_KEY = 'gitnoob:sidebar-sections'
+
+/** Which sections stand open, remembered across runs of the app. */
+const open = reactive(readSections())
+
+function readSections() {
+  try {
+    const saved = JSON.parse(localStorage.getItem(SECTIONS_KEY) ?? '{}')
+    return {
+      locals: saved.locals !== false,
+      remotes: saved.remotes !== false,
+      tags: saved.tags === true,
+      stashes: saved.stashes !== false,
+      reviews: saved.reviews !== false
+    }
+  } catch {
+    return { locals: true, remotes: true, tags: false, stashes: true, reviews: true }
+  }
+}
+
+watch(open, () => {
+  try {
+    localStorage.setItem(SECTIONS_KEY, JSON.stringify(open))
+  } catch {
+    // A window that cannot remember still shows the sections this session.
+  }
+})
+
 const filter = ref('')
 /** The branch whose deletion is being confirmed. */
 const deleting = ref<string | null>(null)
@@ -58,15 +85,36 @@ const prompt = ref<{
 const match = (name: string) =>
   !filter.value.trim() || name.toLowerCase().includes(filter.value.trim().toLowerCase())
 
+const FOLDERS_KEY = 'gitnoob:sidebar-folders'
+
 /**
- * Folders the user has shut. Everything starts open, so a window that has never
- * been touched shows branches rather than a wall of closed folders.
+ * Folders the user has shut, remembered across runs. Everything starts open,
+ * so a window that has never been touched shows branches rather than a wall of
+ * closed folders.
  */
-const shut = reactive(new Set<string>())
+const shut = reactive(new Set<string>(readShut()))
 
 function toggleFolder(path: string) {
   if (shut.has(path)) shut.delete(path)
   else shut.add(path)
+  saveShut()
+}
+
+function readShut(): string[] {
+  try {
+    const saved = JSON.parse(localStorage.getItem(FOLDERS_KEY) ?? '[]')
+    return Array.isArray(saved) ? saved.filter((one) => typeof one === 'string') : []
+  } catch {
+    return []
+  }
+}
+
+function saveShut() {
+  try {
+    localStorage.setItem(FOLDERS_KEY, JSON.stringify([...shut]))
+  } catch {
+    // A window that cannot remember still opens and shuts folders this session.
+  }
 }
 
 /** A folder heading or a branch, at a depth, ready for one flat `v-for`. */
@@ -139,7 +187,7 @@ const SIZES_KEY = 'gitnoob:sidebar-sizes'
 const MIN_SECTION = 40
 
 /**
- * Heights the user has dragged sections to, in pixels, by profile.
+ * Heights the user has dragged sections to, in pixels.
  *
  * Undragged, a section is as tall as what is in it and no taller than the cap
  * in the stylesheet — three merge requests take three rows, forty remote
@@ -147,22 +195,20 @@ const MIN_SECTION = 40
  * column fit: the sidebar scrolls when the sections together are taller than
  * it, which is the one thing a person can predict.
  *
- * Kept per profile because the sizes follow the work. The repositories on one
- * account tend to look alike — a wall of remote branches at work, none of them
- * at home — and a size dragged for one is the wrong size for the other.
+ * One set for every profile: the shape of the sidebar belongs to the window,
+ * not to the account signed into it.
  */
-const sizes = reactive<Record<string, Partial<Record<Section, number>>>>(readSizes())
+const sizes = reactive<Partial<Record<Section, number>>>(readSizes())
 
-/** Which set of heights is in play: the active profile's, or a shared one. */
-const profileKey = computed(() => config.profile.value?.id ?? 'default')
-
-function readSizes(): Record<string, Partial<Record<Section, number>>> {
+function readSizes(): Partial<Record<Section, number>> {
   try {
     const saved = JSON.parse(localStorage.getItem(SIZES_KEY) ?? '{}')
-    // Heights used to be stored for everyone at once. Anything in that shape is
-    // read as the shared set rather than thrown away.
-    if (Object.values(saved).some((value) => typeof value === 'number')) {
-      return { default: saved }
+    // Heights used to be kept per profile, each set under the profile's id.
+    // One of those sets is adopted as the shared one rather than thrown away —
+    // the active profile's where it exists.
+    if (saved && Object.values(saved).some((value) => value && typeof value === 'object')) {
+      const byProfile = saved as Record<string, Partial<Record<Section, number>>>
+      return byProfile[config.profile.value?.id ?? ''] ?? byProfile.default ?? {}
     }
     return saved
   } catch {
@@ -179,7 +225,7 @@ function saveSizes() {
 }
 
 function sizeOf(section: Section) {
-  const height = sizes[profileKey.value]?.[section]
+  const height = sizes[section]
   // `max-height` is what caps an undragged section; a dragged one has said what
   // it wants, so the cap comes off and the height stands.
   return height ? { height: `${height}px`, maxHeight: 'none' } : undefined
@@ -202,8 +248,7 @@ function grab(event: PointerEvent, section: Section) {
   grip.setPointerCapture(event.pointerId)
 
   const move = (moved: PointerEvent) => {
-    const bag = sizes[profileKey.value] ?? (sizes[profileKey.value] = {})
-    bag[section] = Math.max(MIN_SECTION, startHeight + moved.clientY - startY)
+    sizes[section] = Math.max(MIN_SECTION, startHeight + moved.clientY - startY)
   }
   const done = () => {
     grip.releasePointerCapture(event.pointerId)
@@ -218,7 +263,7 @@ function grab(event: PointerEvent, section: Section) {
 
 /** Double-clicking a divider gives a section its ordinary height back. */
 function resetSize(section: Section) {
-  delete sizes[profileKey.value]?.[section]
+  delete sizes[section]
   saveSizes()
 }
 
