@@ -40,6 +40,10 @@ const MISS_FOR: Duration = Duration::from_secs(7 * 24 * 60 * 60);
 /// answers nearly every call without touching the disk.
 static SEEN: Mutex<Option<HashMap<String, Option<String>>>> = Mutex::new(None);
 
+/// Per repository, the address every recent commit was written with and the
+/// picture of the account that wrote it. Asked for once per run.
+static AUTHORS: Mutex<Option<HashMap<String, HashMap<String, String>>>> = Mutex::new(None);
+
 fn remembered(email: &str) -> Option<Option<String>> {
     SEEN.lock()
         .unwrap()
@@ -103,8 +107,9 @@ pub async fn find(state: &AppState, email: &str) -> Result<Option<String>, Strin
     // both forges keep the address behind the API, and answer only a caller
     // holding a token.
     let account = forge::account(state).ok();
+    let slug = forge::remote_slug(state);
 
-    let found = fetch(&email, &digest, account).await;
+    let found = fetch(&email, &digest, account, slug).await;
     let _ = fs::create_dir_all(&cache);
     match &found {
         Some(bytes) => {
@@ -169,6 +174,7 @@ async fn fetch(
     email: &str,
     digest: &str,
     account: Option<(ForgeKind, String, String)>,
+    slug: Option<forge::RepoSlug>,
 ) -> Option<Vec<u8>> {
     let client = reqwest::Client::builder()
         .user_agent("gitnoob/0.1")
@@ -182,56 +188,126 @@ async fn fetch(
         }
     }
 
-    // `d=404` asks gravatar for an answer rather than a drawing: for someone it
-    // has never heard of, the window makes a better one itself.
-    let url = format!("https://www.gravatar.com/avatar/{digest}?s={SIZE}&d=404");
-    if let Some(bytes) = image(&client, &url).await {
+    // Ask the forge who wrote the commits in this repository. GitHub resolves a
+    // commit to the account that made it from what it knows privately, which is
+    // the whole difficulty: the address nobody can search for is exactly the one
+    // people commit with. A public repository answers without a token, so this
+    // is worth trying whether or not a profile is signed in.
+    if let Some(slug) = &slug {
+        let kind = match &account {
+            Some((kind, _, _)) => *kind,
+            // No profile: go by the host the code is on.
+            None if slug.host == "github.com" => ForgeKind::GitHub,
+            None => ForgeKind::None,
+        };
+        let token = account.as_ref().map(|(_, _, token)| token.as_str());
+        if let Some(url) = author_map(&client, kind, &slug.host, token, slug)
+            .await
+            .get(email)
+        {
+            if let Some(bytes) = image(&client, &sized_to(url, SIZE)).await {
+                return Some(bytes);
+            }
+        }
+    }
+
+    if let Some(bytes) = gravatar(&client, digest).await {
         return Some(bytes);
     }
 
-    let (kind, host, token) = account?;
-    let link = match kind {
-        ForgeKind::GitHub => github_search(&client, &host, &token, email).await,
-        ForgeKind::GitLab => gitlab_search(&client, &host, &token, email).await,
-        ForgeKind::None => None,
-    }?;
-    image(&client, &link).await
+    match account {
+        Some((ForgeKind::GitLab, host, token)) => {
+            let link = gitlab_search(&client, &host, &token, email).await?;
+            image(&client, &link).await
+        }
+        _ => None,
+    }
 }
 
-/// The avatar of the GitHub account that owns an address.
+/// `d=404` asks gravatar for an answer rather than a drawing: for someone it
+/// has never heard of, the window makes a better one itself.
+async fn gravatar(client: &reqwest::Client, digest: &str) -> Option<Vec<u8>> {
+    let url = format!("https://www.gravatar.com/avatar/{digest}?s={SIZE}&d=404");
+    image(client, &url).await
+}
+
+/// Everyone who has written a commit in this repository lately, by the address
+/// they wrote it with.
 ///
-/// The search only ever answers for an address the account has made public;
-/// there is no way to ask about a private one, and a miss here is the end of
-/// the road for that author.
-async fn github_search(
+/// One request answers for the whole team, and it answers for addresses no
+/// search will match: GitHub resolves a commit to the account that made it
+/// from what it knows privately, which is the only way a colleague committing
+/// with a private work address gets a face. GitLab's commits carry no such
+/// link, so there is nothing to ask it for here.
+async fn author_map(
     client: &reqwest::Client,
+    kind: ForgeKind,
     host: &str,
-    token: &str,
-    email: &str,
-) -> Option<String> {
+    token: Option<&str>,
+    slug: &forge::RepoSlug,
+) -> HashMap<String, String> {
+    if kind != ForgeKind::GitHub {
+        return HashMap::new();
+    }
+    let repo = format!("{host}/{}", slug.full());
+    if let Some(known) = AUTHORS.lock().unwrap().as_ref().and_then(|by_repo| by_repo.get(&repo)) {
+        return known.clone();
+    }
+
     let base = if host == "github.com" {
         "https://api.github.com".to_string()
     } else {
         format!("https://{host}/api/v3")
     };
-    let query = format!("{}+in%3Aemail", urlencode(email));
-    let answer = client
-        .get(format!("{base}/search/users?q={query}&per_page=1"))
-        .bearer_auth(token)
-        .header("Accept", "application/vnd.github+json")
-        .send()
-        .await
-        .ok()?
-        .json::<serde_json::Value>()
-        .await
-        .ok()?;
-    let url = answer
-        .get("items")?
-        .as_array()?
-        .first()?
-        .get("avatar_url")?
-        .as_str()?;
-    Some(sized_to(url, SIZE))
+    let mut found = HashMap::new();
+    // Three pages of a hundred: enough to cover everyone still working on the
+    // project, without walking the history of one to fill in a name that has
+    // not been seen in a year.
+    for page in 1..=3 {
+        let ask = client
+            .get(format!(
+                "{base}/repos/{}/commits?per_page=100&page={page}",
+                slug.full()
+            ))
+            .header("Accept", "application/vnd.github+json");
+        let ask = match token {
+            Some(token) => ask.bearer_auth(token),
+            None => ask,
+        };
+        let commits: Vec<serde_json::Value> = match ask
+            .send()
+            .await
+            .ok()
+            .filter(|response| response.status().is_success())
+        {
+            Some(response) => response.json().await.unwrap_or_default(),
+            None => break,
+        };
+        let short = commits.len() < 100;
+        for commit in commits {
+            for side in ["author", "committer"] {
+                let email = commit
+                    .pointer(&format!("/commit/{side}/email"))
+                    .and_then(|value| value.as_str());
+                let picture = commit
+                    .pointer(&format!("/{side}/avatar_url"))
+                    .and_then(|value| value.as_str());
+                if let (Some(email), Some(picture)) = (email, picture) {
+                    found.insert(email.trim().to_lowercase(), picture.to_string());
+                }
+            }
+        }
+        if short {
+            break;
+        }
+    }
+
+    AUTHORS
+        .lock()
+        .unwrap()
+        .get_or_insert_with(HashMap::new)
+        .insert(repo, found.clone());
+    found
 }
 
 /// The avatar of the GitLab account that owns an address.

@@ -842,6 +842,7 @@ pub fn run() {
         .plugin(tauri_plugin_dialog::init())
         .setup(|app| {
             let dir = app.path().app_config_dir()?;
+            config::use_dir(&dir);
             let state = AppState::new(dir);
             // Before any git command runs, so the very first fetch already uses
             // the right key.

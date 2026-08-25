@@ -103,7 +103,7 @@ pub fn parse_remote(url: &str) -> Option<RepoSlug> {
 }
 
 /// Reads the push URL of the remote a branch tracks, falling back to `origin`.
-fn remote_slug(state: &AppState) -> Option<RepoSlug> {
+pub fn remote_slug(state: &AppState) -> Option<RepoSlug> {
     let repo = state.repo().ok()?;
     let preferred = repo
         .head()

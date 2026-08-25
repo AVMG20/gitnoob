@@ -266,7 +266,16 @@ pub fn new_id() -> String {
 
 // --- secrets ---------------------------------------------------------------
 
+#[cfg(not(debug_assertions))]
 const SERVICE: &str = "dev.gitnoob.app";
+
+/// The config directory, for the development token file. Set once at startup.
+static DIR: Mutex<Option<PathBuf>> = Mutex::new(None);
+
+/// Tells the secret store where the config lives.
+pub fn use_dir(dir: &Path) {
+    *DIR.lock().unwrap() = Some(dir.to_path_buf());
+}
 
 /// Secrets read since the app started, including the ones that were not there.
 ///
@@ -297,24 +306,11 @@ fn cache(key: &str, value: Option<String>) {
         .insert(key.to_string(), value);
 }
 
-/// Stores a secret in the OS keychain. An empty value deletes the entry.
+/// Stores a secret. An empty value deletes it.
 pub fn secret_set(key: &str, value: &str) -> Result<(), String> {
-    let entry = keyring::Entry::new(SERVICE, key).map_err(|e| e.to_string())?;
-    if value.is_empty() {
-        return match entry.delete_credential() {
-            Ok(()) => {
-                cache(key, None);
-                Ok(())
-            }
-            Err(keyring::Error::NoEntry) => {
-                cache(key, None);
-                Ok(())
-            }
-            Err(e) => Err(e.to_string()),
-        };
-    }
-    entry.set_password(value).map_err(|e| e.to_string())?;
-    cache(key, Some(value.to_string()));
+    let value = (!value.is_empty()).then(|| value.to_string());
+    store_set(key, value.as_deref())?;
+    cache(key, value);
     Ok(())
 }
 
@@ -322,12 +318,75 @@ pub fn secret_get(key: &str) -> Option<String> {
     if let Some(known) = cached(key) {
         return known;
     }
-    let found = keyring::Entry::new(SERVICE, key)
-        .ok()
-        .and_then(|entry| entry.get_password().ok())
-        .filter(|value| !value.is_empty());
+    let found = store_get(key).filter(|value| !value.is_empty());
     cache(key, found.clone());
     found
+}
+
+#[cfg(not(debug_assertions))]
+fn store_set(key: &str, value: Option<&str>) -> Result<(), String> {
+    let entry = keyring::Entry::new(SERVICE, key).map_err(|e| e.to_string())?;
+    match value {
+        Some(value) => entry.set_password(value).map_err(|e| e.to_string()),
+        None => match entry.delete_credential() {
+            Ok(()) | Err(keyring::Error::NoEntry) => Ok(()),
+            Err(e) => Err(e.to_string()),
+        },
+    }
+}
+
+#[cfg(not(debug_assertions))]
+fn store_get(key: &str) -> Option<String> {
+    keyring::Entry::new(SERVICE, key)
+        .ok()
+        .and_then(|entry| entry.get_password().ok())
+}
+
+/// Where a development build keeps its tokens.
+///
+/// macOS ties a keychain item's permission to the exact binary that made it, so
+/// every rebuild is a stranger asking for a password — and a rebuild happens
+/// dozens of times a day. That question is worth asking of the app someone
+/// installed, not of the one being written, so a debug build keeps its tokens
+/// in a file beside the config, readable by its owner and nobody else. The
+/// keychain code above is what a release build compiles.
+#[cfg(debug_assertions)]
+fn dev_file() -> Option<PathBuf> {
+    Some(DIR.lock().unwrap().clone()?.join("secrets.dev.json"))
+}
+
+#[cfg(debug_assertions)]
+fn store_get(key: &str) -> Option<String> {
+    let text = fs::read_to_string(dev_file()?).ok()?;
+    serde_json::from_str::<HashMap<String, String>>(&text)
+        .ok()?
+        .remove(key)
+}
+
+#[cfg(debug_assertions)]
+fn store_set(key: &str, value: Option<&str>) -> Result<(), String> {
+    let Some(path) = dev_file() else {
+        return Err("No config directory to keep tokens in".to_string());
+    };
+    let mut all: HashMap<String, String> = fs::read_to_string(&path)
+        .ok()
+        .and_then(|text| serde_json::from_str(&text).ok())
+        .unwrap_or_default();
+    match value {
+        Some(value) => all.insert(key.to_string(), value.to_string()),
+        None => all.remove(key),
+    };
+    let text = serde_json::to_string_pretty(&all).map_err(|e| e.to_string())?;
+    if let Some(dir) = path.parent() {
+        let _ = fs::create_dir_all(dir);
+    }
+    fs::write(&path, text).map_err(|e| e.to_string())?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let _ = fs::set_permissions(&path, fs::Permissions::from_mode(0o600));
+    }
+    Ok(())
 }
 
 /// Keychain key for a profile's forge token.
