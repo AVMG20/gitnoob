@@ -287,6 +287,205 @@
   --scrollbar-hover: #2c3540;
 }
 
+/* Plum — semi-dark, and the one theme that is not built out of greys. Every
+   surface carries the same violet, so the magenta accent belongs to the room
+   rather than being dropped into it. */
+[data-theme='plum'] {
+  --bg: #1a151d;
+  --bg-panel: #201a24;
+  --bg-raised: #28202d;
+  --bg-hover: #302636;
+  --bg-active: #462c47;
+  --bg-deep: #150f18;
+  --line: #342a39;
+  --line-soft: #29222e;
+  --text: #e0d6e4;
+  --text-dim: #a08fa6;
+  --text-faint: #726478;
+  --accent: #e879b8;
+  --on-accent: #24081a;
+  --accent-hover: #f091c7;
+  --red: #e0576d;
+  --on-danger: #1a0d10;
+  --danger-hover: #e97183;
+  --green: #5cc48d;
+  --amber: #eda63f;
+  --purple: #a98cf5;
+  --red-soft: #ee8c9c;
+  --amber-soft: #efb96f;
+  --green-soft: #86d5ab;
+  --accent-soft: #f0a3cd;
+  --purple-soft: #c2adf8;
+  --scrollbar: #3a2f40;
+  --scrollbar-hover: #4c3e53;
+}
+
+/* Moss — semi-dark and olive, with the accent taken further into yellow than
+   the green that marks an added line, so the two never stand in for each
+   other. */
+[data-theme='moss'] {
+  --bg: #171a15;
+  --bg-panel: #1c201a;
+  --bg-raised: #232820;
+  --bg-hover: #2a3027;
+  --bg-active: #37452d;
+  --bg-deep: #131611;
+  --line: #2e3529;
+  --line-soft: #242a20;
+  --text: #d9dfd1;
+  --text-dim: #929a88;
+  --text-faint: #666e5d;
+  --accent: #a3cf5c;
+  --on-accent: #16200a;
+  --accent-hover: #b5db78;
+  --red: #e0576d;
+  --on-danger: #1a0d10;
+  --danger-hover: #e97183;
+  --green: #5cc48d;
+  --amber: #eaa63c;
+  --purple: #b48cf0;
+  --red-soft: #ec8a99;
+  --amber-soft: #edb96d;
+  --green-soft: #85d3a8;
+  --accent-soft: #bcd98a;
+  --purple-soft: #c7abf3;
+  --scrollbar: #333b2d;
+  --scrollbar-hover: #45503d;
+}
+
+/* Obsidian — near-black with no colour in it at all, so the only hue on a
+   resting window is the violet the app puts there on purpose. The steps
+   between the surfaces are small and even: what separates a panel from the
+   page is depth, not a line drawn round it. */
+[data-theme='obsidian'] {
+  --bg: #08090b;
+  --bg-panel: #0d0e11;
+  --bg-raised: #131519;
+  --bg-hover: #1a1c21;
+  --bg-active: #272238;
+  --bg-deep: #050608;
+  --line: #1c1e23;
+  --line-soft: #14161a;
+  --text: #d5d7dc;
+  --text-dim: #868a93;
+  --text-faint: #5a5e67;
+  --accent: #8b7df7;
+  --on-accent: #0b0718;
+  --accent-hover: #a294f9;
+  --red: #e0576d;
+  --on-danger: #1a0d10;
+  --danger-hover: #e97183;
+  --green: #57c184;
+  --amber: #f0a83c;
+  --purple: #d07bd6;
+  --red-soft: #e58a99;
+  --amber-soft: #e8b163;
+  --green-soft: #7fcda3;
+  --accent-soft: #a89dfa;
+  --purple-soft: #dda4e2;
+  --scrollbar: #202329;
+  --scrollbar-hover: #2d3138;
+}
+
+/* Mono — near-black and, apart from what has to carry meaning, entirely
+   grey. The accent is the paper colour rather than a hue, so selection and
+   emphasis read as light falling on the thing rather than as another colour
+   competing with the diff and the lanes, which are the two places in this app
+   where colour is load-bearing. */
+[data-theme='mono'] {
+  --bg: #0a0a0a;
+  --bg-panel: #0f0f0f;
+  --bg-raised: #161616;
+  --bg-hover: #1d1d1d;
+  --bg-active: #2f2f2f;
+  --bg-deep: #060606;
+  --line: #222222;
+  --line-soft: #191919;
+  --text: #e6e6e6;
+  --text-dim: #8f8f8f;
+  --text-faint: #616161;
+  --accent: #e8e8e8;
+  --on-accent: #0a0a0a;
+  --accent-hover: #ffffff;
+  --red: #e0576d;
+  --on-danger: #1a0d10;
+  --danger-hover: #e97183;
+  --green: #57c184;
+  --amber: #f0a83c;
+  --purple: #a97bf0;
+  --red-soft: #e58a99;
+  --amber-soft: #e8b163;
+  --green-soft: #7fcda3;
+  --accent-soft: #c9c9c9;
+  --purple-soft: #b395ee;
+  --scrollbar: #262626;
+  --scrollbar-hover: #363636;
+}
+
+/* Frost — a cold white, and a teal accent rather than another blue: the two
+   light themes that came before both lean on blue, and on a page this pale a
+   second blue is a different theme only on the swatch. */
+[data-theme='frost'] {
+  --bg: #f7fafb;
+  --bg-panel: #eef4f6;
+  --bg-raised: #e4ecef;
+  --bg-hover: #d9e4e8;
+  --bg-active: #c8e6e9;
+  --bg-deep: #e9f1f3;
+  --line: #ccd8dc;
+  --line-soft: #dde6e9;
+  --text: #23323a;
+  --text-dim: #54666f;
+  --text-faint: #85949c;
+  --accent: #0f8f9e;
+  --on-accent: #ffffff;
+  --accent-hover: #0c7a87;
+  --red: #d4455c;
+  --on-danger: #ffffff;
+  --danger-hover: #bf3a50;
+  --green: #2f9e63;
+  --amber: #b9791a;
+  --purple: #7b52d8;
+  --red-soft: #b83a52;
+  --amber-soft: #98651a;
+  --green-soft: #23784c;
+  --accent-soft: #0b7581;
+  --purple-soft: #6a44c0;
+  --scrollbar: #c0ced3;
+  --scrollbar-hover: #a7b8be;
+}
+
+/* Lilac — a warm white with violet in it, for the same reason. */
+[data-theme='lilac'] {
+  --bg: #fbf9fe;
+  --bg-panel: #f3f0f9;
+  --bg-raised: #eae6f3;
+  --bg-hover: #e1dcee;
+  --bg-active: #ddd2f5;
+  --bg-deep: #efebf7;
+  --line: #d8d2e6;
+  --line-soft: #e6e1f0;
+  --text: #2b2735;
+  --text-dim: #605a70;
+  --text-faint: #918ba1;
+  --accent: #7c4dd6;
+  --on-accent: #ffffff;
+  --accent-hover: #6a3fbd;
+  --red: #d4455c;
+  --on-danger: #ffffff;
+  --danger-hover: #bf3a50;
+  --green: #2f9e63;
+  --amber: #b9791a;
+  --purple: #a13db8;
+  --red-soft: #b83a52;
+  --amber-soft: #98651a;
+  --green-soft: #23784c;
+  --accent-soft: #6739bb;
+  --purple-soft: #8b2fa0;
+  --scrollbar: #cfc7e0;
+  --scrollbar-hover: #b7adce;
+}
+
 * {
   box-sizing: border-box;
 }
@@ -488,7 +687,9 @@ textarea {
 
 [data-theme='paper'],
 [data-theme='mist'],
-[data-theme='sand'] {
+[data-theme='sand'],
+[data-theme='frost'],
+[data-theme='lilac'] {
   --hl-keyword: #0033b3;
   --hl-string: #067d17;
   --hl-number: #1750eb;
