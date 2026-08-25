@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
+import { computed, nextTick, onMounted, onUnmounted, ref, watch } from 'vue'
 import { Check, Copy, FolderOpen, Minus, Undo2, X } from 'lucide-vue-next'
 import { copyText, useGit, type FileDiff } from '~/composables/useGit'
 import { labelFor } from '~/composables/useHighlight'
@@ -13,6 +13,9 @@ const loading = ref(false)
 /** The file itself, for the whole-file view. Only read when that view is on. */
 const text = ref<string | null>(null)
 const textError = ref<string | null>(null)
+
+/** The scrolling half of the viewer, which the ruler measures. */
+const body = ref<HTMLElement | null>(null)
 
 const target = computed(() => store.viewer)
 const language = computed(() => (target.value ? labelFor(target.value.path) : null))
@@ -33,6 +36,27 @@ async function load() {
     : await git.workingFileDiff(current.path, current.side ?? 'unstaged')
   await loadText()
   loading.value = false
+  await toFirstChange()
+}
+
+/**
+ * Puts the first change on screen when the whole file is shown.
+ *
+ * A file is opened from a list of what changed, so the top of the file is
+ * almost never what is being looked for — and in a long file the change can be
+ * hundreds of lines down. The diff view needs none of this: it has nothing in
+ * it but the changes.
+ */
+async function toFirstChange() {
+  if (diffMode.mode !== 'file') return
+  await nextTick()
+  const box = body.value
+  if (!box) return
+  const first = box.querySelector('.line.added, .line.changed, .gone')
+  if (!first) return
+  const origin = box.getBoundingClientRect().top - box.scrollTop
+  // A few lines of what came before, so the change has somewhere to sit.
+  box.scrollTop = Math.max(0, first.getBoundingClientRect().top - origin - 72)
 }
 
 /**
@@ -53,7 +77,16 @@ async function loadText() {
   }
 }
 
-watch(() => diffMode.mode, loadText)
+watch(() => diffMode.mode, async () => {
+  await loadText()
+  await toFirstChange()
+})
+
+/** What the ruler is looking at; a change here means measuring again. */
+const shown = computed(
+  () => `${target.value?.path ?? ''}:${target.value?.commit ?? target.value?.side ?? ''}` +
+    `:${diffMode.mode}:${loading.value}`
+)
 
 function close() {
   store.viewer = null
@@ -68,7 +101,27 @@ async function onHunk(index: number, action: 'stage' | 'unstage' | 'discard') {
 }
 
 function onKey(event: KeyboardEvent) {
-  if (event.key === 'Escape') close()
+  if (event.key === 'Escape') {
+    close()
+    return
+  }
+  // Tab flips between the patch and the file, which is the one thing anyone
+  // does twice while reading a change. Left alone wherever it still means
+  // "next field", and wherever a modifier makes it mean something else.
+  if (event.key === 'Tab' && !event.altKey && !event.ctrlKey && !event.metaKey && !typing(event)) {
+    event.preventDefault()
+    diffMode.mode = diffMode.mode === 'file' ? 'diff' : 'file'
+  }
+}
+
+/** True when the keystroke belongs to whatever is being written in. */
+function typing(event: KeyboardEvent) {
+  const element = event.target as HTMLElement | null
+  if (!element) return false
+  return (
+    element.isContentEditable ||
+    ['INPUT', 'TEXTAREA', 'SELECT'].includes(element.tagName)
+  )
 }
 
 watch(target, load, { deep: true })
@@ -100,7 +153,7 @@ onUnmounted(() => window.removeEventListener('keydown', onKey))
         <button
           class="seg"
           :class="{ on: diffMode.mode === 'diff' }"
-          title="The changed lines, in hunks"
+          title="The changed lines, in hunks (Tab)"
           @click="diffMode.mode = 'diff'"
         >
           Diff
@@ -108,7 +161,7 @@ onUnmounted(() => window.removeEventListener('keydown', onKey))
         <button
           class="seg"
           :class="{ on: diffMode.mode === 'file' }"
-          title="The whole file, with the changes marked down the side"
+          title="The whole file, with the changes marked down the side (Tab)"
           @click="diffMode.mode = 'file'"
         >
           File
@@ -150,22 +203,25 @@ onUnmounted(() => window.removeEventListener('keydown', onKey))
       </button>
     </header>
 
-    <div class="body">
-      <FileView
-        v-if="diffMode.mode === 'file'"
-        :diff="diff"
-        :text="text"
-        :loading="loading"
-        :error="textError"
-      />
-      <DiffView
-        v-else
-        :diff="diff"
-        :loading="loading"
-        :side="target.commit ? null : (target.side ?? 'unstaged')"
-        :busy="store.busy"
-        @hunk="onHunk"
-      />
+    <div class="pane">
+      <div ref="body" class="body">
+        <FileView
+          v-if="diffMode.mode === 'file'"
+          :diff="diff"
+          :text="text"
+          :loading="loading"
+          :error="textError"
+        />
+        <DiffView
+          v-else
+          :diff="diff"
+          :loading="loading"
+          :side="target.commit ? null : (target.side ?? 'unstaged')"
+          :busy="store.busy"
+          @hunk="onHunk"
+        />
+      </div>
+      <ChangeRuler :container="body" :version="shown" />
     </div>
   </section>
 </template>
@@ -173,6 +229,11 @@ onUnmounted(() => window.removeEventListener('keydown', onKey))
 <style scoped>
 .viewer {
   display: grid;
+  /* The column is stated rather than left implicit. An `auto` column is sized
+     to its content, so one very long line of a diff widens the whole column
+     past the window instead of scrolling inside it — the file view then paints
+     over the panel beside it and the window layout comes apart. */
+  grid-template-columns: minmax(0, 1fr);
   grid-template-rows: auto minmax(0, 1fr);
   min-width: 0;
   background: var(--bg);
@@ -234,7 +295,15 @@ onUnmounted(() => window.removeEventListener('keydown', onKey))
   color: #ef8d9c;
 }
 
+.pane {
+  display: flex;
+  min-width: 0;
+  min-height: 0;
+}
+
 .body {
+  flex: 1;
+  min-width: 0;
   overflow: auto;
 }
 </style>

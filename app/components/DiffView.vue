@@ -158,6 +158,12 @@ const paint = (code: string) => painted.value(code)
 .line {
   display: flex;
   white-space: pre;
+  /* As wide as the widest line, and never narrower than the view. Without the
+     first, the tint on an added or deleted row stops at the edge of the window
+     and the rest of the row is bare once you scroll sideways; without the
+     second, short rows do not reach the right-hand edge. */
+  width: max-content;
+  min-width: 100%;
 }
 
 .no {

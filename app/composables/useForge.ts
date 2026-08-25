@@ -18,6 +18,14 @@ export interface ForgeStatus {
   error: string | null
 }
 
+/** Someone a review can be handed to. */
+export interface Member {
+  /** GitLab addresses people by number, GitHub by login; both are kept. */
+  id: number
+  login: string
+  name: string
+}
+
 export interface Review {
   number: number
   title: string
@@ -29,12 +37,27 @@ export interface Review {
   url: string
   updated_at: string
   is_current: boolean
+  /** Set when the review opened but something after it did not. */
+  warning: string | null
 }
 
 export interface ForgeUser {
   login: string
+  /** The forge's own numeric id, which GitLab wants instead of the login. */
+  id: number
   /** The picture as a `data:` URL, or null when the forge has none. */
   avatar: string | null
+}
+
+/** Everything the forge needs to open one. */
+export interface NewReview {
+  source: string
+  target: string
+  title: string
+  body: string
+  draft: boolean
+  assignees: Member[]
+  reviewers: Member[]
 }
 
 const store = reactive({
@@ -48,7 +71,13 @@ const store = reactive({
   /** The profile `me` describes, so a switch does not show the last face. */
   meFor: null as string | null,
   /** Every profile's picture, by profile id, for the switcher. */
-  faces: {} as Record<string, string>
+  faces: {} as Record<string, string>,
+  /** Everyone this project can hand a review to, once asked. */
+  members: [] as Member[],
+  /** The project `members` describes, so a switch does not show the last one. */
+  membersFor: null as string | null,
+  loadingMembers: false,
+  membersError: null as string | null
 })
 
 export function useForge() {
@@ -125,6 +154,34 @@ export function useForge() {
     }
   }
 
+  /**
+   * Asks who is on this project, once per project.
+   *
+   * Only the review dialog needs it, so it is asked for when that opens rather
+   * than on every refresh: it is a request per project that most sessions
+   * never make.
+   */
+  async function loadMembers(force = false) {
+    const slug = store.status?.slug
+    const id = slug ? `${store.status?.kind}@${store.status?.host}/${slug.owner}/${slug.name}` : null
+    if (!usable.value || !id) {
+      store.members = []
+      return
+    }
+    if (!force && store.membersFor === id && store.members.length) return
+    store.loadingMembers = true
+    store.membersError = null
+    try {
+      store.members = await invoke<Member[]>('forge_members')
+      store.membersFor = id
+    } catch (error) {
+      store.membersError = String(error)
+      store.members = []
+    } finally {
+      store.loadingMembers = false
+    }
+  }
+
   async function check() {
     store.checking = true
     store.error = null
@@ -151,10 +208,13 @@ export function useForge() {
     refreshStatus,
     loadFaces,
     loadReviews,
+    loadMembers,
     loadMe,
     check,
-    createReview: (title: string, body: string, target: string, draft: boolean) =>
-      invoke<Review>('forge_create_review', { title, body, target, draft }),
+    createReview: (draft: NewReview) => invoke<Review>('forge_create_review', { ...draft }),
+    /** The forge's own new-review page, with the form already filled in. */
+    compareUrl: (source: string, target: string, title: string, body: string) =>
+      invoke<string>('forge_compare_url', { source, target, title, body }),
     open: (url: string) => invoke('open_external', { url }),
     /** The forge's token-creation page, with scopes and a name pre-filled. */
     tokenUrl: (kind: ForgeKind, host: string) =>

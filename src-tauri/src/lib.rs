@@ -778,15 +778,47 @@ async fn forge_reviews(state: State<'_, AppState>) -> Result<Vec<forge::Review>,
     forge::reviews(&state).await
 }
 
+/// Everyone the project's review can be assigned to or reviewed by.
 #[tauri::command]
+async fn forge_members(state: State<'_, AppState>) -> Result<Vec<forge::Member>, String> {
+    forge::members(&state).await
+}
+
+#[tauri::command]
+#[allow(clippy::too_many_arguments)]
 async fn forge_create_review(
+    source: Option<String>,
+    target: String,
     title: String,
     body: String,
-    target: String,
     draft: Option<bool>,
+    assignees: Option<Vec<forge::Member>>,
+    reviewers: Option<Vec<forge::Member>>,
     state: State<'_, AppState>,
 ) -> Result<forge::Review, String> {
-    forge::create_review(&state, title, body, target, draft.unwrap_or(false)).await
+    forge::create_review(
+        &state,
+        source,
+        target,
+        title,
+        body,
+        draft.unwrap_or(false),
+        assignees.unwrap_or_default(),
+        reviewers.unwrap_or_default(),
+    )
+    .await
+}
+
+/// The forge's own new-review page, with the form already filled in.
+#[tauri::command]
+fn forge_compare_url(
+    source: String,
+    target: String,
+    title: String,
+    body: String,
+    state: State<'_, AppState>,
+) -> Result<String, String> {
+    forge::compare_url(&state, &source, &target, &title, &body)
 }
 
 /// The picture for each profile that has an account, keyed by profile id.
@@ -823,6 +855,16 @@ async fn ai_models(
 #[tauri::command]
 async fn ai_commit_message(state: State<'_, AppState>) -> Result<ai::CommitMessage, String> {
     ai::commit_message(&state).await
+}
+
+/// The title and description of a review, written from the branch's commits.
+#[tauri::command]
+async fn ai_review_message(
+    source: String,
+    target: String,
+    state: State<'_, AppState>,
+) -> Result<ai::CommitMessage, String> {
+    ai::review_message(&state, source, target).await
 }
 
 #[tauri::command]
@@ -979,12 +1021,15 @@ pub fn run() {
             forge_me,
             forge_check,
             forge_reviews,
+            forge_members,
             forge_create_review,
+            forge_compare_url,
             forge_faces,
             avatar,
             ai_status,
             ai_models,
             ai_commit_message,
+            ai_review_message,
             ai_resolve_conflict,
             open_external,
         ])

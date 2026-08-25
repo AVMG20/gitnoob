@@ -68,6 +68,11 @@ export function useAi() {
     loadModels,
     commitMessage: () =>
       run('commit message', () => invoke<CommitMessage>('ai_commit_message')),
+    /** A review's title and description, written from the branch's commits. */
+    reviewMessage: (source: string, target: string) =>
+      run('review description', () =>
+        invoke<CommitMessage>('ai_review_message', { source, target })
+      ),
     resolveConflict: (path: string, index: number) =>
       run('conflict', () => invoke<string[]>('ai_resolve_conflict', { path, index }))
   }

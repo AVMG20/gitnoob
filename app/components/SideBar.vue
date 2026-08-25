@@ -884,6 +884,9 @@ function stashMenu(event: MouseEvent, index: number, message: string) {
 <style scoped>
 .side {
   display: grid;
+  /* Stated, so a long branch name scrolls inside the sidebar rather than
+     widening it past the window. */
+  grid-template-columns: minmax(0, 1fr);
   grid-template-rows: auto minmax(0, 1fr);
   background: var(--bg-panel);
   border-right: 1px solid var(--line);

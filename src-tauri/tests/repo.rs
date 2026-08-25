@@ -221,6 +221,61 @@ fn the_checked_out_line_keeps_the_leftmost_lane() {
     }
 }
 
+/// A merge into the checked-out branch, from a branch that is newer than it.
+///
+/// The shape a branch switch leaves behind, and the one that used to break: the
+/// merge puts a line into the lane held for HEAD, and every row between the
+/// merge and HEAD's own commit has to keep drawing it. Skipping those rows left
+/// the line ending in mid-air a row below the merge.
+#[test]
+fn a_merge_into_the_checked_out_branch_keeps_its_line() {
+    let sandbox = Sandbox::new("merge-into-head");
+    sandbox.commit("a.txt", "1\n", "Root");
+    sandbox.git(&["checkout", "-q", "-b", "topic"]);
+    sandbox.commit("t.txt", "t\n", "Topic work");
+    sandbox.git(&["checkout", "-q", "main"]);
+    sandbox.commit("m.txt", "m\n", "Main work");
+    sandbox.commit("m.txt", "m2\n", "More main work");
+    // Topic takes main's work, so the merge's second parent is main's tip.
+    sandbox.git(&["checkout", "-q", "topic"]);
+    sandbox.git(&["merge", "-q", "--no-ff", "-m", "Merge main into topic", "main"]);
+    sandbox.commit("t.txt", "t2\n", "Newer than HEAD");
+    sandbox.git(&["checkout", "-q", "main"]);
+
+    let page = graph::build(&sandbox.state(), 500).unwrap();
+    let at = |summary: &str| {
+        page.rows
+            .iter()
+            .position(|row| row.summary == summary)
+            .unwrap_or_else(|| panic!("{summary} should be in the graph"))
+    };
+    let merge = at("Merge main into topic");
+    let head = at("More main work");
+    assert!(merge < head, "the merge is newer than the commit it merged");
+
+    // The lane the merge sends its second parent into.
+    let into = page.rows[merge]
+        .segments
+        .iter()
+        .filter(|s| s.y1 == 1 && s.y2 == 2 && s.x2 != page.rows[merge].lane)
+        .map(|s| s.x2)
+        .next()
+        .expect("a merge sends a line to its second parent");
+
+    for row in merge + 1..head {
+        assert!(
+            page.rows[row].segments.iter().any(|s| s.x1 == into && s.y1 == 0),
+            "row {row} ({}) drops the line the merge left in lane {into}",
+            page.rows[row].summary
+        );
+    }
+    // And it arrives at the commit it was drawn for.
+    assert!(
+        page.rows[head].segments.iter().any(|s| s.x1 == into && s.y2 == 1),
+        "the line should end at the commit that was merged"
+    );
+}
+
 /// The graph is the piece most likely to be quietly wrong, so this asserts the
 /// invariants a renderer depends on rather than an exact picture.
 #[test]

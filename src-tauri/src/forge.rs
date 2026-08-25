@@ -1,7 +1,7 @@
 use std::collections::HashMap;
 use std::sync::Mutex;
 
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 
 use crate::avatar;
 use crate::config::{self, ForgeKind};
@@ -42,8 +42,22 @@ pub struct ForgeStatus {
 #[derive(Serialize, Clone)]
 pub struct ForgeUser {
     pub login: String,
+    /// GitLab addresses people by number rather than by name, so the id is kept
+    /// alongside the login and the picker hands back whichever the forge wants.
+    pub id: i64,
     /// Their picture as a `data:` URL, when the forge has one for them.
     pub avatar: Option<String>,
+}
+
+/// Someone a review can be handed to, either to own it or to look at it.
+#[derive(Serialize, Deserialize, Clone)]
+pub struct Member {
+    /// What GitLab wants: the numeric user id.
+    pub id: i64,
+    /// What GitHub wants: the account name.
+    pub login: String,
+    /// Their real name, when the forge admits to one; the login otherwise.
+    pub name: String,
 }
 
 /// A pull request or merge request, flattened to the fields both forges share.
@@ -60,6 +74,10 @@ pub struct Review {
     pub updated_at: String,
     /// True when the source branch is checked out right now.
     pub is_current: bool,
+    /// Set when the review itself was opened but something after it was not:
+    /// GitHub takes the people in separate requests, and one of those failing
+    /// is worth saying out loud without pretending the whole thing failed.
+    pub warning: Option<String>,
 }
 
 /// Turns a git remote URL into a slug.
@@ -318,7 +336,9 @@ pub async fn me(state: &AppState) -> Result<ForgeUser, String> {
         }
     }
 
-    Ok(ForgeUser { login, avatar })
+    let id = body.get("id").and_then(|v| v.as_i64()).unwrap_or(0);
+
+    Ok(ForgeUser { login, id, avatar })
 }
 
 /// The faces of every profile, so the switcher shows accounts rather than a
@@ -439,6 +459,7 @@ fn github_review(item: &serde_json::Value, current: Option<&str>) -> Review {
         target_branch: string(item, &["base", "ref"]),
         url: string(item, &["html_url"]),
         updated_at: string(item, &["updated_at"]),
+        warning: None,
     }
 }
 
@@ -455,22 +476,111 @@ fn gitlab_review(item: &serde_json::Value, current: Option<&str>) -> Review {
         target_branch: string(item, &["target_branch"]),
         url: string(item, &["web_url"]),
         updated_at: string(item, &["updated_at"]),
+        warning: None,
     }
 }
 
-/// Opens a pull request or merge request from the current branch.
+/// Everyone this project's review can be handed to.
+///
+/// Assignees and reviewers come from the same list on both forges, so one
+/// lookup feeds both pickers.
+pub async fn members(state: &AppState) -> Result<Vec<Member>, String> {
+    let call = prepare(state)?;
+    let base = api_base(call.kind, &call.host);
+    let http = client()?;
+
+    let response = match call.kind {
+        ForgeKind::GitHub => {
+            let url = format!(
+                "{base}/repos/{}/collaborators?per_page=100&affiliation=all",
+                call.slug.full()
+            );
+            http.get(url)
+                .bearer_auth(&call.token)
+                .header("Accept", "application/vnd.github+json")
+                .send()
+                .await
+        }
+        ForgeKind::GitLab => {
+            let project = urlencode(&call.slug.full());
+            // `members/all` rather than `members`: on GitLab the people who
+            // would review a project are usually members of the group above it
+            // and never appear in the project's own list.
+            let url = format!("{base}/projects/{project}/members/all?per_page=100");
+            http.get(url).bearer_auth(&call.token).send().await
+        }
+        ForgeKind::None => return Err("No forge configured".to_string()),
+    }
+    .map_err(|e| e.to_string())?;
+
+    if !response.status().is_success() {
+        return Err(describe(response).await);
+    }
+    let items: Vec<serde_json::Value> = response.json().await.map_err(|e| e.to_string())?;
+
+    let mut people: Vec<Member> = items
+        .iter()
+        .filter(|item| match call.kind {
+            // A guest cannot be given a GitLab merge request and a blocked
+            // account cannot be given anything, so offering either would only
+            // produce a request that fails once the review already exists.
+            ForgeKind::GitLab => {
+                let level = item.get("access_level").and_then(|v| v.as_i64()).unwrap_or(0);
+                let state = item.get("state").and_then(|v| v.as_str()).unwrap_or("active");
+                level >= 20 && state == "active"
+            }
+            _ => true,
+        })
+        .map(|item| {
+            let login = item
+                .get("login")
+                .or_else(|| item.get("username"))
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .to_string();
+            let name = item
+                .get("name")
+                .and_then(|v| v.as_str())
+                .filter(|s| !s.is_empty())
+                .unwrap_or(&login)
+                .to_string();
+            Member {
+                id: item.get("id").and_then(|v| v.as_i64()).unwrap_or(0),
+                login,
+                name,
+            }
+        })
+        .filter(|person| !person.login.is_empty())
+        .collect();
+
+    // `members/all` lists someone once per level they hold: the project, the
+    // group it is in, and every group above that.
+    people.sort_by(|a, b| a.login.to_lowercase().cmp(&b.login.to_lowercase()));
+    people.dedup_by(|a, b| a.login == b.login);
+    Ok(people)
+}
+
+/// Opens a pull request or merge request.
 pub async fn create_review(
     state: &AppState,
+    source: Option<String>,
+    target: String,
     title: String,
     body: String,
-    target: String,
     draft: bool,
+    assignees: Vec<Member>,
+    reviewers: Vec<Member>,
 ) -> Result<Review, String> {
     let call = prepare(state)?;
-    let source = call
-        .current_branch
-        .clone()
-        .ok_or_else(|| "HEAD is detached; check out a branch first".to_string())?;
+    // The dialog names the branch to merge; HEAD is only the fallback for a
+    // caller that has nothing to say about it.
+    let source = source
+        .filter(|name| !name.trim().is_empty())
+        .or_else(|| call.current_branch.clone())
+        .ok_or_else(|| "HEAD is detached; choose a branch to merge from".to_string())?;
+    if source == target {
+        return Err("A branch cannot be merged into itself".to_string());
+    }
     let base = api_base(call.kind, &call.host);
     let http = client()?;
 
@@ -506,6 +616,9 @@ pub async fn create_review(
                     "description": body,
                     "source_branch": source,
                     "target_branch": target,
+                    // GitLab takes the people with the merge request itself.
+                    "assignee_ids": assignees.iter().map(|m| m.id).collect::<Vec<_>>(),
+                    "reviewer_ids": reviewers.iter().map(|m| m.id).collect::<Vec<_>>(),
                 }))
                 .send()
                 .await
@@ -518,9 +631,114 @@ pub async fn create_review(
         return Err(describe(response).await);
     }
     let item: serde_json::Value = response.json().await.map_err(|e| e.to_string())?;
-    Ok(match call.kind {
+    let mut review = match call.kind {
         ForgeKind::GitHub => github_review(&item, Some(&source)),
         _ => gitlab_review(&item, Some(&source)),
+    };
+
+    if call.kind == ForgeKind::GitHub {
+        review.warning = github_people(&http, &call, review.number, &assignees, &reviewers).await;
+    }
+    Ok(review)
+}
+
+/// Hands a freshly opened pull request to its people.
+///
+/// GitHub takes neither assignees nor reviewers when the pull request is
+/// created: assignees belong to the issue underneath it, reviewers to an
+/// endpoint of their own. Both run after the fact, so a failure here leaves a
+/// pull request that exists and is only missing its names. That is reported as
+/// a warning rather than raised as an error, which would suggest nothing
+/// happened and invite a second attempt the forge would refuse.
+async fn github_people(
+    http: &reqwest::Client,
+    call: &Call,
+    number: i64,
+    assignees: &[Member],
+    reviewers: &[Member],
+) -> Option<String> {
+    let base = api_base(call.kind, &call.host);
+    let slug = call.slug.full();
+    let mut trouble = Vec::new();
+
+    if !assignees.is_empty() {
+        let logins: Vec<&str> = assignees.iter().map(|m| m.login.as_str()).collect();
+        let url = format!("{base}/repos/{slug}/issues/{number}/assignees");
+        match http
+            .post(url)
+            .bearer_auth(&call.token)
+            .header("Accept", "application/vnd.github+json")
+            .json(&serde_json::json!({ "assignees": logins }))
+            .send()
+            .await
+        {
+            Ok(response) if response.status().is_success() => {}
+            Ok(response) => trouble.push(format!("assignees: {}", describe(response).await)),
+            Err(error) => trouble.push(format!("assignees: {error}")),
+        }
+    }
+
+    if !reviewers.is_empty() {
+        let logins: Vec<&str> = reviewers.iter().map(|m| m.login.as_str()).collect();
+        let url = format!("{base}/repos/{slug}/pulls/{number}/requested_reviewers");
+        match http
+            .post(url)
+            .bearer_auth(&call.token)
+            .header("Accept", "application/vnd.github+json")
+            .json(&serde_json::json!({ "reviewers": logins }))
+            .send()
+            .await
+        {
+            Ok(response) if response.status().is_success() => {}
+            Ok(response) => trouble.push(format!("reviewers: {}", describe(response).await)),
+            Err(error) => trouble.push(format!("reviewers: {error}")),
+        }
+    }
+
+    if trouble.is_empty() {
+        None
+    } else {
+        Some(format!("Opened, but {}", trouble.join("; ")))
+    }
+}
+
+/// The forge's own "new review" page, with what has been typed already in it.
+///
+/// For everything the API does not carry — labels, milestones, the template a
+/// project wants filled in — the honest answer is to hand the work over rather
+/// than grow a form that will always be a subset of the forge's own.
+pub fn compare_url(
+    state: &AppState,
+    source: &str,
+    target: &str,
+    title: &str,
+    body: &str,
+) -> Result<String, String> {
+    let (kind, host, _) = account(state)?;
+    let slug = remote_slug(state)
+        .ok_or_else(|| "Could not work out the project from the git remote".to_string())?;
+    let path = slug.full();
+
+    Ok(match kind {
+        // GitHub reads the branches out of the path, so those two keep their
+        // slashes; everything else is a query value.
+        ForgeKind::GitHub => format!(
+            "https://{host}/{path}/compare/{target}...{source}?expand=1&title={}&body={}",
+            urlencode(title),
+            urlencode(body)
+        ),
+        ForgeKind::GitLab => format!(
+            "https://{host}/{path}/-/merge_requests/new\
+             ?merge_request%5Bsource_branch%5D={}\
+             &merge_request%5Btarget_branch%5D={}\
+             &merge_request%5Btitle%5D={}\
+             &merge_request%5Bdescription%5D={}",
+            urlencode(source),
+            urlencode(target),
+            urlencode(title),
+            urlencode(body)
+        ),
+        ForgeKind::None => return Err("No forge configured".to_string()),
     })
 }
 

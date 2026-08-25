@@ -534,6 +534,7 @@ watch(
 .conflicts {
   display: grid;
   grid-template-columns: 210px minmax(0, 1fr);
+  grid-template-rows: minmax(0, 1fr);
   min-width: 0;
   min-height: 0;
   overflow: hidden;
@@ -654,8 +655,13 @@ watch(
 .panes {
   display: grid;
   grid-template-columns: 1fr 1fr;
+  /* The row is stated for the same reason the columns are. Left implicit it is
+     `auto`, which means as tall as the file — so each side grew to its full
+     length, never scrolled, and hung down over the result pane instead. */
+  grid-template-rows: minmax(0, 1fr);
   flex: 1;
   min-height: 0;
+  overflow: hidden;
   border-bottom: 1px solid var(--line);
 }
 
@@ -665,6 +671,8 @@ watch(
 
 .pane {
   display: grid;
+  /* Stated, so a long conflicted line scrolls rather than widening the pane. */
+  grid-template-columns: minmax(0, 1fr);
   grid-template-rows: auto minmax(0, 1fr);
   min-width: 0;
   border-right: 1px solid var(--line);

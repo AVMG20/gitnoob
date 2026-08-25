@@ -398,6 +398,7 @@ function fileMenu(event: MouseEvent, path: string, side: 'staged' | 'unstaged', 
 <style scoped>
 .working {
   display: grid;
+  grid-template-columns: minmax(0, 1fr);
   min-height: 0;
   overflow: hidden;
 }

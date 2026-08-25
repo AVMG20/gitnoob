@@ -19,6 +19,7 @@ const showWorking = computed(() => store.selected === WIP)
 <style scoped>
 .panel {
   display: grid;
+  grid-template-columns: minmax(0, 1fr);
   grid-template-rows: minmax(0, 1fr);
   min-height: 0;
   background: var(--bg-panel);

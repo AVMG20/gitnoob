@@ -239,6 +239,94 @@ pub async fn commit_message(state: &AppState) -> Result<CommitMessage, String> {
     Ok(split_message(&answer))
 }
 
+/// Writes the title and description of a review from the commits behind it.
+///
+/// The commits are the argument the branch is making, in the author's own
+/// words; the diffstat is there so a subject like "fix the thing" can still be
+/// placed in the right part of the codebase.
+pub async fn review_message(
+    state: &AppState,
+    source: String,
+    target: String,
+) -> Result<CommitMessage, String> {
+    let root = state.path()?;
+    let source = checked_ref(&source)?;
+    let target = resolve_ref(&root, &checked_ref(&target)?)?;
+    if source == target {
+        return Err("The two branches are the same".to_string());
+    }
+
+    let range = format!("{target}..{source}");
+    let log = git_cmd::run_checked(
+        &root,
+        &["log", "--no-color", "--max-count=40", "--format=%s%n%b%n---", &range],
+    )?;
+    if log.trim().is_empty() {
+        return Err(format!(
+            "{source} has no commits that {target} does not already have"
+        ));
+    }
+    // Three dots: what the branch did, not what happened on the target while
+    // it was away.
+    let stat = git_cmd::run_checked(
+        &root,
+        &["diff", "--stat", "--stat-width=200", &format!("{target}...{source}")],
+    )
+    .unwrap_or_default();
+
+    let truncated = log.chars().count() > MAX_DIFF_CHARS;
+    let log: String = log.chars().take(MAX_DIFF_CHARS).collect();
+    let stat: String = stat.chars().take(8_000).collect();
+
+    let prompt = format!(
+        "Branch: {source}\nMerging into: {target}\n\n\
+         Commits on the branch, newest first, each ending with `---`{}:\n{log}\n\n\
+         Files changed:\n{stat}",
+        if truncated { " (truncated)" } else { "" }
+    );
+
+    let answer = complete(state, REVIEW_SYSTEM, prompt).await?;
+    Ok(split_message(&answer))
+}
+
+/// Refuses a branch name git would read as an option.
+///
+/// The arguments never reach a shell, so this is not about quoting: a branch
+/// called `--all` would simply be understood as a flag.
+fn checked_ref(name: &str) -> Result<String, String> {
+    let name = name.trim();
+    if name.is_empty() {
+        return Err("No branch given".to_string());
+    }
+    if name.starts_with('-') {
+        return Err(format!("{name} is not a usable branch name"));
+    }
+    Ok(name.to_string())
+}
+
+/// Finds the ref a branch name means here.
+///
+/// The target of a review is often a branch nobody has checked out — `develop`
+/// exists on the forge and locally only as `origin/develop` — so a plain name
+/// that resolves to nothing is tried again against each remote.
+fn resolve_ref(root: &std::path::Path, name: &str) -> Result<String, String> {
+    let exists = |candidate: &str| {
+        git_cmd::run_checked(root, &["rev-parse", "--verify", "--quiet", &format!("{candidate}^{{commit}}")])
+            .is_ok()
+    };
+    if exists(name) {
+        return Ok(name.to_string());
+    }
+    let remotes = git_cmd::run_checked(root, &["remote"]).unwrap_or_default();
+    for remote in remotes.lines().map(str::trim).filter(|r| !r.is_empty()) {
+        let candidate = format!("{remote}/{name}");
+        if exists(&candidate) {
+            return Ok(candidate);
+        }
+    }
+    Err(format!("{name} is not a branch this repository knows about"))
+}
+
 /// Resolves one conflict region.
 ///
 /// The model gets the merge base as well as both sides, which is what lets it
@@ -369,6 +457,31 @@ mood, no trailing period, under 72 characters total.
 Then a blank line, then one to three sentences on WHY the change was made. \
 Skip the body for a trivial change. Do not list files.";
 
+const REVIEW_SYSTEM: &str = "\
+You write the title and description of a pull request, for the reviewer who \
+has to read it. Reply with the text and nothing else: no preamble, no code \
+fences, no quotes.
+
+Line 1 is the title: what the branch does as a whole, imperative mood, no \
+trailing period, under 70 characters. It is not a list of the commits; if they \
+are one piece of work, name the piece. Never prefix it with the branch name or \
+a ticket number that is already in the branch name.
+
+Then a blank line, then the description in plain GitHub-flavoured markdown, \
+usually 60 to 200 words:
+
+- A short paragraph on WHY the change was made and what problem it solves.
+- A `## What changed` list of the substantial changes, one line each, only \
+where there is more than one worth separating. Group by intent, not by file, \
+and leave out anything mechanical.
+- A `## How to test` list, only when there is something a reviewer should \
+actually run or click.
+
+Write what the commits and the file list support and nothing more. Do not \
+invent tickets, screenshots, breaking changes or migration steps. Do not \
+thank anyone, do not summarise your own summary, and do not add a checklist \
+the project has not asked for.";
+
 const CONFLICT_SYSTEM: &str = "\
 You resolve a single git merge conflict.
 
@@ -434,6 +547,13 @@ mod tests {
             strip_fences("no fence here"),
             vec!["no fence here".to_string()]
         );
+    }
+
+    #[test]
+    fn refuses_a_branch_name_git_would_read_as_a_flag() {
+        assert_eq!(checked_ref(" main ").unwrap(), "main");
+        assert!(checked_ref("--all").is_err());
+        assert!(checked_ref("   ").is_err());
     }
 
     #[test]

@@ -186,6 +186,7 @@ onUnmounted(() => {
 .shell {
   /* tabs, toolbar, progress bar, body, activity log */
   display: grid;
+  grid-template-columns: minmax(0, 1fr);
   grid-template-rows: auto auto auto minmax(0, 1fr) auto;
   height: 100%;
 }
