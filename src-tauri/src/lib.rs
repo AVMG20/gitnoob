@@ -768,6 +768,14 @@ async fn forge_create_review(
     forge::create_review(&state, title, body, target, draft.unwrap_or(false)).await
 }
 
+/// The picture for each profile that has an account, keyed by profile id.
+#[tauri::command]
+async fn forge_faces(
+    state: State<'_, AppState>,
+) -> Result<std::collections::HashMap<String, String>, String> {
+    Ok(forge::faces(&state).await)
+}
+
 // --- authors ----------------------------------------------------------------
 
 /// The picture for one commit author, or `None` when there is none to find.
@@ -948,6 +956,7 @@ pub fn run() {
             forge_check,
             forge_reviews,
             forge_create_review,
+            forge_faces,
             avatar,
             ai_status,
             ai_models,

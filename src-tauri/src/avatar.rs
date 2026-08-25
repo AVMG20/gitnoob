@@ -14,6 +14,7 @@ use std::time::{Duration, SystemTime};
 use sha2::{Digest, Sha256};
 
 use crate::config::ForgeKind;
+use crate::forge::{self, urlencode};
 use crate::state::AppState;
 
 /// Wide enough for the row's slot on a 2x display, and no wider.
@@ -45,6 +46,18 @@ fn remember(email: &str, found: Option<String>) {
         .unwrap()
         .get_or_insert_with(HashMap::new)
         .insert(email.to_string(), found);
+}
+
+/// Files a picture already in hand under an email address, for this session.
+///
+/// The signed-in account's own face arrives with the profile, not through a
+/// lookup; saying which address it belongs to spares the search and means the
+/// user sees themselves in the history even when nothing public links the two.
+pub fn note(email: &str, picture: &str) {
+    let email = email.trim().to_lowercase();
+    if !email.is_empty() {
+        remember(&email, Some(picture.to_string()));
+    }
 }
 
 /// Finds the picture for one author, as a `data:` URL the window can draw
@@ -80,15 +93,12 @@ pub async fn find(state: &AppState, email: &str) -> Result<Option<String>, Strin
         return Ok(None);
     }
 
-    // The profile decides only whether GitLab is worth asking. Everything else
-    // is the same wherever the code is hosted.
-    let gitlab = config.active().and_then(|profile| match profile.forge {
-        ForgeKind::GitLab if !profile.host.is_empty() => Some(profile.host.clone()),
-        ForgeKind::GitLab => Some("gitlab.com".to_string()),
-        _ => None,
-    });
+    // The signed-in profile is what makes a lookup by email possible at all:
+    // both forges keep the address behind the API, and answer only a caller
+    // holding a token.
+    let account = forge::account(state).ok();
 
-    let found = fetch(&email, &digest, gitlab).await;
+    let found = fetch(&email, &digest, account).await;
     let _ = fs::create_dir_all(&cache);
     match &found {
         Some(bytes) => {
@@ -121,9 +131,13 @@ pub async fn from_url(url: &str) -> Option<String> {
 /// Asks for a small copy where the host is known to offer one: the picture is
 /// drawn at a couple of dozen pixels and travels to the window as base64.
 fn sized(url: &str) -> String {
+    sized_to(url, FACE)
+}
+
+fn sized_to(url: &str, size: u32) -> String {
     if url.contains("avatars.githubusercontent.com") || url.contains("gravatar.com") {
         let joiner = if url.contains('?') { '&' } else { '?' };
-        format!("{url}{joiner}s={FACE}")
+        format!("{url}{joiner}s={size}")
     } else {
         url.to_string()
     }
@@ -139,13 +153,17 @@ fn fresh_miss(marker: &Path) -> bool {
 
 /// Asks each source in turn and stops at the first picture.
 ///
-/// GitHub is asked first and costs nothing to guess: an address at
-/// `users.noreply.github.com` carries the account it belongs to, so the picture
-/// can be addressed without searching for the person. Gravatar comes next
-/// because it is what the forges themselves fall back to. GitLab is asked last,
-/// and only for a GitLab project, because unlike the others it is told the
-/// address in the clear rather than as a hash.
-async fn fetch(email: &str, digest: &str, gitlab: Option<String>) -> Option<Vec<u8>> {
+/// The guess from the address itself comes first and costs nothing: an address
+/// at `users.noreply.github.com` carries the account it belongs to. Gravatar
+/// comes next because it is what the forges themselves fall back to, and it is
+/// told a hash rather than the address. The forge is asked last: it wants a
+/// token and the address in the clear, and it is rate limited, but it is the
+/// only source that knows the private addresses people actually commit with.
+async fn fetch(
+    email: &str,
+    digest: &str,
+    account: Option<(ForgeKind, String, String)>,
+) -> Option<Vec<u8>> {
     let client = reqwest::Client::builder()
         .user_agent("gitnoob/0.1")
         .timeout(Duration::from_secs(10))
@@ -165,26 +183,109 @@ async fn fetch(email: &str, digest: &str, gitlab: Option<String>) -> Option<Vec<
         return Some(bytes);
     }
 
-    if let Some(host) = gitlab {
-        let url = format!("https://{host}/api/v4/avatar?email={email}&size={SIZE}");
-        let answer = client
-            .get(&url)
-            .send()
-            .await
-            .ok()?
-            .json::<serde_json::Value>()
-            .await
-            .ok()?;
-        // GitLab hands back a gravatar URL when it knows nobody by that
-        // address, and gravatar has already been asked and missed.
-        if let Some(found) = answer.get("avatar_url").and_then(|value| value.as_str()) {
-            if !found.contains("gravatar.com") {
-                return image(&client, found).await;
-            }
+    let (kind, host, token) = account?;
+    let link = match kind {
+        ForgeKind::GitHub => github_search(&client, &host, &token, email).await,
+        ForgeKind::GitLab => gitlab_search(&client, &host, &token, email).await,
+        ForgeKind::None => None,
+    }?;
+    image(&client, &link).await
+}
+
+/// The avatar of the GitHub account that owns an address.
+///
+/// The search only ever answers for an address the account has made public;
+/// there is no way to ask about a private one, and a miss here is the end of
+/// the road for that author.
+async fn github_search(
+    client: &reqwest::Client,
+    host: &str,
+    token: &str,
+    email: &str,
+) -> Option<String> {
+    let base = if host == "github.com" {
+        "https://api.github.com".to_string()
+    } else {
+        format!("https://{host}/api/v3")
+    };
+    let query = format!("{}+in%3Aemail", urlencode(email));
+    let answer = client
+        .get(format!("{base}/search/users?q={query}&per_page=1"))
+        .bearer_auth(token)
+        .header("Accept", "application/vnd.github+json")
+        .send()
+        .await
+        .ok()?
+        .json::<serde_json::Value>()
+        .await
+        .ok()?;
+    let url = answer
+        .get("items")?
+        .as_array()?
+        .first()?
+        .get("avatar_url")?
+        .as_str()?;
+    Some(sized_to(url, SIZE))
+}
+
+/// The avatar of the GitLab account that owns an address.
+///
+/// The dedicated endpoint is asked first because it accepts an address the
+/// account keeps private. It falls back to a gravatar URL for someone it does
+/// not know, which is no use here: gravatar has already been asked and missed.
+async fn gitlab_search(
+    client: &reqwest::Client,
+    host: &str,
+    token: &str,
+    email: &str,
+) -> Option<String> {
+    let base = format!("https://{host}/api/v4");
+    let address = urlencode(email);
+
+    let answer = client
+        .get(format!("{base}/avatar?email={address}&size={SIZE}"))
+        .bearer_auth(token)
+        .send()
+        .await
+        .ok()
+        .filter(|response| response.status().is_success())?
+        .json::<serde_json::Value>()
+        .await
+        .ok()?;
+    if let Some(found) = answer.get("avatar_url").and_then(|value| value.as_str()) {
+        if !found.is_empty() && !found.contains("gravatar.com") {
+            return Some(absolute(host, found));
         }
     }
 
-    None
+    // An instance that hides the endpoint behind a permission still lists the
+    // members of a project the token can see.
+    let answer = client
+        .get(format!("{base}/users?search={address}"))
+        .bearer_auth(token)
+        .send()
+        .await
+        .ok()
+        .filter(|response| response.status().is_success())?
+        .json::<serde_json::Value>()
+        .await
+        .ok()?;
+    let found = answer
+        .as_array()?
+        .first()?
+        .get("avatar_url")?
+        .as_str()
+        .filter(|url| !url.is_empty() && !url.contains("gravatar.com"))?;
+    Some(absolute(host, found))
+}
+
+/// GitLab gives its own uploads as a path rather than a whole URL.
+fn absolute(host: &str, url: &str) -> String {
+    if url.starts_with("http") {
+        url.to_string()
+    } else {
+        format!("https://{host}{}", if url.starts_with('/') { url } else { "/" })
+    }
 }
 
 /// The picture for a GitHub address that names its own account.

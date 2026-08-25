@@ -45,7 +45,9 @@ const store = reactive({
   /** Who the active profile's token belongs to, once asked. */
   me: null as ForgeUser | null,
   /** The profile `me` describes, so a switch does not show the last face. */
-  meFor: null as string | null
+  meFor: null as string | null,
+  /** Every profile's picture, by profile id, for the switcher. */
+  faces: {} as Record<string, string>
 })
 
 export function useForge() {
@@ -63,6 +65,18 @@ export function useForge() {
   async function refreshStatus() {
     store.status = await invoke<ForgeStatus>('forge_status').catch(() => null)
     await loadMe()
+  }
+
+  /**
+   * Asks every profile's forge for its picture.
+   *
+   * Kept apart from `loadMe` because it is about the other profiles: the
+   * switcher shows accounts, and an account is recognised by its face before
+   * its name is read. Cached for the run on the other side, so calling this
+   * whenever the menu opens costs nothing after the first time.
+   */
+  async function loadFaces() {
+    store.faces = await invoke<Record<string, string>>('forge_faces').catch(() => ({}))
   }
 
   /**
@@ -130,6 +144,7 @@ export function useForge() {
     label,
     shortLabel,
     refreshStatus,
+    loadFaces,
     loadReviews,
     loadMe,
     check,

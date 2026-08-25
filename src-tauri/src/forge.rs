@@ -1,8 +1,15 @@
+use std::collections::HashMap;
+use std::sync::Mutex;
+
 use serde::Serialize;
 
 use crate::avatar;
 use crate::config::{self, ForgeKind};
 use crate::state::AppState;
+
+/// Faces already fetched this run, by profile id. `None` records a profile
+/// whose forge had nothing to show, so it is not asked again on every opening.
+static FACES: Mutex<Option<HashMap<String, Option<String>>>> = Mutex::new(None);
 
 /// The `owner/name` pair a forge API needs, parsed out of a git remote URL.
 #[derive(Serialize, Clone, Debug, PartialEq, Eq)]
@@ -149,7 +156,7 @@ struct Call {
 
 /// The forge, host and token of the active profile: everything a request needs
 /// that has nothing to do with which repository happens to be open.
-fn account(state: &AppState) -> Result<(ForgeKind, String, String), String> {
+pub fn account(state: &AppState) -> Result<(ForgeKind, String, String), String> {
     let config = state.config();
     let profile = config
         .active()
@@ -291,7 +298,91 @@ pub async fn me(state: &AppState) -> Result<ForgeUser, String> {
         _ => None,
     };
 
+    // The history is drawn from commit emails, and the address someone commits
+    // with is usually not one the forge will admit to over the API. This is the
+    // one case where the two are known to be the same person, so say so and the
+    // user's own face appears in the graph without a lookup that would miss.
+    if let Some(picture) = &avatar {
+        let config = state.config();
+        for address in [
+            body.get("email").and_then(|v| v.as_str()).map(String::from),
+            config.active().and_then(|profile| profile.git_email.clone()),
+        ]
+        .into_iter()
+        .flatten()
+        {
+            avatar::note(&address, picture);
+        }
+    }
+
     Ok(ForgeUser { login, avatar })
+}
+
+/// The faces of every profile, so the switcher shows accounts rather than a
+/// list of names.
+///
+/// One request per profile, once per run: the menu is opened often and the
+/// answer does not change between openings.
+pub async fn faces(state: &AppState) -> HashMap<String, String> {
+    let profiles: Vec<(String, ForgeKind, String, String)> = {
+        let config = state.config();
+        config
+            .profiles
+            .iter()
+            .filter(|profile| profile.forge != ForgeKind::None)
+            .filter_map(|profile| {
+                let token = config::secret_get(&config::forge_key(&profile.id))?;
+                let host = if profile.host.is_empty() {
+                    profile.forge.default_host().to_string()
+                } else {
+                    profile.host.clone()
+                };
+                Some((profile.id.clone(), profile.forge, host, token))
+            })
+            .collect()
+    };
+
+    let mut found = HashMap::new();
+    for (id, kind, host, token) in profiles {
+        let known = FACES
+            .lock()
+            .unwrap()
+            .as_ref()
+            .and_then(|seen| seen.get(&id).cloned());
+        if let Some(known) = known {
+            if let Some(picture) = known {
+                found.insert(id, picture);
+            }
+            continue;
+        }
+        let picture = one_face(kind, &host, &token).await;
+        FACES
+            .lock()
+            .unwrap()
+            .get_or_insert_with(HashMap::new)
+            .insert(id.clone(), picture.clone());
+        if let Some(picture) = picture {
+            found.insert(id, picture);
+        }
+    }
+    found
+}
+
+async fn one_face(kind: ForgeKind, host: &str, token: &str) -> Option<String> {
+    let base = api_base(kind, host);
+    let body: serde_json::Value = client()
+        .ok()?
+        .get(format!("{base}/user"))
+        .bearer_auth(token)
+        .send()
+        .await
+        .ok()
+        .filter(|response| response.status().is_success())?
+        .json()
+        .await
+        .ok()?;
+    let url = body.get("avatar_url")?.as_str().filter(|url| !url.is_empty())?;
+    avatar::from_url(url).await
 }
 
 pub async fn reviews(state: &AppState) -> Result<Vec<Review>, String> {
@@ -464,7 +555,7 @@ fn string(value: &serde_json::Value, path: &[&str]) -> String {
 }
 
 /// Percent-encodes the characters that matter for a path segment.
-fn urlencode(input: &str) -> String {
+pub fn urlencode(input: &str) -> String {
     let mut out = String::with_capacity(input.len() + 8);
     for byte in input.bytes() {
         match byte {

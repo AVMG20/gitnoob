@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, ref } from 'vue'
+import { computed, ref, watch } from 'vue'
 import { Check, ChevronDown, Github, Gitlab, Sparkles, User, UserCog } from 'lucide-vue-next'
 import { FORGE_LABELS, useConfig } from '~/composables/useConfig'
 import { useForge } from '~/composables/useForge'
@@ -20,6 +20,23 @@ const forgeIcon = computed(() => {
 
 /** The signed-in user's own picture, when the forge knows one. */
 const face = computed(() => forge.store.me?.avatar ?? null)
+
+/** The picture for one profile in the switcher, or null to fall back to a logo. */
+function faceFor(id: string) {
+  return forge.store.faces[id] ?? null
+}
+
+function iconFor(forgeKind: string) {
+  if (forgeKind === 'github') return Github
+  if (forgeKind === 'gitlab') return Gitlab
+  return User
+}
+
+// Asked for when the menu opens rather than on load: nothing else uses the
+// other profiles' faces, and the answer is cached for the rest of the run.
+watch(open, (showing) => {
+  if (showing) forge.loadFaces()
+})
 
 async function pick(id: string) {
   open.value = false
@@ -94,6 +111,16 @@ async function pick(id: string) {
         >
           <Check v-if="candidate.id === profile?.id" :size="14" class="tick" />
           <span v-else class="tick-space" />
+          <img
+            v-if="faceFor(candidate.id)"
+            class="face"
+            :src="faceFor(candidate.id)!"
+            alt=""
+            draggable="false"
+          />
+          <span v-else class="face placeholder">
+            <component :is="iconFor(candidate.forge)" :size="11" />
+          </span>
           <span class="grow">{{ candidate.name }}</span>
           <span class="faint small">{{ FORGE_LABELS[candidate.forge] }}</span>
         </button>
@@ -143,6 +170,16 @@ async function pick(id: string) {
 .face.big {
   width: 22px;
   height: 22px;
+}
+
+/* A profile whose forge has no picture still gets a round slot, so the names
+   in the switcher line up whether or not there is a face beside them. */
+.face.placeholder {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: var(--bg-active);
+  color: var(--text-dim);
 }
 
 .who {
