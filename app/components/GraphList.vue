@@ -663,6 +663,13 @@ onUnmounted(() => {
                 class="glyph"
               />
             </span>
+            <!-- Carries the leader on from the chip to the edge of the column,
+                 where the graph's own line picks it up and runs to the node. -->
+            <span
+              v-if="item.row.labels.length"
+              class="leader"
+              :style="{ background: laneColor(item.row.color) }"
+            />
           </span>
 
           <svg
@@ -983,16 +990,15 @@ onUnmounted(() => {
   display: block;
 }
 
-/* The branch strip. Right-aligned so every chip ends against the graph and the
-   leader lines all start from the same edge; when a commit carries more refs
-   than fit, the ones nearest the graph win, which are the ones the line is
-   pointing at. */
+/* The branch strip. The chips start at the left edge, where the eye already is
+   for every other column, and a leader carries the line from the chip across to
+   the graph rather than the chips being pushed over to meet it. */
 .col-refs {
   flex: none;
   width: 124px;
   display: flex;
   align-items: center;
-  justify-content: flex-end;
+  justify-content: flex-start;
   gap: 4px;
   overflow: hidden;
   /* Cancels the row's gap on this side alone, so the leader line — which starts
@@ -1000,6 +1006,13 @@ onUnmounted(() => {
      after a gap it cannot reach across. */
   margin-right: -10px;
   padding-right: 0;
+}
+
+.leader {
+  flex: 1;
+  min-width: 4px;
+  height: 1.2px;
+  opacity: 0.45;
 }
 
 /* The counter for the refs not on show. Deliberately quiet: it is a way in,
@@ -1038,8 +1051,13 @@ onUnmounted(() => {
 }
 
 /* The heading reads left to right; only the chips below it hug the graph. */
-.colhead .col-refs {
-  justify-content: flex-start;
+/* The author and date columns carry a size and colour of their own for the
+   rows. In the heading they were inheriting those instead of the heading's, so
+   two of the five column names were drawn larger and lighter than the rest. */
+.colhead .col-author,
+.colhead .col-date {
+  font-size: inherit;
+  color: inherit;
 }
 
 .col-msg {
