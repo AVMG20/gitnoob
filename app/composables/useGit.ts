@@ -43,7 +43,16 @@ export interface LocalBranch {
 }
 
 export interface RemoteBranch { name: string; remote: string; oid: string }
-export interface Tag { name: string; oid: string }
+export interface Tag {
+  name: string
+  /** The commit the tag names, peeled: never an annotated tag's own object. */
+  oid: string
+  annotated: boolean
+  /** The first line of an annotated tag's message. */
+  message: string | null
+  /** Seconds since the epoch — the tagger's time, or the commit's. */
+  when: number
+}
 export interface Stash { index: number; message: string }
 
 export interface RefTree {

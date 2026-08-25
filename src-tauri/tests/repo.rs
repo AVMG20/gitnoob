@@ -2564,3 +2564,45 @@ fn rebasing_a_branch_you_are_not_on_replays_it_and_comes_back() {
     let log = sandbox.git(&["log", "--format=%s", "side"]);
     assert_eq!(log.lines().collect::<Vec<_>>(), vec!["On side", "On main", "First"]);
 }
+
+#[test]
+fn an_annotated_tag_names_its_commit_rather_than_its_own_object() {
+    let sandbox = Sandbox::new("annotated-tag");
+    sandbox.commit("a.txt", "one\n", "First");
+    sandbox.git(&["tag", "light"]);
+    sandbox.git(&["tag", "-a", "v1.0.0", "-m", "The first release"]);
+
+    let head = sandbox.git(&["rev-parse", "HEAD"]).trim().to_string();
+    let object = sandbox.git(&["rev-parse", "v1.0.0"]).trim().to_string();
+    // The whole reason this needs a test: `git tag -a` writes an object of its
+    // own, and its id is not the commit's. Reading the ref without peeling
+    // yields an id that nothing in the history has.
+    assert_ne!(head, object, "an annotated tag is an object in its own right");
+
+    let state = sandbox.state();
+    let tree = refs::tree(&state).unwrap();
+
+    let annotated = tree.tags.iter().find(|t| t.name == "v1.0.0").unwrap();
+    assert_eq!(annotated.oid, head, "the tag should name the commit it tags");
+    assert!(annotated.annotated);
+    assert_eq!(annotated.message.as_deref(), Some("The first release"));
+    assert!(annotated.when > 0);
+
+    let light = tree.tags.iter().find(|t| t.name == "light").unwrap();
+    assert_eq!(light.oid, head);
+    assert!(!light.annotated, "a bare `git tag` writes no object");
+    assert!(light.message.is_none());
+
+    // And the graph, which is where it showed: a chip hung on the tag object's
+    // id decorates no row, because no row carries that id.
+    let page = graph::build(&state, 500).unwrap();
+    let row = page.rows.iter().find(|r| r.oid == head).unwrap();
+    let tags: Vec<&str> = row
+        .labels
+        .iter()
+        .filter(|l| l.kind == "tag")
+        .map(|l| l.name.as_str())
+        .collect();
+    assert!(tags.contains(&"v1.0.0"), "the annotated tag should decorate its commit");
+    assert!(tags.contains(&"light"));
+}

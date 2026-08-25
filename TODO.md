@@ -273,6 +273,21 @@ Building it yourself was the only way to run it. Now a tag is.
       launch — off in one click — surfaces as a line in the profile menu and a
       dot beside Updates, rather than as a dialog over the repository you came
       to look at
+- [x] **Tags, which the release flow runs on.** Three things were wrong at
+      once, and all three were the same thing: `git tag -a` writes an object of
+      its own, and its id is not the commit's. The tag list handed that id
+      straight out, so clicking a tag asked the graph for a commit that does
+      not exist; the graph decoration hung the chip on it, so an annotated tag
+      appeared nowhere in the chart. Both peel now. On top of that: clicking a
+      tag reveals its commit, the way clicking a branch always has; an empty
+      Tags list says how to make one rather than only that there are none — a
+      + on the header would have had to guess which commit you meant, and
+      right-clicking the commit never does; the new-tag dialog pushes to origin
+      unless you say otherwise, because a tag only origin has not seen starts
+      no release and tells nobody anything; and a tag row shows its date, with
+      its message and kind on hover. The list is newest first
+      rather than alphabetical, because sorting release tags by name puts
+      v0.10.0 above v0.9.0
 - [ ] Sign and notarise, so the first launch is a double-click on both macOS and
       Windows rather than a right-click Open and a "Run anyway"
 - [ ] Tests on every push, not only on a tag
@@ -391,18 +406,25 @@ See the README, which is now the one place the build notes live.
 
 ## Verification
 
-`cargo test` runs 147 and they pass: 57 unit (remote URL parsing, API bases, URL
+`cargo test` runs 150. 149 pass: 59 unit (remote URL parsing, API bases, URL
 encoding, AI answer parsing, reasoning levels, one-hunk patch rebuilding, SSH
 command building, transport-failure explanations, git command rendering, clone
 folder naming, and the config file: its round trip, its migrations and its
-corrupt-file path) and 90 integration against real repositories built with the git
+corrupt-file path) and 91 integration against real repositories built with the git
 CLI — graph lane invariants, divergence reporting, every conflict-resolution
 combination, undo and redo, auto-stash, stash operations, cherry-picking several
 commits out of order, empty repository, detached HEAD, tracking-branch checkout,
 CRLF files, a pull across a divergence, an oversized diff, cloning from a local
 remote, creating a repository with a first commit, adding, editing, renaming and
 removing a remote against a bare one, and pushing to one — a first push, a
-refused one, a force push, and a force push the lease stops.
+refused one, a force push, and a force push the lease stops — and an
+annotated tag, which names an object of its own rather than the commit.
+
+The one failure is on Windows and predates any of this:
+`clones_a_repository_into_a_folder_named_after_it` reads a local
+`C:Users…` path as a URL and takes everything after the colon as the folder
+name, so cloning by pasting a Windows path names the folder after the whole
+path. Nothing to do with tags or releases; worth its own fix.
 
 `npm run typecheck` runs and reports 79 errors in seven files, all pre-existing
 — this file said 59 for a while, which was never right. `npm run generate` builds the bundle clean.

@@ -10,7 +10,9 @@ const store = git.store
 
 const name = ref('')
 const message = ref('')
-const push = ref(false)
+// On by default: a tag nobody else can see does nothing. It builds no
+// release, and the next person to clone will not know it exists.
+const push = ref(true)
 
 const taken = computed(() => (store.refs?.tags ?? []).some((t) => t.name === name.value.trim()))
 const invalid = computed(() => {
@@ -48,6 +50,9 @@ async function submit() {
     <label class="check">
       <input v-model="push" type="checkbox" />
       Push the tag to origin as well
+      <span class="faint block">
+        A tag only starts a release once origin has it.
+      </span>
     </label>
 
     <template #footer>

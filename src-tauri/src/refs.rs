@@ -43,7 +43,18 @@ pub struct RemoteBranch {
 #[derive(Serialize)]
 pub struct Tag {
     pub name: String,
+    /// The commit the tag names — for an annotated tag, what the tag object
+    /// points at rather than the tag object itself. The graph has rows for
+    /// commits and nothing else, so this is the id that can be looked up.
     pub oid: String,
+    /// An annotated tag is an object in its own right, with a message, a
+    /// tagger and a date of its own. A lightweight one is just a name.
+    pub annotated: bool,
+    /// The first line of the tag's own message, when it has one.
+    pub message: Option<String>,
+    /// Seconds since the epoch: the tagger's time when there is one, the
+    /// commit's otherwise, so both kinds sort against each other.
+    pub when: i64,
 }
 
 #[derive(Serialize)]
@@ -192,18 +203,38 @@ pub fn tree(state: &AppState) -> Result<RefTree, String> {
     remotes.sort_by(|a, b| (&a.remote, &a.name).cmp(&(&b.remote, &b.name)));
 
     let mut tags = Vec::new();
-    repo.tag_foreach(|oid, name| {
-        let name = String::from_utf8_lossy(name)
-            .trim_start_matches("refs/tags/")
-            .to_string();
-        tags.push(Tag {
-            name,
-            oid: oid.to_string(),
-        });
-        true
-    })
-    .map_err(err)?;
-    tags.sort_by(|a, b| a.name.cmp(&b.name));
+    if let Ok(refs) = repo.references_glob("refs/tags/*") {
+        for r in refs.flatten() {
+            let Some(name) = r.shorthand() else { continue };
+            // Peeling is the whole point: `git tag -a` writes a tag object,
+            // and its id is not any commit's id. Anything that then treats it
+            // as one — a graph chip, a click that means "show me this" — is
+            // hung on an id that does not exist in the history.
+            let Ok(commit) = r.peel_to_commit() else { continue };
+            let annotated = r.target().and_then(|oid| repo.find_tag(oid).ok());
+            let when = annotated
+                .as_ref()
+                .and_then(|t| t.tagger().map(|who| who.when().seconds()))
+                .unwrap_or_else(|| commit.time().seconds());
+            let message = annotated.as_ref().and_then(|t| {
+                t.message()
+                    .and_then(|m| m.trim().lines().next())
+                    .filter(|line| !line.is_empty())
+                    .map(|line| line.to_string())
+            });
+            tags.push(Tag {
+                name: name.to_string(),
+                oid: commit.id().to_string(),
+                annotated: annotated.is_some(),
+                message,
+                when,
+            });
+        }
+    }
+    // Newest first, not alphabetical. Version tags are the common case and
+    // sorting them by name puts v0.10.0 above v0.9.0, which is the wrong
+    // release; by date the list reads as the release history it is.
+    tags.sort_by(|a, b| b.when.cmp(&a.when).then_with(|| a.name.cmp(&b.name)));
 
     let mut stashes = Vec::new();
     repo.stash_foreach(|index, message, _| {
@@ -266,7 +297,10 @@ pub fn labels_by_oid(repo: &Repository) -> HashMap<String, Vec<Decoration>> {
                 }
                 push(oid, "remote", name.to_string(), false);
             } else if r.is_tag() {
-                push(oid, "tag", name.to_string(), false);
+                // As above: an annotated tag's own id decorates nothing,
+                // because no row in the graph carries it.
+                let commit = r.peel_to_commit().map(|c| c.id()).unwrap_or(oid);
+                push(commit, "tag", name.to_string(), false);
             }
         }
     }

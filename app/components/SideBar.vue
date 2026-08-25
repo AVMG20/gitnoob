@@ -26,7 +26,7 @@ import {
   Trash2,
   Upload
 } from 'lucide-vue-next'
-import { copyText, relativeTime, useGit } from '~/composables/useGit'
+import { copyText, fullTime, relativeTime, useGit, type Tag as TagRef } from '~/composables/useGit'
 import { useContextMenu } from '~/composables/useContextMenu'
 import { useDragDrop } from '~/composables/useDragDrop'
 import { useForge } from '~/composables/useForge'
@@ -316,6 +316,18 @@ const head = computed(() => store.repo?.head ?? '')
 const locals = computed(() => (store.refs?.locals ?? []).filter((b) => match(b.name)))
 const localShelf = computed(() => shelve(locals.value, 'local'))
 const tags = computed(() => (store.refs?.tags ?? []).filter((t) => match(t.name)))
+
+/**
+ * The hover text for a tag row: an annotated tag has a message and a date of
+ * its own worth reading, a lightweight one is only a name on a commit.
+ */
+function describeTag(tag: TagRef) {
+  const when = fullTime(tag.when)
+  if (!tag.annotated) return `${tag.name} — lightweight, on ${tag.oid.slice(0, 7)}`
+  const head = `${tag.name} — annotated, ${when}`
+  return tag.message ? `${head}\n${tag.message}` : head
+}
+
 const stashes = computed(() =>
   store.stashes.filter((stash) => match(`${stash.message} ${stash.branch ?? ''}`))
 )
@@ -981,12 +993,17 @@ function stashMenu(event: MouseEvent, index: number, message: string) {
           v-for="tag in tags"
           :key="tag.name"
           class="row"
+          :title="describeTag(tag)"
+          @click="git.revealCommit(tag.oid)"
           @contextmenu="tagMenu($event, tag.name, tag.oid)"
         >
           <Tag :size="12" class="glyph tag" />
           <MidTruncate class="name" :text="tag.name" />
+          <span class="when faint">{{ relativeTime(tag.when) }}</span>
         </div>
-        <p v-if="!tags.length" class="none faint">No tags.</p>
+        <p v-if="!tags.length" class="none faint">
+          No tags. Right-click a commit in the graph to tag it.
+        </p>
       </div>
       <div
         v-if="open.tags"
@@ -1369,6 +1386,13 @@ function stashMenu(event: MouseEvent, index: number, message: string) {
 
 .meta {
   font-size: 10px;
+}
+
+.when {
+  margin-left: auto;
+  padding-left: 8px;
+  font-size: 10px;
+  flex: none;
 }
 
 .tick {

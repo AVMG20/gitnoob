@@ -14,7 +14,8 @@ tree root — and keep several open as tabs. Clone one by address, ssh or https,
 with the profile's key — or pick it from the list the profile's token can see;
 create one with a first commit and a starter `.gitignore` committing as the
 profile. A sidebar of local branches with
-ahead/behind counts, remote branches, tags and stashes. A commit graph with
+ahead/behind counts, remote branches, tags — newest first, clickable through to
+the commit they name, annotated or not — and stashes. A commit graph with
 topological lanes, ref chips and virtualized rows, so a long history scrolls
 without stuttering. Search it by message, author or hash.
 
