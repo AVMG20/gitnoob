@@ -4,12 +4,10 @@ import { Check, ChevronDown, Github, Gitlab, Sparkles, User, UserCog } from 'luc
 import { FORGE_LABELS, useConfig } from '~/composables/useConfig'
 import { useForge } from '~/composables/useForge'
 import { useAi } from '~/composables/useAi'
-import { useGit } from '~/composables/useGit'
 
 const config = useConfig()
 const forge = useForge()
 const ai = useAi()
-const git = useGit()
 
 const open = ref(false)
 const profile = computed(() => config.profile.value)
@@ -20,24 +18,25 @@ const forgeIcon = computed(() => {
   return User
 })
 
+/** The signed-in user's own picture, when the forge knows one. */
+const face = computed(() => forge.store.me?.avatar ?? null)
+
 async function pick(id: string) {
   open.value = false
   if (id === profile.value?.id) return
   await config.activateProfile(id)
   await forge.refreshStatus()
 }
-
-async function identity() {
-  open.value = false
-  const message = await config.applyIdentity().catch((error) => String(error))
-  git.note(message)
-}
 </script>
 
 <template>
   <div class="wrap">
     <button class="pill-btn" :class="{ on: open }" @click="open = !open">
-      <component :is="forgeIcon" :size="14" />
+      <!-- The face when the forge knows one, its logo when it does not: either
+           way the button says which account this is, not merely that there is
+           one. -->
+      <img v-if="face" class="face" :src="face" alt="" draggable="false" />
+      <component :is="forgeIcon" v-else :size="14" />
       <span class="who">{{ profile?.name ?? 'No profile' }}</span>
       <ChevronDown :size="13" class="faint" />
     </button>
@@ -47,7 +46,8 @@ async function identity() {
       <div class="menu">
         <div class="section-title">Current profile</div>
         <div class="current">
-          <component :is="forgeIcon" :size="16" />
+          <img v-if="face" class="face big" :src="face" alt="" draggable="false" />
+          <component :is="forgeIcon" v-else :size="16" />
           <div class="grow">
             <div class="strong">{{ profile?.name }}</div>
             <div class="faint small">
@@ -58,11 +58,15 @@ async function identity() {
         </div>
 
         <div class="rows">
-          <div class="row">
-            <span class="faint">Forge token</span>
-            <span :class="forge.store.status?.has_token ? 'ok' : 'faint'">
-              {{ forge.store.status?.has_token ? 'stored in keychain' : 'not set' }}
+          <!-- Named for what it is from the outside: an account you are signed
+               in to, not the token that does the signing in. -->
+          <div v-if="profile?.forge && profile.forge !== 'none'" class="row">
+            <span class="faint">{{ FORGE_LABELS[profile.forge] }} account</span>
+            <span v-if="forge.store.me" class="mono small">
+              {{ forge.store.me.login }}
             </span>
+            <span v-else-if="forge.store.status?.has_token" class="ok">signed in</span>
+            <span v-else class="faint">not connected</span>
           </div>
           <div class="row">
             <span class="faint">Commit identity</span>
@@ -79,11 +83,6 @@ async function identity() {
             <span v-else class="faint">not configured</span>
           </div>
         </div>
-
-        <button v-if="profile?.git_email" class="item" @click="identity">
-          <UserCog :size="14" />
-          Use this identity in this repository
-        </button>
 
         <div class="divider" />
         <div class="section-title">Switch profile</div>
@@ -131,6 +130,19 @@ async function identity() {
 .pill-btn:hover,
 .pill-btn.on {
   background: var(--bg-active);
+}
+
+.face {
+  width: 17px;
+  height: 17px;
+  border-radius: 50%;
+  object-fit: cover;
+  flex: none;
+}
+
+.face.big {
+  width: 22px;
+  height: 22px;
 }
 
 .who {

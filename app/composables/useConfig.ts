@@ -149,7 +149,8 @@ export function useConfig() {
     async reload() {
       apply(await invoke<Config>('config_get'))
     },
-    applyIdentity: () => invoke<string>('apply_identity')
+    /** Null when there was nothing to change, so callers can stay quiet. */
+    applyIdentity: () => invoke<string | null>('apply_identity')
   }
 }
 

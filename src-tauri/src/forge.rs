@@ -1,5 +1,6 @@
 use serde::Serialize;
 
+use crate::avatar;
 use crate::config::{self, ForgeKind};
 use crate::state::AppState;
 
@@ -28,6 +29,14 @@ pub struct ForgeStatus {
     pub user: Option<String>,
     pub slug: Option<RepoSlug>,
     pub error: Option<String>,
+}
+
+/// The account an access token belongs to.
+#[derive(Serialize, Clone)]
+pub struct ForgeUser {
+    pub login: String,
+    /// Their picture as a `data:` URL, when the forge has one for them.
+    pub avatar: Option<String>,
 }
 
 /// A pull request or merge request, flattened to the fields both forges share.
@@ -138,7 +147,9 @@ struct Call {
     current_branch: Option<String>,
 }
 
-fn prepare(state: &AppState) -> Result<Call, String> {
+/// The forge, host and token of the active profile: everything a request needs
+/// that has nothing to do with which repository happens to be open.
+fn account(state: &AppState) -> Result<(ForgeKind, String, String), String> {
     let config = state.config();
     let profile = config
         .active()
@@ -146,19 +157,20 @@ fn prepare(state: &AppState) -> Result<Call, String> {
     if profile.forge == ForgeKind::None {
         return Err("This profile has no forge configured".to_string());
     }
-    let token = config::secret_get(&config::forge_key(&profile.id)).ok_or_else(|| {
-        format!(
-            "No access token stored for the {} profile",
-            profile.name
-        )
-    })?;
-    let slug = remote_slug(state)
-        .ok_or_else(|| "Could not work out the project from the git remote".to_string())?;
+    let token = config::secret_get(&config::forge_key(&profile.id))
+        .ok_or_else(|| format!("No access token stored for the {} profile", profile.name))?;
     let host = if profile.host.is_empty() {
         profile.forge.default_host().to_string()
     } else {
         profile.host.clone()
     };
+    Ok((profile.forge, host, token))
+}
+
+fn prepare(state: &AppState) -> Result<Call, String> {
+    let (kind, host, token) = account(state)?;
+    let slug = remote_slug(state)
+        .ok_or_else(|| "Could not work out the project from the git remote".to_string())?;
     let current_branch = state.repo().ok().and_then(|repo| {
         repo.head()
             .ok()
@@ -166,7 +178,7 @@ fn prepare(state: &AppState) -> Result<Call, String> {
     });
 
     Ok(Call {
-        kind: profile.forge,
+        kind,
         host,
         token,
         slug,
@@ -221,6 +233,42 @@ pub async fn check(state: &AppState) -> Result<String, String> {
         .unwrap_or("unknown")
         .to_string();
     Ok(user)
+}
+
+/// Who the stored token belongs to, with their picture.
+///
+/// Unlike `check`, this asks nothing about the repository: a profile has an
+/// account whether or not the folder open right now is hosted on that forge,
+/// and the profile menu wants the face either way.
+pub async fn me(state: &AppState) -> Result<ForgeUser, String> {
+    let (kind, host, token) = account(state)?;
+    let base = api_base(kind, &host);
+
+    let response = client()?
+        .get(format!("{base}/user"))
+        .bearer_auth(&token)
+        .send()
+        .await
+        .map_err(|e| e.to_string())?;
+
+    if !response.status().is_success() {
+        return Err(describe(response).await);
+    }
+    let body: serde_json::Value = response.json().await.map_err(|e| e.to_string())?;
+    let login = body
+        .get("login")
+        .or_else(|| body.get("username"))
+        .and_then(|v| v.as_str())
+        .unwrap_or("unknown")
+        .to_string();
+    // Fetched here rather than handed over as a link: the window draws from a
+    // `data:` URL, so the page itself never reaches out to the forge.
+    let avatar = match body.get("avatar_url").and_then(|v| v.as_str()) {
+        Some(url) if !url.is_empty() => avatar::from_url(url).await,
+        _ => None,
+    };
+
+    Ok(ForgeUser { login, avatar })
 }
 
 pub async fn reviews(state: &AppState) -> Result<Vec<Review>, String> {
@@ -450,24 +498,4 @@ mod tests {
     }
 }
 
-/// Where to send the user to create an access token.
-///
-/// A real OAuth sign-in needs a registered application per forge; until there is
-/// one, this is the next best thing: the token page with the right scopes and a
-/// name already filled in, so it is one click and a paste.
-pub fn signin_url(kind: ForgeKind, host: &str) -> Option<String> {
-    let host = if host.is_empty() {
-        kind.default_host()
-    } else {
-        host
-    };
-    match kind {
-        ForgeKind::GitHub => Some(format!(
-            "https://{host}/settings/tokens/new?description=gitnoob&scopes=repo,read:org,read:user"
-        )),
-        ForgeKind::GitLab => Some(format!(
-            "https://{host}/-/user_settings/personal_access_tokens?name=gitnoob&scopes=api,read_user"
-        )),
-        ForgeKind::None => None,
-    }
-}
+

@@ -19,6 +19,10 @@ use crate::state::AppState;
 /// Wide enough for the row's slot on a 2x display, and no wider.
 const SIZE: u32 = 48;
 
+/// The profile menu draws the signed-in face larger than a row's, and on a
+/// screen that may be sharper still.
+const FACE: u32 = 64;
+
 /// How long to believe that an email has no picture before asking again. A
 /// person who signs up for a gravatar today should not have to reinstall to be
 /// seen, and a miss costs one request a week either way.
@@ -98,6 +102,31 @@ pub async fn find(state: &AppState, email: &str) -> Result<Option<String>, Strin
     let url = found.as_deref().map(data_url);
     remember(&email, url.clone());
     Ok(url)
+}
+
+/// Fetches one picture from a URL that is already known.
+///
+/// The author lookup guesses where a face might live from an email address;
+/// this is for the other case, where a forge has handed over the link to the
+/// signed-in user's own avatar and there is nothing to work out.
+pub async fn from_url(url: &str) -> Option<String> {
+    let client = reqwest::Client::builder()
+        .user_agent("gitnoob/0.1")
+        .timeout(Duration::from_secs(10))
+        .build()
+        .ok()?;
+    image(&client, &sized(url)).await.as_deref().map(data_url)
+}
+
+/// Asks for a small copy where the host is known to offer one: the picture is
+/// drawn at a couple of dozen pixels and travels to the window as base64.
+fn sized(url: &str) -> String {
+    if url.contains("avatars.githubusercontent.com") || url.contains("gravatar.com") {
+        let joiner = if url.contains('?') { '&' } else { '?' };
+        format!("{url}{joiner}s={FACE}")
+    } else {
+        url.to_string()
+    }
 }
 
 /// Whether a "nothing there" answer is recent enough to trust.

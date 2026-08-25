@@ -2,7 +2,6 @@
 import { computed, onMounted, ref, watch } from 'vue'
 import {
   Check,
-  ExternalLink,
   Github,
   Gitlab,
   KeyRound,
@@ -100,20 +99,6 @@ async function remove(profile: Profile) {
   }
   await config.deleteProfile(profile.id)
   if (editing.value?.id === profile.id) editing.value = null
-}
-
-/**
- * Opens the forge's token page with the right scopes already selected.
- *
- * A true OAuth sign-in needs an application registered with each forge; this is
- * the same number of clicks without that dependency.
- */
-async function signIn() {
-  if (!editing.value || editing.value.forge === 'none') return
-  const url = await forge.signinUrl(editing.value.forge, editing.value.host)
-  if (!url) return
-  await forge.open(url)
-  git.note(`Opened ${editing.value.forge} — create the token, then paste it here`)
 }
 
 async function testConnection() {
@@ -302,13 +287,11 @@ onMounted(async () => {
               <span class="label">
                 <KeyRound :size="12" /> Access token
               </span>
-              <button class="btn btn-ghost signin" @click="signIn">
-                <component :is="forgeIcon(editing.forge)" :size="14" />
-                Sign in to {{ FORGE_LABELS[editing.forge] }}
-                <ExternalLink :size="12" class="faint" />
-              </button>
               <span class="hint faint">
-                Opens the token page with the right scopes ticked. Create it, then paste it below.
+                A password gitnoob uses to talk to {{ FORGE_LABELS[editing.forge] }} on your
+                behalf, so it can list pull requests and open them for you. Make one under
+                Settings → Developer settings → Personal access tokens, and paste it here.
+                Pushing and pulling do not need it — that is the ssh key below.
               </span>
               <input
                 v-model="token"
@@ -379,8 +362,8 @@ onMounted(async () => {
               </label>
             </div>
             <p class="hint faint no-top">
-              These are applied to a repository only when you ask, from the profile menu — opening
-              a repository never rewrites its config on its own.
+              Every repository you open under this profile commits as this person. Opening one
+              says so at the bottom of the window when it changes what was there before.
             </p>
 
             <div class="editor-actions">
@@ -760,15 +743,6 @@ select {
   border-radius: 5px;
 }
 
-.signin {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  width: 100%;
-  justify-content: center;
-  padding: 7px;
-  margin-bottom: 7px;
-}
 
 .key-select {
   margin-bottom: 2px;

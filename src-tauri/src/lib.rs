@@ -629,30 +629,41 @@ fn project_reorder(paths: Vec<String>, state: State<'_, AppState>) -> Result<con
 
 /// Writes the active profile's identity into this repository's local config.
 ///
-/// Deliberately explicit: opening a repository never rewrites its config on its
-/// own.
+/// A profile is a person, and choosing one is the whole statement, so this runs
+/// by itself whenever a repository is opened. `Ok(None)` means there was
+/// nothing to do — the profile carries no identity, or the repository already
+/// commits as that person — and nothing is said in that case.
 #[tauri::command]
-fn apply_identity(state: State<'_, AppState>) -> Result<String, String> {
+fn apply_identity(state: State<'_, AppState>) -> Result<Option<String>, String> {
     let root = state.path()?;
     let config = state.config();
-    let profile = config
-        .active()
-        .ok_or_else(|| "No profile is active".to_string())?;
+    let Some(profile) = config.active() else {
+        return Ok(None);
+    };
+    let (Some(name), Some(email)) = (
+        profile.git_name.clone().filter(|s| !s.trim().is_empty()),
+        profile.git_email.clone().filter(|s| !s.trim().is_empty()),
+    ) else {
+        return Ok(None);
+    };
 
-    let name = profile
-        .git_name
-        .clone()
-        .filter(|s| !s.trim().is_empty())
-        .ok_or_else(|| format!("The {} profile has no name set", profile.name))?;
-    let email = profile
-        .git_email
-        .clone()
-        .filter(|s| !s.trim().is_empty())
-        .ok_or_else(|| format!("The {} profile has no email set", profile.name))?;
+    if configured(&root, "user.name").as_deref() == Some(name.as_str())
+        && configured(&root, "user.email").as_deref() == Some(email.as_str())
+    {
+        return Ok(None);
+    }
 
     git_cmd::run_checked(&root, &["config", "--local", "user.name", &name])?;
     git_cmd::run_checked(&root, &["config", "--local", "user.email", &email])?;
-    Ok(format!("This repository will now commit as {name} <{email}>"))
+    Ok(Some(format!("Committing here as {name} <{email}>")))
+}
+
+/// What git would use for a setting in this repository, local or inherited.
+fn configured(root: &std::path::Path, key: &str) -> Option<String> {
+    let out = git_cmd::run(root, &["config", "--get", key]).ok()?;
+    out.ok
+        .then(|| out.stdout.trim().to_string())
+        .filter(|value| !value.is_empty())
 }
 
 // --- ssh --------------------------------------------------------------------
@@ -705,15 +716,15 @@ fn forge_secret_key(state: State<'_, AppState>) -> Option<String> {
 
 // --- forge ------------------------------------------------------------------
 
-/// The page where a token for this forge is created.
-#[tauri::command]
-fn forge_signin_url(kind: config::ForgeKind, host: String) -> Option<String> {
-    forge::signin_url(kind, &host)
-}
-
 #[tauri::command]
 fn forge_status(state: State<'_, AppState>) -> forge::ForgeStatus {
     forge::status(&state)
+}
+
+/// The account the active profile's token belongs to, with their picture.
+#[tauri::command]
+async fn forge_me(state: State<'_, AppState>) -> Result<forge::ForgeUser, String> {
+    forge::me(&state).await
 }
 
 #[tauri::command]
@@ -910,7 +921,7 @@ pub fn run() {
             secret_status,
             forge_secret_key,
             forge_status,
-            forge_signin_url,
+            forge_me,
             forge_check,
             forge_reviews,
             forge_create_review,

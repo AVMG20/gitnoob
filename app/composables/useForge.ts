@@ -30,12 +30,22 @@ export interface Review {
   is_current: boolean
 }
 
+export interface ForgeUser {
+  login: string
+  /** The picture as a `data:` URL, or null when the forge has none. */
+  avatar: string | null
+}
+
 const store = reactive({
   status: null as ForgeStatus | null,
   reviews: [] as Review[],
   loading: false,
   error: null as string | null,
-  checking: false
+  checking: false,
+  /** Who the active profile's token belongs to, once asked. */
+  me: null as ForgeUser | null,
+  /** The profile `me` describes, so a switch does not show the last face. */
+  meFor: null as string | null
 })
 
 export function useForge() {
@@ -52,6 +62,31 @@ export function useForge() {
 
   async function refreshStatus() {
     store.status = await invoke<ForgeStatus>('forge_status').catch(() => null)
+    await loadMe()
+  }
+
+  /**
+   * Asks the forge who the token belongs to, once per profile.
+   *
+   * The answer is only ever decoration — a name and a face on the profile
+   * menu — so a forge that is down, or a token that has expired, simply leaves
+   * the icon where it was. The failure that matters is reported by the
+   * connection test, where the user is asking about it.
+   */
+  async function loadMe(force = false) {
+    const id = profileId()
+    if (!force && store.meFor === id) return
+    store.meFor = id
+    store.me = null
+    if (!id || !store.status?.has_token || store.status.kind === 'none') return
+    store.me = await invoke<ForgeUser>('forge_me').catch(() => null)
+  }
+
+  /** The profile a lookup belongs to: its forge and host, since either changing
+      means a different account. */
+  function profileId() {
+    if (!store.status || store.status.kind === 'none') return null
+    return `${store.status.kind}@${store.status.host}`
   }
 
   async function loadReviews() {
@@ -77,6 +112,9 @@ export function useForge() {
     try {
       const user = await invoke<string>('forge_check')
       if (store.status) store.status.user = user
+      // A token that has just been proved good is worth asking about again:
+      // this is the moment a freshly pasted one gets its face.
+      await loadMe(true)
       return user
     } catch (error) {
       store.error = String(error)
@@ -93,12 +131,10 @@ export function useForge() {
     shortLabel,
     refreshStatus,
     loadReviews,
+    loadMe,
     check,
     createReview: (title: string, body: string, target: string, draft: boolean) =>
       invoke<Review>('forge_create_review', { title, body, target, draft }),
-    open: (url: string) => invoke('open_external', { url }),
-    /** The forge's token-creation page, with scopes and a name pre-filled. */
-    signinUrl: (kind: ForgeKind, host: string) =>
-      invoke<string | null>('forge_signin_url', { kind, host })
+    open: (url: string) => invoke('open_external', { url })
   }
 }

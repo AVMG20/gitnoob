@@ -375,6 +375,12 @@ export function useGit() {
     store.resolving = null
     store.query = ''
     note(`Opened ${info.path}`)
+    // A profile is a person, so opening a repository under one is statement
+    // enough: it commits as them from here on. Spoken only when that actually
+    // changed something, and never fatal — a repository is still usable when
+    // its config will not take a write.
+    const identity = await invoke<string | null>('apply_identity').catch(() => null)
+    if (identity) note(identity)
     await refresh()
     return true
   }
