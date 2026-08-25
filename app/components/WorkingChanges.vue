@@ -128,6 +128,48 @@ async function generate() {
   git.note('Commit message written by the model — read it before committing')
 }
 
+/**
+ * The same moves as a file's menu, applied to everything under a folder.
+ *
+ * The paths are taken from the pane the folder was clicked in rather than
+ * handed to git as a directory: what the menu offers is then exactly what the
+ * rows underneath it show, with nothing swept in from the other pane.
+ */
+function dirMenu(event: MouseEvent, dir: string, side: 'staged' | 'unstaged') {
+  const inside = (side === 'staged' ? staged.value : unstaged.value).filter((entry) =>
+    entry.path.startsWith(`${dir}/`)
+  )
+  if (!inside.length) return
+  const paths = inside.map((entry) => entry.path)
+  const files = `${paths.length} ${paths.length === 1 ? 'file' : 'files'}`
+  // Git will not discard a file it has never seen, and deleting one is not
+  // something to do as a side effect of "discard changes".
+  const tracked = inside.filter((entry) => entry.kind !== 'untracked').map((entry) => entry.path)
+
+  menu.show(
+    event,
+    [
+      side === 'staged'
+        ? { label: `Unstage folder — ${files}`, icon: Minus, action: () => git.unstage(paths) }
+        : { label: `Stage folder — ${files}`, icon: Plus, action: () => git.stage(paths) },
+      {
+        label: `Discard changes in this folder — ${tracked.length} ${
+          tracked.length === 1 ? 'file' : 'files'
+        }`,
+        icon: Undo2,
+        danger: true,
+        disabled: !tracked.length,
+        action: () => git.discard(tracked)
+      },
+      { separator: true, label: '' },
+      { label: `Ignore everything in ${dir}/`, icon: EyeOff, action: () => git.addToGitignore(`${dir}/`) },
+      { label: git.revealLabel, icon: FolderOpen, action: () => git.reveal(dir) },
+      { label: 'Copy path', icon: Copy, action: () => copyText(dir, 'Path') }
+    ],
+    `${dir}/`
+  )
+}
+
 function fileMenu(event: MouseEvent, path: string, side: 'staged' | 'unstaged', kind: string) {
   menu.show(
     event,
@@ -226,6 +268,7 @@ function fileMenu(event: MouseEvent, path: string, side: 'staged' | 'unstaged', 
         @select="(path) => show(path, 'unstaged')"
         @act="(entry) => git.stage([entry.path])"
         @menu="(event, entry) => fileMenu(event, entry.path, 'unstaged', entry.kind)"
+        @dirmenu="(event, dir) => dirMenu(event, dir, 'unstaged')"
         @dragstart="
           (event, entry) => drag.begin(event, { kind: 'file', path: entry.path, staged: false })
         "
@@ -265,6 +308,7 @@ function fileMenu(event: MouseEvent, path: string, side: 'staged' | 'unstaged', 
         @select="(path) => show(path, 'staged')"
         @act="(entry) => git.unstage([entry.path])"
         @menu="(event, entry) => fileMenu(event, entry.path, 'staged', entry.kind)"
+        @dirmenu="(event, dir) => dirMenu(event, dir, 'staged')"
         @dragstart="
           (event, entry) => drag.begin(event, { kind: 'file', path: entry.path, staged: true })
         "

@@ -34,6 +34,8 @@ const props = defineProps<{
 const emit = defineEmits<{
   select: [string]
   menu: [MouseEvent, FileEntry]
+  /** Right-click on a folder row, with the folder's path. */
+  dirmenu: [MouseEvent, string]
   dragstart: [DragEvent, FileEntry]
   dragend: []
   act: [FileEntry]
@@ -91,6 +93,7 @@ function counted(tally: Tally) {
         class="row dir"
         :style="{ paddingLeft: `${indent(row.depth)}px` }"
         @click="view.toggleDir(row.path)"
+        @contextmenu="emit('dirmenu', $event, row.path)"
       >
         <component :is="row.collapsed ? ChevronRight : ChevronDown" :size="12" class="chev" />
         <Folder :size="12" class="folder" />
