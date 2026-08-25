@@ -49,9 +49,9 @@ async function submit() {
 
     <label class="check">
       <input v-model="push" type="checkbox" />
-      Push the tag to origin as well
-      <span class="faint block">
-        A tag only starts a release once origin has it.
+      <span>
+        Push the tag to origin as well
+        <span class="hint faint">A tag only starts a release once origin has it.</span>
       </span>
     </label>
 
@@ -100,11 +100,19 @@ input[type='text'] {
   color: var(--red);
 }
 
+/* The label and the line explaining it are one column beside the box, not two
+   things sitting either side of it — otherwise the explanation becomes a
+   second column and squeezes the label into a wrap. */
 .check {
   display: flex;
-  align-items: center;
+  align-items: flex-start;
   gap: 8px;
   font-size: 12px;
   cursor: pointer;
+}
+
+.check input {
+  margin-top: 1px;
+  flex: none;
 }
 </style>
