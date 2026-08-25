@@ -1129,7 +1129,6 @@ function stashMenu(event: MouseEvent, index: number, message: string) {
   flex: none;
   max-height: 250px;
   overflow-y: auto;
-  scrollbar-width: thin;
 }
 
 /* The divider between two sections is also the handle for the one above it, so
