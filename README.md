@@ -11,8 +11,9 @@ anything destructive says what it will cost before it does it.
 
 **Getting around.** Open a repository by folder — a subdirectory finds the work
 tree root — and keep several open as tabs. Clone one by address, ssh or https,
-with the profile's key; create one with a first commit and a starter
-`.gitignore`, committing as the profile. A sidebar of local branches with
+with the profile's key — or pick it from the list the profile's token can see;
+create one with a first commit and a starter `.gitignore` committing as the
+profile. A sidebar of local branches with
 ahead/behind counts, remote branches, tags and stashes. A commit graph with
 topological lanes, ref chips and virtualized rows, so a long history scrolls
 without stuttering. Search it by message, author or hash.
@@ -146,8 +147,9 @@ The frontend has no tests yet, which is the largest gap in the project.
 `TODO.md` is the full list, kept current. The ones worth knowing before you
 rely on this:
 
-- **No clone from the forge's own list.** Cloning takes a pasted address; the
-    profile's token is not yet used to list its repositories.
+- **No clone from the forge's own list without a token.** Cloning takes a
+    pasted address when there is none; with one, the clone dialog lists what
+    the token can see.
 - **No content security policy.** `default-src 'self'` blocks Nuxt's inline
   import map, so it is off until a working one is written and checked in the
   bundled app rather than in dev.

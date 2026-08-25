@@ -1,20 +1,24 @@
 <script setup lang="ts">
-import { computed, ref } from 'vue'
+import { computed, onMounted, ref } from 'vue'
 import { invoke } from '@tauri-apps/api/core'
 import { open } from '@tauri-apps/plugin-dialog'
 import { FolderOpen } from 'lucide-vue-next'
 import { useGit, type NewRepo } from '~/composables/useGit'
 import { useConfig } from '~/composables/useConfig'
+import { useForge } from '~/composables/useForge'
+import SearchSelect, { type Choice } from '~/components/SearchSelect.vue'
 
 const emit = defineEmits<{ close: []; done: [string] }>()
 
 const git = useGit()
 const config = useConfig()
+const forge = useForge()
 
 const url = ref('')
 const parent = ref('')
 const error = ref('')
 const busy = ref(false)
+const picked = ref<string | null>(null)
 
 /** Mirrors the backend's naming, so the folder is named before it is fetched. */
 function folderName(value: string): string {
@@ -25,6 +29,35 @@ function folderName(value: string): string {
 
 const name = computed(() => folderName(url.value))
 const ready = computed(() => url.value.trim() !== '' && parent.value !== '' && name.value !== '')
+
+/** The repositories the profile's token can see, as picker rows. */
+const choices = computed<Choice[]>(() =>
+  forge.store.repos.map((repo) => ({
+    value: repo.ssh_url || repo.https_url,
+    label: repo.name,
+    note: repo.owner,
+    hint: repo.full_name
+  }))
+)
+
+const forgeLabel = computed(() =>
+  forge.store.status?.kind === 'gitlab' ? 'GitLab' : 'GitHub'
+)
+
+function pickRepo(value: string) {
+  picked.value = value
+  url.value = value
+}
+
+onMounted(async () => {
+  // The dialog is reached from the welcome pane, where no repository is open
+  // and the status has not been read this session. `forge_status` asks only
+  // the config, so it works with nothing open.
+  if (!forge.store.status) await forge.refreshStatus().catch(() => null)
+  if (forge.store.status?.has_token && forge.store.status.kind !== 'none') {
+    await forge.loadRepos().catch(() => null)
+  }
+})
 
 async function pick() {
   const path = await open({ directory: true, multiple: false, title: 'Clone into' })
@@ -49,13 +82,29 @@ async function submit() {
 
 <template>
   <AppModal title="Clone a repository" :width="480" @close="emit('close')">
+    <div v-if="choices.length" class="field">
+      <span class="label">Your {{ forgeLabel }} repositories</span>
+      <SearchSelect
+        :model-value="picked"
+        :options="choices"
+        placeholder="Pick one…"
+        empty="Nothing of yours matches that."
+        @update:model-value="pickRepo"
+      />
+      <span class="hint faint">Picking fills the address below; edit it if you would rather.</span>
+    </div>
+    <p v-else-if="forge.store.reposError" class="hint error-line">
+      Could not list your repositories: {{ forge.store.reposError }}
+    </p>
+    <p v-else-if="forge.store.loadingRepos" class="hint faint">Listing your repositories…</p>
+
     <label class="field">
       <span class="label">Repository address</span>
       <input
         v-model="url"
         type="text"
         placeholder="git@github.com:acme/widget.git"
-        autofocus
+        :autofocus="!choices.length"
         spellcheck="false"
         @keyup.enter="submit"
       />
@@ -121,6 +170,10 @@ async function submit() {
 
 .hint.faint {
   color: var(--text-faint);
+}
+
+.error-line {
+  color: var(--red);
 }
 
 .error {

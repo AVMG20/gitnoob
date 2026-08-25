@@ -60,6 +60,16 @@ export interface NewReview {
   reviewers: Member[]
 }
 
+/** A repository the token can see, for picking one to clone. */
+export interface ForgeRepo {
+  name: string
+  full_name: string
+  owner: string
+  ssh_url: string
+  https_url: string
+  updated_at: string
+}
+
 const store = reactive({
   status: null as ForgeStatus | null,
   reviews: [] as Review[],
@@ -77,7 +87,12 @@ const store = reactive({
   /** The project `members` describes, so a switch does not show the last one. */
   membersFor: null as string | null,
   loadingMembers: false,
-  membersError: null as string | null
+  membersError: null as string | null,
+  /** The repositories the active profile's token can see, once asked. */
+  repos: [] as ForgeRepo[],
+  reposFor: null as string | null,
+  loadingRepos: false,
+  reposError: null as string | null
 })
 
 export function useForge() {
@@ -200,6 +215,33 @@ export function useForge() {
     }
   }
 
+  /**
+   * Asks the forge for every repository the token can see, once per account.
+   *
+   * Only the clone dialog needs it, so it is asked for when that opens. Unlike
+   * the project-bound lookups this works with nothing open — the whole point
+   * is choosing a repository before one exists locally.
+   */
+  async function loadRepos(force = false) {
+    const id = profileId()
+    if (!id || !store.status?.has_token) {
+      store.repos = []
+      return
+    }
+    if (!force && store.reposFor === id) return
+    store.loadingRepos = true
+    store.reposError = null
+    try {
+      store.repos = await invoke<ForgeRepo[]>('forge_repos')
+      store.reposFor = id
+    } catch (error) {
+      store.reposError = String(error)
+      store.repos = []
+    } finally {
+      store.loadingRepos = false
+    }
+  }
+
   return {
     store,
     usable,
@@ -210,6 +252,7 @@ export function useForge() {
     loadReviews,
     loadMembers,
     loadMe,
+    loadRepos,
     check,
     createReview: (draft: NewReview) => invoke<Review>('forge_create_review', { ...draft }),
     /** The forge's own new-review page, with the form already filled in. */

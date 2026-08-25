@@ -228,10 +228,15 @@ all.
       `.gitignore` and commits it as the profile's identity; with no identity
       anywhere, the `.gitignore` is left untracked in the changes panel and the
       reason is said in the log
-- [ ] List the repositories a profile's token can see, so cloning is picking
+- [x] List the repositories a profile's token can see, so cloning is picking
       one from a list rather than pasting a URL. `forge.rs` already
       authenticates and reads pull requests; it has never asked for `/user/repos`
       or `/projects?membership=true`
+      — done: `forge_repos` walks both forges' pagination (up to a thousand
+      repositories), flattens the fields that matter, and the clone dialog
+      offers the list as a searchable picker whenever the profile has a token.
+      Works with nothing open — `forge_status` asks only the config — because
+      the whole point is choosing a repository before one exists locally
 - [ ] Manage remotes: add one, rename one, change a URL, remove one. `remotes`
       only lists them, and a repository cloned over HTTPS cannot be moved to ssh
       without dropping to the command line

@@ -824,6 +824,13 @@ async fn forge_reviews(state: State<'_, AppState>) -> Result<Vec<forge::Review>,
     forge::reviews(&state).await
 }
 
+/// The repositories the active profile's token can see, so cloning is picking
+/// one from a list rather than pasting an address.
+#[tauri::command]
+async fn forge_repos(state: State<'_, AppState>) -> Result<Vec<forge::ForgeRepo>, String> {
+    forge::repos(&state).await
+}
+
 /// Everyone the project's review can be assigned to or reviewed by.
 #[tauri::command]
 async fn forge_members(state: State<'_, AppState>) -> Result<Vec<forge::Member>, String> {
@@ -1069,6 +1076,7 @@ pub fn run() {
             forge_me,
             forge_check,
             forge_reviews,
+            forge_repos,
             forge_members,
             forge_create_review,
             forge_compare_url,
