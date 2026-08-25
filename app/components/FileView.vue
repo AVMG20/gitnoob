@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed } from 'vue'
+import { computed, onMounted, onUnmounted, ref } from 'vue'
 import type { FileDiff } from '~/composables/useGit'
 import { highlightWhole, languageFor } from '~/composables/useHighlight'
 
@@ -17,8 +17,10 @@ type Mark = 'added' | 'changed' | null
 interface Line {
   number: number
   mark: Mark
+  /** What this line said before it was changed, when it replaced something. */
+  was: string[]
   /** Lines deleted immediately above this one, with nothing put in their place. */
-  removed: number
+  removed: string[]
 }
 
 const language = computed(() => (props.diff ? languageFor(props.diff.path) : null))
@@ -41,7 +43,11 @@ const lines = computed<Line[]>(() => {
   if (source.length && source[source.length - 1] === '') source.pop()
 
   const marks = new Map<number, Mark>()
-  const gaps = new Map<number, number>()
+  // The text of what went, not just how much of it: a gutter mark that can be
+  // asked what it replaced is worth more than one that can only say something
+  // happened here.
+  const before = new Map<number, string[]>()
+  const gaps = new Map<number, string[]>()
 
   for (const hunk of props.diff?.hunks ?? []) {
     // Walk each run of touched lines together: what a run is made of decides
@@ -53,26 +59,34 @@ const lines = computed<Line[]>(() => {
         continue
       }
       let end = index
-      let deletions = 0
+      const deleted: string[] = []
       const added: number[] = []
       while (end < hunk.lines.length && hunk.lines[end]!.origin !== ' ') {
         const line = hunk.lines[end]!
-        if (line.origin === '-') deletions++
+        if (line.origin === '-') deleted.push(line.content)
         else if (line.new_lineno) added.push(line.new_lineno)
         end++
       }
+      const deletions = deleted.length
 
       if (added.length) {
         // As many added lines as were deleted are the replacements; anything
         // beyond that is genuinely new.
         for (const [at, number] of added.entries()) {
           marks.set(number, at < deletions ? 'changed' : 'added')
+          if (at >= deletions) continue
+          // Where more went than came back, the surplus has no line of its own
+          // to hang from, so it joins the last of the replacements: the run
+          // still reads as one change, and none of it goes unaccounted for.
+          const replaced =
+            at === added.length - 1 ? deleted.slice(at) : deleted.slice(at, at + 1)
+          before.set(number, replaced)
         }
       } else if (deletions) {
         // Nothing replaced them, so the mark belongs to the seam: the line the
         // deleted ones used to sit above.
         const next = hunk.lines[end]?.new_lineno ?? source.length + 1
-        gaps.set(next, (gaps.get(next) ?? 0) + deletions)
+        gaps.set(next, [...(gaps.get(next) ?? []), ...deleted])
       }
       index = end
     }
@@ -81,14 +95,56 @@ const lines = computed<Line[]>(() => {
   return source.map((_, at) => ({
     number: at + 1,
     mark: marks.get(at + 1) ?? null,
-    removed: gaps.get(at + 1) ?? 0
+    was: before.get(at + 1) ?? [],
+    removed: gaps.get(at + 1) ?? []
   }))
 })
 
 const counts = computed(() => ({
   marked: lines.value.filter((line) => line.mark).length,
-  gaps: lines.value.filter((line) => line.removed).length
+  gaps: lines.value.filter((line) => line.removed.length).length
 }))
+
+// --- what it was before
+//
+// The marks are the only record in this view of what the file used to say, so
+// they answer for it: clicking one shows the lines it stands in for. The panel
+// is anchored to the mark rather than to the pointer, the way an editor does
+// it, so the old text lands beside the new and the two can be read together.
+const open = ref<{ line: number; kind: 'was' | 'gone' } | null>(null)
+
+const isOpen = (line: Line, kind: 'was' | 'gone') =>
+  open.value?.line === line.number && open.value.kind === kind
+
+function show(line: Line, kind: 'was' | 'gone') {
+  open.value = isOpen(line, kind) ? null : { line: line.number, kind }
+}
+
+/** The old lines, coloured as a piece so a block comment reads as one. */
+function paintOld(text: string[]) {
+  return highlightWhole(text.join('\n'), language.value)
+}
+
+function onKey(event: KeyboardEvent) {
+  if (event.key === 'Escape' && open.value) open.value = null
+}
+
+/** Anywhere but the panel and the mark that opened it closes it. */
+function onDown(event: MouseEvent) {
+  const target = event.target as HTMLElement | null
+  if (target?.closest('.gutter, .before')) return
+  open.value = null
+}
+
+onMounted(() => {
+  window.addEventListener('keydown', onKey)
+  window.addEventListener('mousedown', onDown)
+})
+
+onUnmounted(() => {
+  window.removeEventListener('keydown', onKey)
+  window.removeEventListener('mousedown', onDown)
+})
 
 /**
  * The file coloured in one pass, one entry per line.
@@ -120,13 +176,54 @@ const paint = (at: number) => painted.value[at - 1] ?? ''
         <!-- The bar an editor draws between the numbers and the code: solid
              where a line is new or changed, and a wedge where lines were taken
              out and nothing put in their place, since a removal has no line of
-             its own to colour. -->
-        <span class="gutter">
+             its own to colour. Both answer a click with what used to be there;
+             a line that is new has nothing to answer with, so it stays a mark. -->
+        <span
+          class="gutter"
+          :class="{ live: line.was.length, shown: isOpen(line, 'was') }"
+          :title="line.was.length ? 'Click to see what this line said before' : ''"
+          @click="line.was.length && show(line, 'was')"
+        >
           <span
-            v-if="line.removed"
+            v-if="line.removed.length"
             class="gone"
-            :title="`${line.removed} ${line.removed === 1 ? 'line' : 'lines'} deleted here`"
+            :class="{ shown: isOpen(line, 'gone') }"
+            :title="`${line.removed.length} ${
+              line.removed.length === 1 ? 'line' : 'lines'
+            } deleted here — click to read them`"
+            @click.stop="show(line, 'gone')"
           />
+
+          <!-- The deleted lines sit above the one that took their place, which
+               is where they were. -->
+          <span v-if="isOpen(line, 'gone')" class="before gone-at">
+            <span class="before-head">
+              {{ line.removed.length }} deleted
+              {{ line.removed.length === 1 ? 'line' : 'lines' }}
+            </span>
+            <span class="before-body">
+              <span
+                v-for="(html, at) in paintOld(line.removed)"
+                :key="at"
+                class="before-line"
+                v-html="html || ' '"
+              />
+            </span>
+          </span>
+
+          <span v-if="isOpen(line, 'was')" class="before was-at">
+            <span class="before-head">
+              {{ line.was.length === 1 ? 'Was' : `Was, ${line.was.length} lines` }}
+            </span>
+            <span class="before-body">
+              <span
+                v-for="(html, at) in paintOld(line.was)"
+                :key="at"
+                class="before-line"
+                v-html="html || ' '"
+              />
+            </span>
+          </span>
         </span>
         <span class="text" v-html="paint(line.number)" />
       </div>
@@ -162,6 +259,23 @@ const paint = (at: number) => painted.value[at - 1] ?? ''
   margin-right: 8px;
 }
 
+/* Three pixels is a mark, not a target. The bar keeps its width and takes its
+   clicks from a few pixels either side of it, which costs no layout. */
+.gutter.live {
+  cursor: pointer;
+}
+
+.gutter.live::before {
+  content: '';
+  position: absolute;
+  inset: 0 -4px;
+}
+
+.gutter.live:hover,
+.gutter.shown {
+  filter: brightness(1.35);
+}
+
 .line.added .gutter {
   background: var(--green);
 }
@@ -181,6 +295,78 @@ const paint = (at: number) => painted.value[at - 1] ?? ''
   height: 4px;
   background: var(--text-faint);
   border-radius: 1px;
+  cursor: pointer;
+  /* Above the change bar's own hit area, so the seam keeps its clicks. */
+  z-index: 2;
+}
+
+.gone::after {
+  /* The clickable part, wider than the wedge and invisible. */
+  content: '';
+  position: absolute;
+  inset: -3px -4px;
+}
+
+.gone:hover,
+.gone.shown {
+  background: var(--text-dim);
+}
+
+/* What used to be there. Anchored to the mark, drawn over the code to its
+   right, and never taller than a third of the window — anything longer scrolls
+   inside itself rather than pushing the file around. */
+.before {
+  position: absolute;
+  left: 11px;
+  z-index: 6;
+  display: block;
+  min-width: 260px;
+  max-width: 62vw;
+  max-height: 34vh;
+  overflow: auto;
+  border: 1px solid var(--line);
+  border-left: 3px solid var(--red-soft);
+  border-radius: 4px;
+  background: var(--bg-raised);
+  box-shadow: 0 6px 20px rgba(0, 0, 0, 0.35);
+  cursor: auto;
+}
+
+/* The old text lands where it belongs against the new: what a line used to say
+   sits directly under the line that says it now, and lines that were taken out
+   sit above the line they used to sit above. Neither covers the code it is
+   there to be compared with. */
+.was-at {
+  top: calc(100% - 2px);
+}
+
+.gone-at {
+  bottom: calc(100% - 2px);
+}
+
+.before-head {
+  display: block;
+  position: sticky;
+  top: 0;
+  padding: 2px 8px;
+  font-family: var(--font);
+  font-size: 10px;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--text-faint);
+  background: var(--bg-raised);
+  border-bottom: 1px solid var(--line);
+}
+
+.before-body {
+  display: block;
+  padding: 3px 0;
+}
+
+.before-line {
+  display: block;
+  padding: 0 10px;
+  white-space: pre;
 }
 
 .no {
