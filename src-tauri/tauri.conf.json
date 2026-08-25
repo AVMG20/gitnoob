@@ -28,9 +28,21 @@
       "csp": null
     }
   },
+  "plugins": {
+    "updater": {
+      "endpoints": [
+        "https://github.com/AVMG20/gitnoob/releases/latest/download/latest.json"
+      ],
+      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IDlGRUQyN0FEQUMyM0NENTMKUldSVHpTT3NyU2Z0bjIrc0Uva0QzVitySjBuYzVqQzJYZlQvNHFmK3NMME9LTEtodkw2K3VPTkgK",
+      "windows": {
+        "installMode": "passive"
+      }
+    }
+  },
   "bundle": {
     "active": true,
     "targets": "all",
+    "createUpdaterArtifacts": true,
     "icon": [
       "icons/32x32.png",
       "icons/128x128.png",

@@ -97,6 +97,10 @@ pub struct Global {
     /// initials instead and asks nobody anything.
     #[serde(default = "yes")]
     pub show_avatars: bool,
+    /// Ask GitHub once at launch whether there is a newer release. Off, and the
+    /// only check is the button in settings.
+    #[serde(default = "yes")]
+    pub check_updates: bool,
 }
 
 #[derive(Serialize, Deserialize, Clone)]
@@ -172,6 +176,7 @@ impl Default for Global {
             auto_fetch_minutes: default_fetch_minutes(),
             auto_stash: true,
             show_avatars: true,
+            check_updates: true,
         }
     }
 }

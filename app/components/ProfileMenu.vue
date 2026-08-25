@@ -1,13 +1,24 @@
 <script setup lang="ts">
 import { computed, ref, watch } from 'vue'
-import { Check, ChevronDown, Github, Gitlab, Sparkles, User, UserCog } from 'lucide-vue-next'
+import {
+  Check,
+  ChevronDown,
+  Download,
+  Github,
+  Gitlab,
+  Sparkles,
+  User,
+  UserCog
+} from 'lucide-vue-next'
 import { FORGE_LABELS, useConfig } from '~/composables/useConfig'
 import { useForge } from '~/composables/useForge'
 import { useAi } from '~/composables/useAi'
+import { useUpdates } from '~/composables/useUpdates'
 
 const config = useConfig()
 const forge = useForge()
 const ai = useAi()
+const updates = useUpdates()
 
 const open = ref(false)
 const profile = computed(() => config.profile.value)
@@ -131,6 +142,15 @@ async function pick(id: string) {
         </button>
         <button class="item" @click="((open = false), config.openSettings('ai'))">
           <Sparkles :size="14" /> AI settings
+        </button>
+        <!-- Only when there is one. The check at launch is quiet, so this is
+             where a new version turns up without going looking for it. -->
+        <button
+          v-if="updates.store.stage === 'available'"
+          class="item"
+          @click="((open = false), config.openSettings('updates'))"
+        >
+          <Download :size="14" /> Update to {{ updates.store.version }}
         </button>
       </div>
     </template>

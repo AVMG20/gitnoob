@@ -2,6 +2,7 @@
 import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
 import {
   Check,
+  Download,
   ExternalLink,
   Github,
   Gitlab,
@@ -9,6 +10,7 @@ import {
   Keyboard,
   Palette,
   Plus,
+  RefreshCw,
   Settings2,
   Sparkles,
   Trash2,
@@ -33,6 +35,7 @@ import { describeKey, useSsh } from '~/composables/useSsh'
 import { useTheme } from '~/composables/useTheme'
 import { SHORTCUTS, SHORTCUT_GROUPS, keyLabel } from '~/composables/useShortcuts'
 import { useColumns } from '~/composables/useColumns'
+import { useUpdates } from '~/composables/useUpdates'
 
 const config = useConfig()
 const forge = useForge()
@@ -41,8 +44,31 @@ const ai = useAi()
 const git = useGit()
 const { theme, themes, setTheme } = useTheme()
 const cols = useColumns()
+const updates = useUpdates()
 
 const section = computed(() => config.store.settingsSection)
+
+// --- updates
+
+/** Where to read what changed, before deciding to install it. */
+const RELEASES_URL = 'https://github.com/AVMG20/gitnoob/releases'
+
+/** The AppImage caveat is only worth saying on the platform it applies to. */
+const linux = computed(() => navigator.userAgent.includes('Linux'))
+
+/** What the install button says, which is mostly what it is doing. */
+const installLabel = computed(() => {
+  if (updates.store.stage === 'downloading') return 'Installing…'
+  // The window is about to go; saying so is better than a button that looks
+  // like it did nothing.
+  if (updates.store.stage === 'ready') return 'Restarting…'
+  return 'Download and install'
+})
+
+/** The button, as opposed to the quiet check at launch: this one reports. */
+async function lookForUpdate() {
+  await updates.checkForUpdate()
+}
 
 /** The keyboard, grouped the way the list is written, with empty groups gone. */
 const shortcutGroups = computed(() =>
@@ -199,6 +225,7 @@ onUnmounted(() => window.removeEventListener('keydown', onKey))
 
 onMounted(async () => {
   window.addEventListener('keydown', onKey)
+  await updates.version()
   tokenKey.value = await config.forgeSecretKey()
   await config.refreshSecrets()
   await ssh.loadKeys()
@@ -244,6 +271,14 @@ onMounted(async () => {
           @click="config.store.settingsSection = 'behaviour'"
         >
           <Settings2 :size="15" /> Behaviour
+        </button>
+        <button
+          class="nav-item"
+          :class="{ on: section === 'updates' }"
+          @click="config.store.settingsSection = 'updates'"
+        >
+          <Download :size="15" /> Updates
+          <span v-if="updates.store.stage === 'available'" class="nav-dot" />
         </button>
         <p class="nav-note faint">
           Profiles hold their own forge, identity and open projects. Everything under AI,
@@ -574,6 +609,107 @@ onMounted(async () => {
               <span class="faint small keys-where">{{ row.where }}</span>
             </div>
           </div>
+        </section>
+
+        <!-- Updates -->
+        <section v-else-if="section === 'updates'">
+          <h2>Updates</h2>
+          <p class="dim intro">
+            Releases are built for macOS, Windows and Linux and published on GitHub. This window
+            can fetch one and install it over itself.
+          </p>
+
+          <div class="field">
+            <span class="label">Installed version</span>
+            <span class="version-row">
+              <strong class="version">{{ updates.store.current || '—' }}</strong>
+              <button class="btn btn-ghost" :disabled="updates.busy.value" @click="lookForUpdate">
+                <RefreshCw :size="13" :class="{ spin: updates.store.stage === 'checking' }" />
+                Check for updates
+              </button>
+            </span>
+          </div>
+
+          <!-- Nothing on offer, and we looked. -->
+          <p v-if="updates.store.stage === 'none'" class="hint ok">
+            This is the newest release.
+          </p>
+
+          <p v-else-if="updates.store.stage === 'error'" class="hint bad">
+            {{ updates.store.error }}
+          </p>
+
+          <div
+            v-else-if="updates.store.stage !== 'idle' && updates.store.stage !== 'checking'"
+            class="offer"
+          >
+            <div class="offer-head">
+              <strong>Version {{ updates.store.version }} is available</strong>
+              <span v-if="updates.store.date" class="faint">released {{ updates.store.date }}</span>
+            </div>
+
+            <pre v-if="updates.store.notes" class="notes">{{ updates.store.notes }}</pre>
+
+            <!-- The bar only appears once there is something to measure; a
+                 server that sends no length would otherwise sit at zero. -->
+            <div v-if="updates.store.stage === 'downloading'" class="progress">
+              <div class="track">
+                <div class="bar" :style="{ width: `${updates.progress.value}%` }" />
+              </div>
+              <span class="faint">
+                {{ updates.store.total ? `${updates.progress.value}%` : 'Downloading…' }}
+              </span>
+            </div>
+
+            <div class="offer-actions">
+              <button
+                class="btn btn-primary"
+                :disabled="updates.busy.value || updates.store.stage === 'ready'"
+                @click="updates.install()"
+              >
+                <Download :size="13" />
+                {{ installLabel }}
+              </button>
+              <button
+                class="btn btn-ghost"
+                :disabled="updates.busy.value"
+                @click="updates.dismiss()"
+              >
+                Not now
+              </button>
+            </div>
+            <p class="hint faint">
+              The app closes while the new version is written, and comes back on its own. Nothing
+              in your repositories is touched.
+            </p>
+          </div>
+
+          <label class="check">
+            <input
+              type="checkbox"
+              :checked="config.settings.value?.check_updates"
+              @change="patchGlobal({ check_updates: ($event.target as HTMLInputElement).checked })"
+            />
+            <span>
+              <strong>Look for a new version at launch</strong>
+              <span class="faint block">
+                One request to GitHub when the window opens, asking only which release is newest.
+                Off, and the button above is the only check.
+              </span>
+            </span>
+          </label>
+
+          <p class="hint faint">
+            Every download is signed with the project's release key and verified before it is
+            written, so a file that key never signed is refused.
+            <a href="#" @click.prevent="forge.open(RELEASES_URL)">
+              All releases <ExternalLink :size="11" />
+            </a>
+          </p>
+          <p v-if="linux" class="hint faint no-top">
+            On Linux this works for the AppImage. Installed from the .deb or .rpm, update through
+            your package manager or download the next release by hand.
+          </p>
         </section>
 
         <!-- Behaviour -->
@@ -1094,5 +1230,101 @@ select {
 
 .cols .check {
   margin-bottom: 0;
+}
+
+/* --- updates */
+
+/* The one place in the nav that ever has news, so it says so quietly rather
+   than opening a dialog over whatever you were doing. */
+.nav-dot {
+  width: 6px;
+  height: 6px;
+  margin-left: auto;
+  border-radius: 50%;
+  background: var(--accent);
+}
+
+.version-row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.version {
+  font-family: var(--mono);
+  font-size: 13px;
+}
+
+.bad {
+  color: var(--red);
+}
+
+.spin {
+  animation: spin 0.9s linear infinite;
+}
+
+@keyframes spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+.offer {
+  margin: 12px 0 18px;
+  padding: 12px 14px;
+  border: 1px solid color-mix(in srgb, var(--accent) 50%, transparent);
+  border-radius: 8px;
+  background: color-mix(in srgb, var(--accent) 10%, transparent);
+}
+
+.offer-head {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  font-size: 13px;
+}
+
+/* Release notes as they were written — a list of changes reads as a list even
+   without a markdown renderer, and pre keeps the line breaks that make it one.
+   Tall ones scroll here rather than pushing the buttons off the panel. */
+.notes {
+  max-height: 200px;
+  margin: 10px 0 0;
+  overflow-y: auto;
+  font-family: var(--mono);
+  font-size: 11px;
+  line-height: 1.6;
+  white-space: pre-wrap;
+  color: var(--text-dim);
+}
+
+.progress {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-top: 12px;
+  font-size: 11px;
+}
+
+.progress .track {
+  flex: 1;
+  min-width: 0;
+  height: 4px;
+  border-radius: 2px;
+  background: var(--bg-hover);
+}
+
+.progress .bar {
+  width: 0;
+  height: 100%;
+  border-radius: 2px;
+  background: var(--accent);
+  transition: width 0.2s linear;
+}
+
+.offer-actions {
+  display: flex;
+  gap: 8px;
+  margin-top: 12px;
 }
 </style>

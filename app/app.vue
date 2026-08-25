@@ -8,6 +8,7 @@ import { useForge } from '~/composables/useForge'
 import { useAi } from '~/composables/useAi'
 import { usePanes } from '~/composables/usePanes'
 import { useTheme } from '~/composables/useTheme'
+import { useUpdates } from '~/composables/useUpdates'
 
 const git = useGit()
 const store = git.store
@@ -15,6 +16,7 @@ const config = useConfig()
 const forge = useForge()
 const ai = useAi()
 const { layout } = usePanes()
+const updates = useUpdates()
 // Applied as a side effect of loading the composable, before the first paint.
 useTheme()
 
@@ -138,6 +140,14 @@ onMounted(async () => {
     'git-command',
     ({ payload }) => git.note(payload.line, payload.ok ? 'command' : 'error')
   ).catch(() => undefined)
+
+  // Whether a newer release exists, asked once and quietly: a machine that is
+  // offline should not be told so every time the window opens. What it finds
+  // shows up as a dot next to Updates in settings, not as a dialog over the
+  // repository you came here to look at.
+  if (config.settings.value?.check_updates !== false) {
+    updates.checkForUpdate(true)
+  }
 
   // Belt and braces for anything the watcher cannot see — a network share, a
   // platform without file notifications — and for the commonest case of all:

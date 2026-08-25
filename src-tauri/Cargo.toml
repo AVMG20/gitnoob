@@ -32,6 +32,14 @@ reqwest = { version = "0.12", default-features = false, features = [
 ] }
 sha2 = { version = "0.10", default-features = false }
 
+# Updating in place. The bundle the pipeline built is signed with the key whose
+# public half is in tauri.conf.json, and the plugin refuses anything that does
+# not verify — so "download from GitHub and run it" cannot be turned into
+# "download from anywhere and run it".
+tauri-plugin-updater = "2"
+# Only so the app can restart itself once the new version is written.
+tauri-plugin-process = "2"
+
 # Tokens live in the OS keychain, never in the config file. The backing store
 # differs per platform, so each one picks its own keyring feature.
 [target.'cfg(target_os = "macos")'.dependencies]

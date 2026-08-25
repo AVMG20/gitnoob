@@ -242,10 +242,40 @@ Every request made in this project, so nothing gets dropped between sessions.
       Discarded changes could go to a hidden ref, recoverable for a few days
 - [ ] **Accessibility.** Not one `aria-` attribute in the app, and no arrow-key
       navigation of the commit list or the file list
-- [ ] **Continuous integration.** No `.github/`, so nothing stops a broken
-      build landing: `cargo test`, `cargo clippy`, `npm run typecheck`
+- [~] **Continuous integration.** `.github/workflows/release.yml` builds all
+      three platforms on a tag, so a break that only shows up on Linux or
+      Windows is caught by the next release rather than by a user. Nothing yet
+      runs on a push: `cargo test`, `cargo clippy` and `npm run typecheck`
+      still guard nothing
 - [ ] Conflict resolution reads the file with `read_to_string`, so a file that
       is not valid UTF-8 fails rather than saying why
+
+## Round 5 — shipping it
+
+Building it yourself was the only way to run it. Now a tag is.
+
+- [x] **A pipeline that builds the app on a tag.** `.github/workflows/release.yml`
+      drafts a release, builds macOS, Windows and Linux in parallel, uploads to
+      that draft, and publishes it only when all three have finished — so a
+      release is never half a release and never three of them. macOS is one
+      universal bundle rather than two downloads and a question about which
+      Mac you have; Linux builds on 22.04, because the AppImage carries the
+      glibc it was built against as a floor and building on the newest Ubuntu
+      quietly excludes everyone on an older one
+- [x] **The version comes from the tag.** `scripts/set-version.mjs` writes it
+      into `tauri.conf.json` and `Cargo.toml` before the build. The updater
+      compares that number against the newest release, so an app reporting a
+      version older than the one it is would offer to install itself, for ever
+- [x] **Update from inside the window.** Settings → Updates: the installed
+      version, a check button, the release notes of what is on offer, and one
+      button that downloads it, verifies the signature against the public key
+      compiled into the running copy, writes it and restarts. A quiet check at
+      launch — off in one click — surfaces as a line in the profile menu and a
+      dot beside Updates, rather than as a dialog over the repository you came
+      to look at
+- [ ] Sign and notarise, so the first launch is a double-click on both macOS and
+      Windows rather than a right-click Open and a "Run anyway"
+- [ ] Tests on every push, not only on a tag
 
 ## Missing outright — found by the feature audit
 
@@ -344,7 +374,16 @@ it. These are the gaps that hurt that person specifically.
       Linux now builds and the full test suite passes there, given the GTK and
       WebKit development packages the README names; the window itself has still
       never been looked at on Linux.
-- [ ] Release build, code signing and notarisation
+- [~] Release build, code signing and notarisation
+      — done: pushing a tag drafts a release, builds a universal `.dmg`, an
+      NSIS `.exe` and an `.msi`, and an `.AppImage`, `.deb` and `.rpm`, then
+      publishes the release once all three runners have finished. Every bundle
+      is signed with the updater key, and the app updates itself from Settings →
+      Updates: it verifies the signature against the public key compiled into
+      the running copy before writing anything, and restarts into the new
+      version. Not done: an Apple Developer certificate and notarisation, and a
+      Windows code-signing certificate — until those exist, a first launch is a
+      right-click Open on macOS and a "Run anyway" on Windows
 
 ## How to run it
 

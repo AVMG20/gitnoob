@@ -46,6 +46,7 @@ export interface GlobalSettings {
   auto_fetch_minutes: number
   auto_stash: boolean
   show_avatars: boolean
+  check_updates: boolean
 }
 
 export interface Config {
@@ -57,7 +58,13 @@ export interface Config {
 
 export const OPENROUTER_SECRET = 'openrouter'
 
-export type SettingsSection = 'profiles' | 'ai' | 'appearance' | 'shortcuts' | 'behaviour'
+export type SettingsSection =
+  | 'profiles'
+  | 'ai'
+  | 'appearance'
+  | 'shortcuts'
+  | 'behaviour'
+  | 'updates'
 
 const store = reactive({
   config: null as Config | null,

@@ -1,0 +1,192 @@
+# Push a tag, get downloadable apps.
+#
+#   npm run set-version 0.2.0
+#   git commit -am "Version 0.2.0" && git tag v0.2.0 && git push --follow-tags
+#
+# One draft release is made first so the three build jobs have somewhere agreed
+# to upload to — running them without it races, and three jobs each creating
+# "the" release is how you end up with three of them. The draft is published
+# only once all three have finished, so nobody downloads a release that is still
+# missing their platform.
+#
+# The bundles are signed with the updater key, whose public half is in
+# tauri.conf.json. Two secrets have to exist on the repository or the build
+# fails outright, which is the intended failure: an unsigned release is one the
+# updater in every installed copy will refuse.
+#
+#   TAURI_SIGNING_PRIVATE_KEY           the contents of ~/.tauri/gitnoob.key
+#   TAURI_SIGNING_PRIVATE_KEY_PASSWORD  its password, empty if it has none
+
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+# The tag is the whole identity of a release, so a second push of the same one
+# should wait rather than fight the first.
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+permissions:
+  contents: write
+
+jobs:
+  draft:
+    name: Draft the release
+    runs-on: ubuntu-latest
+    outputs:
+      release_id: ${{ steps.create.outputs.result }}
+      version: ${{ steps.version.outputs.version }}
+    steps:
+      - id: version
+        run: echo "version=${GITHUB_REF_NAME#v}" >> "$GITHUB_OUTPUT"
+
+      - id: create
+        uses: actions/github-script@v7
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+        with:
+          result-encoding: string
+          script: |
+            const version = process.env.VERSION
+            const body = [
+              'Download the file for your machine below.',
+              '',
+              `- **macOS** — \`gitnoob_${version}_universal.dmg\`, Intel and Apple Silicon in one.`,
+              `- **Windows** — \`gitnoob_${version}_x64-setup.exe\`.`,
+              `- **Linux** — \`gitnoob_${version}_amd64.AppImage\`, or the \`.deb\` or \`.rpm\` beside it.`,
+              '',
+              'Nothing here is code-signed yet, so the first launch needs a nudge.',
+              'macOS calls the app damaged or from an unidentified developer: right-click',
+              'it in Applications and choose Open, or run',
+              '`xattr -dr com.apple.quarantine /Applications/gitnoob.app`. Windows SmartScreen',
+              'calls it an unrecognised app: More info, then Run anyway.',
+              '',
+              'Already running gitnoob? Settings → Updates will offer this version and',
+              'install it in place.'
+            ].join('\n')
+            const tag = context.ref.replace('refs/tags/', '')
+
+            // Re-running after one platform failed should adopt the draft the
+            // first run left behind, not stop dead on a 422 for a release that
+            // already exists.
+            const releases = await github.paginate(github.rest.repos.listReleases, {
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              per_page: 100
+            })
+            const already = releases.find((one) => one.tag_name === tag)
+            if (already) {
+              core.notice(`Reusing the existing release for ${tag}`)
+              return already.id
+            }
+
+            const { data } = await github.rest.repos.createRelease({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              tag_name: tag,
+              name: `gitnoob ${version}`,
+              body,
+              draft: true,
+              prerelease: false
+            })
+            return data.id
+
+  build:
+    name: ${{ matrix.name }}
+    needs: draft
+    strategy:
+      # One platform failing to build should not take the other two down with
+      # it: two thirds of a release is worth looking at.
+      fail-fast: false
+      matrix:
+        include:
+          # Both Mac architectures in one bundle, so there is one download and
+          # one updater entry rather than a question to answer.
+          - name: macOS (universal)
+            runner: macos-latest
+            targets: aarch64-apple-darwin,x86_64-apple-darwin
+            args: --target universal-apple-darwin
+          # 22.04 rather than the newest Ubuntu: the AppImage carries whatever
+          # glibc it was built against as a floor, and building on the newest
+          # release quietly excludes everyone on an older one.
+          - name: Linux (x86_64)
+            runner: ubuntu-22.04
+            targets: ''
+            args: ''
+          - name: Windows (x86_64)
+            runner: windows-latest
+            targets: ''
+            args: ''
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: GTK and WebKit
+        if: matrix.runner == 'ubuntu-22.04'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libwebkit2gtk-4.1-dev \
+            libjavascriptcoregtk-4.1-dev \
+            libsoup-3.0-dev \
+            libgtk-3-dev \
+            libayatana-appindicator3-dev \
+            librsvg2-dev \
+            libxdo-dev \
+            patchelf \
+            build-essential \
+            file \
+            wget
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.targets }}
+
+      # Keyed per platform and per Cargo.lock; a cold build of this dependency
+      # tree is most of the wall clock.
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri -> target
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - run: npm ci
+
+      # Before the build, not after: the number compiled into the app is what
+      # the updater compares a future release against.
+      - name: Take the version from the tag
+        run: node scripts/set-version.mjs "${{ needs.draft.outputs.version }}"
+
+      - uses: tauri-apps/tauri-action@v0
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+        with:
+          releaseId: ${{ needs.draft.outputs.release_id }}
+          # latest.json, the file every installed copy asks about updates.
+          includeUpdaterJson: true
+          args: ${{ matrix.args }}
+
+  publish:
+    name: Publish
+    needs: [draft, build]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/github-script@v7
+        with:
+          script: |
+            await github.rest.repos.updateRelease({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              release_id: ${{ needs.draft.outputs.release_id }},
+              draft: false,
+              make_latest: 'true'
+            })

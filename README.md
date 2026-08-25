@@ -46,6 +46,10 @@ and merge requests. Tokens go to the OS keychain, never the config file.
 **AI, optional.** With an OpenRouter key: a commit message from the staged diff,
 and conflict resolution per region or per file.
 
+**Keeping itself current.** Every tag builds installers for macOS, Windows and
+Linux on GitHub, and the app installs a newer one over itself from Settings →
+Updates. The download has to carry the project's signature or it is refused.
+
 ## How it works
 
 Reads go through **libgit2** (the `git2` crate): the revision walk, diffs,
@@ -144,6 +148,73 @@ push and its lease included.
 The frontend has no tests yet, which is the largest gap in the project.
 `npm run typecheck` runs, and currently reports 79 errors across seven files —
 mostly indexing that Nuxt's strict settings want guarded.
+
+## Releasing
+
+Push a tag and `.github/workflows/release.yml` builds the app for all three
+platforms and publishes a GitHub release with the installers attached, so
+nobody has to install Rust to run it.
+
+```sh
+npm run set-version 0.2.0     # writes tauri.conf.json and Cargo.toml
+git commit -am "Version 0.2.0"
+git tag v0.2.0
+git push --follow-tags
+```
+
+What comes out: a universal `.dmg` for macOS covering Intel and Apple Silicon,
+an NSIS `.exe` and an `.msi` for Windows, and an `.AppImage`, a `.deb` and an
+`.rpm` for Linux — the Linux build on Ubuntu 22.04 rather than the newest
+release, because the AppImage carries the glibc it was built against as a floor.
+
+A draft release is created before the three build jobs start, so they have an
+agreed place to upload to rather than three of them each creating "the"
+release, and it is published only once all three have finished. A release is
+never half a release.
+
+The version compiled into the app is taken from the tag by
+`scripts/set-version.mjs` before anything is built. It matters more than it
+looks: the updater compares that number against the newest release, and an app
+that reports a version older than the one it is would offer to install itself,
+for ever.
+
+### Signing
+
+Bundles are signed with the project's updater key, and both halves of it must
+be dealt with once:
+
+```sh
+npx tauri signer generate -w ~/.tauri/gitnoob.key
+gh secret set TAURI_SIGNING_PRIVATE_KEY < ~/.tauri/gitnoob.key
+gh secret set TAURI_SIGNING_PRIVATE_KEY_PASSWORD --body ""
+```
+
+The public half lives in `tauri.conf.json` under `plugins.updater.pubkey` and is
+already there. **Keep the private key.** It is not in the repository and cannot
+be recovered from anything that is; lose it and every installed copy refuses
+every future update, and everyone reinstalls by hand.
+
+With the secrets missing the build fails rather than publishing unsigned
+bundles, which is the intended failure: an unsigned bundle is one every
+installed copy would refuse anyway.
+
+Nothing is code-signed with an Apple or Windows certificate yet, so a first
+launch needs a nudge — macOS calls the app damaged, Windows SmartScreen calls it
+unrecognised. Each release says how to get past it.
+
+### Updating in place
+
+Settings → Updates: the version installed, a button to check, and the release
+notes of whatever is on offer before you agree to it. Installing downloads the
+bundle, verifies its signature against the public key compiled into the running
+app, writes it and restarts. On Linux this works from the AppImage; installed
+from the `.deb` or `.rpm`, updating belongs to the package manager.
+
+The app also asks once at launch, quietly — a machine that is offline should not
+be told so every time the window opens — and what it finds turns up as a line in
+the profile menu and a dot beside Updates in settings, rather than as a dialog
+over the repository you came to look at. "Look for a new version at launch" in
+that same page turns it off.
 
 ## Known gaps
 
