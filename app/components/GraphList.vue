@@ -38,13 +38,21 @@ const menu = useContextMenu()
 const drag = useDragDrop()
 
 const ROW = 27
-const LANE = 14
+/**
+ * How far apart two parallel lines sit.
+ *
+ * Wide enough that a node, and the ring an unpushed one wears, clear the lane
+ * next door: lanes closer together than the things drawn on them collapse into
+ * a single smudged column, and a graph that cannot show two lines apart cannot
+ * show what happened.
+ */
+const LANE = 24
 const OVERSCAN = 12
 const MAX_LANES = 14
 /** Half the width of a commit node — the author's face sits inside it. */
-const NODE = 9
+const NODE = 8
 /** Room at the left edge for the first lane's node and its ring. */
-const PAD = 5
+const PAD = 6
 
 const viewport = ref<HTMLElement | null>(null)
 const searchBox = ref<HTMLInputElement | null>(null)
@@ -115,14 +123,22 @@ function face(row: GraphRow) {
   }
 }
 
+/**
+ * One line segment, drawn as a lane change rather than a diagonal.
+ *
+ * A line leaves its lane going straight down and arrives in the next one going
+ * straight down too, with the sideways move happening in between: the eye
+ * follows a column and a step off it far more easily than a slope. Pulling the
+ * control points past the midpoint is what flattens the middle into that step.
+ */
 function path(segment: Segment) {
   const x1 = x(segment.x1)
   const x2 = x(segment.x2)
   const y1 = y(segment.y1)
   const y2 = y(segment.y2)
   if (x1 === x2) return `M${x1},${y1} L${x2},${y2}`
-  const mid = (y1 + y2) / 2
-  return `M${x1},${y1} C${x1},${mid} ${x2},${mid} ${x2},${y2}`
+  const bend = (y2 - y1) * 0.62
+  return `M${x1},${y1} C${x1},${y1 + bend} ${x2},${y2 - bend} ${x2},${y2}`
 }
 
 function onScroll() {
@@ -564,8 +580,9 @@ onUnmounted(() => {
           v-if="store.rows.length"
           :d="`M${x(headLane)},${ROW / 2} L${x(headLane)},${ROW}`"
           :stroke="laneColor(headColor)"
-          stroke-width="1.6"
-          stroke-dasharray="2 2"
+          stroke-width="2"
+          stroke-dasharray="2 3"
+          stroke-linecap="round"
           fill="none"
         />
         <circle
@@ -695,7 +712,8 @@ onUnmounted(() => {
               :d="path(segment)"
               :stroke="laneColor(segment.color)"
               fill="none"
-              stroke-width="1.6"
+              stroke-width="2"
+              stroke-linecap="round"
             />
             <!-- A commit the upstream does not have yet wears a ring. Colour
                  alone will not do it: the first lane is already the accent
