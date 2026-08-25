@@ -143,8 +143,10 @@ onUnmounted(() => window.removeEventListener('keydown', onKey))
   position: fixed;
   min-width: 216px;
   /* Wide enough that the longest action, with its hint beside it, is not
-     ellipsised — a truncated verb is worse than a wide menu. */
-  max-width: 380px;
+     ellipsised — a truncated verb is worse than a wide menu. Branch names can
+     run long, so the ceiling is generous but still leaves the fit() nudge room
+     to keep the menu inside the window. */
+  max-width: min(560px, calc(100vw - 24px));
   padding: 4px;
   background: var(--bg-raised);
   border: 1px solid var(--line);
@@ -187,6 +189,7 @@ onUnmounted(() => window.removeEventListener('keydown', onKey))
   left: 100%;
   z-index: 1;
   min-width: 232px;
+  max-width: min(560px, calc(100vw - 24px));
   margin-left: -3px;
   padding: 4px;
   background: var(--bg-raised);
