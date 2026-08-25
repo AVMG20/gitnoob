@@ -326,6 +326,35 @@ function describeChip(chip: RefChip): string {
   return `${chip.name}${where}`
 }
 
+/** The tooltip on a chip, which also says what double-clicking it would do. */
+function chipTitle(chip: RefChip): string {
+  if (chip.head) return describeChip(chip)
+  return `${describeChip(chip)}\nDouble-click to check out`
+}
+
+/** What checking a ref out would do, said before it happens. */
+function chipHint(chip: RefChip): string {
+  if (chip.kind === 'remote') return 'creates a local branch'
+  if (chip.kind === 'tag') return 'detaches HEAD'
+  return ''
+}
+
+/** The icon standing for where a ref lives. */
+function chipIcon(chip: RefChip) {
+  return chip.kind === 'tag' ? Tag : chip.kind === 'remote' ? Cloud : MonitorDot
+}
+
+/**
+ * Checks a ref out, unless it is already the one we are on.
+ *
+ * Shared by the double-click on a chip and the menu rows, so both refuse the
+ * same no-op rather than one of them running a checkout that changes nothing.
+ */
+function checkoutRef(chip: RefChip) {
+  if (chip.head) return
+  git.checkout(chip.name)
+}
+
 /** The refs a commit carries beyond the one on show. */
 function hiddenRefs(row: GraphRow) {
   return refChips(row).slice(1)
@@ -338,10 +367,10 @@ function refsMenu(event: MouseEvent, row: GraphRow) {
     event,
     chips.map((chip) => ({
       label: chip.name,
-      icon: chip.kind === 'tag' ? Tag : chip.kind === 'remote' ? Cloud : MonitorDot,
-      hint: chip.head ? 'checked out' : chip.remotes.length ? 'pushed' : '',
+      icon: chipIcon(chip),
+      hint: chip.head ? 'checked out' : chipHint(chip) || (chip.remotes.length ? 'pushed' : ''),
       disabled: chip.head,
-      action: () => git.checkout(chip.name)
+      action: () => checkoutRef(chip)
     })),
     `${chips.length} refs on ${row.short}`
   )
@@ -400,9 +429,23 @@ watch(() => store.repo?.path, clearMarks)
 function commitMenu(event: MouseEvent, row: GraphRow) {
   const isHead = row.labels.some((label) => label.kind === 'local' && label.name === store.repo?.head)
   const picked = subjects(row)
+  // A commit carrying refs can be reached by name, and switching to the branch
+  // is nearly always what was meant by "go here" — it keeps HEAD attached,
+  // where checking the commit out by hash does not. So the named refs go above
+  // the hash-level entries, without replacing them.
+  const namedCheckouts = refChips(row)
+    .filter((chip) => !chip.head)
+    .map((chip) => ({
+      label: `Checkout ${chip.name}`,
+      icon: chipIcon(chip),
+      hint: chipHint(chip),
+      action: () => checkoutRef(chip)
+    }))
   menu.show(
     event,
     [
+      ...namedCheckouts,
+      ...(namedCheckouts.length ? [{ separator: true, label: '' }] : []),
       // Branching is the safe way to work from an old commit, so it goes first:
       // checking the commit out directly detaches HEAD, and anything committed
       // afterwards belongs to no branch.
@@ -704,8 +747,9 @@ onUnmounted(() => {
               v-for="chip in refChips(item.row).slice(0, 1)"
               :key="chip.key"
               class="chip"
-              :class="[`chip-${chip.kind}`, { 'chip-current': chip.head }]"
-              :title="describeChip(chip)"
+              :class="[`chip-${chip.kind}`, { 'chip-current': chip.head, 'chip-live': !chip.head }]"
+              :title="chipTitle(chip)"
+              @dblclick.stop="checkoutRef(chip)"
             >
               <Check v-if="chip.head" :size="11" :stroke-width="3" class="glyph" />
               <span class="truncate">{{ chip.name }}</span>
@@ -1187,6 +1231,28 @@ onUnmounted(() => {
   max-width: 180px;
   overflow: hidden;
   white-space: nowrap;
+  /* Double-clicking a chip checks it out; without this the second click
+     selects the name instead of reading as a gesture. */
+  user-select: none;
+}
+
+/* A ref that is not the one we are on can be checked out from here, so it
+   answers the pointer: the hand and a lift in brightness say the name is a
+   way in, not a caption. The chip's own colour is left alone — the hover is
+   an outline and a step up in weight, so a branch, a remote and a tag each
+   stay recognisable while lit. */
+.chip-live {
+  cursor: pointer;
+  transition: box-shadow 90ms ease, filter 90ms ease;
+}
+
+.chip-live:hover {
+  filter: brightness(1.28);
+  box-shadow: inset 0 0 0 1px currentColor;
+}
+
+.chip-live:active {
+  filter: brightness(1.1);
 }
 
 /* The branch you are on: brighter, outlined, and ticked. Everything else on
