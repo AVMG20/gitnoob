@@ -304,13 +304,16 @@ pub async fn me(state: &AppState) -> Result<ForgeUser, String> {
     // user's own face appears in the graph without a lookup that would miss.
     if let Some(picture) = &avatar {
         let config = state.config();
-        for address in [
-            body.get("email").and_then(|v| v.as_str()).map(String::from),
-            config.active().and_then(|profile| profile.git_email.clone()),
-        ]
-        .into_iter()
-        .flatten()
-        {
+        // Every address the account admits to. GitLab keeps three — the one it
+        // logs in with, the one it shows publicly, and the one it writes into
+        // commits — and it is the last of those that the history is drawn from.
+        let mut addresses: Vec<String> = ["email", "commit_email", "public_email"]
+            .iter()
+            .filter_map(|field| body.get(*field).and_then(|v| v.as_str()))
+            .map(String::from)
+            .collect();
+        addresses.extend(config.active().and_then(|profile| profile.git_email.clone()));
+        for address in addresses {
             avatar::note(&address, picture);
         }
     }

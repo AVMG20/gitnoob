@@ -24,6 +24,12 @@ const SIZE: u32 = 48;
 /// screen that may be sharper still.
 const FACE: u32 = 64;
 
+/// Bumped whenever the lookup learns a new place to look, so that "nothing
+/// there" answers recorded by an older, shorter search are not trusted: the
+/// address that had no picture last week may simply not have been asked of the
+/// forge yet.
+const LOOKUP: u32 = 2;
+
 /// How long to believe that an email has no picture before asking again. A
 /// person who signs up for a gravatar today should not have to reinstall to be
 /// seen, and a miss costs one request a week either way.
@@ -81,7 +87,7 @@ pub async fn find(state: &AppState, email: &str) -> Result<Option<String>, Strin
     let digest = hex(&Sha256::digest(email.as_bytes()));
     let cache = state.config_dir().join("avatars");
     let hit = cache.join(format!("{digest}.img"));
-    let miss = cache.join(format!("{digest}.none"));
+    let miss = cache.join(format!("{digest}.none{LOOKUP}"));
 
     if let Ok(bytes) = fs::read(&hit) {
         let url = data_url(&bytes);
@@ -170,7 +176,7 @@ async fn fetch(
         .build()
         .ok()?;
 
-    if let Some(url) = github_url(email) {
+    if let Some(url) = github_url(email).or_else(|| known_url(email)) {
         if let Some(bytes) = image(&client, &url).await {
             return Some(bytes);
         }
@@ -303,6 +309,22 @@ fn github_url(email: &str) -> Option<String> {
     }
 }
 
+/// Addresses that write commits but belong to no account anyone can look up.
+///
+/// A tool that commits on your behalf signs its work with a shared address the
+/// forges know nothing about, so every lookup misses and the history fills with
+/// initials for something that has a perfectly good face. There are few enough
+/// of these to name them.
+fn known_url(email: &str) -> Option<String> {
+    let url = match email {
+        // The Claude GitHub app, which is what "Claude <noreply@anthropic.com>"
+        // is in every repository that has one of its commits.
+        "noreply@anthropic.com" => "https://avatars.githubusercontent.com/in/1236702",
+        _ => return None,
+    };
+    Some(format!("{url}?s={SIZE}"))
+}
+
 /// Fetches a URL and keeps the body only if it is an image of a sane size.
 async fn image(client: &reqwest::Client, url: &str) -> Option<Vec<u8>> {
     let response = client.get(url).send().await.ok()?;
@@ -376,6 +398,15 @@ mod tests {
             Some(format!("https://github.com/octocat.png?size={SIZE}"))
         );
         assert_eq!(github_url("someone@example.com"), None);
+    }
+
+    #[test]
+    fn a_tool_that_commits_has_a_face_of_its_own() {
+        assert_eq!(
+            known_url("noreply@anthropic.com"),
+            Some(format!("https://avatars.githubusercontent.com/in/1236702?s={SIZE}"))
+        );
+        assert_eq!(known_url("someone@example.com"), None);
     }
 
     #[test]

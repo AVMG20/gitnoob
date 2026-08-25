@@ -1,6 +1,7 @@
 import { invoke } from '@tauri-apps/api/core'
 import { computed, reactive } from 'vue'
 import type { ForgeKind } from '~/composables/useConfig'
+import { forgetAvatars } from '~/composables/useAvatars'
 
 export interface RepoSlug {
   host: string
@@ -94,6 +95,10 @@ export function useForge() {
     store.me = null
     if (!id || !store.status?.has_token || store.status.kind === 'none') return
     store.me = await invoke<ForgeUser>('forge_me').catch(() => null)
+    // Asking who the token belongs to also tells the other side which commit
+    // addresses that face answers for. Rows drawn before the answer arrived
+    // have already been told there is no picture, so let them ask again.
+    if (store.me?.avatar) forgetAvatars()
   }
 
   /** The profile a lookup belongs to: its forge and host, since either changing
