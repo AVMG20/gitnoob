@@ -780,10 +780,26 @@ textarea {
   color: var(--text-dim);
 }
 
-/* Syntax colours in the spirit of Darcula, the JetBrains dark scheme, so code
-   in a diff reads the way it does in the editor it came from. The light themes
-   override the palette below with JetBrains' light scheme. */
-:root {
+/* Syntax colours.
+ *
+ * Ten variables, and a scheme is a set of values for them — chosen in Settings,
+ * and named after wherever anyone would recognise it from. Each states its dark
+ * values and then its light ones under `[data-light]`, which <html> carries
+ * whenever the app theme is a light one: a scheme has to hold under all
+ * eighteen themes, not only the dark ones, and Darcula's orange keywords on
+ * white is not a scheme anybody chose.
+ *
+ * `--hl-property` and `--hl-punctuation` are deliberately close to the body
+ * text rather than equal to it. They cover the commonest tokens in most
+ * languages, and colouring those as loudly as a keyword turns a file into
+ * confetti — but leaving them at the text colour exactly is what made a file of
+ * mostly property access read as uncoloured.
+ */
+
+/* Darcula, the JetBrains dark scheme, with JetBrains' light one beside it. This
+   is what the app shipped with before there was a choice. */
+:root,
+[data-syntax='theme'] {
   --hl-keyword: #cc7832;
   --hl-string: #6a8759;
   --hl-number: #6897bb;
@@ -798,11 +814,8 @@ textarea {
   --hl-punctuation: #a9b7c6;
 }
 
-[data-theme='paper'],
-[data-theme='mist'],
-[data-theme='sand'],
-[data-theme='frost'],
-[data-theme='lilac'] {
+[data-light],
+[data-light][data-syntax='theme'] {
   --hl-keyword: #0033b3;
   --hl-string: #067d17;
   --hl-number: #1750eb;
@@ -815,6 +828,212 @@ textarea {
   --hl-deletion: #cc5b5b;
   --hl-property: #2b3138;
   --hl-punctuation: #3b4149;
+}
+
+/* VS Code — Dark+ and Light+. */
+[data-syntax='vscode'] {
+  --hl-keyword: #569cd6;
+  --hl-string: #ce9178;
+  --hl-number: #b5cea8;
+  --hl-comment: #6a9955;
+  --hl-title: #dcdcaa;
+  --hl-attr: #9cdcfe;
+  --hl-meta: #c586c0;
+  --hl-name: #4ec9b0;
+  --hl-built_in: #4ec9b0;
+  --hl-deletion: #d16969;
+  --hl-property: #9cdcfe;
+  --hl-punctuation: #d4d4d4;
+}
+
+[data-light][data-syntax='vscode'] {
+  --hl-keyword: #0000ff;
+  --hl-string: #a31515;
+  --hl-number: #098658;
+  --hl-comment: #008000;
+  --hl-title: #795e26;
+  --hl-attr: #001080;
+  --hl-meta: #af00db;
+  --hl-name: #267f99;
+  --hl-built_in: #267f99;
+  --hl-deletion: #b31d28;
+  --hl-property: #001080;
+  --hl-punctuation: #24292e;
+}
+
+/* GitKraken — cooler and flatter than the editors, which is what makes a diff
+   read as a diff rather than as a file that happens to be open. */
+[data-syntax='gitkraken'] {
+  --hl-keyword: #8ab4f8;
+  --hl-string: #a5d6a7;
+  --hl-number: #f5c26b;
+  --hl-comment: #7c8895;
+  --hl-title: #e0b0ff;
+  --hl-attr: #80cbc4;
+  --hl-meta: #f5c26b;
+  --hl-name: #80cbc4;
+  --hl-built_in: #b39ddb;
+  --hl-deletion: #ef9a9a;
+  --hl-property: #cfd8dc;
+  --hl-punctuation: #b0bec5;
+}
+
+[data-light][data-syntax='gitkraken'] {
+  --hl-keyword: #1a5fb4;
+  --hl-string: #2e7d32;
+  --hl-number: #a05a00;
+  --hl-comment: #78868f;
+  --hl-title: #6a1b9a;
+  --hl-attr: #00695c;
+  --hl-meta: #a05a00;
+  --hl-name: #00695c;
+  --hl-built_in: #4527a0;
+  --hl-deletion: #c62828;
+  --hl-property: #2f3b42;
+  --hl-punctuation: #45525c;
+}
+
+/* GitHub — what a diff looks like in the pull request it came from. */
+[data-syntax='github'] {
+  --hl-keyword: #ff7b72;
+  --hl-string: #a5d6ff;
+  --hl-number: #79c0ff;
+  --hl-comment: #8b949e;
+  --hl-title: #d2a8ff;
+  --hl-attr: #79c0ff;
+  --hl-meta: #ffa657;
+  --hl-name: #7ee787;
+  --hl-built_in: #ffa657;
+  --hl-deletion: #ffa198;
+  --hl-property: #79c0ff;
+  --hl-punctuation: #c9d1d9;
+}
+
+[data-light][data-syntax='github'] {
+  --hl-keyword: #cf222e;
+  --hl-string: #0a3069;
+  --hl-number: #0550ae;
+  --hl-comment: #6e7781;
+  --hl-title: #8250df;
+  --hl-attr: #0550ae;
+  --hl-meta: #953800;
+  --hl-name: #116329;
+  --hl-built_in: #953800;
+  --hl-deletion: #82071e;
+  --hl-property: #0550ae;
+  --hl-punctuation: #24292f;
+}
+
+/* One Dark, from Atom. */
+[data-syntax='onedark'] {
+  --hl-keyword: #c678dd;
+  --hl-string: #98c379;
+  --hl-number: #d19a66;
+  --hl-comment: #5c6370;
+  --hl-title: #61afef;
+  --hl-attr: #d19a66;
+  --hl-meta: #e5c07b;
+  --hl-name: #e06c75;
+  --hl-built_in: #e5c07b;
+  --hl-deletion: #e06c75;
+  --hl-property: #e06c75;
+  --hl-punctuation: #abb2bf;
+}
+
+[data-light][data-syntax='onedark'] {
+  --hl-keyword: #a626a4;
+  --hl-string: #50a14f;
+  --hl-number: #986801;
+  --hl-comment: #a0a1a7;
+  --hl-title: #4078f2;
+  --hl-attr: #986801;
+  --hl-meta: #c18401;
+  --hl-name: #e45649;
+  --hl-built_in: #c18401;
+  --hl-deletion: #e45649;
+  --hl-punctuation: #383a42;
+  --hl-property: #e45649;
+}
+
+/* Monokai, from Sublime Text. Its light variant is not Monokai — there has
+   never been one — so it is the same hues taken down onto white. */
+[data-syntax='monokai'] {
+  --hl-keyword: #f92672;
+  --hl-string: #e6db74;
+  --hl-number: #ae81ff;
+  --hl-comment: #75715e;
+  --hl-title: #a6e22e;
+  --hl-attr: #fd971f;
+  --hl-meta: #fd971f;
+  --hl-name: #a6e22e;
+  --hl-built_in: #66d9ef;
+  --hl-deletion: #f92672;
+  --hl-property: #66d9ef;
+  --hl-punctuation: #f8f8f2;
+}
+
+[data-light][data-syntax='monokai'] {
+  --hl-keyword: #c2185b;
+  --hl-string: #8a6d00;
+  --hl-number: #6a3ab2;
+  --hl-comment: #8a8560;
+  --hl-title: #4c8b0b;
+  --hl-attr: #b25000;
+  --hl-meta: #b25000;
+  --hl-name: #4c8b0b;
+  --hl-built_in: #0f7c8c;
+  --hl-deletion: #c2185b;
+  --hl-property: #0f7c8c;
+  --hl-punctuation: #2b2b28;
+}
+
+/* Solarized, both halves of it — the one scheme here that was designed as a
+   pair rather than given a light counterpart afterwards. */
+[data-syntax='solarized'] {
+  --hl-keyword: #859900;
+  --hl-string: #2aa198;
+  --hl-number: #d33682;
+  --hl-comment: #657b83;
+  --hl-title: #268bd2;
+  --hl-attr: #b58900;
+  --hl-meta: #cb4b16;
+  --hl-name: #268bd2;
+  --hl-built_in: #b58900;
+  --hl-deletion: #dc322f;
+  --hl-property: #93a1a1;
+  --hl-punctuation: #93a1a1;
+}
+
+[data-light][data-syntax='solarized'] {
+  --hl-keyword: #859900;
+  --hl-string: #2aa198;
+  --hl-number: #d33682;
+  --hl-comment: #93a1a1;
+  --hl-title: #268bd2;
+  --hl-attr: #b58900;
+  --hl-meta: #cb4b16;
+  --hl-name: #268bd2;
+  --hl-built_in: #b58900;
+  --hl-deletion: #dc322f;
+  --hl-property: #586e75;
+  --hl-punctuation: #586e75;
+}
+
+/* Every token the body colour, for reading a diff as a terminal shows it. */
+[data-syntax='plain'],
+[data-light][data-syntax='plain'] {
+  --hl-keyword: var(--text);
+  --hl-string: var(--text);
+  --hl-number: var(--text);
+  --hl-comment: var(--text-dim);
+  --hl-title: var(--text);
+  --hl-attr: var(--text);
+  --hl-meta: var(--text);
+  --hl-name: var(--text);
+  --hl-built_in: var(--text);
+  --hl-deletion: var(--text);
+  --hl-property: var(--text);
+  --hl-punctuation: var(--text);
 }
 
 /* Which token wears which colour.
