@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { onMounted } from 'vue'
+import ContextMenu from './ContextMenu.vue'
 import ReviewPane from './ReviewPane.vue'
 import ReviewFilesPanel from './ReviewFilesPanel.vue'
 import { useReview } from '~/composables/useReview'
@@ -278,6 +279,9 @@ onMounted(() => {
   <div class="lab">
     <ReviewPane />
     <ReviewFilesPanel v-if="store.tab === 'files'" class="panel" />
+    <!-- The shell hosts this in the real app; without it the menus have
+         nowhere to draw. -->
+    <ContextMenu />
   </div>
 </template>
 

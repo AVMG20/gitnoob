@@ -344,7 +344,7 @@ function fileMenu(event: MouseEvent, path: string) {
           <span class="branches mono faint">
             {{ review.source_branch }} <ArrowRight :size="10" /> {{ review.target_branch }}
           </span>
-          <button class="link" title="Open on the forge" @click="forge.open(review.url)">
+          <button class="link" :title="`Open on ${forge.forgeName.value}`" @click="forge.open(review.url)">
             <ExternalLink :size="12" />
           </button>
         </div>

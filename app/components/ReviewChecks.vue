@@ -61,7 +61,7 @@ function refresh() {
         <button
           v-if="check.url"
           class="open"
-          title="Read the run on the forge"
+          :title="`Read the run on ${forge.forgeName.value}`"
           @click="forge.open(check.url)"
         >
           <ExternalLink :size="12" />

@@ -185,6 +185,13 @@ export function useForge() {
   const shortLabel = computed(() => (store.status?.kind === 'gitlab' ? 'MR' : 'PR'))
   /** How the forge itself writes a review's number: `!38` on GitLab, `#38` on GitHub. */
   const sigil = computed(() => (store.status?.kind === 'gitlab' ? '!' : '#'))
+  /** What to call it out loud: "the forge" is what this app calls it, not what
+      anybody who is about to click through to it calls it. */
+  const forgeName = computed(() => {
+    if (store.status?.kind === 'gitlab') return 'GitLab'
+    if (store.status?.kind === 'github') return 'GitHub'
+    return 'the forge'
+  })
 
   async function refreshStatus() {
     store.status = await invoke<ForgeStatus>('forge_status').catch(() => null)
@@ -361,6 +368,7 @@ export function useForge() {
     label,
     shortLabel,
     sigil,
+    forgeName,
     refreshStatus,
     loadFaces,
     loadReviews,

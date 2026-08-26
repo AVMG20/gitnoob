@@ -158,7 +158,7 @@ function more(event: MouseEvent) {
         action: () => void copyText(current.source_branch, 'Branch')
       },
       {
-        label: 'Open on the forge',
+        label: `Open on ${forge.forgeName.value}`,
         icon: ExternalLink,
         action: () => void forge.open(current.url)
       }
@@ -201,7 +201,7 @@ function more(event: MouseEvent) {
       >
         <RotateCw :size="14" />
       </button>
-      <button class="icon" title="Open on the forge" @click="forge.open(one.url)">
+      <button class="icon" :title="`Open on ${forge.forgeName.value}`" @click="forge.open(one.url)">
         <ExternalLink :size="14" />
       </button>
       <button class="icon" title="Check out the branch" @click="checkout">

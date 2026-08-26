@@ -346,7 +346,7 @@ watch(
       </dl>
       <button class="forge-link" @click="forge.open(detail.url)">
         <ExternalLink :size="11" />
-        View on {{ forge.store.status?.kind === 'gitlab' ? 'GitLab' : 'GitHub' }}
+        View on {{ forge.forgeName.value }}
       </button>
     </section>
   </aside>
