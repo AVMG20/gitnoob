@@ -71,7 +71,9 @@ const store = reactive({
   /** Which secrets exist, keyed by keychain key. Never holds a value. */
   secrets: {} as Record<string, boolean>,
   settingsOpen: false,
-  settingsSection: 'profiles' as SettingsSection
+  settingsSection: 'profiles' as SettingsSection,
+  /** The project a click asked for, held only until the open lands. */
+  opening: null as string | null
 })
 
 function apply(config: Config) {
@@ -86,6 +88,18 @@ export function useConfig() {
   )
   const projects = computed(() => profile.value?.projects ?? [])
   const activeProject = computed(() => profile.value?.active_project ?? null)
+  /**
+   * Which tab to draw as the current one.
+   *
+   * The real answer lives in the config, and the config only says so once the
+   * repository has been opened and the file re-read — two round trips after the
+   * click. The reads are quick, but the strip sat on the old tab until they
+   * landed, which reads as a slow app however fast the work behind it was. So
+   * the tab a click asked for is drawn as current from the moment of the click,
+   * and the config takes over when it catches up. A failed open clears the
+   * intent and the highlight snaps back to whatever is really open.
+   */
+  const selectedProject = computed(() => store.opening ?? activeProject.value)
   const settings = computed(() => store.config?.global ?? null)
 
   async function load() {
@@ -118,7 +132,17 @@ export function useConfig() {
     profile,
     projects,
     activeProject,
+    selectedProject,
     settings,
+
+    /** Draws a tab as current straight away, before its repository is open. */
+    beginOpen(path: string) {
+      store.opening = path
+    },
+    /** The open has landed, or failed: the config is the answer again. */
+    endOpen() {
+      store.opening = null
+    },
     load,
     refreshSecrets,
     forgeSecretKey,

@@ -74,7 +74,10 @@ async function close(path: string) {
 function step(by: number) {
   const paths = config.projects.value.map((p) => p.path)
   if (paths.length < 2) return
-  const at = paths.indexOf(config.activeProject.value ?? '')
+  // From the tab on screen rather than the one the config has caught up to, so
+  // holding the key steps one tab per press instead of bouncing off whichever
+  // open is still in flight.
+  const at = paths.indexOf(config.selectedProject.value ?? '')
   const next = paths[(at + by + paths.length) % paths.length]
   if (next) emit('open', next)
 }
@@ -89,7 +92,7 @@ useShortcuts({
   'project.previous': () => step(-1),
   'project.nth': (index: number) => {
     const path = config.projects.value[index]?.path
-    if (path && path !== config.activeProject.value) emit('open', path)
+    if (path && path !== config.selectedProject.value) emit('open', path)
   }
 })
 
@@ -117,7 +120,10 @@ function onDrop(target: string) {
         v-for="project in config.projects.value"
         :key="project.path"
         class="tab"
-        :class="{ on: project.path === config.activeProject.value, drag: dragging === project.path }"
+        :class="{
+          on: project.path === config.selectedProject.value,
+          drag: dragging === project.path
+        }"
         :title="project.path"
         draggable="true"
         @click="emit('open', project.path)"

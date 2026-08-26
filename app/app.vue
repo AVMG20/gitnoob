@@ -79,8 +79,16 @@ const settings = computed(() => config.settings.value)
 
 /** Opens a project and does the on-open housekeeping GitKraken does. */
 async function openProject(path: string) {
-  if (!(await git.openRepo(path))) return
-  await config.reload()
+  // Before the first await, so the tab strip moves in the same frame as the
+  // click rather than two round trips later. The work below is quick; it was
+  // waiting for it to finish that made switching feel slow.
+  config.beginOpen(path)
+  try {
+    if (!(await git.openRepo(path))) return
+    await config.reload()
+  } finally {
+    config.endOpen()
+  }
   await Promise.all([forge.refreshStatus(), ai.refreshStatus()])
   forge.loadReviews()
   // Fetch straight away so the ahead/behind counts on screen are true rather
