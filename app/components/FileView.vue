@@ -349,11 +349,13 @@ const ROW = CODE_ROW
   user-select: none;
 }
 
+/* Never wrapped. Every row is exactly one line tall, because that is what the
+   list scrolling this counts in — so a line long enough to wrap drew its
+   second half on top of the row below. Long lines run off to the right
+   instead, where the hidden gauge above has already made room for them. */
 .text {
   flex: 1;
-  min-width: 0;
   padding-right: 12px;
-  white-space: pre-wrap;
-  word-break: break-word;
+  white-space: pre;
 }
 </style>
