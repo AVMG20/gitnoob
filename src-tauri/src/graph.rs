@@ -320,6 +320,15 @@ fn plot(commits: &[Commit], anchor: Option<Oid>) -> Vec<Place> {
 
         let width = lanes_before.len().max(lanes_after.len()).max(lane + 1);
 
+        // Lines that live entirely past the right-hand edge of the column are
+        // never seen, and a repository with a few hundred remote branches has
+        // far more of those than of the ones on show — fifty-odd segments a row
+        // where a dozen are drawn. Dropping them here rather than in the
+        // frontend keeps them out of the payload as well as out of the
+        // document. A line with one end inside the edge is kept whole: it is
+        // drawn running off the side, which is what it does.
+        segments.retain(|s| s.x1 < DRAWN_LANES || s.x2 < DRAWN_LANES);
+
         places.push(Place {
             lane,
             color,
@@ -386,6 +395,12 @@ fn trunk_tip(repo: &git2::Repository) -> Option<Oid> {
     }
     repo.head().ok().and_then(|h| h.target())
 }
+
+/// How many lanes the frontend has room for. Kept in step with `MAX_LANES`
+/// there, which is where the column's width is actually decided: the svg is
+/// drawn that many lanes wide whatever the user does to the column, so a line
+/// beyond it has nowhere to appear.
+const DRAWN_LANES: usize = 14;
 
 /// How many colours the frontend cycles through. Kept in step with
 /// `LANE_COLORS` there, which is where they are actually chosen.

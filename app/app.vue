@@ -160,8 +160,21 @@ onMounted(async () => {
   window.addEventListener('focus', onFocus)
 })
 
+/** When the window was last read on being focused. */
+let lastFocusRead = 0
+
+/**
+ * Cmd-tabbing through windows, and a dialog closing, both fire focus — several
+ * times a second in the first case. Reading the whole repository each time is
+ * work nobody asked for, and one read per visit answers the question just as
+ * well.
+ */
 function onFocus() {
-  if (!store.busy && store.repo) git.refresh()
+  if (store.busy || !store.repo) return
+  const now = Date.now()
+  if (now - lastFocusRead < 2000) return
+  lastFocusRead = now
+  git.refresh()
 }
 
 onUnmounted(() => {

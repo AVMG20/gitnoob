@@ -355,13 +355,46 @@ const reviews = computed(() =>
   )
 )
 
-/** How many remote branches the filter left, across every remote. */
-const remoteCount = computed(() =>
-  remoteGroups.value.reduce((sum, group) => sum + group.branches.length, 0)
-)
+/** One remote branch, as the rows need it. */
+interface RemoteRef {
+  name: string
+  oid: string
+}
 
+/**
+ * How many remote branches are handed over at a time.
+ *
+ * A project of any age has hundreds of them and a busy one has thousands —
+ * fourteen hundred is not unusual — and every one of those rows is a piece of
+ * document to build, lay out and then rebuild the next time anything in the
+ * sidebar changes. Put on screen all at once they cost more than everything
+ * else the window does put together: a tenth of a second on every tab switch,
+ * on every refresh, and on every letter typed into the filter.
+ *
+ * So the list hands over a hundred and asks for the next hundred when the
+ * scroll approaches the end. Only the drawing is rationed: the filter still
+ * runs over every branch the repository has, because it searches the branches
+ * and not the rows.
+ */
+const REMOTE_PAGE = 100
+
+const remoteShown = ref(REMOTE_PAGE)
+
+// A different repository is a different list, and it starts at the top. A
+// refresh is not: it would drag someone who had scrolled back to the first
+// hundred while they were reading.
+watch(repoKey, () => {
+  remoteShown.value = REMOTE_PAGE
+})
+
+// Neither is typing, but there the list really is new.
+watch(filter, () => {
+  remoteShown.value = REMOTE_PAGE
+})
+
+/** Every remote branch the filter left, grouped by the remote it is on. */
 const remoteGroups = computed(() => {
-  const groups = new Map<string, { name: string; oid: string }[]>()
+  const groups = new Map<string, RemoteRef[]>()
   for (const branch of store.refs?.remotes ?? []) {
     if (!match(branch.name)) continue
     const list = groups.get(branch.remote) ?? []
@@ -370,6 +403,41 @@ const remoteGroups = computed(() => {
   }
   return [...groups.entries()].map(([remote, branches]) => ({ remote, branches }))
 })
+
+/** How many remote branches the filter left, across every remote. */
+const remoteCount = computed(() =>
+  remoteGroups.value.reduce((sum, group) => sum + group.branches.length, 0)
+)
+
+/**
+ * The rows to draw: the first `remoteShown` branches, foldered.
+ *
+ * Worked out here rather than in the template, where it sat inside the `v-for`
+ * that drew it — so every render of the sidebar, whatever had changed, re-sorted
+ * and re-walked every branch in the repository before drawing a single row.
+ */
+const remoteShelves = computed(() => {
+  let budget = remoteShown.value
+  const shelves: { remote: string; rows: Shelf<RemoteRef>[] }[] = []
+  for (const group of remoteGroups.value) {
+    if (budget <= 0) break
+    const branches = group.branches.slice(0, budget)
+    budget -= branches.length
+    shelves.push({ remote: group.remote, rows: shelve(branches, `remote:${group.remote}`) })
+  }
+  return shelves
+})
+
+/** How many the filter found but the list is not drawing yet. */
+const remoteMore = computed(() => Math.max(0, remoteCount.value - remoteShown.value))
+
+/** Asks for the next hundred once the end of the list is nearly in view. */
+function onRemoteScroll(event: Event) {
+  if (!remoteMore.value) return
+  const list = event.currentTarget as HTMLElement
+  if (list.scrollTop + list.clientHeight < list.scrollHeight - 200) return
+  remoteShown.value += REMOTE_PAGE
+}
 
 // --- drag and drop between branches
 
@@ -861,8 +929,13 @@ function stashMenu(event: MouseEvent, index: number, message: string) {
           <Plus :size="13" />
         </button>
       </div>
-      <div v-if="open.remotes" class="group" :style="sizeOf('remotes')">
-        <div v-for="group in remoteGroups" :key="group.remote">
+      <div
+        v-if="open.remotes"
+        class="group"
+        :style="sizeOf('remotes')"
+        @scroll.passive="onRemoteScroll"
+      >
+        <div v-for="group in remoteShelves" :key="group.remote">
           <div
             class="remote-name"
             :title="group.remote"
@@ -870,7 +943,7 @@ function stashMenu(event: MouseEvent, index: number, message: string) {
           >
             <Cloud :size="11" /> {{ group.remote }}
           </div>
-          <template v-for="row in shelve(group.branches, `remote:${group.remote}`)" :key="row.key">
+          <template v-for="row in group.rows" :key="row.key">
             <button
               v-if="row.kind === 'folder'"
               class="row folder indent"
@@ -904,6 +977,11 @@ function stashMenu(event: MouseEvent, index: number, message: string) {
             </div>
           </template>
         </div>
+        <!-- The scroll asks for the next hundred on its own; this is for a
+             section too short to scroll, and for saying how many are left. -->
+        <button v-if="remoteMore" class="row more" @click="remoteShown += REMOTE_PAGE">
+          <span class="name faint">{{ remoteMore }} more…</span>
+        </button>
         <p v-if="!remoteGroups.length" class="none faint">No remote branches.</p>
       </div>
       <div
@@ -1314,6 +1392,15 @@ function stashMenu(event: MouseEvent, index: number, message: string) {
 .row.on .name {
   color: var(--text);
   font-weight: 600;
+}
+
+/* Sits where the next branch would, and reads as a note rather than as one
+   more branch: the list carries on below it once it is asked to. */
+.row.more {
+  width: 100%;
+  padding-left: var(--indent-2);
+  cursor: pointer;
+  font-style: italic;
 }
 
 /* Dimmed on purpose: the branch is still listed, still right-clickable, and

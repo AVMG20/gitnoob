@@ -1,5 +1,6 @@
 import { invoke } from '@tauri-apps/api/core'
-import { reactive, ref } from 'vue'
+import { markRaw, reactive, ref } from 'vue'
+import { useConfig } from './useConfig'
 
 /**
  * What the platform calls its file manager. The backend already opens the right
@@ -315,7 +316,21 @@ export interface LogLine {
   text: string
 }
 
+/** How many commits a page is, before the settings have been read. */
 const COMMIT_PAGE = 500
+
+/**
+ * How many commits to ask for at a time.
+ *
+ * The backend takes this setting into account only when the frontend sends no
+ * limit at all, and the frontend always sent one — so "commits per page" in
+ * settings moved nothing. It is read here instead, which is where the number
+ * is actually decided.
+ */
+function pageSize(): number {
+  const size = useConfig().settings.value?.graph_page_size
+  return size && size > 0 ? size : COMMIT_PAGE
+}
 
 /** Stands in for the working tree in `store.selected`. */
 export const WIP = '__working__' 
@@ -377,6 +392,83 @@ Object.defineProperty(fields, 'busy', {
  */
 const store = fields as typeof fields & { readonly busy: boolean }
 
+/**
+ * Keeps a backend payload out of Vue's reach.
+ *
+ * A graph page for a busy repository is a few hundred rows carrying tens of
+ * thousands of line segments between them, and a reactive store turns every
+ * one of those objects into a proxy on the way to the screen. Nothing here is
+ * ever edited in place — each read replaces the last wholesale — so the
+ * tracking buys nothing and the raw object is handed over as it arrived.
+ */
+function raw<T>(value: T): T {
+  return value && typeof value === 'object' ? (markRaw(value as object) as T) : value
+}
+
+/**
+ * What one repository was last seen holding.
+ *
+ * Two jobs. Switching tabs paints the old picture at once instead of leaving
+ * the window empty for as long as seven backend reads take, and a refresh
+ * compares what came back against what is already drawn — because a refresh
+ * runs on every window focus and every write under `.git`, and almost always
+ * reads back exactly what is on screen already.
+ */
+interface Snapshot {
+  info: RepoInfo
+  refs: RefTree | null
+  status: WorkingStatus | null
+  rows: GraphRow[]
+  hasMore: boolean
+  limit: number
+  stashes: StashEntry[]
+  history: Stacks
+  progress: InProgress | null
+  /** Each of the above serialized, so the next read can tell what moved. */
+  seen: Record<string, string>
+}
+
+const snapshots = new Map<string, Snapshot>()
+
+/** A big repository's snapshot is a megabyte or so; a handful is plenty. */
+const SNAPSHOT_LIMIT = 8
+
+function remember(path: string, snapshot: Snapshot) {
+  // Re-inserting moves it to the end, so the one dropped is the least recently
+  // looked at rather than the one opened longest ago.
+  snapshots.delete(path)
+  snapshots.set(path, snapshot)
+  while (snapshots.size > SNAPSHOT_LIMIT) {
+    const oldest = snapshots.keys().next().value
+    if (oldest === undefined) break
+    snapshots.delete(oldest)
+  }
+}
+
+/** Empties everything a refresh fills, leaving the view state alone. */
+function clearData() {
+  store.refs = null
+  store.status = null
+  store.rows = []
+  store.hasMore = false
+  store.limit = pageSize()
+  store.stashes = []
+  store.history = { undo: [], redo: [] }
+  store.progress = null
+}
+
+/** Puts a remembered snapshot on screen, whole. */
+function paint(snapshot: Snapshot) {
+  store.refs = snapshot.refs
+  store.status = snapshot.status
+  store.rows = snapshot.rows
+  store.hasMore = snapshot.hasMore
+  store.limit = snapshot.limit
+  store.stashes = snapshot.stashes
+  store.history = snapshot.history
+  store.progress = snapshot.progress
+}
+
 function note(text: string, level: LogLevel = 'info') {
   if (!text.trim()) return
   store.log.unshift({ id: ++logSeq.value, at: Date.now(), level, text: text.trim() })
@@ -413,16 +505,9 @@ async function guard<T>(label: string, fn: () => Promise<T>): Promise<T | null> 
  */
 function forget() {
   store.repo = null
-  store.rows = []
-  store.refs = null
-  store.status = null
-  store.stashes = []
+  clearData()
   store.detail = null
   store.selected = WIP
-  store.hasMore = false
-  store.limit = COMMIT_PAGE
-  store.history = { undo: [], redo: [] }
-  store.progress = null
   store.pushBlocked = null
   store.resolving = null
   store.revealing = null
@@ -437,7 +522,6 @@ export function useGit() {
     )
     if (!info) return false
     store.repo = info
-    store.limit = COMMIT_PAGE
     store.selected = WIP
     store.detail = null
     // Everything below is about the repository that was open, and would
@@ -447,6 +531,15 @@ export function useGit() {
     store.viewer = null
     store.resolving = null
     store.query = ''
+
+    // Whatever this tab was showing last time, back on screen before the reads
+    // below are even sent. A tab that has not been opened this session starts
+    // empty rather than wearing the last repository's branches, which is what
+    // used to sit there until the reads landed.
+    const previous = snapshots.get(info.path)
+    if (previous) paint(previous)
+    else clearData()
+
     note(`Opened ${info.path}`)
     // A profile is a person, so opening a repository under one is statement
     // enough: it commits as them from here on. Spoken only when that actually
@@ -468,8 +561,21 @@ export function useGit() {
    */
   async function refreshStatus() {
     if (!store.repo) return
+    const path = store.repo.path
     const status = await part('the working tree', invoke<WorkingStatus>('working_status'), null)
-    if (status) store.status = status
+    if (!status || store.repo?.path !== path) return
+    // A save in an editor that touched nothing git cares about still wakes the
+    // watcher; comparing costs nothing next to rebuilding the panel.
+    const snapshot = snapshots.get(path)
+    if (snapshot) {
+      const key = JSON.stringify(status)
+      if (snapshot.seen.status === key) return
+      snapshot.seen.status = key
+      snapshot.status = raw(status)
+      store.status = snapshot.status
+      return
+    }
+    store.status = raw(status)
   }
 
   /**
@@ -491,29 +597,61 @@ export function useGit() {
 
   async function refresh() {
     if (!store.repo) return
+    const path = store.repo.path
+    const limit = store.limit
     const [info, refs, status, page, stashes, history, progress] = await Promise.all([
       part('the repository', invoke<RepoInfo>('repo_info'), store.repo),
       part('the branches', invoke<RefTree>('ref_tree'), null),
       part('the working tree', invoke<WorkingStatus>('working_status'), null),
       part(
         'the history',
-        invoke<{ rows: GraphRow[]; has_more: boolean }>('commit_graph', { limit: store.limit }),
+        invoke<{ rows: GraphRow[]; has_more: boolean }>('commit_graph', { limit }),
         null
       ),
       part('the stashes', invoke<StashEntry[]>('stash_list'), [] as StashEntry[]),
       part('the undo history', invoke<Stacks>('history'), { undo: [], redo: [] } as Stacks),
       part('what git is doing', invoke<InProgress>('in_progress'), null)
     ])
-    if (info) store.repo = info
-    if (refs) store.refs = refs
-    if (status) store.status = status
+    // A tab switched away from mid-read must not have its answers land on
+    // whatever is open now. The backend holds one repository at a time, so a
+    // switch part-way through leaves these reads describing a mixture of two —
+    // and both the store and the snapshot are better off without them.
+    if (store.repo?.path !== path || (info && info.path !== path)) return
+
+    // Only what actually moved is written to the store, because writing a
+    // field is what rebuilds the panel reading it — and most refreshes,
+    // triggered by a window focus or a file being saved, find nothing new.
+    const seen = snapshots.get(path)?.seen ?? {}
+    const settle = <T>(field: string, value: T, current: T): T => {
+      const key = JSON.stringify(value) ?? 'undefined'
+      if (seen[field] === key) return current
+      seen[field] = key
+      return raw(value)
+    }
+
+    if (info) store.repo = settle('info', info, store.repo)
+    if (refs) store.refs = settle('refs', refs, store.refs)
+    if (status) store.status = settle('status', status, store.status)
     if (page) {
-      store.rows = page.rows
+      store.rows = settle('rows', page.rows, store.rows)
       store.hasMore = page.has_more
     }
-    store.stashes = stashes ?? []
-    store.history = history ?? { undo: [], redo: [] }
-    store.progress = progress
+    store.stashes = settle('stashes', stashes ?? [], store.stashes)
+    store.history = settle('history', history ?? { undo: [], redo: [] }, store.history)
+    store.progress = settle('progress', progress, store.progress)
+
+    remember(path, {
+      info: store.repo!,
+      refs: store.refs,
+      status: store.status,
+      rows: store.rows,
+      hasMore: store.hasMore,
+      limit,
+      stashes: store.stashes,
+      history: store.history,
+      progress: store.progress,
+      seen
+    })
 
     // An amend rewrites the commit that was open; fall back to the working tree.
     if (store.selected !== WIP && !store.rows.some((r) => r.oid === store.selected)) {
@@ -529,7 +667,7 @@ export function useGit() {
   }
 
   async function loadMore() {
-    store.limit += COMMIT_PAGE
+    store.limit += pageSize()
     await refresh()
   }
 
