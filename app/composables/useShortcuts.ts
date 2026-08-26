@@ -60,7 +60,9 @@ export const SHORTCUTS: Shortcut[] = [
   { id: 'graph.clearsearch', keys: 'Escape', label: 'Close the search box', where: 'The commit list', group: 'The commit list' },
 
   // Changes and diffs
-  { id: 'diff.mode', keys: 'Tab', label: 'Switch between unified and side-by-side', where: 'A diff', group: 'Changes and diffs' },
+  { id: 'diff.mode', keys: 'Tab', label: 'Switch between the patch and the whole file', where: 'An open file', group: 'Changes and diffs' },
+  { id: 'viewer.move', keys: 'ArrowUp/ArrowDown', label: 'Move to the file before or after this one', where: 'An open file', group: 'Changes and diffs', note: 'Walks the panel beside it, in the order it lists them.' },
+  { id: 'viewer.close', keys: 'Escape', label: 'Close the file', where: 'An open file', group: 'Changes and diffs' },
   { id: 'filter.clear', keys: 'Escape', label: 'Clear the branch filter', where: 'The filter box in the sidebar', group: 'Changes and diffs' },
 
   // Projects and windows

@@ -4,9 +4,11 @@ import { Check, Copy, FolderOpen, Minus, Undo2, X } from 'lucide-vue-next'
 import { copyText, useGit, type FileDiff } from '~/composables/useGit'
 import { labelFor } from '~/composables/useHighlight'
 import { diffMode } from '~/composables/useDiffMode'
+import { stepFile, useFileView, walkOrder, type FileStep } from '~/composables/useFileView'
 
 const git = useGit()
 const store = git.store
+const view = useFileView()
 
 const diff = ref<FileDiff | null>(null)
 const loading = ref(false)
@@ -106,6 +108,49 @@ function close() {
   store.viewer = null
 }
 
+/**
+ * The files the arrows walk: the commit's own when a commit is open, and the
+ * working tree's two lists otherwise — unstaged first, which is the order the
+ * panel stacks them in.
+ */
+const order = computed<FileStep[]>(() =>
+  target.value?.commit
+    ? walkOrder(
+        [
+          {
+            files: (store.detail?.files ?? []).map((file) => ({
+              path: file.path,
+              kind: file.status
+            }))
+          }
+        ],
+        view.state.mode,
+        view.state.collapsed
+      )
+    : walkOrder(
+        [
+          { files: store.status?.unstaged ?? [], side: 'unstaged' },
+          { files: store.status?.staged ?? [], side: 'staged' }
+        ],
+        view.state.mode,
+        view.state.collapsed
+      )
+)
+
+/** Opens the file `by` steps along, leaving the viewer where it is if there is none. */
+function move(by: number) {
+  const current = target.value
+  if (!current) return
+  const from: FileStep = current.commit
+    ? { path: current.path }
+    : { path: current.path, side: current.side ?? 'unstaged' }
+  const next = stepFile(order.value, from, by)
+  if (!next) return
+  store.viewer = current.commit
+    ? { path: next.path, commit: current.commit }
+    : { path: next.path, side: next.side }
+}
+
 /** Stage, unstage or discard one hunk, then reload so the view is honest. */
 async function onHunk(index: number, action: 'stage' | 'unstage' | 'discard') {
   const current = target.value
@@ -119,13 +164,34 @@ function onKey(event: KeyboardEvent) {
     close()
     return
   }
+  if (typing(event) || covered() || event.altKey || event.ctrlKey || event.metaKey) return
   // Tab flips between the patch and the file, which is the one thing anyone
   // does twice while reading a change. Left alone wherever it still means
   // "next field", and wherever a modifier makes it mean something else.
-  if (event.key === 'Tab' && !event.altKey && !event.ctrlKey && !event.metaKey && !typing(event)) {
+  if (event.key === 'Tab') {
     event.preventDefault()
     diffMode.mode = diffMode.mode === 'file' ? 'diff' : 'file'
+    return
   }
+  // The same two keys the commit list uses, and free while the viewer is open:
+  // it stands where the list would be, so the list is not mounted to want them.
+  if (event.key === 'ArrowDown') {
+    event.preventDefault()
+    move(1)
+  } else if (event.key === 'ArrowUp') {
+    event.preventDefault()
+    move(-1)
+  }
+}
+
+/**
+ * True while something sits on top of the viewer.
+ *
+ * A dialog, a menu and a picker draw their own scrim, and the conflict resolver
+ * its own overlay; whichever it is, the keys are theirs.
+ */
+function covered() {
+  return !!document.querySelector('.scrim, .overlay')
 }
 
 /** True when the keystroke belongs to whatever is being written in. */

@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed } from 'vue'
+import { computed, nextTick, ref, watch } from 'vue'
 import {
   ArrowRight,
   ChevronDown,
@@ -44,6 +44,27 @@ const emit = defineEmits<{
 const view = useFileView()
 const rows = computed(() => buildRows(props.files, view.state.mode, view.state.collapsed))
 
+const list = ref<HTMLElement | null>(null)
+
+/**
+ * Keeps the open file on screen.
+ *
+ * The arrows in the viewer walk this list from the other side of the window, so
+ * the row they land on has to come into view by itself or the highlight walks
+ * off the bottom and there is nothing left saying where in the change you are.
+ * `nearest` does nothing when the row is already visible, which is every click.
+ */
+watch(
+  () => props.selected,
+  async (path) => {
+    if (!path) return
+    await nextTick()
+    list.value
+      ?.querySelector(`[data-path="${CSS.escape(path)}"]`)
+      ?.scrollIntoView({ block: 'nearest' })
+  }
+)
+
 /**
  * Where a row's content starts.
  *
@@ -86,7 +107,7 @@ function counted(tally: Tally) {
 </script>
 
 <template>
-  <div class="list">
+  <div ref="list" class="list">
     <template v-for="row in rows" :key="row.key">
       <button
         v-if="row.kind === 'dir'"
@@ -117,6 +138,7 @@ function counted(tally: Tally) {
         v-else
         class="row file"
         :class="{ on: props.selected === row.path }"
+        :data-path="row.path"
         :style="{ paddingLeft: `${indent(row.depth, true)}px` }"
         :title="row.path"
         :draggable="props.draggable"
