@@ -219,10 +219,19 @@ function paint(line: DiffLine) {
 </template>
 
 <style scoped>
+/* As wide as the widest line rather than as wide as the view, which the hidden
+   gauge below settles.
+   
+   The rows are positioned against a box inside this one, so a row's
+   `min-width: 100%` is only worth what this is worth: left at the width of the
+   view, the tint on an added line stopped where the view did and the rest of
+   the row was bare as soon as the patch was scrolled sideways. */
 .diff {
   font-family: var(--mono);
   font-size: 12px;
   line-height: 1.5;
+  width: max-content;
+  min-width: 100%;
 }
 
 .note {
