@@ -120,19 +120,6 @@ export function lineChips(rows: GraphRow[]): (RefChip | null)[] {
   })
 }
 
-/** What one chip is, spelled out, for a tooltip or a menu row. */
-export function describeChip(chip: RefChip): string {
-  const where = chip.remotes.length ? ` — also on ${chip.remotes.join(', ')}` : ''
-  if (chip.head) return `${chip.name} — checked out${where}`
-  return `${chip.name}${where}`
-}
-
-/** The tooltip on a chip, which also says what double-clicking it would do. */
-export function chipTitle(chip: RefChip): string {
-  if (chip.head) return describeChip(chip)
-  return `${describeChip(chip)}\nDouble-click to check out`
-}
-
 /**
  * The tooltip on a ghosted name.
  *

@@ -401,6 +401,35 @@ async function guard<T>(label: string, fn: () => Promise<T>): Promise<T | null> 
   }
 }
 
+/**
+ * Puts the store back to having no repository open.
+ *
+ * Closing the last tab used to clear the repository and the commit list and
+ * leave the rest — so the file viewer, the refs, the status and a rejected push
+ * all survived into the welcome pane and were waiting, describing a repository
+ * that was no longer open, for whatever opened next. Written once here rather
+ * than at each of the two places that empty the store, which is how the two
+ * came to disagree about what emptying it means.
+ */
+function forget() {
+  store.repo = null
+  store.rows = []
+  store.refs = null
+  store.status = null
+  store.stashes = []
+  store.detail = null
+  store.selected = WIP
+  store.hasMore = false
+  store.limit = COMMIT_PAGE
+  store.history = { undo: [], redo: [] }
+  store.progress = null
+  store.pushBlocked = null
+  store.resolving = null
+  store.revealing = null
+  store.viewer = null
+  store.query = ''
+}
+
 export function useGit() {
   async function openRepo(path: string) {
     const info = await guard('Open repository', () =>
@@ -569,6 +598,7 @@ export function useGit() {
   }
 
   return {
+    forget,
     store,
     note,
     refresh,
@@ -879,17 +909,29 @@ export function laneTint(index: number, alpha: number) {
   return `rgba(${(value >> 16) & 255}, ${(value >> 8) & 255}, ${value & 255}, ${alpha})`
 }
 
+/*
+ * Built once and reused. `toLocaleDateString` and `toLocaleString` construct a
+ * formatter per call, which is the most expensive thing the commit list does
+ * per row: every commit older than a month takes the date branch below, so a
+ * window of fifty rows built a formatter fifty times on every scroll frame.
+ */
+const DATE_ONLY = new Intl.DateTimeFormat(undefined, { dateStyle: 'medium' })
+const DATE_TIME = new Intl.DateTimeFormat(undefined, {
+  dateStyle: 'medium',
+  timeStyle: 'short'
+})
+
 export function relativeTime(seconds: number) {
   const diff = Date.now() / 1000 - seconds
   if (diff < 60) return 'just now'
   if (diff < 3600) return `${Math.floor(diff / 60)}m ago`
   if (diff < 86400) return `${Math.floor(diff / 3600)}h ago`
   if (diff < 86400 * 30) return `${Math.floor(diff / 86400)}d ago`
-  return new Date(seconds * 1000).toLocaleDateString()
+  return DATE_ONLY.format(seconds * 1000)
 }
 
 export function fullTime(seconds: number) {
-  return new Date(seconds * 1000).toLocaleString()
+  return DATE_TIME.format(seconds * 1000)
 }
 
 /** Copies text, reporting through the activity log either way. */

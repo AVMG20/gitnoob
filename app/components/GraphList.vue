@@ -19,6 +19,7 @@ import {
 import {
   WIP,
   copyText,
+  fullTime,
   highlight,
   laneColor,
   laneTint,
@@ -30,8 +31,6 @@ import {
   type Segment
 } from '~/composables/useGit'
 import {
-  chipTitle,
-  describeChip,
   ghostTitle,
   hiddenRefs,
   lineChips,
@@ -43,11 +42,16 @@ import { useContextMenu } from '~/composables/useContextMenu'
 import { useDragDrop } from '~/composables/useDragDrop'
 import { useShortcuts } from '~/composables/useShortcuts'
 import { useColumns, type ColumnId } from '~/composables/useColumns'
+import { useConfig } from '~/composables/useConfig'
 
 const git = useGit()
 const store = git.store
 const menu = useContextMenu()
 const drag = useDragDrop()
+const config = useConfig()
+
+/** Whether to draw author pictures at all, which Settings can turn off. */
+const avatars = computed(() => config.settings.value?.show_avatars !== false)
 
 const ROW = 27
 /**
@@ -91,9 +95,13 @@ const markedSet = computed(() => new Set(marked.value))
 const anchor = ref<string | null>(null)
 
 const total = computed(() => store.rows.length)
-const lanes = computed(() =>
-  Math.min(MAX_LANES, Math.max(2, ...store.rows.map((row) => row.width)))
-)
+const lanes = computed(() => {
+  // Walked rather than spread into `Math.max`: a history long enough to be
+  // worth virtualizing is also long enough to overflow the argument list.
+  let widest = 2
+  for (const row of store.rows) if (row.width > widest) widest = row.width
+  return Math.min(MAX_LANES, widest)
+})
 const graphWidth = computed(() => lanes.value * LANE + 8 + PAD)
 
 // --- columns
@@ -167,10 +175,95 @@ const first = computed(() => Math.max(0, Math.floor(scrollTop.value / ROW) - OVE
 const last = computed(() =>
   Math.min(total.value, Math.ceil((scrollTop.value + height.value) / ROW) + OVERSCAN)
 )
+/**
+ * Everything a row needs in order to draw, worked out once per commit.
+ *
+ * The template used to ask for the same things over and over — the face four
+ * times a row, the chips three, the ghost twice — and a scroll event re-renders
+ * every row in the window, so one flick of the wheel ran the lot thousands of
+ * times. None of it depends on where the list is scrolled to or on anything
+ * that changes while it sits there, so it is worked out once and kept.
+ */
+interface RowMemo {
+  /** The one ref chip there is room to draw, of however many the commit has. */
+  chip: RefChip | undefined
+  /** The rest, which live behind the counter beside it. */
+  hidden: RefChip[]
+  /**
+   * The branch a commit that is nobody's tip belongs to, ghosted on hover. A
+   * row that is a tip has a chip of its own and gets nothing here: the ghost
+   * answers "what is this commit on?", which that row already answers.
+   */
+  ghost: RefChip | null
+  /**
+   * Whether two lines become one here — a merge, and only a merge. It is the
+   * busiest node in the picture, so it is drawn as a plain dot rather than a
+   * face: the junction reads as a junction, and the lines meeting there are not
+   * hidden behind a picture. A branch point is left as an ordinary commit even
+   * though it is a junction of a kind; the line leaving it says so already, and
+   * there is one for every branch ever made from the trunk.
+   */
+  junction: boolean
+  letters: string
+  tint: string
+  when: string
+}
+
+const memos = new Map<string, RowMemo>()
+
+// A refresh rebuilds the rows wholesale, and what a commit is part of can
+// change with them — a branch deleted moves the ghost names — so the memos go
+// with them rather than being reconciled.
+watch(() => store.rows, () => {
+  memos.clear()
+  cancelUnfold()
+})
+
+function memoOf(row: GraphRow, index: number): RowMemo {
+  let memo = memos.get(row.oid)
+  if (!memo) {
+    const chips = refChips(row)
+    memo = {
+      chip: chips[0],
+      hidden: chips.slice(1),
+      ghost: row.labels.length ? null : (lineOwners.value[index] ?? null),
+      junction: row.parents.length > 1,
+      letters: initials(row.author, row.email),
+      tint: tint(row.email),
+      when: relativeTime(row.time)
+    }
+    memos.set(row.oid, memo)
+  }
+  return memo
+}
+
 const window_ = computed(() =>
-  store.rows
-    .slice(first.value, last.value)
-    .map((row, i) => ({ row, index: first.value + i, top: (first.value + i) * ROW }))
+  store.rows.slice(first.value, last.value).map((row, i) => {
+    const index = first.value + i
+    const memo = memoOf(row, index)
+    // Read here rather than in the memo: the answer arrives after the row has
+    // already been drawn once, and reading it inside the computed is what makes
+    // the row draw again when it does. Three states, not two — for the moment
+    // between asking and knowing the node is the colour alone, so nothing
+    // flickers from letters into a face.
+    const found = avatars.value ? avatarFor(row.email) : null
+    return {
+      row,
+      index,
+      top: index * ROW,
+      chip: memo.chip,
+      hidden: memo.hidden,
+      refs: memo.chip ? [memo.chip, ...memo.hidden] : [],
+      ghost: memo.ghost,
+      junction: memo.junction,
+      picture: found ?? null,
+      letters: found === null ? memo.letters : '',
+      tint: memo.tint,
+      when: memo.when,
+      whenFull: fullTime(row.time),
+      parts: highlight(row.summary, store.query)
+    }
+  })
 )
 
 const dirty = computed(
@@ -221,22 +314,6 @@ const x = (lane: number) => Math.min(lane, MAX_LANES - 1) * LANE + LANE / 2 + PA
 const y = (level: number) => (level === 0 ? 0 : level === 1 ? ROW / 2 : ROW)
 
 /**
- * What to draw inside a commit's node.
- *
- * The picture if there is one, the author's initials on their own colour if
- * there is not, and — for the moment between asking and knowing — the colour
- * alone, so nothing flickers from letters into a face.
- */
-function face(row: GraphRow) {
-  const picture = avatarFor(row.email)
-  return {
-    picture: picture ?? null,
-    letters: picture === null ? initials(row.author, row.email) : '',
-    tint: tint(row.email)
-  }
-}
-
-/**
  * One line segment: straight runs joined by a corner, never a diagonal.
  *
  * A line belongs to a lane, and the whole point of the picture is to show which
@@ -249,23 +326,6 @@ function face(row: GraphRow) {
  * other over the whole segment, which reads as a bulge rather than a junction
  * and leaves neither end of it clearly in a lane.
  */
-/**
- * Whether two lines become one at this commit.
- *
- * A merge, and only a merge. It is the busiest node in the picture — the one
- * row where several lines arrive at once — so it is drawn as a plain dot rather
- * than a face: the junction reads as a junction, and the lines meeting there
- * are not hidden behind a picture.
- *
- * A branch point is left as an ordinary commit even though it is a junction of
- * a kind. The line leaving it says so already, and there is one of them for
- * every branch ever made from the trunk: dotting those turns a column of faces
- * into a column of dots and buys nothing the elbow was not showing.
- */
-function junction(row: GraphRow) {
-  return row.parents.length > 1
-}
-
 function path(segment: Segment) {
   const x1 = x(segment.x1)
   const x2 = x(segment.x2)
@@ -292,8 +352,22 @@ function path(segment: Segment) {
   )
 }
 
+/**
+ * Scroll events arrive faster than frames do, and each one re-renders the whole
+ * window of rows. Coalescing them to one a frame is the difference between
+ * drawing the list once per flick of the wheel and drawing it once for every
+ * event the compositor felt like sending.
+ */
+let scrollQueued = false
+
 function onScroll() {
-  if (viewport.value) scrollTop.value = viewport.value.scrollTop
+  cancelUnfold()
+  if (scrollQueued) return
+  scrollQueued = true
+  requestAnimationFrame(() => {
+    scrollQueued = false
+    if (viewport.value) scrollTop.value = viewport.value.scrollTop
+  })
 }
 
 function measure() {
@@ -457,17 +531,41 @@ function openReset(oid: string, mode: ResetMode) {
 const lineOwners = computed(() => lineChips(store.rows))
 
 /**
- * The chip to ghost on a row, if any: at most one, handed back as a list so the
- * template can loop it the way it loops the real one.
+ * Which row's branch column is unfolded, and which way it went.
  *
- * A row that is the tip of something has a chip of its own and gets nothing
- * here — the ghost answers "what is this commit on?", which that row already
- * answers.
+ * Held here rather than left to `:hover`, for the pause before it opens: the
+ * pointer crosses a dozen rows on its way anywhere, and a column that unfolds
+ * under each one in turn is a list that will not sit still. A rest of a third
+ * of a second says the pointer stopped rather than passed.
+ *
+ * The direction is a measurement, and there is no asking CSS for one. It grows
+ * downwards over the rows below, which runs out of window on the last few of
+ * them — and a name half cut off by the bottom edge is the thing this was built
+ * to stop — so those unfold upwards instead. Measured when it opens rather than
+ * followed as the list scrolls: which way a row would open is only ever a
+ * question about the row being pointed at.
  */
-function ghostChips(row: GraphRow, index: number): RefChip[] {
-  if (row.labels.length) return []
-  const chip = lineOwners.value[index]
-  return chip ? [chip] : []
+const UNFOLD_AFTER = 350
+
+const unfolded = ref<{ oid: string; up: boolean } | null>(null)
+let unfoldTimer: number | undefined
+
+function unfold(event: MouseEvent, oid: string, count: number) {
+  cancelUnfold()
+  if (!count) return
+  const cell = event.currentTarget as HTMLElement
+  unfoldTimer = window.setTimeout(() => {
+    const box = viewport.value?.getBoundingClientRect()
+    const rect = cell.getBoundingClientRect()
+    // A chip and the gap under it, plus the padding the box adds top and bottom.
+    const needed = count * 19 + 12
+    unfolded.value = { oid, up: !!box && rect.top + needed > box.bottom }
+  }, UNFOLD_AFTER)
+}
+
+function cancelUnfold() {
+  window.clearTimeout(unfoldTimer)
+  if (unfolded.value) unfolded.value = null
 }
 
 /** What checking a ref out would do, said before it happens. */
@@ -800,6 +898,7 @@ onMounted(() => {
 onUnmounted(() => {
   observer.disconnect()
   window.removeEventListener('keydown', onKey)
+  window.clearTimeout(unfoldTimer)
 })
 </script>
 
@@ -948,50 +1047,76 @@ onUnmounted(() => {
           <!-- Refs live in their own column with a line running to the node,
                so a tip is found by scanning one narrow strip rather than by
                reading the start of every message. -->
-          <span v-if="cols.state.shown.refs" class="col-refs" :style="box('refs')">
-            <span
-              v-for="chip in refChips(item.row).slice(0, 1)"
-              :key="chip.key"
-              class="chip"
-              :class="[`chip-${chip.kind}`, { 'chip-current': chip.head, 'chip-live': !chip.head }]"
-              :style="chipStyle(item.row, chip)"
-              :title="chipTitle(chip)"
-              @dblclick.stop="checkoutRef(chip)"
-            >
-              <Check v-if="chip.head" :size="11" :stroke-width="3" class="glyph" />
-              <!-- Cut in the middle. Four chips reading `origin/ASANA-1216293…`
-                   are the same chip as far as the eye is concerned; the digits
-                   that differ are at the end. -->
-              <MidTruncate :text="chip.name" />
-              <component
-                :is="chip.kind === 'remote' ? Cloud : chip.kind === 'tag' ? Tag : MonitorDot"
-                :size="11"
-                class="glyph"
-              />
-              <!-- A local branch that is also on its remote says so here rather
-                   than by growing a second chip with the same name in it. -->
-              <Cloud
-                v-if="chip.kind === 'local' && chip.remotes.length"
-                :size="11"
-                class="glyph"
-              />
-            </span>
-            <!-- Only the first chip is drawn; the rest live behind a counter
-                 that lists them, so a commit with five refs takes the same
-                 width as one with a single branch.
+          <span
+            v-if="cols.state.shown.refs"
+            class="col-refs"
+            :class="{
+              open: unfolded?.oid === item.row.oid,
+              up: unfolded?.oid === item.row.oid && unfolded.up
+            }"
+            :style="box('refs')"
+            @mouseenter="unfold($event, item.row.oid, item.refs.length)"
+            @mouseleave="cancelUnfold"
+          >
+            <!-- Every ref the commit carries, though only the first is on
+                 show: the rest are folded away behind a counter, so a commit
+                 with five refs takes the same width in the column as one with a
+                 single branch.
 
-                 After the chip, not before it. In front, the counter indented
-                 the name behind it by its own width, so the one row in ten that
-                 carries several refs was the one row whose name did not start
-                 where every other name in the column starts. -->
-            <button
-              v-if="hiddenRefs(item.row).length"
-              class="more-refs"
-              :title="hiddenRefs(item.row).map(describeChip).join('\n')"
-              @click.stop="refsMenu($event, item.row)"
-            >
-              +{{ hiddenRefs(item.row).length }}
-            </button>
+                 Resting on the column unfolds it. The names are cut to fit and
+                 the counter says only that there is more, so the column can ask
+                 a question it cannot answer; the set grows to its full width
+                 over the graph beside it, which is empty space the moment you
+                 are reading names rather than lines. It is the same set of
+                 chips throughout — grown, not replaced — so nothing moves under
+                 the pointer and the one you were looking at stays where it was.
+
+                 Done with `:hover` rather than by opening something: a panel
+                 drawn over the cell takes the pointer off the cell that
+                 summoned it, and closes itself. A descendant cannot — the cell
+                 is still hovered while the pointer is anywhere inside it. -->
+            <span v-if="item.refs.length" class="refs-set">
+              <span
+                v-for="(chip, at) in item.refs"
+                :key="chip.key"
+                class="chip"
+                :class="[
+                  `chip-${chip.kind}`,
+                  { 'chip-current': chip.head, 'chip-live': !chip.head, folded: at > 0 }
+                ]"
+                :style="chipStyle(item.row, chip)"
+                @dblclick.stop="checkoutRef(chip)"
+              >
+                <Check v-if="chip.head" :size="11" :stroke-width="3" class="glyph" />
+                <!-- Cut in the middle. Four chips reading `origin/ASANA-1216293…`
+                     are the same chip as far as the eye is concerned; the digits
+                     that differ are at the end. -->
+                <MidTruncate :text="chip.name" />
+                <component
+                  :is="chip.kind === 'remote' ? Cloud : chip.kind === 'tag' ? Tag : MonitorDot"
+                  :size="11"
+                  class="glyph"
+                />
+                <!-- A local branch that is also on its remote says so here rather
+                     than by growing a second chip with the same name in it. -->
+                <Cloud
+                  v-if="chip.kind === 'local' && chip.remotes.length"
+                  :size="11"
+                  class="glyph"
+                />
+              </span>
+              <!-- After the chips, not before them. In front, the counter
+                   indented the name behind it by its own width, so the one row
+                   in ten that carries several refs was the one row whose name
+                   did not start where every other name in the column starts. -->
+              <button
+                v-if="item.hidden.length"
+                class="more-refs"
+                @click.stop="refsMenu($event, item.row)"
+              >
+                +{{ item.hidden.length }}
+              </button>
+            </span>
             <!-- The branch this commit is on, for the rows that are not the tip
                  of anything. Hidden until the pointer is on the row: printed at
                  full strength it would be the same name repeated down a hundred
@@ -1003,7 +1128,7 @@ onUnmounted(() => {
                  for the rows in between. The tick is left off: this commit is
                  on that branch, but it is not where the branch is. -->
             <template
-              v-for="chip in ghostChips(item.row, item.index)"
+              v-for="chip in (item.ghost ? [item.ghost] : [])"
               :key="chip.key"
             >
               <span
@@ -1055,7 +1180,7 @@ onUnmounted(() => {
             <!-- The ghost label's half of the leader, carrying it across to the
                  node so the name and the line it names are joined up. -->
             <path
-              v-if="ghostChips(item.row, item.index).length"
+              v-if="item.ghost"
               class="ghost-leader"
               :d="`M0,${ROW / 2} L${x(item.row.lane)},${ROW / 2}`"
               :stroke="laneColor(item.row.color)"
@@ -1087,7 +1212,7 @@ onUnmounted(() => {
                  colour, so the boundary between what the remote has and what is
                  still only here has to be a difference in shape. -->
             <circle
-              v-if="item.row.unpushed && !junction(item.row)"
+              v-if="item.row.unpushed && !item.junction"
               :cx="x(item.row.lane)"
               :cy="ROW / 2"
               :r="NODE + 3"
@@ -1099,7 +1224,7 @@ onUnmounted(() => {
             <!-- Where the history forked or came back together. Hollow while
                  the commit is only here, filled once the remote has it, which
                  is the same distinction the bigger nodes draw as a ring. -->
-            <g v-if="junction(item.row)">
+            <g v-if="item.junction">
               <circle
                 :cx="x(item.row.lane)"
                 :cy="ROW / 2"
@@ -1130,11 +1255,11 @@ onUnmounted(() => {
                 :cx="x(item.row.lane)"
                 :cy="ROW / 2"
                 :r="NODE"
-                :fill="face(item.row).picture ? 'var(--bg)' : face(item.row).tint"
+                :fill="item.picture ? 'var(--bg)' : item.tint"
               />
               <image
-                v-if="face(item.row).picture"
-                :href="face(item.row).picture ?? undefined"
+                v-if="item.picture"
+                :href="item.picture ?? undefined"
                 :x="x(item.row.lane) - NODE"
                 :y="ROW / 2 - NODE"
                 :width="NODE * 2"
@@ -1143,7 +1268,7 @@ onUnmounted(() => {
                 preserveAspectRatio="xMidYMid slice"
               />
               <text
-                v-else-if="face(item.row).letters"
+                v-else-if="item.letters"
                 :x="x(item.row.lane)"
                 :y="ROW / 2"
                 text-anchor="middle"
@@ -1152,7 +1277,7 @@ onUnmounted(() => {
                 font-weight="700"
                 fill="#fff"
               >
-                {{ face(item.row).letters }}
+                {{ item.letters }}
               </text>
               <!-- Every node is the same size, merge or not. A merge used to be
                    drawn hollow, back when a node was a dot; a second ring inside
@@ -1182,7 +1307,7 @@ onUnmounted(() => {
                  only passing over. -->
             <span class="summary truncate" :title="item.row.summary">
               <span
-                v-for="(part, i) in highlight(item.row.summary, store.query)"
+                v-for="(part, i) in item.parts"
                 :key="i"
                 :class="{ mark: part.hit }"
                 >{{ part.text }}</span
@@ -1196,9 +1321,9 @@ onUnmounted(() => {
             v-if="cols.state.shown.date"
             class="col-date faint"
             :style="box('date')"
-            :title="new Date(item.row.time * 1000).toLocaleString()"
+            :title="item.whenFull"
           >
-            {{ relativeTime(item.row.time) }}
+            {{ item.when }}
           </span>
         </div>
       </div>
@@ -1503,6 +1628,95 @@ onUnmounted(() => {
 
 .row:hover .ghost-leader {
   opacity: 0.3;
+}
+
+/* The chips, and the box that grows to hold all of them.
+ *
+ * At rest it is an ordinary flex item clipped to the column. Under the pointer
+ * it is taken out of the flow and given its natural width, so it grows to the
+ * right over the graph rather than widening the column and shoving every other
+ * column along with it.
+ *
+ * Absolute, and `.col-refs` is deliberately left `static`, so the containing
+ * block is the row: an absolutely positioned element is clipped by an
+ * ancestor's `overflow` only from its containing block inwards, and the column
+ * is exactly the `overflow: hidden` it has to escape. */
+.refs-set {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  flex: 0 1 auto;
+  min-width: 0;
+  overflow: hidden;
+}
+
+/* Folded away until asked for. `display: none` rather than a width of zero:
+   a chip with no width still takes its gap, and four of them put the one chip
+   on show a quarter of the column from the left. */
+.refs-set .chip.folded {
+  display: none;
+}
+
+/* Down the column, not along it. Stacked, the names are read the way a list is
+   read and each one is as long as it needs to be; in a row they were a line of
+   chips competing for the same width, which is what the column already was.
+
+   The padding is what puts the first chip back exactly where it sits at rest,
+   so the one you were pointing at does not move as the rest appear under it. */
+.col-refs.open .refs-set {
+  position: absolute;
+  left: 0;
+  top: 0;
+  z-index: 6;
+  flex-direction: column;
+  align-items: flex-start;
+  width: max-content;
+  /* Never wider than the row it is in, however many refs a release commit
+     ended up carrying: the list scroller would answer with a horizontal
+     scrollbar under the whole graph. */
+  max-width: min(720px, 100%);
+  overflow: hidden;
+  /* No padding on the left and no shift with it: the box starts exactly where
+     the column does and grows only to the right. Insetting it to sit the chips
+     off its edge meant starting six pixels to the left of the column, which on
+     the leftmost column in the window is six pixels off the edge of it. */
+  padding: 6px 8px 6px 0;
+  border-radius: 5px;
+  background: var(--bg-hover);
+  box-shadow: 0 3px 14px rgba(0, 0, 0, 0.35);
+}
+
+/* The last rows in the window have no room below them, so they grow the other
+   way. Reversed as well as anchored, so the chip that was on show stays against
+   its own row and the rest pile up above it rather than the order flipping. */
+.col-refs.open.up .refs-set {
+  top: auto;
+  bottom: 0;
+  flex-direction: column-reverse;
+}
+
+.row.on .col-refs.open .refs-set {
+  background: var(--bg-active);
+}
+
+/* Stacked, a chip is as wide as its own name; without this each one stretches
+   to the width of the longest and the short names read as empty boxes. */
+.col-refs.open .refs-set .chip {
+  flex: none;
+}
+
+.col-refs.open .refs-set .chip.folded {
+  display: inline-flex;
+}
+
+/* The whole point: the name is not cut once there is room for it. */
+.col-refs.open .refs-set .chip {
+  max-width: none;
+}
+
+/* It has been answered — the chips it stood for are all on show. */
+.col-refs.open .more-refs {
+  display: none;
 }
 
 /* The counter for the refs not on show. Deliberately quiet: it is a way in,

@@ -67,10 +67,7 @@ async function close(path: string) {
   await config.closeProject(path)
   const next = config.activeProject.value
   if (next) emit('open', next)
-  else {
-    git.store.repo = null
-    git.store.rows = []
-  }
+  else git.forget()
 }
 
 /** Moves along the strip, wrapping, so the keys never dead-end. */
@@ -178,9 +175,11 @@ function onDrop(target: string) {
   align-items: stretch;
   gap: 2px;
   overflow-x: auto;
-  scrollbar-width: none;
 }
 
+/* The pseudo-element alone. `scrollbar-width: none` hides it too, but it also
+   opts this scroller into the platform's own rendering, which on GTK is an
+   overlay bar painted above whatever is on top of it. */
 .tabs::-webkit-scrollbar {
   display: none;
 }

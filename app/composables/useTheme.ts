@@ -56,8 +56,18 @@ const KEY = 'gitnoob.theme'
 
 const theme = ref<ThemeId>('slate')
 
+/**
+ * Marks light themes as such, alongside the theme's own name.
+ *
+ * Anything that needs a different value on a light background — the syntax
+ * schemes below all do — can then say so once rather than restating the list of
+ * light themes, which is a list that grows and was already being copied.
+ */
 function apply(id: ThemeId) {
-  document.documentElement.dataset.theme = id
+  const root = document.documentElement
+  root.dataset.theme = id
+  if (THEMES.find((one) => one.id === id)?.kind === 'Light') root.dataset.light = ''
+  else delete root.dataset.light
 }
 
 function setTheme(id: ThemeId) {

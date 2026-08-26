@@ -36,6 +36,8 @@ import { useTheme } from '~/composables/useTheme'
 import { SHORTCUTS, SHORTCUT_GROUPS, keyLabel } from '~/composables/useShortcuts'
 import { useColumns } from '~/composables/useColumns'
 import { useUpdates } from '~/composables/useUpdates'
+import { useZoom } from '~/composables/useZoom'
+import { useSyntax } from '~/composables/useSyntax'
 
 const config = useConfig()
 const forge = useForge()
@@ -44,6 +46,8 @@ const ai = useAi()
 const git = useGit()
 const { theme, themes, setTheme } = useTheme()
 const cols = useColumns()
+const { zoom, steps: zoomSteps, setZoom } = useZoom()
+const { syntax, schemes, setSyntax } = useSyntax()
 const updates = useUpdates()
 
 const section = computed(() => config.store.settingsSection)
@@ -553,7 +557,7 @@ onMounted(async () => {
         <section v-else-if="section === 'appearance'">
           <h2>Appearance</h2>
           <p class="dim intro">
-            Nine themes: three light, three semi-dark, three dark. The choice is shared.
+            Eighteen themes: five light, five semi-dark, eight dark. The choice is shared.
           </p>
 
           <div class="themes">
@@ -571,6 +575,48 @@ onMounted(async () => {
               <span class="theme-name">{{ one.name }}</span>
               <span class="faint small">{{ one.kind }}</span>
               <Check v-if="one.id === theme" :size="13" class="tick" />
+            </button>
+          </div>
+
+          <h3 class="sub">Text size</h3>
+          <p class="dim intro">
+            How large the window draws everything — text, rows and the graph together, so the
+            commit list stays in step with the lines drawn through it.
+            {{ keyLabel('mod+=') }} and {{ keyLabel('mod+-') }} step through the same sizes, and
+            {{ keyLabel('mod+0') }} comes back here.
+          </p>
+          <div class="sizes">
+            <button
+              v-for="factor in zoomSteps"
+              :key="factor"
+              class="size"
+              :class="{ on: Math.abs(factor - zoom) < 0.001 }"
+              @click="setZoom(factor)"
+            >
+              {{ Math.round(factor * 100) }}%
+              <span v-if="factor === 1" class="faint small block">standard</span>
+            </button>
+          </div>
+
+          <h3 class="sub">Syntax colours</h3>
+          <p class="dim intro">
+            Which scheme code is coloured with in a diff and in an open file. Each has a light
+            variant of its own, so the choice holds whichever theme is on above.
+          </p>
+          <div class="schemes">
+            <button
+              v-for="one in schemes"
+              :key="one.id"
+              class="scheme"
+              :class="{ on: one.id === syntax }"
+              @click="setSyntax(one.id)"
+            >
+              <span class="scheme-swatch">
+                <span v-for="(colour, at) in one.swatch" :key="at" :style="{ background: colour }" />
+              </span>
+              <span class="scheme-name">{{ one.name }}</span>
+              <span class="faint small">{{ one.from }}</span>
+              <Check v-if="one.id === syntax" :size="13" class="tick" />
             </button>
           </div>
 
@@ -1226,6 +1272,84 @@ select {
   flex-wrap: wrap;
   gap: 8px 20px;
   margin-bottom: 10px;
+}
+
+/* The scheme cards carry three bars — keyword, string, comment — which is what
+   tells two schemes apart at a glance and what the eye compares between them. */
+.schemes {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(168px, 1fr));
+  gap: 8px;
+  margin-bottom: 18px;
+}
+
+.scheme {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  padding: 9px 10px;
+  text-align: left;
+  background: var(--bg-raised);
+  border: 1px solid var(--line);
+  border-radius: 7px;
+}
+
+.scheme:hover {
+  border-color: var(--text-faint);
+}
+
+.scheme.on {
+  border-color: var(--accent);
+  background: var(--bg-active);
+}
+
+.scheme-swatch {
+  display: flex;
+  gap: 3px;
+  margin-bottom: 3px;
+}
+
+.scheme-swatch span {
+  width: 22px;
+  height: 6px;
+  border-radius: 2px;
+}
+
+.scheme-name {
+  font-size: 12px;
+  color: var(--text);
+}
+
+/* The sizes read as one row of steps rather than as a list, so which way is
+   bigger is the direction the eye already travels. */
+.sizes {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-bottom: 18px;
+}
+
+.size {
+  min-width: 62px;
+  padding: 6px 10px;
+  font-size: 12px;
+  text-align: center;
+  color: var(--text-dim);
+  background: var(--bg-raised);
+  border: 1px solid var(--line);
+  border-radius: 6px;
+}
+
+.size:hover {
+  color: var(--text);
+  border-color: var(--text-faint);
+}
+
+.size.on {
+  color: var(--text);
+  background: var(--bg-active);
+  border-color: var(--accent);
 }
 
 .cols .check {

@@ -9,6 +9,8 @@ import { useAi } from '~/composables/useAi'
 import { usePanes } from '~/composables/usePanes'
 import { useTheme } from '~/composables/useTheme'
 import { useUpdates } from '~/composables/useUpdates'
+import { useShortcuts } from '~/composables/useShortcuts'
+import { useZoom } from '~/composables/useZoom'
 
 const git = useGit()
 const store = git.store
@@ -17,8 +19,16 @@ const forge = useForge()
 const ai = useAi()
 const { layout } = usePanes()
 const updates = useUpdates()
-// Applied as a side effect of loading the composable, before the first paint.
+// Both applied as a side effect of loading the composable, before the first
+// paint, so neither the theme nor the size is seen changing.
 useTheme()
+const zoom = useZoom()
+
+useShortcuts({
+  'zoom.in': zoom.zoomIn,
+  'zoom.out': zoom.zoomOut,
+  'zoom.reset': zoom.reset
+})
 
 const ready = ref(false)
 let fetchTimer: number | undefined
@@ -95,12 +105,7 @@ watch(
   async () => {
     const path = config.activeProject.value
     if (path) await openProject(path)
-    else {
-      store.repo = null
-      store.rows = []
-      store.refs = null
-      store.status = null
-    }
+    else git.forget()
   }
 )
 

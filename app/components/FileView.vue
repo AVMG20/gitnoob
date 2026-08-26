@@ -2,6 +2,7 @@
 import { computed, onMounted, onUnmounted, ref } from 'vue'
 import type { FileDiff } from '~/composables/useGit'
 import { highlightWhole, languageFor } from '~/composables/useHighlight'
+import { CODE_ROW, markedLines, windowOf, type Line } from '~/composables/useCode'
 
 const props = defineProps<{
   diff: FileDiff | null
@@ -9,96 +10,14 @@ const props = defineProps<{
   text: string | null
   loading?: boolean
   error?: string | null
+  /** Where the box that scrolls this is scrolled to, and how tall it is. */
+  top?: number
+  view?: number
 }>()
-
-/** What happened to a line of the file as it now stands. */
-type Mark = 'added' | 'changed' | null
-
-interface Line {
-  number: number
-  mark: Mark
-  /** What this line said before it was changed, when it replaced something. */
-  was: string[]
-  /** Lines deleted immediately above this one, with nothing put in their place. */
-  removed: string[]
-}
 
 const language = computed(() => (props.diff ? languageFor(props.diff.path) : null))
 
-/**
- * The file, line by line, with what changed marked against it.
- *
- * An editor's gutter distinguishes three things, and so does this: a line that
- * is new, a line that replaced one, and a place where lines were taken out and
- * nothing put back. Git's diff does not name the middle one — it is a deletion
- * and an insertion sitting together — so a run of the two is read as a change
- * to the lines that survived it, which is what someone reading the file sees.
- */
-const lines = computed<Line[]>(() => {
-  const text = props.text
-  if (text === null) return []
-  const source = text.split('\n')
-  // A file that ends in a newline splits into a last empty piece that is not a
-  // line of the file.
-  if (source.length && source[source.length - 1] === '') source.pop()
-
-  const marks = new Map<number, Mark>()
-  // The text of what went, not just how much of it: a gutter mark that can be
-  // asked what it replaced is worth more than one that can only say something
-  // happened here.
-  const before = new Map<number, string[]>()
-  const gaps = new Map<number, string[]>()
-
-  for (const hunk of props.diff?.hunks ?? []) {
-    // Walk each run of touched lines together: what a run is made of decides
-    // whether it reads as an addition or as a change.
-    let index = 0
-    while (index < hunk.lines.length) {
-      if (hunk.lines[index]!.origin === ' ') {
-        index++
-        continue
-      }
-      let end = index
-      const deleted: string[] = []
-      const added: number[] = []
-      while (end < hunk.lines.length && hunk.lines[end]!.origin !== ' ') {
-        const line = hunk.lines[end]!
-        if (line.origin === '-') deleted.push(line.content)
-        else if (line.new_lineno) added.push(line.new_lineno)
-        end++
-      }
-      const deletions = deleted.length
-
-      if (added.length) {
-        // As many added lines as were deleted are the replacements; anything
-        // beyond that is genuinely new.
-        for (const [at, number] of added.entries()) {
-          marks.set(number, at < deletions ? 'changed' : 'added')
-          if (at >= deletions) continue
-          // Where more went than came back, the surplus has no line of its own
-          // to hang from, so it joins the last of the replacements: the run
-          // still reads as one change, and none of it goes unaccounted for.
-          const replaced =
-            at === added.length - 1 ? deleted.slice(at) : deleted.slice(at, at + 1)
-          before.set(number, replaced)
-        }
-      } else if (deletions) {
-        // Nothing replaced them, so the mark belongs to the seam: the line the
-        // deleted ones used to sit above.
-        const next = hunk.lines[end]?.new_lineno ?? source.length + 1
-        gaps.set(next, [...(gaps.get(next) ?? []), ...deleted])
-      }
-      index = end
-    }
-  }
-
-  return source.map((_, at) => ({
-    number: at + 1,
-    mark: marks.get(at + 1) ?? null,
-    was: before.get(at + 1) ?? [],
-    removed: gaps.get(at + 1) ?? []
-  }))
-})
+const lines = computed(() => markedLines(props.text, props.diff?.hunks ?? []))
 
 const counts = computed(() => ({
   marked: lines.value.filter((line) => line.mark).length,
@@ -158,6 +77,32 @@ const painted = computed(() =>
 )
 
 const paint = (at: number) => painted.value[at - 1] ?? ''
+
+// --- only what is on screen
+const shown = computed(() => windowOf(lines.value.length, props.top ?? 0, props.view ?? 0))
+const visible = computed(() => lines.value.slice(shown.value.first, shown.value.last))
+
+/**
+ * A hidden copy of the longest line, which is what holds the view open
+ * sideways.
+ *
+ * A row is as wide as its own content, so with only a screenful of them drawn
+ * the width of the whole view would be the width of whatever happened to be on
+ * screen — and it would change under the pointer while scrolling, taking the
+ * horizontal scrollbar with it. One row carrying the longest line, laid out and
+ * not painted, keeps it still. Measured in characters because the font is
+ * monospace, so the longest line is a matter of counting rather than of asking
+ * the engine.
+ */
+const source = computed(() => (props.text === null ? [] : props.text.split('\n')))
+
+const longest = computed(() => {
+  let found = ''
+  for (const text of source.value) if (text.length > found.length) found = text
+  return found
+})
+
+const ROW = CODE_ROW
 </script>
 
 <template>
@@ -171,7 +116,21 @@ const paint = (at: number) => painted.value[at - 1] ?? ''
       <p v-if="!counts.marked && !counts.gaps" class="note dim">
         Nothing changed in this file — it is shown as it stands.
       </p>
-      <div v-for="line in lines" :key="line.number" class="line" :class="line.mark ?? ''">
+      <!-- Not painted, and no height of its own; it is here to be measured. -->
+      <div class="line gauge" aria-hidden="true">
+        <span class="no">{{ lines.length }}</span>
+        <span class="gutter" />
+        <span class="text">{{ longest }}</span>
+      </div>
+
+      <div
+        class="lines"
+        :style="{
+          paddingTop: `${shown.first * ROW}px`,
+          paddingBottom: `${(lines.length - shown.last) * ROW}px`
+        }"
+      >
+      <div v-for="line in visible" :key="line.number" class="line" :class="line.mark ?? ''">
         <span class="no">{{ line.number }}</span>
         <!-- The bar an editor draws between the numbers and the code: solid
              where a line is new or changed, and a wedge where lines were taken
@@ -227,6 +186,7 @@ const paint = (at: number) => painted.value[at - 1] ?? ''
         </span>
         <span class="text" v-html="paint(line.number)" />
       </div>
+      </div>
     </template>
   </div>
 </template>
@@ -247,6 +207,17 @@ const paint = (at: number) => painted.value[at - 1] ?? ''
   display: flex;
   align-items: flex-start;
   white-space: pre;
+  height: 18px;
+}
+
+/* Wide enough for the longest line in the file and tall enough for none of it,
+   so the view keeps one width whichever rows are drawn in it. */
+.gauge {
+  width: max-content;
+  height: 0;
+  overflow: hidden;
+  visibility: hidden;
+  pointer-events: none;
 }
 
 /* Between the numbers and the code, where an editor puts it: the mark belongs

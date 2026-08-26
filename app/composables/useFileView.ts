@@ -186,6 +186,60 @@ export function buildRows(files: FileEntry[], mode: 'tree' | 'path', collapsed: 
   return rows
 }
 
+/** A file the viewer can be pointed at, and which of the two lists it is in. */
+export interface FileStep {
+  path: string
+  side?: 'staged' | 'unstaged'
+}
+
+/** One of the lists the panel stacks, and the side it stands for. */
+export interface FileGroup {
+  files: FileEntry[]
+  side?: 'staged' | 'unstaged'
+}
+
+/**
+ * The files the arrows walk, in the order they are on screen.
+ *
+ * Built from the rows the panel draws rather than from the list it was handed,
+ * so the order is the one being looked at: tree mode groups by directory and
+ * sorts within it, and a folded-away directory takes its files out of the list
+ * altogether — which is exactly where the arrows should skip to, since a file
+ * nobody can see is not somewhere to land.
+ */
+export function walkOrder(
+  groups: FileGroup[],
+  mode: 'tree' | 'path',
+  collapsed: Set<string>
+): FileStep[] {
+  return groups.flatMap((group) =>
+    buildRows(group.files, mode, collapsed)
+      .filter((row) => row.kind === 'file')
+      .map((row) => (group.side ? { path: row.path, side: group.side } : { path: row.path }))
+  )
+}
+
+/**
+ * The file `by` steps along from the one open, or null when there is nowhere to
+ * go.
+ *
+ * Stops at the ends rather than wrapping, which is what the commit list does
+ * with the same two keys: an arrow held down comes to rest on the last file
+ * instead of starting again at the first, and the two lists in the working tree
+ * read as one run because the end of the unstaged one leads into the staged.
+ */
+export function stepFile(order: FileStep[], from: FileStep | null, by: number): FileStep | null {
+  if (!order.length) return null
+  const at = from
+    ? order.findIndex((one) => one.path === from.path && one.side === from.side)
+    : -1
+  // Nothing open, or a file that has since left the list: start at whichever
+  // end the key was heading away from.
+  if (at === -1) return order[by > 0 ? 0 : order.length - 1] ?? null
+  const to = Math.min(order.length - 1, Math.max(0, at + by))
+  return to === at ? null : (order[to] ?? null)
+}
+
 export function useFileView() {
   return {
     state,
