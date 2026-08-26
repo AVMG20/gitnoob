@@ -181,7 +181,9 @@ function shelve<T extends { name: string }>(items: T[], scope: string): Shelf<T>
 
 // --- section heights
 
-type Section = 'locals' | 'remotes' | 'reviews' | 'tags' | 'stashes'
+/** The sections that can be dragged. Stashes is not one: it is last, and takes
+    whatever the others leave. */
+type Section = 'locals' | 'remotes' | 'reviews' | 'tags'
 
 const SIZES_KEY = 'gitnoob:sidebar-sizes'
 
@@ -210,12 +212,20 @@ function readSizes(): Partial<Record<Section, number>> {
     // the active profile's where it exists.
     if (saved && Object.values(saved).some((value) => value && typeof value === 'object')) {
       const byProfile = saved as Record<string, Partial<Record<Section, number>>>
-      return byProfile[config.profile.value?.id ?? ''] ?? byProfile.default ?? {}
+      const one = byProfile[config.profile.value?.id ?? ''] ?? byProfile.default ?? {}
+      return withoutStashes(one)
     }
-    return saved
+    return withoutStashes(saved)
   } catch {
     return {}
   }
+}
+
+/** Stashes was resizable once. A height left over from then would fight the
+    section that now fills the bottom, so it is dropped on the way in. */
+function withoutStashes(saved: Record<string, unknown>): Partial<Record<Section, number>> {
+  const { stashes: _stashes, ...rest } = saved
+  return rest as Partial<Record<Section, number>>
 }
 
 function saveSizes() {
@@ -1020,7 +1030,10 @@ function stashMenu(event: MouseEvent, index: number, message: string) {
         Stashes
         <span class="count">{{ stashes.length }}</span>
       </button>
-      <div v-if="open.stashes" class="group" :style="sizeOf('stashes')">
+      <!-- The last section takes whatever is left rather than a height of its
+           own: there is nothing under it to divide from, so a cap on it would
+           only leave the bottom of the sidebar empty. -->
+      <div v-if="open.stashes" class="group last">
         <div
           v-for="stash in stashes"
           :key="stash.index"
@@ -1046,13 +1059,6 @@ function stashMenu(event: MouseEvent, index: number, message: string) {
         </div>
         <p v-if="!stashes.length" class="none faint">Nothing stashed.</p>
       </div>
-      <div
-        v-if="open.stashes"
-        class="grip"
-        title="Drag to resize · double-click to reset"
-        @pointerdown="grab($event, 'stashes')"
-        @dblclick="resetSize('stashes')"
-      />
     </div>
 
     <PromptDialog
@@ -1146,6 +1152,14 @@ function stashMenu(event: MouseEvent, index: number, message: string) {
   flex: none;
   max-height: 250px;
   overflow-y: auto;
+}
+
+/* Fills the space the sections above leave, and keeps its content height when
+   they leave none — at which point the sidebar itself scrolls, which is what it
+   does whenever the sections together outgrow it. */
+.group.last {
+  flex: 1 1 auto;
+  max-height: none;
 }
 
 /* The divider between two sections is also the handle for the one above it, so
