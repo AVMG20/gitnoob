@@ -1627,7 +1627,9 @@ fn deleting_a_merged_branch_costs_nothing() {
     let preview = refs::deletion_preview(&sandbox.state(), "topic").unwrap();
     assert!(preview.merged, "HEAD can reach it, so nothing is lost");
     assert_eq!(preview.unpushed, 0);
-    assert!(preview.remotes.is_empty());
+    assert_eq!(preview.only_here, 0);
+    assert!(preview.remote.is_none());
+    assert!(preview.other_remotes.is_empty());
     assert!(!preview.is_head);
 }
 
@@ -1642,6 +1644,8 @@ fn deleting_an_unmerged_branch_is_flagged() {
     let preview = refs::deletion_preview(&sandbox.state(), "topic").unwrap();
     assert!(!preview.merged, "the commit is reachable from nowhere else");
     assert!(preview.upstream.is_none());
+    assert!(preview.also_on.is_empty());
+    assert_eq!(preview.only_here, 1, "what the delete would cost");
 }
 
 #[test]
@@ -1667,7 +1671,11 @@ fn a_branch_that_also_lives_on_a_remote_is_reported() {
     sandbox.git(&["checkout", "-q", "main"]);
 
     let preview = refs::deletion_preview(&sandbox.state(), "topic").unwrap();
-    assert_eq!(preview.remotes, vec!["origin/topic".to_string()]);
+    let remote = preview.remote.expect("origin carries a copy");
+    assert_eq!(remote.name, "origin/topic");
+    assert_eq!(remote.remote, "origin");
+    assert_eq!(remote.unmerged, 1, "the topic commit main cannot reach");
+    assert!(preview.other_remotes.is_empty());
     assert_eq!(preview.upstream.as_deref(), Some("origin/topic"));
     assert_eq!(preview.unpushed, 1, "the commit made after the clone");
 

@@ -5,6 +5,7 @@ use serde::Serialize;
 
 use crate::git_cmd;
 use crate::journal::{self, Mode};
+use crate::remote;
 use crate::state::AppState;
 
 #[derive(Serialize)]
@@ -531,24 +532,49 @@ pub fn create_branch(state: &AppState, name: &str, start: Option<&str>, checkout
     })
 }
 
+/// A copy of the branch on a remote, and what deleting it there would cost.
+#[derive(Serialize)]
+pub struct RemoteCopy {
+    /// Full remote-tracking name, e.g. `origin/feature`.
+    pub name: String,
+    pub remote: String,
+    /// Commits on the remote copy that the branch you are on cannot reach.
+    /// These are the ones a remote delete strands, and no reflog here brings
+    /// them back for anyone else — this is the number that matters most.
+    pub unmerged: usize,
+}
+
 /// What deleting a branch would cost, so the question can be asked properly.
 #[derive(Serialize)]
 pub struct BranchDeletion {
     pub name: String,
     /// Checked out. Git refuses to delete this one, and so do we.
     pub is_head: bool,
-    /// Reachable from HEAD, so nothing is lost by deleting it.
+    /// Reachable from HEAD, so the branch you are on already holds every commit.
     pub merged: bool,
+    /// The branch HEAD is on, so the answer can say what "merged" was measured
+    /// against. `None` on a detached HEAD, where there is no branch to name.
+    pub head: Option<String>,
+    /// Other local branches that can also reach the tip. A branch merged into
+    /// `develop` while you stand on `main` is not lost either, and saying
+    /// "reachable from nothing" about it would be a lie.
+    pub also_on: Vec<String>,
+    /// Commits on this branch that the branch you are on cannot reach: what a
+    /// local delete would actually cost, when it costs anything.
+    pub only_here: usize,
     pub upstream: Option<String>,
-    /// Commits on this branch that its upstream does not have. These are what a
-    /// delete actually costs, when it costs anything.
+    /// Commits on this branch that its upstream does not have.
     pub unpushed: usize,
-    /// Remote branches of the same name, e.g. `origin/feature`. Their presence
-    /// is what turns one question into two.
-    pub remotes: Vec<String>,
+    /// The copy on the remote this branch belongs to — the only remote a
+    /// delete is ever offered for.
+    pub remote: Option<RemoteCopy>,
+    /// Copies on any other remote: forks, mirrors, a colleague's clone. Named
+    /// so nothing comes as a surprise, never deleted from here.
+    pub other_remotes: Vec<String>,
 }
 
 pub fn deletion_preview(state: &AppState, name: &str) -> Result<BranchDeletion, String> {
+    let path = state.path()?;
     let repo = state.repo()?;
     let branch = repo
         .find_branch(name, BranchType::Local)
@@ -558,11 +584,48 @@ pub fn deletion_preview(state: &AppState, name: &str) -> Result<BranchDeletion, 
         .target()
         .ok_or_else(|| format!("Branch {name} has no commit"))?;
 
-    let head = repo.head().ok().and_then(|h| h.target());
+    let head_ref = repo.head().ok();
+    let head_oid = head_ref.as_ref().and_then(|h| h.target());
+    let detached = repo.head_detached().unwrap_or(false);
+    let head = head_ref
+        .as_ref()
+        .filter(|_| !detached)
+        .and_then(|h| h.shorthand().map(String::from));
+
     // Merged means HEAD can already reach it: deleting the label loses nothing.
-    let merged = match head {
-        Some(head) => head == oid || repo.graph_descendant_of(head, oid).unwrap_or(false),
+    let merged = match head_oid {
+        Some(head_oid) => head_oid == oid || repo.graph_descendant_of(head_oid, oid).unwrap_or(false),
         None => false,
+    };
+
+    // The other local branches holding this history. `git branch --contains`
+    // answers in one walk what a descendant check per branch would pay for
+    // several times over, and it is the same question git itself asks.
+    let also_on = git_cmd::run_checked(
+        &path,
+        &["branch", "--contains", &oid.to_string(), "--format=%(refname:short)"],
+    )
+    .map(|raw| {
+        raw.lines()
+            .map(str::trim)
+            .filter(|line| !line.is_empty())
+            // A detached HEAD is listed as "(HEAD detached at abc1234)", which
+            // is not a branch anybody can be told to look at.
+            .filter(|line| !line.starts_with('('))
+            .filter(|line| *line != name && Some(*line) != head.as_deref())
+            .map(String::from)
+            .collect()
+    })
+    .unwrap_or_default();
+
+    // What this branch holds that HEAD does not. `merged` is the same question
+    // asked as a yes or no; this is the number to put in the warning.
+    let only_here = match head_oid {
+        Some(head_oid) => repo
+            .graph_ahead_behind(oid, head_oid)
+            .map(|(ahead, _)| ahead)
+            .unwrap_or(0),
+        None => 0,
     };
 
     let upstream_ref = branch.upstream().ok();
@@ -576,9 +639,16 @@ pub fn deletion_preview(state: &AppState, name: &str) -> Result<BranchDeletion, 
         .map(|(ahead, _)| ahead)
         .unwrap_or(0);
 
-    // Any remote carrying this branch name, not only the tracked one: a branch
-    // pushed to two remotes has two copies to think about.
-    let mut remotes = Vec::new();
+    // The remote this branch belongs to: the one it tracks, else the one the
+    // repository is really about. Copies on any other remote are somebody
+    // else's to delete.
+    let home = upstream
+        .as_ref()
+        .and_then(|full| full.split_once('/').map(|(remote, _)| remote.to_string()))
+        .or_else(|| remote::primary(state));
+
+    let mut remote = None;
+    let mut other_remotes = Vec::new();
     if let Ok(list) = repo.branches(Some(BranchType::Remote)) {
         for entry in list.flatten() {
             let (remote_branch, _) = entry;
@@ -588,23 +658,48 @@ pub fn deletion_preview(state: &AppState, name: &str) -> Result<BranchDeletion, 
             if full.ends_with("/HEAD") {
                 continue;
             }
-            if full.splitn(2, '/').nth(1) == Some(name) {
-                remotes.push(full.to_string());
+            let Some((host, rest)) = full.split_once('/') else {
+                continue;
+            };
+            if rest != name {
+                continue;
+            }
+            if Some(host) == home.as_deref() {
+                // What the remote holds that nothing you are standing on can
+                // reach. Measured against HEAD, the same yardstick the local
+                // half uses, so the two halves of the answer agree.
+                let against = head_oid.unwrap_or(oid);
+                let unmerged = remote_branch
+                    .get()
+                    .target()
+                    .and_then(|remote_oid| repo.graph_ahead_behind(against, remote_oid).ok())
+                    .map(|(_, behind)| behind)
+                    .unwrap_or(0);
+                remote = Some(RemoteCopy {
+                    name: full.to_string(),
+                    remote: host.to_string(),
+                    unmerged,
+                });
+            } else {
+                other_remotes.push(full.to_string());
             }
         }
     }
-    remotes.sort();
+    other_remotes.sort();
 
     Ok(BranchDeletion {
         name: name.to_string(),
         // By name, not by commit: another branch can sit on the same commit as
         // HEAD without being the one checked out.
-        is_head: !repo.head_detached().unwrap_or(false)
-            && repo.head().ok().and_then(|h| h.shorthand().map(String::from)) == Some(name.to_string()),
+        is_head: !detached && head.as_deref() == Some(name),
         merged,
+        head,
+        also_on,
+        only_here,
         upstream,
         unpushed,
-        remotes,
+        remote,
+        other_remotes,
     })
 }
 
@@ -700,4 +795,216 @@ pub fn add_to_gitignore(state: &AppState, pattern: &str) -> Result<String, Strin
     text.push('\n');
     std::fs::write(&file, text).map_err(|e| format!("Could not write .gitignore: {e}"))?;
     Ok(format!("Added {pattern} to .gitignore"))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::path::{Path, PathBuf};
+    use std::process::Command;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    static COUNTER: AtomicUsize = AtomicUsize::new(0);
+
+    /// A repository of its own, with somewhere to push to, removed when the
+    /// test ends.
+    struct Sandbox {
+        root: PathBuf,
+        work: PathBuf,
+        state: AppState,
+    }
+
+    impl Sandbox {
+        fn new(tag: &str) -> Self {
+            let root = std::env::temp_dir().join(format!(
+                "gitnoob-refs-{tag}-{}-{}",
+                std::process::id(),
+                COUNTER.fetch_add(1, Ordering::SeqCst)
+            ));
+            let _ = std::fs::remove_dir_all(&root);
+            std::fs::create_dir_all(&root).unwrap();
+
+            let server = root.join("server.git");
+            run(&root, &["init", "--quiet", "--bare", "server.git"]);
+            let work = root.join("work");
+            std::fs::create_dir_all(&work).unwrap();
+            run(&work, &["init", "--quiet", "--initial-branch=main"]);
+            run(&work, &["config", "user.email", "test@example.com"]);
+            run(&work, &["config", "user.name", "Test"]);
+            run(&work, &["remote", "add", "origin", server.to_str().unwrap()]);
+
+            let state = AppState::new(root.join("config"));
+            state.set_path(work.clone());
+            let sandbox = Sandbox { root, work, state };
+            sandbox.commit("first");
+            run(&sandbox.work, &["push", "--quiet", "-u", "origin", "main"]);
+            sandbox
+        }
+
+        fn git(&self, args: &[&str]) -> String {
+            run(&self.work, args)
+        }
+
+        /// A commit on whatever is checked out, with content nobody else will
+        /// write, so no two commits share an oid.
+        fn commit(&self, message: &str) -> String {
+            let file = self.work.join("log.txt");
+            let mut text = std::fs::read_to_string(&file).unwrap_or_default();
+            text.push_str(message);
+            text.push('\n');
+            std::fs::write(&file, text).unwrap();
+            self.git(&["add", "-A"]);
+            self.git(&["commit", "--quiet", "-m", message]);
+            self.git(&["rev-parse", "HEAD"]).trim().to_string()
+        }
+
+        /// A second clone, for the commits somebody else pushes.
+        fn elsewhere(&self, branch: &str, message: &str) {
+            let other = self.root.join("other");
+            if !other.exists() {
+                run(
+                    &self.root,
+                    &["clone", "--quiet", self.root.join("server.git").to_str().unwrap(), "other"],
+                );
+                run(&other, &["config", "user.email", "them@example.com"]);
+                run(&other, &["config", "user.name", "Them"]);
+            }
+            run(&other, &["checkout", "--quiet", branch]);
+            let file = other.join("log.txt");
+            let mut text = std::fs::read_to_string(&file).unwrap_or_default();
+            text.push_str(message);
+            text.push('\n');
+            std::fs::write(&file, text).unwrap();
+            run(&other, &["add", "-A"]);
+            run(&other, &["commit", "--quiet", "-m", message]);
+            run(&other, &["push", "--quiet", "origin", branch]);
+            self.git(&["fetch", "--quiet", "origin"]);
+        }
+
+        fn preview(&self, name: &str) -> BranchDeletion {
+            deletion_preview(&self.state, name).unwrap()
+        }
+    }
+
+    impl Drop for Sandbox {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.root);
+        }
+    }
+
+    fn run(dir: &Path, args: &[&str]) -> String {
+        let out = Command::new("git")
+            .args(args)
+            .current_dir(dir)
+            .output()
+            .unwrap_or_else(|e| panic!("git {args:?}: {e}"));
+        assert!(
+            out.status.success(),
+            "git {args:?} failed: {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        String::from_utf8_lossy(&out.stdout).to_string()
+    }
+
+    #[test]
+    fn a_merged_branch_is_merged_however_far_ahead_of_its_upstream_it_is() {
+        let sandbox = Sandbox::new("merged-unpushed");
+        sandbox.git(&["checkout", "--quiet", "-b", "feature"]);
+        sandbox.git(&["push", "--quiet", "-u", "origin", "feature"]);
+        sandbox.commit("work nobody has pushed");
+        sandbox.git(&["checkout", "--quiet", "main"]);
+        sandbox.git(&["merge", "--quiet", "--no-ff", "-m", "merge", "feature"]);
+
+        let preview = sandbox.preview("feature");
+        // The commit is on main. That it never reached origin/feature costs
+        // nothing, and the old wording called it lost.
+        assert!(preview.merged);
+        assert_eq!(preview.unpushed, 1);
+        assert_eq!(preview.only_here, 0, "main holds the commit");
+        assert_eq!(preview.head.as_deref(), Some("main"));
+    }
+
+    #[test]
+    fn an_unmerged_branch_that_is_fully_pushed_still_names_its_upstream() {
+        let sandbox = Sandbox::new("unmerged-pushed");
+        sandbox.git(&["checkout", "--quiet", "-b", "feature"]);
+        sandbox.commit("work");
+        sandbox.git(&["push", "--quiet", "-u", "origin", "feature"]);
+        sandbox.git(&["checkout", "--quiet", "main"]);
+
+        let preview = sandbox.preview("feature");
+        assert!(!preview.merged);
+        // Nothing is ahead of the upstream, so the remote holds every commit —
+        // the opposite of "no upstream holding a copy".
+        assert_eq!(preview.unpushed, 0);
+        assert_eq!(preview.only_here, 1);
+        assert_eq!(preview.upstream.as_deref(), Some("origin/feature"));
+        assert_eq!(preview.remote.as_ref().map(|r| r.unmerged), Some(1));
+    }
+
+    #[test]
+    fn commits_only_on_the_remote_are_counted_even_when_the_local_branch_is_merged() {
+        let sandbox = Sandbox::new("remote-ahead");
+        sandbox.git(&["checkout", "--quiet", "-b", "feature"]);
+        sandbox.commit("work");
+        sandbox.git(&["push", "--quiet", "-u", "origin", "feature"]);
+        sandbox.git(&["checkout", "--quiet", "main"]);
+        sandbox.git(&["merge", "--quiet", "--no-ff", "-m", "merge", "feature"]);
+        // Somebody pushes to the branch after it was merged here.
+        sandbox.elsewhere("feature", "their later work");
+
+        let preview = sandbox.preview("feature");
+        assert!(preview.merged);
+        assert_eq!(preview.unpushed, 0);
+        // Deleting on the remote would strand this one, and the local half of
+        // the answer says nothing about it.
+        let remote = preview.remote.expect("origin has a copy");
+        assert_eq!(remote.name, "origin/feature");
+        assert_eq!(remote.unmerged, 1);
+    }
+
+    #[test]
+    fn a_branch_merged_into_another_local_branch_says_which_one() {
+        let sandbox = Sandbox::new("also-on");
+        sandbox.git(&["checkout", "--quiet", "-b", "feature"]);
+        sandbox.commit("work");
+        sandbox.git(&["checkout", "--quiet", "-b", "develop"]);
+        sandbox.git(&["checkout", "--quiet", "main"]);
+
+        let preview = sandbox.preview("feature");
+        assert!(!preview.merged, "main cannot reach it");
+        assert_eq!(preview.only_here, 1);
+        assert_eq!(preview.also_on, vec!["develop".to_string()]);
+    }
+
+    #[test]
+    fn copies_on_other_remotes_are_named_but_not_the_one_offered() {
+        let sandbox = Sandbox::new("fork");
+        let fork = sandbox.root.join("fork.git");
+        run(&sandbox.root, &["init", "--quiet", "--bare", "fork.git"]);
+        sandbox.git(&["remote", "add", "fork", fork.to_str().unwrap()]);
+        sandbox.git(&["checkout", "--quiet", "-b", "feature"]);
+        sandbox.commit("work");
+        sandbox.git(&["push", "--quiet", "-u", "origin", "feature"]);
+        sandbox.git(&["push", "--quiet", "fork", "feature"]);
+        sandbox.git(&["fetch", "--quiet", "fork"]);
+        sandbox.git(&["checkout", "--quiet", "main"]);
+
+        let preview = sandbox.preview("feature");
+        assert_eq!(
+            preview.remote.as_ref().map(|r| r.remote.as_str()),
+            Some("origin"),
+            "the branch's own remote, never the fork"
+        );
+        assert_eq!(preview.other_remotes, vec!["fork/feature".to_string()]);
+    }
+
+    #[test]
+    fn the_checked_out_branch_is_marked_as_such() {
+        let sandbox = Sandbox::new("head");
+        sandbox.git(&["checkout", "--quiet", "-b", "feature"]);
+
+        assert!(sandbox.preview("feature").is_head);
+        assert!(!sandbox.preview("main").is_head);
+    }
 }

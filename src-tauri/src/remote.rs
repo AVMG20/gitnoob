@@ -795,6 +795,33 @@ pub fn delete_remote_tag(state: &AppState, remote: &str, tag: &str) -> Result<Cm
     git_cmd::run(&path, &["push", remote, "--delete", &format!("refs/tags/{tag}")])
 }
 
+/// The remote this repository is really about.
+///
+/// The one the current branch tracks, else the conventional `origin`, else
+/// whichever is configured first. A fork or a mirror added alongside it is
+/// never it, which is what keeps a delete from reaching somebody else's copy.
+pub fn primary(state: &AppState) -> Option<String> {
+    let repo = state.repo().ok()?;
+    let tracked = repo
+        .head()
+        .ok()
+        .filter(|head| head.is_branch())
+        .and_then(|head| head.shorthand().map(|s| s.to_string()))
+        .and_then(|branch| repo.branch_upstream_remote(&format!("refs/heads/{branch}")).ok())
+        .and_then(|buf| buf.as_str().map(|s| s.to_string()));
+    if tracked.is_some() {
+        return tracked;
+    }
+
+    let list = repo.remotes().ok()?;
+    let names: Vec<String> = list.iter().flatten().map(|s| s.to_string()).collect();
+    names
+        .iter()
+        .find(|name| *name == "origin")
+        .or_else(|| names.first())
+        .cloned()
+}
+
 /// The remotes configured for this repository.
 pub fn remotes(state: &AppState) -> Result<Vec<String>, String> {
     let repo = state.repo()?;

@@ -208,14 +208,32 @@ export interface BranchRelation {
 }
 
 /** What deleting a branch would cost, read before the question is asked. */
+/** A copy of the branch on a remote, and what deleting it there would cost. */
+export interface RemoteCopy {
+  /** Full remote-tracking name, e.g. `origin/feature`. */
+  name: string
+  remote: string
+  /** Commits on the remote copy that the branch you are on cannot reach. */
+  unmerged: number
+}
+
 export interface BranchDeletion {
   name: string
   is_head: boolean
+  /** Reachable from HEAD. */
   merged: boolean
+  /** The branch HEAD is on; null on a detached HEAD. */
+  head: string | null
+  /** Other local branches that can also reach the tip. */
+  also_on: string[]
+  /** Commits on the branch that HEAD cannot reach. */
+  only_here: number
   upstream: string | null
   unpushed: number
-  /** Remote branches of the same name, e.g. `origin/feature`. */
-  remotes: string[]
+  /** The copy on the branch's own remote: the only one a delete is offered for. */
+  remote: RemoteCopy | null
+  /** Copies on forks and mirrors, named but never deleted from here. */
+  other_remotes: string[]
 }
 
 export interface MergeOutcome { ok: boolean; message: string; conflicts: string[] }
