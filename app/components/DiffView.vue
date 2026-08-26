@@ -1,10 +1,12 @@
 <script setup lang="ts">
 import { computed } from 'vue'
-import type { FileDiff } from '~/composables/useGit'
-import { highlightLine, languageFor } from '~/composables/useHighlight'
+import type { DiffLine, FileDiff } from '~/composables/useGit'
+import { highlightLine, highlightWhole, languageFor } from '~/composables/useHighlight'
 
 const props = defineProps<{
   diff: FileDiff | null
+  /** The file as it stands on the side being shown, when it could be read. */
+  text?: string | null
   loading?: boolean
   /** When set, each hunk gets its own stage/unstage and discard buttons. */
   side?: 'staged' | 'unstaged' | null
@@ -22,6 +24,30 @@ function lineClass(origin: string) {
 }
 
 /**
+ * A file long enough that painting all of it to colour a few changed lines
+ * costs more than the colour is worth. Generated files are what reach this.
+ */
+const WHOLE_LIMIT = 20_000
+
+/**
+ * The file, coloured whole, beside the plain lines it was made from.
+ *
+ * This is what lets the patch be coloured with everything a line cannot know
+ * about itself: the body of a block comment, a string that runs on, and the
+ * script inside a `.vue` file, which is only JavaScript because of a `<script>`
+ * tag some lines above the hunk. The plain lines are kept so a line can be
+ * checked against the one it claims to be before its colour is used.
+ */
+const whole = computed(() => {
+  const source = props.text
+  const language_ = language.value
+  if (!language_ || source === null || source === undefined) return null
+  const plain = source.split('\n')
+  if (plain.length > WHOLE_LIMIT) return null
+  return { plain, html: highlightWhole(source, language_) }
+})
+
+/**
  * Highlighted lines, cached by content.
  *
  * `paint` used to be called straight from the template, so highlight.js ran
@@ -29,7 +55,7 @@ function lineClass(origin: string) {
  * that have not changed. The cache is dropped whenever the language does, which
  * is whenever a different file is opened.
  */
-const painted = computed(() => {
+const perLine = computed(() => {
   const cache = new Map<string, string>()
   const language_ = language.value
   return (code: string) => {
@@ -41,7 +67,23 @@ const painted = computed(() => {
   }
 })
 
-const paint = (code: string) => painted.value(code)
+/**
+ * A line's colour, taken from the whole file where the line is in it.
+ *
+ * Only where the file agrees that this is the line it says it is: the diff and
+ * the file are read separately, and a write landing between the two would
+ * otherwise paint each line in the colours of whatever now sits at its number.
+ * A deleted line is not in the new file at all and is coloured on its own,
+ * which is the best that can be done without reading the old one too.
+ */
+function paint(line: DiffLine) {
+  const file = whole.value
+  if (file && line.new_lineno !== null) {
+    const at = line.new_lineno - 1
+    if (file.plain[at] === line.content) return file.html[at] ?? ''
+  }
+  return perLine.value(line.content)
+}
 </script>
 
 <template>
@@ -80,7 +122,7 @@ const paint = (code: string) => painted.value(code)
           <span class="no">{{ line.old_lineno ?? '' }}</span>
           <span class="no">{{ line.new_lineno ?? '' }}</span>
           <span class="sign">{{ line.origin === ' ' ? '' : line.origin }}</span>
-          <span class="text" v-html="paint(line.content)" />
+          <span class="text" v-html="paint(line)" />
         </div>
       </div>
 

@@ -76,14 +76,19 @@ async function toFirstChange() {
 }
 
 /**
- * Reads the file itself, which only the whole-file view needs.
+ * Reads the file itself.
  *
- * Deferred until that view is asked for: the diff view already has everything
- * it shows, and reading a file to throw it away is a cost on every click.
+ * Both views want it now. The whole-file view is made of it, and the diff view
+ * colours from it: highlighting a patch line by line cannot see anything that
+ * spans lines, and in a `.vue` or `.html` file — painted with the xml grammar,
+ * which hands the inside of a `<script>` block to javascript — a lone line out
+ * of that block has no tags in it and comes out with no colour at all. Reading
+ * the file is one call against a file already on disk, and the diff view was
+ * the one place that could not tell you what it was looking at.
  */
 async function loadText() {
   const current = target.value
-  if (!current || diffMode.mode !== 'file') return
+  if (!current) return
   textError.value = null
   try {
     text.value = await git.fileText(current.path, current.commit, current.side ?? 'unstaged')
@@ -302,6 +307,7 @@ onUnmounted(() => window.removeEventListener('keydown', onKey))
         <DiffView
           v-else
           :diff="diff"
+          :text="text"
           :loading="loading"
           :side="target.commit ? null : (target.side ?? 'unstaged')"
           :busy="store.busy"
