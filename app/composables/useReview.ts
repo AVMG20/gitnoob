@@ -261,6 +261,22 @@ export function useReview() {
     return folded.value.talk
   }
 
+  /**
+   * Where one remark lives on the forge.
+   *
+   * Neither forge sends the address of a comment with it, but both build it
+   * the same way every time: the review's own page, and an anchor naming the
+   * remark. Worked out here so copying a link to one costs no request.
+   */
+  function commentUrl(comment: RComment): string {
+    const url = store.current?.url ?? store.detail?.url ?? ''
+    if (!url) return ''
+    if (forge.store.status?.kind === 'gitlab') return `${url}#note_${comment.id}`
+    return comment.kind === 'diff'
+      ? `${url}#discussion_r${comment.id}`
+      : `${url}#issuecomment-${comment.id}`
+  }
+
   /** How many remarks a file carries, for the rail and the headers. */
   function countFor(path: string): number {
     let count = 0
@@ -794,6 +810,7 @@ export function useReview() {
     store,
     threadsAt,
     talkThreads,
+    commentUrl,
     countFor,
     openFor,
     diffThreads,

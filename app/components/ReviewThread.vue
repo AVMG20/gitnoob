@@ -1,11 +1,24 @@
 <script setup lang="ts">
 import { computed, ref, watch } from 'vue'
-import { Check, ChevronDown, ChevronRight, CornerDownRight } from 'lucide-vue-next'
+import {
+  Check,
+  ChevronDown,
+  ChevronRight,
+  Copy,
+  CornerDownRight,
+  ExternalLink,
+  MoreHorizontal,
+  Quote
+} from 'lucide-vue-next'
 import PersonFace from './PersonFace.vue'
 import CommentBox from './CommentBox.vue'
 import { renderMarkdown } from '~/composables/useMd'
-import { relativeTime } from '~/composables/useGit'
-import type { Thread } from '~/composables/useReview'
+import { copyText, relativeTime } from '~/composables/useGit'
+import { useContextMenu } from '~/composables/useContextMenu'
+import { useForge } from '~/composables/useForge'
+import { useReview } from '~/composables/useReview'
+import { quotedInto } from '~/composables/reviewThreads'
+import type { RComment, Thread } from '~/composables/useReview'
 
 const props = withDefaults(
   defineProps<{
@@ -23,9 +36,60 @@ const emit = defineEmits<{
   toggleReply: [id: number]
   locate: [thread: Thread]
   resolve: [thread: Thread, resolved: boolean]
+  quote: [comment: RComment]
 }>()
 
+const review = useReview()
+const forge = useForge()
+const menu = useContextMenu()
+
+/**
+ * Whether this thread can be answered where it stands.
+ *
+ * A remark on a line is a thread on both forges. A conversation comment is
+ * not one on GitHub — there is no reply to it, only a quote into the box at
+ * the foot of the page — so that is what is offered there instead of a button
+ * that would post nothing.
+ */
+const answerable = computed(
+  () =>
+    props.thread.root.kind === 'diff' ||
+    (forge.store.status?.kind === 'gitlab' && props.thread.replies.length > 0)
+)
+
+/** What can be done with one remark, in the menu GitHub keeps it in. */
+function remarkMenu(event: MouseEvent, comment: RComment) {
+  const url = review.commentUrl(comment)
+  menu.show(
+    event,
+    [
+      {
+        label: 'Quote reply',
+        icon: Quote,
+        action: () => quote(comment)
+      },
+      {
+        label: 'Copy link',
+        icon: Copy,
+        action: () => void copyText(url, 'Link')
+      },
+      {
+        label: 'Copy markdown',
+        icon: Copy,
+        action: () => void copyText(comment.body, 'Markdown')
+      },
+      {
+        label: `Open on ${forge.forgeName.value}`,
+        icon: ExternalLink,
+        action: () => void forge.open(url)
+      }
+    ],
+    `remark-${comment.id}`
+  )
+}
+
 const root = computed(() => props.thread.root)
+
 const resolved = computed(() => root.value.resolved)
 
 /**
@@ -37,6 +101,31 @@ const resolved = computed(() => root.value.resolved)
  */
 const open = ref(!root.value.resolved)
 watch(resolved, (now) => (open.value = !now))
+
+/**
+ * What is being written in answer, held here rather than by the box.
+ *
+ * Quoting a remark writes into it, and a send that the forge refuses leaves it
+ * where it was: the box closes, the words are still there when it opens again.
+ */
+const answer = ref('')
+
+/**
+ * Answers a remark by quoting it.
+ *
+ * A thread takes the quotation in its own box. A conversation comment has no
+ * thread to take it — GitHub has no reply to one, only a quote — so it goes up
+ * to the page, which writes it into the composer at the foot.
+ */
+function quote(comment: RComment) {
+  if (!answerable.value) {
+    emit('quote', comment)
+    return
+  }
+  answer.value = quotedInto(answer.value, comment.body)
+  if (props.replyTo !== props.thread.id) emit('toggleReply', props.thread.id)
+}
+
 
 function when(iso: string) {
   const at = Date.parse(iso)
@@ -92,6 +181,14 @@ function fullWhen(iso: string) {
             <span class="grow" />
 
             <button
+              class="more"
+              data-testid="remark-menu"
+              title="More"
+              @click="remarkMenu($event, root)"
+            >
+              <MoreHorizontal :size="12" />
+            </button>
+            <button
               v-if="resolved"
               class="fold"
               title="Fold this settled thread away again"
@@ -127,6 +224,14 @@ function fullWhen(iso: string) {
             <div class="meta">
               <span class="author">{{ one.author.name || one.author.login }}</span>
               <span class="faint" :title="fullWhen(one.created_at)">{{ when(one.created_at) }}</span>
+              <span class="grow" />
+              <button
+                class="more"
+                title="More"
+                @click="remarkMenu($event, one)"
+              >
+                <MoreHorizontal :size="12" />
+              </button>
             </div>
             <div class="md-body" v-html="renderMarkdown(one.body)" />
           </div>
@@ -135,7 +240,8 @@ function fullWhen(iso: string) {
 
       <div class="foot">
         <CommentBox
-          v-if="props.replyTo === props.thread.id"
+          v-if="answerable && props.replyTo === props.thread.id"
+          v-model="answer"
           compact
           autofocus
           :busy="props.busy"
@@ -144,9 +250,19 @@ function fullWhen(iso: string) {
           @send="(body) => emit('reply', props.thread.id, body)"
           @cancel="emit('toggleReply', props.thread.id)"
         />
-        <button v-else class="reply" @click="emit('toggleReply', props.thread.id)">
+        <button
+          v-else-if="answerable"
+          class="reply"
+          @click="emit('toggleReply', props.thread.id)"
+        >
           <CornerDownRight :size="11" />
           Reply…
+        </button>
+        <!-- No thread to answer into: the forge takes a quotation in the box
+             at the foot of the conversation, which is what this writes. -->
+        <button v-else class="reply" data-testid="quote-reply" @click="quote(root)">
+          <Quote :size="11" />
+          Quote reply
         </button>
       </div>
     </template>
@@ -288,6 +404,25 @@ function fullWhen(iso: string) {
 .foot {
   margin-left: 18px;
   padding-left: 12px;
+}
+
+.more {
+  flex: none;
+  display: inline-flex;
+  padding: 2px 4px;
+  border-radius: 4px;
+  color: var(--text-faint);
+  opacity: 0;
+}
+
+.remark:hover .more,
+.more:focus-visible {
+  opacity: 1;
+}
+
+.more:hover {
+  color: var(--text);
+  background: var(--bg-hover);
 }
 
 .reply {

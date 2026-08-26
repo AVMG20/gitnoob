@@ -54,3 +54,30 @@ export function foldThreads(comments: RComment[]): { talk: Thread[]; byLine: Map
   }
   return { talk, byLine }
 }
+
+/**
+ * One remark, marked up as a quotation of it.
+ *
+ * The body and nothing else, which is what a forge's own quote reply writes:
+ * a name and a "said" line are noise above the words they introduce.
+ */
+export function quoted(body: string): string {
+  return `${body
+    .trim()
+    .split('\n')
+    .map((line) => `> ${line}`)
+    .join('\n')}\n\n`
+}
+
+/**
+ * The quotation added to whatever is already being written.
+ *
+ * Quoting the same remark twice adds nothing the second time: the box is a
+ * draft somebody is writing in, not a log of every button they pressed.
+ */
+export function quotedInto(held: string, body: string): string {
+  const quotation = quoted(body)
+  if (held.includes(quotation.trim())) return held
+  const before = held.trim()
+  return before ? `${before}\n\n${quotation}` : quotation
+}

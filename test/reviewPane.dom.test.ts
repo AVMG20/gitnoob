@@ -667,6 +667,29 @@ describe('ReviewPane', () => {
     expect(wrapper.find('[data-testid="pending-remark"]').exists()).toBe(false)
   })
 
+  it('answers a conversation comment by quoting it into the composer', async () => {
+    const wrapper = await open()
+
+    // A conversation comment is not a thread on either forge, so it is not
+    // offered a reply that would post nothing.
+    const talk = wrapper.findAll('[data-testid="thread"]')[0]!
+    expect(talk.text()).not.toContain('Reply…')
+    await talk.find('[data-testid="quote-reply"]').trigger('click')
+    await flushPromises()
+
+    const box = wrapper.find('[data-testid="comment-input"]')
+      .element as HTMLTextAreaElement
+    // The body, quoted, and nothing else — the same as a forge's own.
+    expect(box.value.trim()).toBe('> The **description** says it all.')
+    // Kept, like anything else half-written here.
+    expect(review.store.drafts.talk).toContain('description')
+
+    // Quoting the same remark again adds nothing: it is a draft, not a log.
+    await talk.find('[data-testid="quote-reply"]').trigger('click')
+    await flushPromises()
+    expect(review.store.drafts.talk.match(/^> /gm)).toHaveLength(1)
+  })
+
   it('answers a thread where it stands', async () => {
     const wrapper = await open()
     await wrapper.find('[data-testid="tab-files"]').trigger('click')

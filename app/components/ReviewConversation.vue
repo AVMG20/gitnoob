@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, ref, watch } from 'vue'
+import { computed, nextTick, ref, watch } from 'vue'
 import { Check, GitMerge, MessageSquare, Pencil, X } from 'lucide-vue-next'
 import PersonFace from './PersonFace.vue'
 import CommentBox from './CommentBox.vue'
@@ -7,10 +7,11 @@ import ReviewSidebar from './ReviewSidebar.vue'
 import ReviewThread from './ReviewThread.vue'
 import Spinner from './Spinner.vue'
 import { useReview } from '~/composables/useReview'
-import type { ReviewVerdict, Thread } from '~/composables/useReview'
+import type { RComment, ReviewVerdict, Thread } from '~/composables/useReview'
 import { useForge } from '~/composables/useForge'
 import { mergeSummary, verdictLook } from '~/composables/reviewLook'
 import { renderMarkdown } from '~/composables/useMd'
+import { quotedInto } from '~/composables/reviewThreads'
 import { relativeTime } from '~/composables/useGit'
 
 /**
@@ -107,6 +108,20 @@ function locate(thread: Thread) {
   store.selectedPath = thread.root.path
 }
 
+/**
+ * A remark quoted into the composer, which is how a conversation comment is
+ * answered: neither forge threads those, so the answer is a new comment that
+ * carries what it is answering.
+ */
+const composer = ref<InstanceType<typeof CommentBox> | null>(null)
+
+function quote(comment: RComment) {
+  store.drafts.talk = quotedInto(store.drafts.talk, comment.body)
+  review.saveDrafts()
+  void nextTick(() => composer.value?.focus())
+}
+
+
 // --- editing what the review says about itself
 
 const title = ref('')
@@ -191,6 +206,7 @@ async function save() {
             @toggle-reply="toggleReply"
             @locate="locate"
             @resolve="review.resolveThread"
+            @quote="quote"
           />
         </section>
 
@@ -267,6 +283,7 @@ async function save() {
       <!-- The last word, which is usually the reader's. -->
       <section class="card composer">
         <CommentBox
+          ref="composer"
           v-model="store.drafts.talk"
           :busy="store.sending"
           :cancellable="false"

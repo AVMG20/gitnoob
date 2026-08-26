@@ -131,7 +131,13 @@ if (flags.has('--write-only')) {
  */
 function run(command, ...rest) {
   try {
-    execFileSync(command, rest, { cwd: root, stdio: 'inherit' })
+    // `npm` is `npm.cmd` on Windows, and node has refused to spawn a .cmd
+    // without a shell since 20.12 — which read here as "the suite failed"
+    // whatever the suite actually did. Only that one command gets a shell:
+    // the others are handed arguments with spaces in them, which a shell
+    // would take apart.
+    const shell = command.endsWith('.cmd')
+    execFileSync(command, rest, { cwd: root, stdio: 'inherit', shell })
   } catch {
     stop(`${command} ${rest.join(' ')} failed`, 'nothing has been committed, tagged or pushed')
   }
