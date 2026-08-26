@@ -353,8 +353,13 @@ mod tests {
             Some("them/fix-typo"),
             "pushing back to the review should reach the fork, not our own remote"
         );
+        // Read back without the line ending: a Windows checkout writes CRLF
+        // where the fixture wrote LF, and which one landed is not what this is
+        // about.
         assert_eq!(
-            std::fs::read_to_string(sandbox.work.join("readme.md")).unwrap(),
+            std::fs::read_to_string(sandbox.work.join("readme.md"))
+                .unwrap()
+                .replace("\r\n", "\n"),
             "start, fixed\n"
         );
     }

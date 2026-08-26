@@ -26,16 +26,33 @@ pub struct NewRepo {
 /// itself names it. Worked out here so the destination can be checked before
 /// anything is fetched.
 pub fn folder_name(url: &str) -> String {
-    let trimmed = url.trim().trim_end_matches('/');
+    let trimmed = url.trim().trim_end_matches(['/', '\\']);
     // Drop the scheme if there is one, so `ssh://` does not survive as part of
     // the name; whatever separated host from path also separates the name.
     let without_scheme = trimmed.rsplit("://").next().unwrap_or(trimmed);
-    without_scheme
-        .rsplit(['/', ':'])
-        .next()
-        .unwrap_or(without_scheme)
+    // A colon separates host from path in `git@host:owner/repo.git`, and names
+    // a drive in `C:\src\widget`. Told apart, because splitting a local path on
+    // its colon leaves the whole path as the folder's name — which is what
+    // cloning by pasting a Windows path used to do.
+    let name = if local_path(trimmed) {
+        without_scheme.rsplit(['/', '\\']).next()
+    } else {
+        without_scheme.rsplit(['/', ':']).next()
+    };
+    name.unwrap_or(without_scheme)
         .trim_end_matches(".git")
         .to_string()
+}
+
+/// Whether this is a path on this machine rather than an address on a forge.
+fn local_path(input: &str) -> bool {
+    let bytes = input.as_bytes();
+    // `C:\src\widget` or `C:/src/widget`: a drive letter, not a host.
+    let drive = bytes.len() >= 3
+        && bytes[0].is_ascii_alphabetic()
+        && bytes[1] == b':'
+        && (bytes[2] == b'\\' || bytes[2] == b'/');
+    drive || input.contains('\\') || input.starts_with('/') || input.starts_with('.')
 }
 
 /// Clones `url` into a folder named after the repository, inside `parent`.
@@ -140,6 +157,14 @@ mod tests {
         assert_eq!(folder_name("https://github.com/acme/widget.git"), "widget");
         assert_eq!(folder_name("ssh://git@git.example.com:2222/acme/widget.git"), "widget");
         assert_eq!(folder_name("https://gitlab.com/group/subgroup/widget/"), "widget");
+
+        // A path on this machine is a path, not an address: the colon after a
+        // drive letter separates nothing.
+        assert_eq!(folder_name("C:\\Users\\arno\\src\\widget"), "widget");
+        assert_eq!(folder_name("C:/Users/arno/src/widget/"), "widget");
+        assert_eq!(folder_name("/home/arno/src/widget"), "widget");
+        assert_eq!(folder_name("../widget"), "widget");
+        assert_eq!(folder_name("file:///C:/src/widget.git"), "widget");
     }
 
     #[test]

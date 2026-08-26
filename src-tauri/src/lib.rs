@@ -968,6 +968,193 @@ async fn forge_faces(
     Ok(forge::faces(&state).await)
 }
 
+// --- review conversation -----------------------------------------------------
+
+/// Everything said under one review: conversation comments and diff threads.
+#[tauri::command]
+async fn forge_review_comments(
+    number: i64,
+    state: State<'_, AppState>,
+) -> Result<Vec<forge::ReviewComment>, String> {
+    forge::review_comments(&state, number).await
+}
+
+/// Every file a review changes across all of its commits, patches included.
+#[tauri::command]
+async fn forge_review_files(
+    number: i64,
+    state: State<'_, AppState>,
+) -> Result<Vec<forge::ReviewFileChange>, String> {
+    forge::review_files(&state, number).await
+}
+
+/// The commits a review's source branch puts ahead of its target.
+#[tauri::command]
+async fn forge_review_commits(
+    number: i64,
+    state: State<'_, AppState>,
+) -> Result<Vec<forge::ReviewCommit>, String> {
+    forge::review_commits(&state, number).await
+}
+
+/// Leaves one comment on the conversation itself.
+#[tauri::command]
+async fn forge_post_comment(
+    number: i64,
+    body: String,
+    state: State<'_, AppState>,
+) -> Result<(), String> {
+    forge::post_comment(&state, number, &body).await
+}
+
+/// Answers one comment already on the record.
+#[tauri::command]
+async fn forge_reply_comment(
+    number: i64,
+    parent_id: i64,
+    body: String,
+    state: State<'_, AppState>,
+) -> Result<(), String> {
+    forge::reply_comment(&state, number, parent_id, &body).await
+}
+
+/// Starts a thread on one line of one file's diff.
+#[tauri::command]
+#[allow(clippy::too_many_arguments)]
+async fn forge_add_diff_comment(
+    number: i64,
+    head_sha: String,
+    base_sha: String,
+    start_sha: String,
+    path: String,
+    line: i64,
+    side: String,
+    body: String,
+    state: State<'_, AppState>,
+) -> Result<(), String> {
+    forge::add_diff_comment(
+        &state, number, &head_sha, &base_sha, &start_sha, &path, line, &side, &body,
+    )
+    .await
+}
+
+/// Hands down a verdict: approve, request changes or plain comment.
+#[tauri::command]
+async fn forge_submit_review(
+    number: i64,
+    event: String,
+    body: String,
+    comments: Option<Vec<forge::PendingComment>>,
+    state: State<'_, AppState>,
+) -> Result<(), String> {
+    forge::submit_review(&state, number, &event, &body, comments.unwrap_or_default()).await
+}
+
+/// Merges the review as it stands.
+#[tauri::command]
+async fn forge_merge_review(
+    number: i64,
+    squash: Option<bool>,
+    delete_branch: Option<bool>,
+    state: State<'_, AppState>,
+) -> Result<String, String> {
+    forge::merge_review(
+        &state,
+        number,
+        squash.unwrap_or(false),
+        delete_branch.unwrap_or(false),
+    )
+    .await
+}
+
+/// Closes or reopens a review.
+#[tauri::command]
+async fn forge_set_review_state(
+    number: i64,
+    action: String,
+    state: State<'_, AppState>,
+) -> Result<(), String> {
+    forge::set_review_state(&state, number, &action).await
+}
+
+/// Whether the review can land: its checks, its verdicts, its conflicts.
+#[tauri::command]
+async fn forge_review_status(
+    number: i64,
+    state: State<'_, AppState>,
+) -> Result<forge::ReviewStatus, String> {
+    forge::review_status(&state, number).await
+}
+
+/// Marks one diff thread settled, or unsettles it again.
+#[tauri::command]
+async fn forge_resolve_thread(
+    number: i64,
+    thread: String,
+    resolved: bool,
+    state: State<'_, AppState>,
+) -> Result<(), String> {
+    forge::resolve_thread(&state, number, &thread, resolved).await
+}
+
+/// Sets who owns the review and who is being asked to look at it.
+#[tauri::command]
+async fn forge_set_review_people(
+    number: i64,
+    assignees: Vec<forge::Member>,
+    reviewers: Vec<forge::Member>,
+    state: State<'_, AppState>,
+) -> Result<(), String> {
+    forge::set_review_people(&state, number, assignees, reviewers).await
+}
+
+/// Every label this project has.
+#[tauri::command]
+async fn forge_project_labels(state: State<'_, AppState>) -> Result<Vec<forge::Label>, String> {
+    forge::project_labels(&state).await
+}
+
+/// Sets the review's labels to exactly these.
+#[tauri::command]
+async fn forge_set_labels(
+    number: i64,
+    labels: Vec<String>,
+    state: State<'_, AppState>,
+) -> Result<(), String> {
+    forge::set_labels(&state, number, labels).await
+}
+
+/// Rewrites the review's title and description.
+#[tauri::command]
+async fn forge_update_review(
+    number: i64,
+    title: String,
+    body: String,
+    state: State<'_, AppState>,
+) -> Result<(), String> {
+    forge::update_review(&state, number, &title, &body).await
+}
+
+/// Marks the review ready to be read, or puts it back to a draft.
+#[tauri::command]
+async fn forge_set_draft(
+    number: i64,
+    draft: bool,
+    state: State<'_, AppState>,
+) -> Result<(), String> {
+    forge::set_draft(&state, number, draft).await
+}
+
+/// One file as it stands at the review's head, for the whole-file view.
+#[tauri::command]
+async fn forge_review_file_text(
+    number: i64,
+    path: String,
+    state: State<'_, AppState>,
+) -> Result<String, String> {
+    forge::review_file_text(&state, number, &path).await
+}
+
 // --- authors ----------------------------------------------------------------
 
 /// The picture for one commit author, or `None` when there is none to find.
@@ -1219,6 +1406,23 @@ pub fn run() {
             forge_create_review,
             forge_compare_url,
             forge_faces,
+            forge_review_comments,
+            forge_review_files,
+            forge_review_commits,
+            forge_post_comment,
+            forge_reply_comment,
+            forge_add_diff_comment,
+            forge_submit_review,
+            forge_merge_review,
+            forge_set_review_state,
+            forge_review_status,
+            forge_resolve_thread,
+            forge_set_review_people,
+            forge_project_labels,
+            forge_set_labels,
+            forge_update_review,
+            forge_set_draft,
+            forge_review_file_text,
             avatar,
             ai_status,
             ai_models,

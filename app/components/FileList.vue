@@ -2,9 +2,11 @@
 import { computed, nextTick, ref, watch } from 'vue'
 import {
   ArrowRight,
+  Check,
   ChevronDown,
   ChevronRight,
   Folder,
+  MessageSquare,
   Minus,
   Pencil,
   Plus
@@ -30,6 +32,10 @@ const props = defineProps<{
    * button appears.
    */
   action?: string
+  /** Remarks standing on each file, by path, for the review's file list. */
+  comments?: Record<string, number>
+  /** Paths already read to the end, drawn with a quiet tick. */
+  viewed?: string[]
 }>()
 const emit = defineEmits<{
   select: [string]
@@ -159,6 +165,21 @@ function counted(tally: Tally) {
         <span class="name truncate">{{ row.name }}</span>
         <span v-if="row.entry?.additions" class="plus">+{{ row.entry.additions }}</span>
         <span v-if="row.entry?.deletions" class="minus">−{{ row.entry.deletions }}</span>
+        <!-- What has been said about the file, so a list of the review's
+             files says where the conversation is waiting. -->
+        <span
+          v-if="props.comments?.[row.path]"
+          class="remarks"
+          title="Comments on this file"
+        >
+          <MessageSquare :size="10" />{{ props.comments[row.path] }}
+        </span>
+        <Check
+          v-if="props.viewed?.includes(row.path)"
+          :size="11"
+          class="seen"
+          title="Viewed"
+        />
         <!-- The whole file in one click, without going through the menu. It
              appears on hover rather than sitting on every row: a list of forty
              files with forty buttons on it is a list nobody can read. -->
@@ -291,6 +312,21 @@ function counted(tally: Tally) {
 .minus {
   color: var(--red);
   font-size: 11px;
+}
+
+.remarks {
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  color: var(--accent-soft);
+  font-size: 10.5px;
+  font-weight: 600;
+}
+
+.seen {
+  flex: none;
+  color: var(--text-faint);
 }
 
 .none {

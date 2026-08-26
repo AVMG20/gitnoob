@@ -104,6 +104,11 @@ export interface ReviewDetail {
   comments: number
   /** Whether it can be merged, in the forge's own vocabulary. */
   merge_status: string | null
+  /** The versions being compared, which anchoring a comment to a diff line
+      needs naming: GitLab wants all three, GitHub only the head. */
+  base_sha: string
+  head_sha: string
+  start_sha: string
 }
 
 export interface ForgeUser {

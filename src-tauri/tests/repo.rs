@@ -154,8 +154,12 @@ fn clones_a_repository_into_a_folder_named_after_it() {
     );
     assert_eq!(dest, parent.join(&made.name));
     assert!(dest.join(".git").exists());
+    // Read back without the line ending: a Windows checkout writes CRLF where
+    // the fixture wrote LF, and which one landed is not what this is about.
     assert_eq!(
-        std::fs::read_to_string(dest.join("a.txt")).unwrap(),
+        std::fs::read_to_string(dest.join("a.txt"))
+            .unwrap()
+            .replace("\r\n", "\n"),
         "one\n",
         "the clone should carry the files"
     );

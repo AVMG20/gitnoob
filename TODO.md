@@ -408,31 +408,92 @@ it. These are the gaps that hurt that person specifically.
       Windows code-signing certificate — until those exist, a first launch is a
       right-click Open on macOS and a "Run anyway" on Windows
 
+## Round 6 — the review page
+
+Reviews were readable in the app and answered in a browser tab. Now the whole
+thing happens here.
+
+- [x] **One header instead of a row of loose buttons.** Three lines — what it
+      is, whose it is and where it goes, what can be done with it — with the
+      merge as the one filled button on the page and labelled tabs carrying
+      their own counts, in place of an icon rail nobody could name
+- [x] **The conversation reads diff threads too**, in the order everything was
+      said, with the verdicts as events between them. A thread can be settled
+      where it is read — GitLab resolves the discussion, GitHub takes the one
+      GraphQL mutation REST has never offered — and a settled thread folds
+      itself away
+- [x] **How the review stands, in one call**: the checks (GitHub check runs and
+      statuses, GitLab pipeline jobs), the standing verdicts one per person,
+      the approvals a project insists on, and whether the forge will take the
+      merge. Drawn as a Checks page, a summary in the sidebar, and the sentence
+      the merge box leads with
+- [x] **Merging asks once, in a dialog that says what it will do**: which
+      branch goes where, as one commit or as they were written, and whether the
+      branch goes with it — instead of a button that changed its own label for
+      three seconds
+- [x] **The review is managed from the sidebar**: reviewers, assignees and
+      labels are edited in place, the title and description are rewritten in
+      the description card, and a draft is marked ready from the header
+- [x] **The files page is one bar over one file.** The path and its counts are
+      the panel's to say; the bar carries where you are, Diff/File, the Viewed
+      tick and the step to the next unread file. ↑ and ↓ walk the files,
+      Ctrl+Enter reads this one and opens the next, and the end of a file
+      offers the same step where the scroll leaves you
+- [x] **The panel only shows up where it has something to say** — beside the
+      diff — so the conversation is no longer read next to a tree of two
+      hundred files
+- [x] **Remarks are held back for the verdict, the way a review works.** A
+      remark on a line is added to the review — kept on disk, drawn on its
+      line as pending, editable and discardable — and every one of them goes
+      out with Approve, Request changes or the plain send. "Comment now" is
+      still there for the one-off. GitHub takes them in the single request it
+      offers; GitLab has no pending review, so they are posted as their
+      threads immediately before the verdict follows
+- [x] **The toolbar stands down inside a review** — fetch and push are about
+      the working tree — and settings and the profile move into the review
+      header. It is hidden rather than unmounted, since the repository's
+      shortcuts live in it. The shell became a flex column at the same time:
+      naming rows by position broke the moment one could be absent, which is
+      what left the activity log stretched over half the window
+- [x] **A fixture review at `?lab=review` on the dev server**, since a Tauri
+      window cannot be opened in a browser and a page has to be looked at
+      somewhere. Compiled out of anything built for release
+
+
 ## How to run it
 
 See the README, which is now the one place the build notes live.
 
 ## Verification
 
-`cargo test` runs 150. 149 pass: 59 unit (remote URL parsing, API bases, URL
-encoding, AI answer parsing, reasoning levels, one-hunk patch rebuilding, SSH
-command building, transport-failure explanations, git command rendering, clone
-folder naming, and the config file: its round trip, its migrations and its
-corrupt-file path) and 91 integration against real repositories built with the git
-CLI — graph lane invariants, divergence reporting, every conflict-resolution
-combination, undo and redo, auto-stash, stash operations, cherry-picking several
-commits out of order, empty repository, detached HEAD, tracking-branch checkout,
-CRLF files, a pull across a divergence, an oversized diff, cloning from a local
-remote, creating a repository with a first commit, adding, editing, renaming and
-removing a remote against a bare one, and pushing to one — a first push, a
-refused one, a force push, and a force push the lease stops — and an
-annotated tag, which names an object of its own rather than the commit.
+`cargo test` runs 185, all passing: 86 unit (remote URL parsing, API bases, URL
+encoding, check and verdict states, the merge-readiness roll-up, GitLab draft
+titles, held-back review comments, AI answer parsing, reasoning levels,
+one-hunk patch rebuilding, SSH command building, transport-failure
+explanations, git command rendering, clone folder naming, and the config file:
+its round trip, its migrations and its corrupt-file path) and 99 integration
+against real repositories built with the git CLI — graph lane invariants,
+divergence reporting, every conflict-resolution combination, undo and redo,
+auto-stash, stash operations, cherry-picking several commits out of order,
+empty repository, detached HEAD, tracking-branch checkout, CRLF files, a pull
+across a divergence, an oversized diff, cloning from a local remote, creating a
+repository with a first commit, adding, editing, renaming and removing a remote
+against a bare one, and pushing to one — a first push, a refused one, a force
+push, and a force push the lease stops — and an annotated tag, which names an
+object of its own rather than the commit.
 
-The one failure is on Windows and predates any of this:
-`clones_a_repository_into_a_folder_named_after_it` reads a local
-`C:Users…` path as a URL and takes everything after the colon as the folder
-name, so cloning by pasting a Windows path names the folder after the whole
-path. Nothing to do with tags or releases; worth its own fix.
+The Windows failures this file used to list are gone. One was a real bug:
+cloning by pasting a local path split it on the colon after the drive letter
+and named the folder after the whole path. The others were assertions
+comparing a checked-out file against a fixture written with bare newlines,
+which a Windows checkout writes back as CRLF.
+
+`npx vitest run` runs 123 across eleven files, all passing: the review page end to
+end against a fixture forge (its conversation, its threads and their settling,
+its files and the walk through them, its checks, its merge dialog and its
+sidebar edits, its held-back remarks), the thread folding, the patch parser, the markdown renderer, the
+branch-deletion verdicts, the ref chips, the highlighter and the words a
+review’s states are drawn in.
 
 `npm run typecheck` runs and reports 79 errors in seven files, all pre-existing
 — this file said 59 for a while, which was never right. `npm run generate` builds the bundle clean.

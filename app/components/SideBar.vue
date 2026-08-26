@@ -31,6 +31,7 @@ import { copyText, fullTime, relativeTime, useGit, type Tag as TagRef } from '~/
 import { useContextMenu } from '~/composables/useContextMenu'
 import { useDragDrop } from '~/composables/useDragDrop'
 import { useForge, type Review } from '~/composables/useForge'
+import { useReview } from '~/composables/useReview'
 import { useConfig } from '~/composables/useConfig'
 
 const git = useGit()
@@ -38,6 +39,7 @@ const store = git.store
 const menu = useContextMenu()
 const drag = useDragDrop()
 const forge = useForge()
+const reviewPage = useReview()
 const config = useConfig()
 
 const SECTIONS_KEY = 'gitnoob:sidebar-sections'
@@ -406,27 +408,35 @@ function reviewTitle(review: Review) {
     : 'the branch it came from has been deleted'
   const lines = [review.title, `${reviewBranch(review)} → ${review.target_branch}`]
   if (where) lines.push(where)
-  lines.push('Double-click to check it out')
+  lines.push('Click to read the review · double-click to check it out')
   return lines.join('\n')
 }
 
+/** The review whose page is open, so its row stays lit while it is read. */
+const openReview = computed(() => reviewPage.store.current)
+
 /**
- * A single click on a review: the same question a single click on a branch
- * asks — where is it — answered without touching the working tree. The commits
- * of a review from a fork are not here until it has been checked out, so there
- * is nothing to point at and saying so beats moving nothing.
+ * A single click on a review opens it here, in place of the graph — the
+ * conversation, the files across the whole review, and the remarks standing on
+ * their lines.
+ *
+ * But a double click is two singles, and the page opening on the first would
+ * take the column away before the second arrived. So the open waits a beat,
+ * and the double click cancels it and checks the branch out instead. Anything
+ * slower than that beat was one click.
  */
-async function showReview(review: Review) {
-  if (review.head_sha && (await git.revealCommit(review.head_sha))) return
-  git.note(
-    `${forge.sigil.value}${review.number} is not in this clone yet — double-click to check it out`,
-    'info'
-  )
+const DBLCLICK_WAIT = 220
+let openTimer: number | undefined
+
+function openReviewPage(review: Review) {
+  window.clearTimeout(openTimer)
+  openTimer = window.setTimeout(() => reviewPage.show(review), DBLCLICK_WAIT)
 }
 
 /** A double click: stand on it, fetching and adding the fork if that is what
     having those commits takes. */
 function checkoutReview(review: Review) {
+  window.clearTimeout(openTimer)
   return git.checkoutReview({
     number: review.number,
     branch: review.source_branch,
@@ -1133,14 +1143,19 @@ function stashMenu(event: MouseEvent, index: number, message: string) {
             v-for="review in reviews"
             :key="review.number"
             class="row"
-            :class="{ on: review.is_current }"
+            :class="{ on: review.is_current || openReview?.number === review.number }"
             :title="reviewTitle(review)"
-            @click="showReview(review)"
+            @click="openReviewPage(review)"
             @dblclick="checkoutReview(review)"
             @contextmenu="
               menu.show(
                 $event,
                 [
+                  {
+                    label: `Read ${forge.sigil.value}${review.number} here`,
+                    icon: GitPullRequest,
+                    action: () => openReviewPage(review)
+                  },
                   { label: 'Open in browser', icon: ExternalLink, action: () => forge.open(review.url) },
                   {
                     label: `Check out ${reviewBranch(review)}`,

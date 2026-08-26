@@ -22,7 +22,11 @@
   },
   "devDependencies": {
     "@tauri-apps/cli": "^2.0.0",
+    "@vitejs/plugin-vue": "^6.0.8",
+    "@vue/test-utils": "^2.4.11",
+    "happy-dom": "^20.11.6",
     "nuxt": "^4.0.0",
+    "opencode-chrome-devtools": "^1.0.4",
     "typescript": "^5.9.3",
     "vitest": "^4.1.11",
     "vue": "^3.5.0",

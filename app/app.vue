@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
+import { computed, defineAsyncComponent, onMounted, onUnmounted, ref, watch } from 'vue'
 import { invoke } from '@tauri-apps/api/core'
 import { listen, type UnlistenFn } from '@tauri-apps/api/event'
 import { useGit } from '~/composables/useGit'
@@ -7,6 +7,7 @@ import { useConfig } from '~/composables/useConfig'
 import { useForge } from '~/composables/useForge'
 import { useAi } from '~/composables/useAi'
 import { usePanes } from '~/composables/usePanes'
+import { useReview } from '~/composables/useReview'
 import { useTheme } from '~/composables/useTheme'
 import { useUpdates } from '~/composables/useUpdates'
 import { useShortcuts } from '~/composables/useShortcuts'
@@ -16,6 +17,7 @@ const git = useGit()
 const store = git.store
 const config = useConfig()
 const forge = useForge()
+const review = useReview()
 const ai = useAi()
 const { layout } = usePanes()
 const updates = useUpdates()
@@ -31,6 +33,23 @@ useShortcuts({
 })
 
 const ready = ref(false)
+
+/**
+ * The review page on fixture data, at `?lab=review` on the dev server.
+ *
+ * A Tauri window is the only place the real app can run, which makes looking
+ * at a page in a browser — at another width, with the devtools open, on a
+ * review nobody has to have open — impossible. This is the way in, and
+ * `import.meta.dev` keeps it out of anything built for release.
+ */
+const lab = import.meta.dev && window.location.search.includes('lab=review')
+
+// Loaded only where it can be reached, so the fixture review is not bundled
+// into anything shipped: with `import.meta.dev` false the import goes with it.
+const DevReviewLab = import.meta.dev
+  ? defineAsyncComponent(() => import('~/components/DevReviewLab.vue'))
+  : null
+
 let fetchTimer: number | undefined
 let unlisten: UnlistenFn | undefined
 let unlistenCommand: UnlistenFn | undefined
@@ -77,6 +96,21 @@ watch(
 
 const settings = computed(() => config.settings.value)
 
+/**
+ * The review's files stay in the panel wherever in the review you are.
+ *
+ * The list is how a review is walked, not only how a diff is chosen: a file
+ * clicked from the conversation or the checks page opens the files page on
+ * it, and the panel never appears and disappears under the pointer.
+ */
+const reviewOpen = computed(() => !!review.store.current)
+
+const columns = computed(() => {
+  const panel = `${layout.panel}px`
+  if (store.viewer || reviewOpen.value) return `minmax(0, 1fr) 5px ${panel}`
+  return `${layout.sidebar}px 5px minmax(0, 1fr) 5px ${panel}`
+})
+
 /** Opens a project and does the on-open housekeeping GitKraken does. */
 async function openProject(path: string) {
   // Before the first await, so the tab strip moves in the same frame as the
@@ -89,6 +123,8 @@ async function openProject(path: string) {
   } finally {
     config.endOpen()
   }
+  // A review page belongs to the repository it was opened on.
+  review.close()
   await Promise.all([forge.refreshStatus(), ai.refreshStatus()])
   forge.loadReviews()
   // Fetch straight away so the ahead/behind counts on screen are true rather
@@ -113,7 +149,10 @@ watch(
   async () => {
     const path = config.activeProject.value
     if (path) await openProject(path)
-    else git.forget()
+    else {
+      git.forget()
+      review.close()
+    }
   }
 )
 
@@ -194,23 +233,27 @@ onUnmounted(() => {
 </script>
 
 <template>
-  <div class="shell">
+  <component :is="DevReviewLab" v-if="lab && DevReviewLab" />
+  <div v-else class="shell">
     <ProjectTabs @open="openProject" @clone="cloneOpen = true" @init="initOpen = true" />
 
     <template v-if="store.repo">
-      <TitleBar />
+      <!-- Fetch, pull, push and stash are about the working tree, and a review
+           page is not the working tree: the toolbar stands down while one is
+           open, and Back brings it straight back. Hidden rather than unmounted,
+           because the repository's keyboard shortcuts live in it and those still
+           work from a review page. -->
+      <TitleBar v-show="!review.store.current" />
       <BusyBar />
-      <div
-        class="body"
-        :style="{
-          gridTemplateColumns: store.viewer
-            ? `minmax(0, 1fr) 5px ${layout.panel}px`
-            : `${layout.sidebar}px 5px minmax(0, 1fr) 5px ${layout.panel}px`
-        }"
-      >
-        <!-- Opening a file takes over the graph area, as GitKraken does. -->
+      <div class="body" :style="{ gridTemplateColumns: columns }">
+        <!-- Opening a file takes over the graph area, as GitKraken does; so
+             does opening a review, which is read here rather than in the
+             forge's browser tab. -->
         <template v-if="store.viewer">
           <DiffViewer />
+        </template>
+        <template v-else-if="review.store.current">
+          <ReviewPane />
         </template>
         <template v-else>
           <SideBar />
@@ -218,7 +261,11 @@ onUnmounted(() => {
           <GraphList />
         </template>
         <ResizeHandle side="panel" />
-        <RightPanel />
+        <!-- While a review is being read, the panel holds its files: the
+             working tree has nothing to say about somebody else's branch,
+             and the list is how the review itself is walked. -->
+        <ReviewFilesPanel v-if="reviewOpen" />
+        <RightPanel v-else />
       </div>
     </template>
 
@@ -241,23 +288,30 @@ onUnmounted(() => {
 </template>
 
 <style scoped>
+/*
+ * Tabs, toolbar, progress bar, body, activity log — stacked, with the body
+ * taking whatever is left.
+ *
+ * A column of rows named by position broke the moment one of them could be
+ * absent: with the toolbar hidden on a review page, everything below it moved
+ * up a row and the activity log inherited the row that stretches. Flex says
+ * "the body is the one that grows" without counting anybody.
+ */
 .shell {
-  /* tabs, toolbar, progress bar, body, activity log */
-  display: grid;
-  grid-template-columns: minmax(0, 1fr);
-  grid-template-rows: auto auto auto minmax(0, 1fr) auto;
+  display: flex;
+  flex-direction: column;
   height: 100%;
 }
 
-/* Without a repository open there is no toolbar, so the welcome pane takes the
-   row the body would have had. */
-.shell:has(.welcome) {
-  grid-template-rows: auto minmax(0, 1fr) auto;
+.body,
+.shell > :deep(.welcome) {
+  flex: 1;
+  min-height: 0;
 }
 
 .body {
   display: grid;
-  min-height: 0;
+  grid-template-columns: minmax(0, 1fr);
 }
 
 .body > :deep(*) {
