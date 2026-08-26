@@ -85,13 +85,25 @@ function put(path, find, replace) {
  * The lock file is here because cargo rewrites it on the next build whether or
  * not anybody asked. Left out, the release commit is followed by a lock file
  * that no longer matches it, and in CI by a dirty tree.
+ *
+ * It is also the only one whose line break is part of the pattern — the version
+ * it wants is the one under this package's name, and there is nothing else to
+ * tell it apart from a dependency's. So the break has to be allowed to be a
+ * Windows one: the runner checks out with `core.autocrlf` on, and a pattern
+ * that insists on a bare newline finds nothing in a file full of them. The
+ * other two match a line's start and stop before its end, so a carriage return
+ * never comes into it.
  */
 const VERSIONED = ['src-tauri/tauri.conf.json', 'src-tauri/Cargo.toml', 'src-tauri/Cargo.lock']
 
 function writeVersion() {
   put('src-tauri/tauri.conf.json', /^ {2}"version": "([^"]+)"/m, `  "version": "${version}"`)
   put('src-tauri/Cargo.toml', /^version = "([^"]+)"/m, `version = "${version}"`)
-  put('src-tauri/Cargo.lock', /(?<=name = "gitnoob"\n)version = "([^"]+)"/, `version = "${version}"`)
+  put(
+    'src-tauri/Cargo.lock',
+    /(?<=name = "gitnoob"\r?\n)version = "([^"]+)"/,
+    `version = "${version}"`
+  )
 }
 
 /** The number the app currently reports, which the new one has to beat. */
