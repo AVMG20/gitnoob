@@ -401,6 +401,35 @@ async function guard<T>(label: string, fn: () => Promise<T>): Promise<T | null> 
   }
 }
 
+/**
+ * Puts the store back to having no repository open.
+ *
+ * Closing the last tab used to clear the repository and the commit list and
+ * leave the rest — so the file viewer, the refs, the status and a rejected push
+ * all survived into the welcome pane and were waiting, describing a repository
+ * that was no longer open, for whatever opened next. Written once here rather
+ * than at each of the two places that empty the store, which is how the two
+ * came to disagree about what emptying it means.
+ */
+function forget() {
+  store.repo = null
+  store.rows = []
+  store.refs = null
+  store.status = null
+  store.stashes = []
+  store.detail = null
+  store.selected = WIP
+  store.hasMore = false
+  store.limit = COMMIT_PAGE
+  store.history = { undo: [], redo: [] }
+  store.progress = null
+  store.pushBlocked = null
+  store.resolving = null
+  store.revealing = null
+  store.viewer = null
+  store.query = ''
+}
+
 export function useGit() {
   async function openRepo(path: string) {
     const info = await guard('Open repository', () =>
@@ -569,6 +598,7 @@ export function useGit() {
   }
 
   return {
+    forget,
     store,
     note,
     refresh,

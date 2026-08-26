@@ -67,10 +67,7 @@ async function close(path: string) {
   await config.closeProject(path)
   const next = config.activeProject.value
   if (next) emit('open', next)
-  else {
-    git.store.repo = null
-    git.store.rows = []
-  }
+  else git.forget()
 }
 
 /** Moves along the strip, wrapping, so the keys never dead-end. */

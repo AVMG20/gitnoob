@@ -95,12 +95,7 @@ watch(
   async () => {
     const path = config.activeProject.value
     if (path) await openProject(path)
-    else {
-      store.repo = null
-      store.rows = []
-      store.refs = null
-      store.status = null
-    }
+    else git.forget()
   }
 )
 
