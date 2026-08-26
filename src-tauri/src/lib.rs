@@ -884,6 +884,16 @@ async fn forge_reviews(state: State<'_, AppState>) -> Result<Vec<forge::Review>,
     forge::reviews(&state).await
 }
 
+/// Everything one review says about itself, asked for when it is opened rather
+/// than on every refresh of the list.
+#[tauri::command]
+async fn forge_review_detail(
+    number: i64,
+    state: State<'_, AppState>,
+) -> Result<forge::ReviewDetail, String> {
+    forge::review_detail(&state, number).await
+}
+
 /// The repositories the active profile's token can see, so cloning is picking
 /// one from a list rather than pasting an address.
 #[tauri::command]
@@ -1185,6 +1195,7 @@ pub fn run() {
             forge_me,
             forge_check,
             forge_reviews,
+            forge_review_detail,
             forge_repos,
             forge_members,
             forge_create_review,

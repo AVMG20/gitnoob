@@ -62,6 +62,50 @@ export interface Review {
   warning: string | null
 }
 
+/** Somebody a review names: its author, an assignee, a reviewer. */
+export interface Person {
+  login: string
+  /** Their real name where the forge has one; the login otherwise. */
+  name: string
+  /** Their picture as a `data:` URL, or null when there was none to fetch. */
+  avatar: string | null
+}
+
+/** One of a review's labels, with the colour the forge gave it. */
+export interface Label {
+  name: string
+  /** `#rrggbb`, or empty where the forge does not colour its labels. */
+  color: string
+}
+
+/**
+ * Everything one review says about itself.
+ *
+ * The list in the sidebar is asked for on every refresh and stays thin; this
+ * is fetched once, when a particular review is being read.
+ */
+export interface ReviewDetail {
+  number: number
+  title: string
+  /** The review's own description, which is not the head commit's message. */
+  body: string
+  state: string
+  draft: boolean
+  author: Person
+  assignees: Person[]
+  reviewers: Person[]
+  labels: Label[]
+  milestone: string | null
+  source_branch: string
+  target_branch: string
+  url: string
+  created_at: string
+  updated_at: string
+  comments: number
+  /** Whether it can be merged, in the forge's own vocabulary. */
+  merge_status: string | null
+}
+
 export interface ForgeUser {
   login: string
   /** The forge's own numeric id, which GitLab wants instead of the login. */
@@ -103,6 +147,13 @@ const store = reactive({
   meFor: null as string | null,
   /** Every profile's picture, by profile id, for the switcher. */
   faces: {} as Record<string, string>,
+  /** What each opened review says about itself, by number. */
+  details: {} as Record<number, ReviewDetail>,
+  /** The project `details` were read for, so a switch does not show another's. */
+  detailsFor: null as string | null,
+  /** The review a lookup is out for, so the panel can say it is coming. */
+  loadingDetail: null as number | null,
+  detailError: null as string | null,
   /** Everyone this project can hand a review to, once asked. */
   members: [] as Member[],
   /** The project `members` describes, so a switch does not show the last one. */
@@ -127,6 +178,8 @@ export function useForge() {
   )
   const label = computed(() => (store.status?.kind === 'gitlab' ? 'Merge requests' : 'Pull requests'))
   const shortLabel = computed(() => (store.status?.kind === 'gitlab' ? 'MR' : 'PR'))
+  /** How the forge itself writes a review's number: `!38` on GitLab, `#38` on GitHub. */
+  const sigil = computed(() => (store.status?.kind === 'gitlab' ? '!' : '#'))
 
   async function refreshStatus() {
     store.status = await invoke<ForgeStatus>('forge_status').catch(() => null)
@@ -190,6 +243,41 @@ export function useForge() {
     }
   }
 
+  /** The project a lookup belongs to: the account, plus the repository. */
+  function projectId() {
+    const slug = store.status?.slug
+    if (!slug) return null
+    return `${store.status?.kind}@${store.status?.host}/${slug.owner}/${slug.name}`
+  }
+
+  /**
+   * Asks what one review says about itself, once per review.
+   *
+   * Everything here — who it is assigned to, what it is labelled, whether it
+   * can be merged — is a second request the sidebar's list does not make, so
+   * it waits until a review is actually being read. Kept afterwards because
+   * clicking between two reviews is how they get compared.
+   */
+  async function loadReviewDetail(number: number, force = false) {
+    const id = projectId()
+    if (!usable.value || !id) return
+    // A different project's numbers mean different reviews.
+    if (store.detailsFor !== id) {
+      store.details = {}
+      store.detailsFor = id
+    }
+    if (!force && store.details[number]) return
+    store.loadingDetail = number
+    store.detailError = null
+    try {
+      store.details[number] = await invoke<ReviewDetail>('forge_review_detail', { number })
+    } catch (error) {
+      store.detailError = String(error)
+    } finally {
+      if (store.loadingDetail === number) store.loadingDetail = null
+    }
+  }
+
   /**
    * Asks who is on this project, once per project.
    *
@@ -198,8 +286,7 @@ export function useForge() {
    * never make.
    */
   async function loadMembers(force = false) {
-    const slug = store.status?.slug
-    const id = slug ? `${store.status?.kind}@${store.status?.host}/${slug.owner}/${slug.name}` : null
+    const id = projectId()
     if (!usable.value || !id) {
       store.members = []
       return
@@ -268,9 +355,11 @@ export function useForge() {
     usable,
     label,
     shortLabel,
+    sigil,
     refreshStatus,
     loadFaces,
     loadReviews,
+    loadReviewDetail,
     loadMembers,
     loadMe,
     loadRepos,

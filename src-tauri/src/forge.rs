@@ -682,6 +682,265 @@ async fn gitlab_project(
     })
 }
 
+/// Somebody a review names: its author, an assignee, a reviewer.
+#[derive(Serialize, Clone)]
+pub struct Person {
+    /// The account name, which is what the forges show next to an action.
+    pub login: String,
+    /// Their real name where the forge has one; the login otherwise.
+    pub name: String,
+    /// Their picture as a `data:` URL, when there was one to fetch.
+    pub avatar: Option<String>,
+}
+
+/// One of a review's labels, with the colour the forge gave it.
+#[derive(Serialize, Clone)]
+pub struct Label {
+    pub name: String,
+    /// `#rrggbb`, or empty where the forge does not colour its labels.
+    pub color: String,
+}
+
+/// Everything about one review that the list of them leaves out.
+///
+/// The sidebar's list is deliberately thin — it is asked for on every
+/// refresh — so the facts that only matter once a particular review is open
+/// are fetched separately, when it is.
+#[derive(Serialize)]
+pub struct ReviewDetail {
+    pub number: i64,
+    pub title: String,
+    /// The review's own description, which is not the head commit's message.
+    pub body: String,
+    pub state: String,
+    pub draft: bool,
+    pub author: Person,
+    pub assignees: Vec<Person>,
+    pub reviewers: Vec<Person>,
+    pub labels: Vec<Label>,
+    pub milestone: Option<String>,
+    pub source_branch: String,
+    pub target_branch: String,
+    pub url: String,
+    pub created_at: String,
+    pub updated_at: String,
+    /// How many comments have been left on it.
+    pub comments: i64,
+    /// Whether it can be merged as it stands, in the forge's own vocabulary —
+    /// the two have no shared one worth inventing.
+    pub merge_status: Option<String>,
+}
+
+/// Faces already fetched this run, by URL. Each one is a request and a base64
+/// blob, and a project's reviews name the same few people over and over.
+static PEOPLE: Mutex<Option<HashMap<String, Option<String>>>> = Mutex::new(None);
+
+/// A picture for somebody a review names, fetched at most once per URL.
+async fn face(url: &str) -> Option<String> {
+    if url.is_empty() {
+        return None;
+    }
+    if let Some(known) = PEOPLE.lock().unwrap().as_ref().and_then(|map| map.get(url)) {
+        return known.clone();
+    }
+    let found = avatar::from_url(url).await;
+    PEOPLE
+        .lock()
+        .unwrap()
+        .get_or_insert_with(HashMap::new)
+        .insert(url.to_string(), found.clone());
+    found
+}
+
+/// Reads one person out of a forge's JSON, whichever forge wrote it, along with
+/// where their picture lives.
+///
+/// GitHub gives an account a `login` and nothing else here; GitLab gives a
+/// `username` and a display name. Taking both and falling back keeps one
+/// reader for the two shapes. Kept apart from fetching the picture so the
+/// reading can be checked without a network.
+fn read_person(value: &serde_json::Value) -> (Person, String) {
+    let login = {
+        let github = string(value, &["login"]);
+        if github.is_empty() {
+            string(value, &["username"])
+        } else {
+            github
+        }
+    };
+    let name = {
+        let given = string(value, &["name"]);
+        if given.is_empty() {
+            login.clone()
+        } else {
+            given
+        }
+    };
+    (
+        Person {
+            login,
+            name,
+            avatar: None,
+        },
+        string(value, &["avatar_url"]),
+    )
+}
+
+/// One person, with their picture fetched.
+async fn person(value: &serde_json::Value) -> Person {
+    let (mut read, picture) = read_person(value);
+    read.avatar = face(&picture).await;
+    read
+}
+
+/// The same, for the arrays of people a review carries. Anyone the forge lists
+/// without an account name is not somebody to show.
+async fn people(value: Option<&serde_json::Value>) -> Vec<Person> {
+    let Some(items) = value.and_then(|v| v.as_array()) else {
+        return Vec::new();
+    };
+    let mut out = Vec::new();
+    for item in items {
+        if read_person(item).0.login.is_empty() {
+            continue;
+        }
+        out.push(person(item).await);
+    }
+    out
+}
+
+/// A review's labels. GitHub writes its colours without the `#`; GitLab writes
+/// them with one, and only when asked for the detailed form.
+fn labels(value: Option<&serde_json::Value>) -> Vec<Label> {
+    let Some(items) = value.and_then(|v| v.as_array()) else {
+        return Vec::new();
+    };
+    items
+        .iter()
+        .filter_map(|item| {
+            // GitLab without `with_labels_details` gives bare strings.
+            if let Some(name) = item.as_str() {
+                return Some(Label {
+                    name: name.to_string(),
+                    color: String::new(),
+                });
+            }
+            let name = string(item, &["name"]);
+            if name.is_empty() {
+                return None;
+            }
+            let color = string(item, &["color"]);
+            let color = if color.is_empty() || color.starts_with('#') {
+                color
+            } else {
+                format!("#{color}")
+            };
+            Some(Label { name, color })
+        })
+        .collect()
+}
+
+/// Everything one review says about itself.
+pub async fn review_detail(state: &AppState, number: i64) -> Result<ReviewDetail, String> {
+    let call = prepare(state)?;
+    let base = api_base(call.kind, &call.host);
+    let http = client()?;
+
+    let response = match call.kind {
+        ForgeKind::GitHub => {
+            let url = format!("{base}/repos/{}/pulls/{number}", call.slug.full());
+            http.get(url)
+                .bearer_auth(&call.token)
+                .header("Accept", "application/vnd.github+json")
+                .send()
+                .await
+        }
+        ForgeKind::GitLab => {
+            let project = urlencode(&call.slug.full());
+            let url = format!(
+                "{base}/projects/{project}/merge_requests/{number}?with_labels_details=true"
+            );
+            http.get(url).bearer_auth(&call.token).send().await
+        }
+        ForgeKind::None => return Err("No forge configured".to_string()),
+    }
+    .map_err(|e| e.to_string())?;
+
+    if !response.status().is_success() {
+        return Err(describe(response).await);
+    }
+    let item: serde_json::Value = response.json().await.map_err(|e| e.to_string())?;
+    let text = |key: &str| item.get(key).and_then(|v| v.as_str()).unwrap_or("").to_string();
+    let flag = |key: &str| item.get(key).and_then(|v| v.as_bool()).unwrap_or(false);
+    let count = |key: &str| item.get(key).and_then(|v| v.as_i64()).unwrap_or(0);
+    let milestone = {
+        let title = string(&item, &["milestone", "title"]);
+        (!title.is_empty()).then_some(title)
+    };
+
+    Ok(match call.kind {
+        ForgeKind::GitHub => ReviewDetail {
+            number: item.get("number").and_then(|v| v.as_i64()).unwrap_or(number),
+            title: text("title"),
+            body: text("body"),
+            // GitHub leaves a merged review's state as `closed`, and merged
+            // against closed-unmerged is the distinction a reader wants.
+            state: if flag("merged") {
+                "merged".to_string()
+            } else {
+                text("state")
+            },
+            draft: flag("draft"),
+            author: person(item.get("user").unwrap_or(&serde_json::Value::Null)).await,
+            assignees: people(item.get("assignees")).await,
+            reviewers: people(item.get("requested_reviewers")).await,
+            labels: labels(item.get("labels")),
+            milestone,
+            source_branch: string(&item, &["head", "ref"]),
+            target_branch: string(&item, &["base", "ref"]),
+            url: string(&item, &["html_url"]),
+            created_at: text("created_at"),
+            updated_at: text("updated_at"),
+            // Comments on the conversation and comments on the diff are two
+            // counts on GitHub and one on GitLab; added, they mean the same.
+            comments: count("comments") + count("review_comments"),
+            merge_status: {
+                let status = text("mergeable_state");
+                (!status.is_empty() && status != "unknown").then_some(status)
+            },
+        },
+        _ => ReviewDetail {
+            number: item.get("iid").and_then(|v| v.as_i64()).unwrap_or(number),
+            title: text("title"),
+            body: text("description"),
+            state: text("state"),
+            draft: flag("draft"),
+            author: person(item.get("author").unwrap_or(&serde_json::Value::Null)).await,
+            assignees: people(item.get("assignees")).await,
+            reviewers: people(item.get("reviewers")).await,
+            labels: labels(item.get("labels")),
+            milestone,
+            source_branch: text("source_branch"),
+            target_branch: text("target_branch"),
+            url: text("web_url"),
+            created_at: text("created_at"),
+            updated_at: text("updated_at"),
+            comments: count("user_notes_count"),
+            merge_status: {
+                // Newer GitLab spells it out in `detailed_merge_status`; older
+                // installs only have the coarse `merge_status`.
+                let detailed = text("detailed_merge_status");
+                let status = if detailed.is_empty() {
+                    text("merge_status")
+                } else {
+                    detailed
+                };
+                (!status.is_empty()).then_some(status)
+            },
+        },
+    })
+}
+
 /// Everyone this project's review can be handed to.
 ///
 /// Assignees and reviewers come from the same list on both forges, so one
@@ -1016,6 +1275,55 @@ mod tests {
 
         assert!(parse_remote("/local/path/repo").is_none());
         assert!(parse_remote("git@github.com:noslash").is_none());
+    }
+
+    #[test]
+    fn reads_the_label_shapes_the_two_forges_send() {
+        // GitLab without the detailed form: bare strings, no colour.
+        let bare = serde_json::json!(["backend", "urgent"]);
+        let read = labels(Some(&bare));
+        assert_eq!(read.len(), 2);
+        assert_eq!(read[0].name, "backend");
+        assert!(read[0].color.is_empty());
+
+        // GitHub writes its colours without the `#`; GitLab writes them with.
+        let rich = serde_json::json!([
+            { "name": "bug", "color": "d73a4a" },
+            { "name": "chore", "color": "#428bca" },
+            { "name": "" }
+        ]);
+        let read = labels(Some(&rich));
+        assert_eq!(read.len(), 2, "a nameless label is not a label");
+        assert_eq!(read[0].color, "#d73a4a");
+        assert_eq!(read[1].color, "#428bca");
+
+        assert!(labels(None).is_empty());
+    }
+
+    #[test]
+    fn reads_a_person_from_either_forge() {
+        // GitHub: a login and nothing else.
+        let (read, picture) = read_person(&serde_json::json!({
+            "login": "arno",
+            "avatar_url": "https://example.test/a.png"
+        }));
+        assert_eq!(read.login, "arno");
+        assert_eq!(read.name, "arno", "with no real name the login stands in");
+        assert_eq!(picture, "https://example.test/a.png");
+
+        // GitLab: a username and a display name.
+        let (read, _) = read_person(&serde_json::json!({
+            "username": "arno",
+            "name": "Arno Visker"
+        }));
+        assert_eq!(read.login, "arno");
+        assert_eq!(read.name, "Arno Visker");
+
+        // Anybody the forge lists without an account name is not somebody to
+        // show, and there is no picture to go looking for either.
+        let (read, picture) = read_person(&serde_json::json!({}));
+        assert!(read.login.is_empty());
+        assert!(picture.is_empty());
     }
 
     #[test]

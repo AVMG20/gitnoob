@@ -351,7 +351,7 @@ const stashes = computed(() =>
  */
 const reviews = computed(() =>
   forge.store.reviews.filter((review) =>
-    match(`!${review.number} ${review.title} ${review.source_branch} ${review.author}`)
+    match(`${forge.sigil.value}${review.number} ${review.title} ${review.source_branch} ${review.author}`)
   )
 )
 
@@ -386,7 +386,7 @@ function reviewTitle(review: Review) {
 async function showReview(review: Review) {
   if (review.head_sha && (await git.revealCommit(review.head_sha))) return
   git.note(
-    `!${review.number} is not in this clone yet — double-click to check it out`,
+    `${forge.sigil.value}${review.number} is not in this clone yet — double-click to check it out`,
     'info'
   )
 }
@@ -1079,13 +1079,13 @@ function stashMenu(event: MouseEvent, index: number, message: string) {
                   },
                   { label: 'Copy link', icon: Copy, action: () => copyText(review.url, 'Link') }
                 ],
-                `!${review.number} ${review.title.slice(0, 40)}`
+                `${forge.sigil.value}${review.number} ${review.title.slice(0, 40)}`
               )
             "
           >
             <GitPullRequest :size="13" class="glyph pr" />
             <span class="name truncate">
-              <span class="faint">!{{ review.number }}</span>
+              <span class="faint">{{ forge.sigil.value }}{{ review.number }}</span>
               {{ review.title }}
             </span>
             <span v-if="review.draft" class="tick faint">draft</span>
