@@ -315,6 +315,40 @@ fn reports_staged_and_unstaged_changes_separately() {
 /// line the user is standing on is pushed sideways around it — which reads as
 /// the branch and the trunk trading places rather than as a branch leaving.
 #[test]
+fn a_repository_with_many_branches_gets_lanes_past_the_first_dozen() {
+    let sandbox = Sandbox::new("wide-graph");
+    sandbox.commit("a.txt", "root\n", "Root");
+
+    // Twenty branches off the root, none of them merged: every one of them is
+    // a line the graph has to hold open at once. Two commits each, so each line
+    // has a stretch that runs down its own lane rather than only reaching for
+    // the root.
+    for i in 0..20 {
+        let branch = format!("topic-{i}");
+        sandbox.git(&["checkout", "-q", "-b", &branch, "main"]);
+        sandbox.commit(&format!("{branch}.txt"), "work\n", &format!("Work on {branch}"));
+        sandbox.commit(&format!("{branch}.txt"), "more\n", &format!("More on {branch}"));
+    }
+    sandbox.git(&["checkout", "-q", "main"]);
+
+    let page = graph::build(&sandbox.state(), 500).unwrap();
+
+    let widest = page.rows.iter().map(|row| row.lane).max().unwrap_or(0);
+    assert!(
+        widest >= 14,
+        "twenty parallel branches should reach past the old ceiling, got {widest}"
+    );
+    // A line whose whole length is out there used to be dropped before it
+    // reached the window, so the lanes past the ceiling drew nothing at all.
+    assert!(
+        page.rows
+            .iter()
+            .any(|row| row.segments.iter().any(|s| s.x1 >= 14 && s.x2 >= 14)),
+        "a line living entirely past lane 14 was thrown away"
+    );
+}
+
+#[test]
 fn the_checked_out_line_keeps_the_leftmost_lane() {
     let sandbox = Sandbox::new("trunk-lane");
     sandbox.commit("a.txt", "1\n", "Root");

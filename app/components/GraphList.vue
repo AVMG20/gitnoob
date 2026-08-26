@@ -64,7 +64,15 @@ const ROW = 27
  */
 const LANE = 24
 const OVERSCAN = 12
-const MAX_LANES = 14
+/**
+ * How many lanes the picture can hold. Anything past the last one is drawn in
+ * the last one, so a busy repository used to end with a handful of unrelated
+ * branches sharing a single column. Kept in step with `DRAWN_LANES` on the
+ * other side, which drops the segments no lane can show. The palette is
+ * shorter than this and repeats, which is the intent: a lane out here wearing
+ * a shade already on screen still reads better than no lane at all.
+ */
+const MAX_LANES = 28
 /** Half the width of a commit node — the author's face sits inside it. */
 const NODE = 8
 /** Room at the left edge for the first lane's node and its ring. */

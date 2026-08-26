@@ -434,7 +434,15 @@ fn trunk_tip(repo: &git2::Repository) -> Option<Oid> {
 /// there, which is where the column's width is actually decided: the svg is
 /// drawn that many lanes wide whatever the user does to the column, so a line
 /// beyond it has nowhere to appear.
-const DRAWN_LANES: usize = 14;
+///
+/// Everything past the last lane is drawn *in* the last lane, so a repository
+/// with more branches in flight than there are lanes ends with several unrelated
+/// lines collapsed into one column. Set well past the point where a graph is
+/// still readable so that the picture runs out of usable width before it runs
+/// out of lanes. There is no matching limit on colour: the palette is walked
+/// with a modulo, so lanes beyond it wear a shade already in use rather than
+/// having none.
+const DRAWN_LANES: usize = 28;
 
 /// How far the search for a commit's row will walk before giving up. Counting
 /// oids is cheap; a page big enough to hold a row this far back is not, so
