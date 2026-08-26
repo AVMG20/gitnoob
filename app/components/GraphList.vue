@@ -31,8 +31,6 @@ import {
   type Segment
 } from '~/composables/useGit'
 import {
-  chipTitle,
-  describeChip,
   ghostTitle,
   hiddenRefs,
   lineChips,
@@ -216,7 +214,10 @@ const memos = new Map<string, RowMemo>()
 // A refresh rebuilds the rows wholesale, and what a commit is part of can
 // change with them — a branch deleted moves the ghost names — so the memos go
 // with them rather than being reconciled.
-watch(() => store.rows, () => memos.clear())
+watch(() => store.rows, () => {
+  memos.clear()
+  cancelUnfold()
+})
 
 function memoOf(row: GraphRow, index: number): RowMemo {
   let memo = memos.get(row.oid)
@@ -252,6 +253,7 @@ const window_ = computed(() =>
       top: index * ROW,
       chip: memo.chip,
       hidden: memo.hidden,
+      refs: memo.chip ? [memo.chip, ...memo.hidden] : [],
       ghost: memo.ghost,
       junction: memo.junction,
       picture: found ?? null,
@@ -359,6 +361,7 @@ function path(segment: Segment) {
 let scrollQueued = false
 
 function onScroll() {
+  cancelUnfold()
   if (scrollQueued) return
   scrollQueued = true
   requestAnimationFrame(() => {
@@ -526,6 +529,44 @@ function openReset(oid: string, mode: ResetMode) {
  * one row depends on every row above it.
  */
 const lineOwners = computed(() => lineChips(store.rows))
+
+/**
+ * Which row's branch column is unfolded, and which way it went.
+ *
+ * Held here rather than left to `:hover`, for the pause before it opens: the
+ * pointer crosses a dozen rows on its way anywhere, and a column that unfolds
+ * under each one in turn is a list that will not sit still. A rest of a third
+ * of a second says the pointer stopped rather than passed.
+ *
+ * The direction is a measurement, and there is no asking CSS for one. It grows
+ * downwards over the rows below, which runs out of window on the last few of
+ * them — and a name half cut off by the bottom edge is the thing this was built
+ * to stop — so those unfold upwards instead. Measured when it opens rather than
+ * followed as the list scrolls: which way a row would open is only ever a
+ * question about the row being pointed at.
+ */
+const UNFOLD_AFTER = 350
+
+const unfolded = ref<{ oid: string; up: boolean } | null>(null)
+let unfoldTimer: number | undefined
+
+function unfold(event: MouseEvent, oid: string, count: number) {
+  cancelUnfold()
+  if (!count) return
+  const cell = event.currentTarget as HTMLElement
+  unfoldTimer = window.setTimeout(() => {
+    const box = viewport.value?.getBoundingClientRect()
+    const rect = cell.getBoundingClientRect()
+    // A chip and the gap under it, plus the padding the box adds top and bottom.
+    const needed = count * 19 + 12
+    unfolded.value = { oid, up: !!box && rect.top + needed > box.bottom }
+  }, UNFOLD_AFTER)
+}
+
+function cancelUnfold() {
+  window.clearTimeout(unfoldTimer)
+  if (unfolded.value) unfolded.value = null
+}
 
 /** What checking a ref out would do, said before it happens. */
 function chipHint(chip: RefChip): string {
@@ -857,6 +898,7 @@ onMounted(() => {
 onUnmounted(() => {
   observer.disconnect()
   window.removeEventListener('keydown', onKey)
+  window.clearTimeout(unfoldTimer)
 })
 </script>
 
@@ -1005,50 +1047,76 @@ onUnmounted(() => {
           <!-- Refs live in their own column with a line running to the node,
                so a tip is found by scanning one narrow strip rather than by
                reading the start of every message. -->
-          <span v-if="cols.state.shown.refs" class="col-refs" :style="box('refs')">
-            <span
-              v-for="chip in (item.chip ? [item.chip] : [])"
-              :key="chip.key"
-              class="chip"
-              :class="[`chip-${chip.kind}`, { 'chip-current': chip.head, 'chip-live': !chip.head }]"
-              :style="chipStyle(item.row, chip)"
-              :title="chipTitle(chip)"
-              @dblclick.stop="checkoutRef(chip)"
-            >
-              <Check v-if="chip.head" :size="11" :stroke-width="3" class="glyph" />
-              <!-- Cut in the middle. Four chips reading `origin/ASANA-1216293…`
-                   are the same chip as far as the eye is concerned; the digits
-                   that differ are at the end. -->
-              <MidTruncate :text="chip.name" />
-              <component
-                :is="chip.kind === 'remote' ? Cloud : chip.kind === 'tag' ? Tag : MonitorDot"
-                :size="11"
-                class="glyph"
-              />
-              <!-- A local branch that is also on its remote says so here rather
-                   than by growing a second chip with the same name in it. -->
-              <Cloud
-                v-if="chip.kind === 'local' && chip.remotes.length"
-                :size="11"
-                class="glyph"
-              />
-            </span>
-            <!-- Only the first chip is drawn; the rest live behind a counter
-                 that lists them, so a commit with five refs takes the same
-                 width as one with a single branch.
+          <span
+            v-if="cols.state.shown.refs"
+            class="col-refs"
+            :class="{
+              open: unfolded?.oid === item.row.oid,
+              up: unfolded?.oid === item.row.oid && unfolded.up
+            }"
+            :style="box('refs')"
+            @mouseenter="unfold($event, item.row.oid, item.refs.length)"
+            @mouseleave="cancelUnfold"
+          >
+            <!-- Every ref the commit carries, though only the first is on
+                 show: the rest are folded away behind a counter, so a commit
+                 with five refs takes the same width in the column as one with a
+                 single branch.
 
-                 After the chip, not before it. In front, the counter indented
-                 the name behind it by its own width, so the one row in ten that
-                 carries several refs was the one row whose name did not start
-                 where every other name in the column starts. -->
-            <button
-              v-if="item.hidden.length"
-              class="more-refs"
-              :title="item.hidden.map(describeChip).join('\n')"
-              @click.stop="refsMenu($event, item.row)"
-            >
-              +{{ item.hidden.length }}
-            </button>
+                 Resting on the column unfolds it. The names are cut to fit and
+                 the counter says only that there is more, so the column can ask
+                 a question it cannot answer; the set grows to its full width
+                 over the graph beside it, which is empty space the moment you
+                 are reading names rather than lines. It is the same set of
+                 chips throughout — grown, not replaced — so nothing moves under
+                 the pointer and the one you were looking at stays where it was.
+
+                 Done with `:hover` rather than by opening something: a panel
+                 drawn over the cell takes the pointer off the cell that
+                 summoned it, and closes itself. A descendant cannot — the cell
+                 is still hovered while the pointer is anywhere inside it. -->
+            <span v-if="item.refs.length" class="refs-set">
+              <span
+                v-for="(chip, at) in item.refs"
+                :key="chip.key"
+                class="chip"
+                :class="[
+                  `chip-${chip.kind}`,
+                  { 'chip-current': chip.head, 'chip-live': !chip.head, folded: at > 0 }
+                ]"
+                :style="chipStyle(item.row, chip)"
+                @dblclick.stop="checkoutRef(chip)"
+              >
+                <Check v-if="chip.head" :size="11" :stroke-width="3" class="glyph" />
+                <!-- Cut in the middle. Four chips reading `origin/ASANA-1216293…`
+                     are the same chip as far as the eye is concerned; the digits
+                     that differ are at the end. -->
+                <MidTruncate :text="chip.name" />
+                <component
+                  :is="chip.kind === 'remote' ? Cloud : chip.kind === 'tag' ? Tag : MonitorDot"
+                  :size="11"
+                  class="glyph"
+                />
+                <!-- A local branch that is also on its remote says so here rather
+                     than by growing a second chip with the same name in it. -->
+                <Cloud
+                  v-if="chip.kind === 'local' && chip.remotes.length"
+                  :size="11"
+                  class="glyph"
+                />
+              </span>
+              <!-- After the chips, not before them. In front, the counter
+                   indented the name behind it by its own width, so the one row
+                   in ten that carries several refs was the one row whose name
+                   did not start where every other name in the column starts. -->
+              <button
+                v-if="item.hidden.length"
+                class="more-refs"
+                @click.stop="refsMenu($event, item.row)"
+              >
+                +{{ item.hidden.length }}
+              </button>
+            </span>
             <!-- The branch this commit is on, for the rows that are not the tip
                  of anything. Hidden until the pointer is on the row: printed at
                  full strength it would be the same name repeated down a hundred
@@ -1560,6 +1628,95 @@ onUnmounted(() => {
 
 .row:hover .ghost-leader {
   opacity: 0.3;
+}
+
+/* The chips, and the box that grows to hold all of them.
+ *
+ * At rest it is an ordinary flex item clipped to the column. Under the pointer
+ * it is taken out of the flow and given its natural width, so it grows to the
+ * right over the graph rather than widening the column and shoving every other
+ * column along with it.
+ *
+ * Absolute, and `.col-refs` is deliberately left `static`, so the containing
+ * block is the row: an absolutely positioned element is clipped by an
+ * ancestor's `overflow` only from its containing block inwards, and the column
+ * is exactly the `overflow: hidden` it has to escape. */
+.refs-set {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  flex: 0 1 auto;
+  min-width: 0;
+  overflow: hidden;
+}
+
+/* Folded away until asked for. `display: none` rather than a width of zero:
+   a chip with no width still takes its gap, and four of them put the one chip
+   on show a quarter of the column from the left. */
+.refs-set .chip.folded {
+  display: none;
+}
+
+/* Down the column, not along it. Stacked, the names are read the way a list is
+   read and each one is as long as it needs to be; in a row they were a line of
+   chips competing for the same width, which is what the column already was.
+
+   The padding is what puts the first chip back exactly where it sits at rest,
+   so the one you were pointing at does not move as the rest appear under it. */
+.col-refs.open .refs-set {
+  position: absolute;
+  left: 0;
+  top: 0;
+  z-index: 6;
+  flex-direction: column;
+  align-items: flex-start;
+  width: max-content;
+  /* Never wider than the row it is in, however many refs a release commit
+     ended up carrying: the list scroller would answer with a horizontal
+     scrollbar under the whole graph. */
+  max-width: min(720px, 100%);
+  overflow: hidden;
+  /* No padding on the left and no shift with it: the box starts exactly where
+     the column does and grows only to the right. Insetting it to sit the chips
+     off its edge meant starting six pixels to the left of the column, which on
+     the leftmost column in the window is six pixels off the edge of it. */
+  padding: 6px 8px 6px 0;
+  border-radius: 5px;
+  background: var(--bg-hover);
+  box-shadow: 0 3px 14px rgba(0, 0, 0, 0.35);
+}
+
+/* The last rows in the window have no room below them, so they grow the other
+   way. Reversed as well as anchored, so the chip that was on show stays against
+   its own row and the rest pile up above it rather than the order flipping. */
+.col-refs.open.up .refs-set {
+  top: auto;
+  bottom: 0;
+  flex-direction: column-reverse;
+}
+
+.row.on .col-refs.open .refs-set {
+  background: var(--bg-active);
+}
+
+/* Stacked, a chip is as wide as its own name; without this each one stretches
+   to the width of the longest and the short names read as empty boxes. */
+.col-refs.open .refs-set .chip {
+  flex: none;
+}
+
+.col-refs.open .refs-set .chip.folded {
+  display: inline-flex;
+}
+
+/* The whole point: the name is not cut once there is room for it. */
+.col-refs.open .refs-set .chip {
+  max-width: none;
+}
+
+/* It has been answered — the chips it stood for are all on show. */
+.col-refs.open .more-refs {
+  display: none;
 }
 
 /* The counter for the refs not on show. Deliberately quiet: it is a way in,
