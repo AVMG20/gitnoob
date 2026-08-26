@@ -608,6 +608,17 @@ body,
   margin: 0;
 }
 
+/* What the engine draws for itself — a select's popup list, the caret, a
+   spinner on a number field — follows this rather than our variables. The light
+   themes mark the root element, so the two stay in step. */
+:root {
+  color-scheme: dark;
+}
+
+:root[data-light] {
+  color-scheme: light;
+}
+
 body {
   background: var(--bg);
   color: var(--text);
@@ -625,7 +636,8 @@ button {
 }
 
 input,
-textarea {
+textarea,
+select {
   font: inherit;
   color: var(--text);
   background: var(--bg);
@@ -635,9 +647,39 @@ textarea {
 }
 
 input:focus,
-textarea:focus {
+textarea:focus,
+select:focus {
   outline: none;
   border-color: var(--accent);
+}
+
+/* A select is drawn by the platform unless it is told not to be, and the
+   platform's is white — under a dark theme it was the one bright rectangle in
+   the window. The arrow goes with the platform's own drawing, so it is redrawn
+   here as a chevron in the text colour, and the padding on the right leaves it
+   room. `color-scheme` below is what carries the theme into the popup list,
+   which is a real menu and not ours to style. */
+select {
+  appearance: none;
+  padding-right: 26px;
+  background-image: linear-gradient(45deg, transparent 50%, currentcolor 50%),
+    linear-gradient(135deg, currentcolor 50%, transparent 50%);
+  background-position: calc(100% - 15px) calc(50% + 1px), calc(100% - 10px) calc(50% + 1px);
+  background-size: 5px 5px, 5px 5px;
+  background-repeat: no-repeat;
+  cursor: pointer;
+}
+
+select:disabled {
+  color: var(--text-faint);
+  cursor: default;
+}
+
+/* Named for the browsers that paint the open list themselves, which take the
+   colours from the element rather than from the page. */
+option {
+  color: var(--text);
+  background: var(--bg-panel);
 }
 
 textarea {
@@ -647,19 +689,16 @@ textarea {
 
 /* Scrollbars: visible enough to grab, quiet enough to ignore.
  *
- * Said twice, because there are two ways to ask. `scrollbar-width` and
- * `scrollbar-color` are the standard ones, and a browser that understands them
- * switches that scroller to its own rendering and ignores every
- * `::-webkit-scrollbar` rule below — so an element that set only
- * `scrollbar-width: thin`, meaning to make our bar narrower, was really opting
- * out of our bar altogether and getting the platform's, arrow buttons and all.
- * Both properties are inherited, so declaring them here covers every scroller
- * in the window and anything wanting a different bar overrides them locally.
+ * Said once, in `::-webkit-scrollbar` terms only. Setting `scrollbar-width` or
+ * `scrollbar-color` anywhere hands that scroller to the platform's own
+ * rendering and makes every rule below it dead, which on GTK means an overlay
+ * bar — and an overlay bar is painted above the page rather than in it, so the
+ * one over the commit list showed through the settings window sitting on top of
+ * it. The three webviews Tauri runs on — WebKitGTK, WKWebView and WebView2 —
+ * all understand the pseudo-elements, so nothing is given up by leaving the
+ * standard pair unsaid. An element that wants a different bar overrides the
+ * pseudo-elements locally rather than reaching for `scrollbar-width`.
  */
-:root {
-  scrollbar-width: thin;
-  scrollbar-color: var(--scrollbar) transparent;
-}
 
 ::-webkit-scrollbar {
   width: 10px;
