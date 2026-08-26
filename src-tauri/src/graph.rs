@@ -55,6 +55,40 @@ pub struct GraphPage {
     pub has_more: bool,
 }
 
+/// How far back a commit sits in the same walk the graph draws.
+///
+/// The graph loads a page at a time, and in a repository with tens of
+/// thousands of commits a branch tip is very often older than the page: the
+/// row is simply not there to scroll to, so clicking the branch appears to do
+/// nothing. Answering how deep it is lets the frontend load exactly enough to
+/// have the row before it asks for it.
+///
+/// `None` means the commit is not in the walk at all — nothing points at it,
+/// or it is deeper than any page anybody should be asked to wait for.
+pub fn depth(state: &AppState, oid: &str) -> Result<Option<usize>, String> {
+    let repo = state.repo()?;
+    let wanted = Oid::from_str(oid).map_err(err)?;
+
+    let mut walk = repo.revwalk().map_err(err)?;
+    // The same ordering and the same refs as `build`, or the number counted
+    // here would not be the row the graph draws.
+    walk.set_sorting(Sort::TOPOLOGICAL | Sort::TIME).map_err(err)?;
+    walk.push_glob("refs/heads/*").map_err(err)?;
+    let _ = walk.push_glob("refs/remotes/*");
+    let _ = walk.push_glob("refs/tags/*");
+    let _ = walk.push_head();
+
+    for (index, found) in walk.enumerate() {
+        if index >= DEPTH_CAP {
+            break;
+        }
+        if found.map_err(err)? == wanted {
+            return Ok(Some(index));
+        }
+    }
+    Ok(None)
+}
+
 /// Walks history and assigns each commit a lane, producing ready-to-draw line
 /// segments.
 ///
@@ -402,6 +436,11 @@ fn trunk_tip(repo: &git2::Repository) -> Option<Oid> {
 /// beyond it has nowhere to appear.
 const DRAWN_LANES: usize = 14;
 
+/// How far the search for a commit's row will walk before giving up. Counting
+/// oids is cheap; a page big enough to hold a row this far back is not, so
+/// there is no point finding one.
+const DEPTH_CAP: usize = 100_000;
+
 /// How many colours the frontend cycles through. Kept in step with
 /// `LANE_COLORS` there, which is where they are actually chosen.
 const PALETTE: usize = 10;
@@ -469,6 +508,61 @@ fn err(e: git2::Error) -> String {
 
 #[cfg(test)]
 mod tests {
+    use std::path::Path;
+    use std::process::Command;
+
+    fn git(dir: &Path, args: &[&str]) -> String {
+        let out = Command::new("git").args(args).current_dir(dir).output().unwrap();
+        assert!(
+            out.status.success(),
+            "git {args:?} failed: {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        String::from_utf8_lossy(&out.stdout).to_string()
+    }
+
+    /// The number `depth` reports has to be the row `build` draws, or the graph
+    /// loads a page that still does not reach the commit.
+    #[test]
+    fn a_commit_is_found_at_the_row_the_graph_puts_it_on() {
+        let root = std::env::temp_dir().join(format!("gitnoob-depth-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).unwrap();
+        git(&root, &["init", "--quiet", "--initial-branch=main"]);
+        git(&root, &["config", "user.email", "test@example.com"]);
+        git(&root, &["config", "user.name", "Test"]);
+
+        let mut old = String::new();
+        for step in 0..12 {
+            std::fs::write(root.join("log.txt"), format!("{step}\n")).unwrap();
+            git(&root, &["add", "-A"]);
+            git(&root, &["commit", "--quiet", "-m", &format!("commit {step}")]);
+            // A branch left behind partway, the shape that goes missing from a
+            // page in a repository big enough for one.
+            if step == 3 {
+                git(&root, &["branch", "left-behind"]);
+                old = git(&root, &["rev-parse", "HEAD"]).trim().to_string();
+            }
+        }
+
+        let state = AppState::new(root.join("config"));
+        state.set_path(root.clone());
+
+        let page = build(&state, 100).unwrap();
+        let drawn = page.rows.iter().position(|row| row.oid == old).unwrap();
+        assert_eq!(depth(&state, &old).unwrap(), Some(drawn));
+        // A page that stops short of it is exactly the case being fixed: the
+        // row is missing, and the depth is what says how far to reach.
+        let short = build(&state, drawn).unwrap();
+        assert!(short.rows.iter().all(|row| row.oid != old));
+        assert!(depth(&state, &old).unwrap().unwrap() >= short.rows.len());
+
+        let unknown = "0".repeat(40);
+        assert_eq!(depth(&state, &unknown).unwrap(), None);
+
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
     use super::*;
 
     /// A commit id from a small number, so a test history reads as 1, 2, 3.

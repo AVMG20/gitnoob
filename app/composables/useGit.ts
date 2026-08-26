@@ -350,6 +350,14 @@ function pageSize(): number {
   return size && size > 0 ? size : COMMIT_PAGE
 }
 
+/**
+ * How deep a commit can sit and still be worth loading the graph down to.
+ *
+ * Twenty thousand rows is a few seconds and some tens of megabytes; past that
+ * the honest answer is that the commit is too far back to scroll to.
+ */
+const REVEAL_LIMIT = 20000
+
 /** Stands in for the working tree in `store.selected`. */
 export const WIP = '__working__' 
 
@@ -701,6 +709,41 @@ export function useGit() {
   }
 
   /**
+   * Loads far enough back to have a commit's row, when it is not on screen.
+   *
+   * The graph holds a page at a time. In a repository of a few hundred commits
+   * every branch tip is in the first page and this never runs; in one of
+   * seventeen thousand, spread over hundreds of branches, most tips are older
+   * than the page and the row to scroll to does not exist yet — which is why
+   * clicking such a branch looked like it did nothing at all.
+   */
+  async function loadUpTo(oid: string): Promise<'here' | 'missing' | 'far'> {
+    if (store.rows.some((row) => row.oid === oid)) return 'here'
+    const depth = await guard('Find commit', () =>
+      invoke<number | null>('commit_depth', { oid })
+    )
+    // Nothing points at it, or this clone has never fetched it.
+    if (depth === null || depth === undefined) return 'missing'
+    const wanted = depth + 1
+    if (wanted <= store.limit) return 'here'
+    // So far back that a page holding it would be a download rather than a
+    // scroll. The detail panel still answers the question the click asked.
+    if (wanted > REVEAL_LIMIT) {
+      note(
+        `That commit is ${wanted.toLocaleString()} commits back — too far to draw. ` +
+          'Its details are on the right.',
+        'info'
+      )
+      return 'far'
+    }
+    // Whole pages, so the number in settings still means what it says.
+    const page = pageSize()
+    store.limit = Math.ceil(wanted / page) * page
+    await refresh()
+    return 'here'
+  }
+
+  /**
    * Selects a commit and asks the graph to bring it into view.
    *
    * What a single click on a branch does: pointing at a branch is a question
@@ -708,9 +751,18 @@ export function useGit() {
    * touching the working tree. Checking out stays on the double click.
    */
   async function revealCommit(oid: string) {
+    // Ask for the rows before asking the graph to scroll to one of them: the
+    // scroll is a one-shot, and a row that arrives after it has nothing to
+    // move to it.
+    const found = await loadUpTo(oid)
+    // A commit this clone does not have is not worth asking the backend to
+    // describe: the answer is an error, and the caller knows better than this
+    // does what to say about it.
+    if (found === 'missing') return false
     revealSeq += 1
     store.revealing = { oid, seq: revealSeq }
     await select(oid)
+    return true
   }
 
   /** Opens a stash's diff in the detail panel, reusing the commit view. */

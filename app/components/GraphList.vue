@@ -377,8 +377,11 @@ function measure() {
 function scrollTo(oid: string) {
   const index = store.rows.findIndex((row) => row.oid === oid)
   if (index < 0 || !viewport.value) return
-  const target = index * ROW - height.value / 2 + ROW
-  viewport.value.scrollTo({ top: Math.max(0, target), behavior: 'smooth' })
+  const target = Math.max(0, index * ROW - height.value / 2 + ROW)
+  // Gliding is worth it across a screen or two. Across ten thousand rows it is
+  // a long blur that ends somewhere the eye did not follow, so that jumps.
+  const far = Math.abs(target - viewport.value.scrollTop) > height.value * 8
+  viewport.value.scrollTo({ top: target, behavior: far ? 'auto' : 'smooth' })
 }
 
 function step(by: number) {

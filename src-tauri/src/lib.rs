@@ -191,6 +191,13 @@ async fn create_branch(
     refs::create_branch(&state, &name, start.as_deref(), checkout.unwrap_or(true))
 }
 
+/// How far back a commit sits in the graph's walk, so a page big enough to
+/// hold its row can be asked for.
+#[tauri::command]
+async fn commit_depth(oid: String, state: State<'_, AppState>) -> Result<Option<usize>, String> {
+    graph::depth(&state, &oid)
+}
+
 /// What deleting a branch would cost, read before the question is asked.
 #[tauri::command]
 async fn delete_branch_preview(
@@ -1062,6 +1069,7 @@ pub fn run() {
             file_text,
             checkout,
             create_branch,
+            commit_depth,
             delete_branch,
             delete_branch_preview,
             rename_branch,
