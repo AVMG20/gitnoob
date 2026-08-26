@@ -984,6 +984,31 @@ fn open_external(url: String) -> Result<(), String> {
         .map_err(|e| format!("Could not open {url}: {e}"))
 }
 
+/**
+ * Takes the animation off the scroll wheel.
+ *
+ * WebKitGTK smooths a wheel event into an animation and goes on running it
+ * after the wheel has stopped, so a flick keeps travelling for a moment and the
+ * window reads as lagging behind the hand — most of all in the commit list and
+ * the diff, which are the two things in this app anybody scrolls. Chromium,
+ * which is what every other desktop git client is built on, stops when you do,
+ * and that is the feel being matched.
+ *
+ * There is no Tauri setting for it, so it is asked of the webview directly.
+ * Failing to reach it is not worth a word to the user: the app works, the
+ * scrolling is merely the one WebKit chose.
+ */
+#[cfg(target_os = "linux")]
+fn snap_scrolling(window: &tauri::WebviewWindow) {
+    use webkit2gtk::{SettingsExt, WebViewExt};
+
+    let _ = window.with_webview(|webview| {
+        if let Some(settings) = WebViewExt::settings(&webview.inner()) {
+            settings.set_enable_smooth_scrolling(false);
+        }
+    });
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
@@ -1007,6 +1032,10 @@ pub fn run() {
             // Holds the watch for whichever repository is open; empty until one
             // is.
             app.manage(watch::Slot::default());
+            #[cfg(target_os = "linux")]
+            if let Some(window) = app.get_webview_window("main") {
+                snap_scrolling(&window);
+            }
             // The inspector is only compiled into debug builds, and having it
             // open from the start is the only way to see a failure that happens
             // before the page can report anything itself.
