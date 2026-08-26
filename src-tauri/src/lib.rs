@@ -209,6 +209,22 @@ async fn checkout_review(
     review::checkout(&state, review)
 }
 
+/// The branch this repository is organised around, which is what "has this
+/// work landed?" is really asking about.
+#[tauri::command]
+fn trunk_branch(state: State<'_, AppState>) -> refs::Trunk {
+    refs::trunk(&state)
+}
+
+/// Names that branch, or forgets the name when given nothing.
+#[tauri::command]
+async fn set_trunk_branch(
+    name: Option<String>,
+    state: State<'_, AppState>,
+) -> Result<String, String> {
+    refs::set_trunk(&state, name.as_deref())
+}
+
 /// What deleting a branch would cost, read before the question is asked.
 #[tauri::command]
 async fn delete_branch_preview(
@@ -1112,6 +1128,8 @@ pub fn run() {
             checkout_review,
             commit_depth,
             delete_branch,
+            trunk_branch,
+            set_trunk_branch,
             delete_branch_preview,
             rename_branch,
             set_upstream,

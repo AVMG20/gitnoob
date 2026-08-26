@@ -26,9 +26,15 @@ function list(names: string[]) {
   return `${names.slice(0, -1).join(', ')} and ${names[names.length - 1]}`
 }
 
-/** The branch the local half is measured against, named the way git would. */
-function here(found: BranchDeletion) {
-  return found.head ?? 'the commit you are on'
+/**
+ * The branch everything is measured against.
+ *
+ * The repository's trunk, because "has this landed?" is a question about where
+ * work lands, not about wherever you happen to be standing. HEAD only when the
+ * repository has no trunk at all.
+ */
+function against(found: BranchDeletion) {
+  return found.against ?? found.head ?? 'the commit you are on'
 }
 
 /**
@@ -37,24 +43,11 @@ function here(found: BranchDeletion) {
  * only way a beginner finds that out is being told.
  */
 export function localVerdict(found: BranchDeletion): Verdict {
-  if (found.merged) {
+  if (found.trunk_holds) {
     return {
       tone: 'safe',
       headline: 'Safe to delete',
-      detail: `${here(found)} already holds every commit on ${found.name}, so deleting the branch here loses nothing.`,
-      acknowledge: false
-    }
-  }
-
-  // Not merged into HEAD, but another local branch holds the work. Git's own
-  // `-d` refuses this; nothing is lost by it all the same.
-  if (found.also_on.length) {
-    return {
-      tone: 'safe',
-      headline: 'Safe to delete',
-      detail: `${found.name} is not merged into ${here(found)}, but ${list(found.also_on)} ${
-        found.also_on.length === 1 ? 'holds' : 'hold'
-      } every commit on it.`,
+      detail: `${against(found)} already holds every commit on ${found.name}, so deleting the branch here loses nothing.`,
       acknowledge: false
     }
   }
@@ -64,7 +57,25 @@ export function localVerdict(found: BranchDeletion): Verdict {
     return {
       tone: 'careful',
       headline: 'Safe here — the remote keeps a copy',
-      detail: `${found.name} is not merged into ${here(found)}, but ${found.upstream} holds every commit on it. You can check it out again from there.`,
+      detail: `${found.name} has not landed on ${against(found)}, but ${found.upstream} holds every commit on it. You can check it out again from there.`,
+      acknowledge: false
+    }
+  }
+
+  // Another local branch holds the work — which is not the same as it being
+  // safe. A branch like `staging` holds every commit right up to the morning
+  // somebody resets it, and this used to read as "safe to delete" on the
+  // strength of exactly that.
+  if (found.also_on.length) {
+    const many = found.also_on.length > 1
+    return {
+      tone: 'careful',
+      headline: `Not on ${against(found)} yet`,
+      detail: `${found.name} has not landed on ${against(found)}. ${list(found.also_on)} ${
+        many ? 'hold' : 'holds'
+      } every commit on it, so nothing goes today — but ${
+        many ? 'those branches are' : 'that branch is'
+      } not where work is kept, and a reset there takes the work with it.`,
       acknowledge: false
     }
   }
@@ -99,7 +110,7 @@ export function remoteVerdict(found: BranchDeletion): Verdict | null {
     return {
       tone: 'careful',
       headline: `${remote.name} holds nothing new`,
-      detail: `Every commit on ${remote.name} is already on ${here(found)}. Deleting it there removes the branch for everyone, but no work goes with it.`,
+      detail: `Every commit on ${remote.name} is already on ${against(found)}. Deleting it there removes the branch for everyone, but no work goes with it.`,
       acknowledge: false
     }
   }
@@ -109,7 +120,7 @@ export function remoteVerdict(found: BranchDeletion): Verdict | null {
     headline: `${commits(remote.unmerged)} exist only on ${remote.name}`,
     detail: `${commits(remote.unmerged)} on ${remote.name} ${
       remote.unmerged === 1 ? 'is' : 'are'
-    } not on ${here(found)} — most likely somebody else's work. Deleting the branch there removes ${
+    } not on ${against(found)} — most likely somebody else's work. Deleting the branch there removes ${
       remote.unmerged === 1 ? 'it' : 'them'
     } for everyone, and no reflog here brings ${remote.unmerged === 1 ? 'it' : 'them'} back.`,
     acknowledge: true

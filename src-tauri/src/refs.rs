@@ -634,6 +634,79 @@ pub struct RemoteCopy {
     pub unmerged: usize,
 }
 
+/// The branch a repository is organised around.
+///
+/// "Is this branch safe to delete?" is really "does the line everything ends up
+/// on already hold this work?", and the branch you happen to be standing on is
+/// not that line. Neither is a branch like `staging` that holds every commit
+/// today and gets reset tomorrow — which is exactly the case that read as safe
+/// when the answer was worked out from whatever could reach the tip.
+#[derive(Serialize, Clone)]
+pub struct Trunk {
+    /// The ref the comparison uses: a local branch where there is one, else a
+    /// remote-tracking copy. `None` when the repository has neither.
+    pub name: Option<String>,
+    /// True when this repository was told which branch it is, rather than the
+    /// usual names being tried in turn.
+    pub chosen: bool,
+}
+
+/// Where the choice is kept: the repository's own git config, so it survives a
+/// profile switch, travels with the clone, and can be read and changed with
+/// `git config gitnoob.trunk` by somebody who would rather do that.
+const TRUNK_KEY: &str = "gitnoob.trunk";
+
+/// Whether a ref exists here, by either of the names a branch answers to.
+fn ref_exists(repo: &Repository, name: &str) -> bool {
+    repo.find_branch(name, BranchType::Local).is_ok()
+        || repo.find_branch(name, BranchType::Remote).is_ok()
+}
+
+pub fn trunk(state: &AppState) -> Trunk {
+    let Ok(repo) = state.repo() else {
+        return Trunk { name: None, chosen: false };
+    };
+
+    // What this repository was told, when it still names something real. A
+    // branch that has since been deleted falls back rather than measuring
+    // everything against nothing.
+    if let Ok(path) = state.path() {
+        if let Ok(raw) = git_cmd::run_checked(&path, &["config", "--get", TRUNK_KEY]) {
+            let chosen = raw.trim();
+            if !chosen.is_empty() && ref_exists(&repo, chosen) {
+                return Trunk { name: Some(chosen.to_string()), chosen: true };
+            }
+        }
+    }
+
+    // The usual names, local first: a clone that has never checked the default
+    // branch out still has `origin/main` to measure against.
+    for name in ["main", "master", "origin/main", "origin/master"] {
+        if ref_exists(&repo, name) {
+            return Trunk { name: Some(name.to_string()), chosen: false };
+        }
+    }
+    Trunk { name: None, chosen: false }
+}
+
+/// Names the branch this repository is organised around, or forgets the name
+/// when given nothing, which puts the usual guesses back.
+pub fn set_trunk(state: &AppState, name: Option<&str>) -> Result<String, String> {
+    let path = state.path()?;
+    let Some(name) = name.map(str::trim).filter(|name| !name.is_empty()) else {
+        // `--unset` on a key that is not there exits 5; there is nothing wrong
+        // with clearing a choice that was never made.
+        let _ = git_cmd::run(&path, &["config", "--local", "--unset", TRUNK_KEY]);
+        return Ok("Main branch back to whichever of main and master exists".to_string());
+    };
+    let repo = state.repo()?;
+    if !ref_exists(&repo, name) {
+        return Err(format!("No branch named {name}"));
+    }
+    git_cmd::run_checked(&path, &["config", "--local", TRUNK_KEY, name])?;
+    Ok(format!("{name} is now this repository's main branch"))
+}
+
 /// What deleting a branch would cost, so the question can be asked properly.
 #[derive(Serialize)]
 pub struct BranchDeletion {
@@ -647,10 +720,18 @@ pub struct BranchDeletion {
     pub head: Option<String>,
     /// Other local branches that can also reach the tip. A branch merged into
     /// `develop` while you stand on `main` is not lost either, and saying
-    /// "reachable from nothing" about it would be a lie.
+    /// "reachable from nothing" about it would be a lie. It is not a promise
+    /// of safety either: `staging` holds everything until the day it is reset.
     pub also_on: Vec<String>,
-    /// Commits on this branch that the branch you are on cannot reach: what a
-    /// local delete would actually cost, when it costs anything.
+    /// The branch everything below was measured against — the repository's
+    /// trunk, or HEAD when it has no trunk to speak of.
+    pub against: Option<String>,
+    /// The trunk already holds every commit on this branch. This, rather than
+    /// `merged`, is the question worth answering: whether the work has landed
+    /// where work lands.
+    pub trunk_holds: bool,
+    /// Commits on this branch that `against` cannot reach: what a local delete
+    /// would actually cost, when it costs anything.
     pub only_here: usize,
     pub upstream: Option<String>,
     /// Commits on this branch that its upstream does not have.
@@ -682,9 +763,31 @@ pub fn deletion_preview(state: &AppState, name: &str) -> Result<BranchDeletion, 
         .filter(|_| !detached)
         .and_then(|h| h.shorthand().map(String::from));
 
-    // Merged means HEAD can already reach it: deleting the label loses nothing.
+    // Merged means HEAD can already reach it, which is the question `git
+    // branch -d` asks and so decides whether deleting needs forcing.
     let merged = match head_oid {
         Some(head_oid) => head_oid == oid || repo.graph_descendant_of(head_oid, oid).unwrap_or(false),
+        None => false,
+    };
+
+    // Whether the work has landed is a question about the trunk, not about
+    // wherever you happen to be standing. Falling back to HEAD only when the
+    // repository has no trunk at all keeps an answer for the odd clone that
+    // has neither main nor master.
+    let trunk = trunk(state);
+    let against_oid = trunk
+        .name
+        .as_deref()
+        .and_then(|name| {
+            repo.find_branch(name, BranchType::Local)
+                .or_else(|_| repo.find_branch(name, BranchType::Remote))
+                .ok()
+        })
+        .and_then(|found| found.get().target())
+        .or(head_oid);
+    let against = trunk.name.clone().or_else(|| head.clone());
+    let trunk_holds = match against_oid {
+        Some(base) => base == oid || repo.graph_descendant_of(base, oid).unwrap_or(false),
         None => false,
     };
 
@@ -702,17 +805,23 @@ pub fn deletion_preview(state: &AppState, name: &str) -> Result<BranchDeletion, 
             // A detached HEAD is listed as "(HEAD detached at abc1234)", which
             // is not a branch anybody can be told to look at.
             .filter(|line| !line.starts_with('('))
-            .filter(|line| *line != name && Some(*line) != head.as_deref())
+            // Not the branch itself, and not the trunk — the trunk is the
+            // answer above, and repeating it here says nothing new. The branch
+            // you are standing on stays in: now that landing is judged against
+            // the trunk, HEAD holding the work is the same weak evidence as any
+            // other branch holding it, and leaving it out of the list would
+            // hide the very branch the reader is looking at.
+            .filter(|line| *line != name && Some(*line) != trunk.name.as_deref())
             .map(String::from)
             .collect()
     })
     .unwrap_or_default();
 
-    // What this branch holds that HEAD does not. `merged` is the same question
-    // asked as a yes or no; this is the number to put in the warning.
-    let only_here = match head_oid {
-        Some(head_oid) => repo
-            .graph_ahead_behind(oid, head_oid)
+    // What this branch holds that the trunk does not. `trunk_holds` is the same
+    // question asked as a yes or no; this is the number to put in the warning.
+    let only_here = match against_oid {
+        Some(base) => repo
+            .graph_ahead_behind(oid, base)
             .map(|(ahead, _)| ahead)
             .unwrap_or(0),
         None => 0,
@@ -755,14 +864,14 @@ pub fn deletion_preview(state: &AppState, name: &str) -> Result<BranchDeletion, 
                 continue;
             }
             if Some(host) == home.as_deref() {
-                // What the remote holds that nothing you are standing on can
-                // reach. Measured against HEAD, the same yardstick the local
-                // half uses, so the two halves of the answer agree.
-                let against = head_oid.unwrap_or(oid);
+                // What the remote holds that the trunk cannot reach: the same
+                // yardstick the local half uses, so the two halves of the
+                // answer agree with each other.
+                let base = against_oid.unwrap_or(oid);
                 let unmerged = remote_branch
                     .get()
                     .target()
-                    .and_then(|remote_oid| repo.graph_ahead_behind(against, remote_oid).ok())
+                    .and_then(|remote_oid| repo.graph_ahead_behind(base, remote_oid).ok())
                     .map(|(_, behind)| behind)
                     .unwrap_or(0);
                 remote = Some(RemoteCopy {
@@ -785,6 +894,8 @@ pub fn deletion_preview(state: &AppState, name: &str) -> Result<BranchDeletion, 
         merged,
         head,
         also_on,
+        against,
+        trunk_holds,
         only_here,
         upstream,
         unpushed,

@@ -224,9 +224,15 @@ export interface BranchDeletion {
   merged: boolean
   /** The branch HEAD is on; null on a detached HEAD. */
   head: string | null
-  /** Other local branches that can also reach the tip. */
+  /** Other local branches that can also reach the tip. Not a promise: a branch
+      that gets reset holds every commit right up until it does not. */
   also_on: string[]
-  /** Commits on the branch that HEAD cannot reach. */
+  /** The branch everything was measured against: the trunk, or HEAD when the
+      repository has no trunk to speak of. */
+  against: string | null
+  /** The trunk already holds every commit on the branch. */
+  trunk_holds: boolean
+  /** Commits on the branch that `against` cannot reach. */
   only_here: number
   upstream: string | null
   unpushed: number
@@ -234,6 +240,19 @@ export interface BranchDeletion {
   remote: RemoteCopy | null
   /** Copies on forks and mirrors, named but never deleted from here. */
   other_remotes: string[]
+}
+
+/**
+ * The branch a repository is organised around.
+ *
+ * Named by the user where they have said so, guessed from the usual names
+ * otherwise. What "has this work landed?" is really asking about.
+ */
+export interface Trunk {
+  /** `main`, `master`, `origin/main`… or null when the repository has none. */
+  name: string | null
+  /** True when this repository was told, rather than the names being tried. */
+  chosen: boolean
 }
 
 export interface MergeOutcome { ok: boolean; message: string; conflicts: string[] }
@@ -377,6 +396,8 @@ export const WIP = '__working__'
 const fields = reactive({
   repo: null as RepoInfo | null,
   refs: null as RefTree | null,
+  /** The branch this repository is organised around. */
+  trunk: { name: null, chosen: false } as Trunk,
   status: null as WorkingStatus | null,
   rows: [] as GraphRow[],
   hasMore: false,
@@ -454,6 +475,7 @@ function raw<T>(value: T): T {
 interface Snapshot {
   info: RepoInfo
   refs: RefTree | null
+  trunk: Trunk
   status: WorkingStatus | null
   rows: GraphRow[]
   hasMore: boolean
@@ -485,6 +507,7 @@ function remember(path: string, snapshot: Snapshot) {
 /** Empties everything a refresh fills, leaving the view state alone. */
 function clearData() {
   store.refs = null
+  store.trunk = { name: null, chosen: false }
   store.status = null
   store.rows = []
   store.hasMore = false
@@ -497,6 +520,7 @@ function clearData() {
 /** Puts a remembered snapshot on screen, whole. */
 function paint(snapshot: Snapshot) {
   store.refs = snapshot.refs
+  store.trunk = snapshot.trunk
   store.status = snapshot.status
   store.rows = snapshot.rows
   store.hasMore = snapshot.hasMore
@@ -636,9 +660,10 @@ export function useGit() {
     if (!store.repo) return
     const path = store.repo.path
     const limit = store.limit
-    const [info, refs, status, page, stashes, history, progress] = await Promise.all([
+    const [info, refs, trunk, status, page, stashes, history, progress] = await Promise.all([
       part('the repository', invoke<RepoInfo>('repo_info'), store.repo),
       part('the branches', invoke<RefTree>('ref_tree'), null),
+      part('the main branch', invoke<Trunk>('trunk_branch'), store.trunk),
       part('the working tree', invoke<WorkingStatus>('working_status'), null),
       part(
         'the history',
@@ -668,6 +693,7 @@ export function useGit() {
 
     if (info) store.repo = settle('info', info, store.repo)
     if (refs) store.refs = settle('refs', refs, store.refs)
+    if (trunk) store.trunk = settle('trunk', trunk, store.trunk)
     if (status) store.status = settle('status', status, store.status)
     if (page) {
       store.rows = settle('rows', page.rows, store.rows)
@@ -680,6 +706,7 @@ export function useGit() {
     remember(path, {
       info: store.repo!,
       refs: store.refs,
+      trunk: store.trunk,
       status: store.status,
       rows: store.rows,
       hasMore: store.hasMore,
@@ -865,6 +892,8 @@ export function useGit() {
     /** What deleting would cost, so the dialog can ask a real question. */
     deleteBranchPreview: (name: string) =>
       guard('Read branch', () => invoke<BranchDeletion>('delete_branch_preview', { name })),
+    /** Names the branch this repository is organised around; null forgets it. */
+    setTrunk: (name: string | null) => run<string>('Main branch', 'set_trunk_branch', { name }),
     renameBranch: (from: string, to: string) =>
       run<string>('Rename branch', 'rename_branch', { from, to }),
     setUpstream: (branch: string, upstream: string) =>

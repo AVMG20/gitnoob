@@ -19,6 +19,7 @@ import {
   GitPullRequest,
   HardDrive,
   Hash,
+  Milestone,
   Pencil,
   Plus,
   Search,
@@ -140,10 +141,25 @@ type Shelf<T> =
  * While a filter is typed every folder is open — someone searching wants what
  * they searched for, not the folder it happens to live in.
  */
-function shelve<T extends { name: string }>(items: T[], scope: string): Shelf<T>[] {
+/**
+ * Turns a flat list of refs into folder rows.
+ *
+ * `pin` is the one name that goes to the top whatever the alphabet says: the
+ * branch everything else is measured against belongs where the eye lands, not
+ * wherever `main` happens to fall between `fix-login` and `release`.
+ */
+function shelve<T extends { name: string }>(
+  items: T[],
+  scope: string,
+  pin: string | null = null
+): Shelf<T>[] {
   const rows: Shelf<T>[] = []
   const searching = !!filter.value.trim()
-  const sorted = [...items].sort((a, b) => a.name.localeCompare(b.name))
+  const sorted = [...items].sort((a, b) => {
+    if (pin && a.name === pin) return -1
+    if (pin && b.name === pin) return 1
+    return a.name.localeCompare(b.name)
+  })
   let trail: string[] = []
   // The depth of the shut folder currently hiding rows, if any.
   let hidden: number | null = null
@@ -323,8 +339,25 @@ function toggleHidden(name: string) {
 }
 
 const head = computed(() => store.repo?.head ?? '')
+
+/** The branch this repository is organised around, pinned to the top of both lists. */
+const trunk = computed(() => store.trunk.name)
+
+/**
+ * The trunk as one remote's list writes it.
+ *
+ * A remote branch is listed under its remote by the bare name, so `origin/main`
+ * is the row called `main` inside `origin`. A trunk that is already a bare name
+ * pins in every group, which is what somebody with two remotes would expect.
+ */
+function remotePin(remote: string) {
+  const name = trunk.value
+  if (!name) return null
+  return name.startsWith(`${remote}/`) ? name.slice(remote.length + 1) : name
+}
+
 const locals = computed(() => (store.refs?.locals ?? []).filter((b) => match(b.name)))
-const localShelf = computed(() => shelve(locals.value, 'local'))
+const localShelf = computed(() => shelve(locals.value, 'local', trunk.value))
 const tags = computed(() => (store.refs?.tags ?? []).filter((t) => match(t.name)))
 
 /**
@@ -448,7 +481,18 @@ const remoteGroups = computed(() => {
     list.push({ name: branch.name, oid: branch.oid })
     groups.set(branch.remote, list)
   }
-  return [...groups.entries()].map(([remote, branches]) => ({ remote, branches }))
+  // Sorted here rather than only in `shelve`, because the list below takes the
+  // first so many branches and a trunk left in alphabetical order would be cut
+  // off the end of a repository with more remote branches than the list draws.
+  return [...groups.entries()].map(([remote, branches]) => {
+    const pin = remotePin(remote)
+    branches.sort((a, b) => {
+      if (pin && a.name === pin) return -1
+      if (pin && b.name === pin) return 1
+      return a.name.localeCompare(b.name)
+    })
+    return { remote, branches }
+  })
 })
 
 /** How many remote branches the filter left, across every remote. */
@@ -470,7 +514,10 @@ const remoteShelves = computed(() => {
     if (budget <= 0) break
     const branches = group.branches.slice(0, budget)
     budget -= branches.length
-    shelves.push({ remote: group.remote, rows: shelve(branches, `remote:${group.remote}`) })
+    shelves.push({
+      remote: group.remote,
+      rows: shelve(branches, `remote:${group.remote}`, remotePin(group.remote))
+    })
   }
   return shelves
 })
@@ -618,6 +665,7 @@ async function onDropOnBranch(event: MouseEvent, target: string, targetIsRemote:
 
 function localMenu(event: MouseEvent, name: string, upstream: string | null) {
   const isHead = name === head.value
+  const isTrunk = name === trunk.value
   menu.show(
     event,
     [
@@ -678,6 +726,18 @@ function localMenu(event: MouseEvent, name: string, upstream: string | null) {
         }
       },
       { separator: true, label: '' },
+      {
+        // What "is this safe to delete?" gets measured against. Guessed as main
+        // or master until somebody says otherwise, which is wrong in every
+        // repository that calls its trunk something else — and quietly wrong,
+        // because a branch that has only reached `staging` reads as landed.
+        label: isTrunk ? 'Not the main branch' : 'Use as the main branch',
+        icon: Milestone,
+        hint: isTrunk ? 'back to guessing' : 'what "safe to delete" is measured against',
+        action: async () => {
+          await git.setTrunk(isTrunk ? null : name)
+        }
+      },
       {
         label: 'Copy branch name',
         icon: Copy,
@@ -949,6 +1009,16 @@ function stashMenu(event: MouseEvent, index: number, message: string) {
             >
               <ArrowDown :size="11" :stroke-width="2.5" />{{ row.item.behind }}
             </span>
+            <Milestone
+              v-if="row.item.name === trunk"
+              :size="11"
+              class="faint trunk-mark"
+              :title="
+                store.trunk.chosen
+                  ? 'The main branch, as set here'
+                  : 'Taken as the main branch — right-click another to change it'
+              "
+            />
             <Cloud v-if="!row.item.upstream" :size="11" class="faint no-upstream" />
           </div>
         </template>
@@ -1574,6 +1644,13 @@ function stashMenu(event: MouseEvent, index: number, message: string) {
 .no-upstream {
   flex: none;
   opacity: 0.5;
+}
+
+/* Quieter than the ahead/behind ticks beside it: this says what a branch is,
+   not that something needs doing about it. */
+.trunk-mark {
+  flex: none;
+  opacity: 0.55;
 }
 
 .remote-name {

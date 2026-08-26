@@ -1796,6 +1796,83 @@ fn a_branch_that_also_lives_on_a_remote_is_reported() {
 }
 
 #[test]
+fn the_main_branch_is_guessed_and_can_be_named() {
+    let sandbox = Sandbox::new("trunk");
+    sandbox.commit("a.txt", "one\n", "Base");
+
+    let state = sandbox.state();
+    let found = refs::trunk(&state);
+    assert_eq!(found.name.as_deref(), Some("main"));
+    assert!(!found.chosen, "nobody said so; it was guessed from the name");
+
+    sandbox.git(&["branch", "trunk-by-another-name"]);
+    refs::set_trunk(&state, Some("trunk-by-another-name")).unwrap();
+    let found = refs::trunk(&state);
+    assert_eq!(found.name.as_deref(), Some("trunk-by-another-name"));
+    assert!(found.chosen);
+    // Kept in the repository's own config, where git itself can read it.
+    assert_eq!(
+        sandbox.git(&["config", "--get", "gitnoob.trunk"]).trim(),
+        "trunk-by-another-name"
+    );
+
+    // A name nothing answers to is refused rather than quietly stored.
+    assert!(refs::set_trunk(&state, Some("no-such-branch")).is_err());
+
+    refs::set_trunk(&state, None).unwrap();
+    assert_eq!(refs::trunk(&state).name.as_deref(), Some("main"));
+}
+
+#[test]
+fn a_chosen_main_branch_that_has_gone_falls_back_to_the_usual_names() {
+    let sandbox = Sandbox::new("trunk-gone");
+    sandbox.commit("a.txt", "one\n", "Base");
+    sandbox.git(&["branch", "release"]);
+
+    let state = sandbox.state();
+    refs::set_trunk(&state, Some("release")).unwrap();
+    sandbox.git(&["branch", "-D", "release"]);
+
+    let found = refs::trunk(&state);
+    assert_eq!(found.name.as_deref(), Some("main"));
+    assert!(!found.chosen, "the stored name no longer names anything");
+}
+
+#[test]
+fn deletion_is_measured_against_the_main_branch_not_the_one_checked_out() {
+    let sandbox = Sandbox::new("delagainst");
+    sandbox.commit("a.txt", "one\n", "Base");
+    // Work that reaches a branch that gets reset, and never reaches main.
+    sandbox.git(&["checkout", "-q", "-b", "topic"]);
+    sandbox.commit("b.txt", "two\n", "Topic work");
+    sandbox.git(&["checkout", "-q", "-b", "staging", "main"]);
+    sandbox.git(&["merge", "-q", "--no-ff", "-m", "Merge topic", "topic"]);
+
+    let state = sandbox.state();
+    let preview = refs::deletion_preview(&state, "topic").unwrap();
+
+    // Standing on staging, which holds every commit — the old answer, and the
+    // wrong one: main has never seen this work.
+    assert!(preview.merged, "staging can reach it, so git -d would allow it");
+    assert_eq!(preview.against.as_deref(), Some("main"));
+    assert!(!preview.trunk_holds, "main does not hold the work");
+    assert_eq!(preview.only_here, 1, "one commit main cannot reach");
+    assert_eq!(
+        preview.also_on,
+        vec!["staging".to_string()],
+        "the branch that holds it is named, not counted as safety"
+    );
+
+    // Once it lands on main the answer changes, and staging stops being the
+    // reason for it.
+    sandbox.git(&["checkout", "-q", "main"]);
+    sandbox.git(&["merge", "-q", "--no-ff", "-m", "Merge topic", "topic"]);
+    let preview = refs::deletion_preview(&state, "topic").unwrap();
+    assert!(preview.trunk_holds);
+    assert_eq!(preview.only_here, 0);
+}
+
+#[test]
 fn the_checked_out_branch_is_reported_as_such() {
     let sandbox = Sandbox::new("delhead");
     sandbox.commit("a.txt", "one\n", "Base");
