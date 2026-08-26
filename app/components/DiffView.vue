@@ -2,6 +2,7 @@
 import { computed } from 'vue'
 import type { DiffLine, FileDiff } from '~/composables/useGit'
 import { highlightLine, highlightWhole, languageFor } from '~/composables/useHighlight'
+import { diffRows, diffWindow } from '~/composables/useCode'
 
 const props = defineProps<{
   diff: FileDiff | null
@@ -11,6 +12,9 @@ const props = defineProps<{
   /** When set, each hunk gets its own stage/unstage and discard buttons. */
   side?: 'staged' | 'unstaged' | null
   busy?: boolean
+  /** Where the box that scrolls this is scrolled to, and how tall it is. */
+  top?: number
+  view?: number
 }>()
 const emit = defineEmits<{ hunk: [number, 'stage' | 'unstage' | 'discard'] }>()
 
@@ -76,6 +80,39 @@ const perLine = computed(() => {
  * A deleted line is not in the new file at all and is coloured on its own,
  * which is the best that can be done without reading the old one too.
  */
+// --- only what is on screen
+const laid = computed(() => diffRows(props.diff?.hunks ?? []))
+const shown = computed(() => diffWindow(laid.value.rows, props.top ?? 0, props.view ?? 0))
+const visible = computed(() => laid.value.rows.slice(shown.value.first, shown.value.last))
+
+/**
+ * The heading of the hunk the top of the view is in.
+ *
+ * It used to be `position: sticky`, which needs the heading to be in the page
+ * to stick — and with only the rows on screen drawn, the heading of a hunk
+ * taller than the box is not. So it is drawn again where the sticky one would
+ * have come to rest. Which hunk that is comes from the first row on screen, not
+ * the first row drawn: the window reaches above the top edge.
+ */
+const pinned = computed(() => {
+  const rows = laid.value.rows
+  const at = shown.value.first
+  if (!rows.length || at >= rows.length) return null
+  const top = props.top ?? 0
+  let hunk = rows[at]!.hunk
+  for (let i = at; i < rows.length && rows[i]!.top <= top; i++) hunk = rows[i]!.hunk
+  return hunk
+})
+
+/** The longest line in the patch, which is what holds the view open sideways. */
+const longest = computed(() => {
+  let found = ''
+  for (const hunk of props.diff?.hunks ?? []) {
+    for (const line of hunk.lines) if (line.content.length > found.length) found = line.content
+  }
+  return found
+})
+
 function paint(line: DiffLine) {
   const file = whole.value
   if (file && line.new_lineno !== null) {
@@ -94,35 +131,82 @@ function paint(line: DiffLine) {
     <p v-else-if="empty" class="note dim">No changes in this file.</p>
 
     <template v-else>
-      <div v-for="(hunk, hi) in props.diff.hunks" :key="hi" class="hunk">
-        <div class="hunk-head mono">
-          <span class="truncate">{{ hunk.header }}</span>
-          <!-- Discard sits away from the staging button, so the destructive
-               one is never where the hand already is. -->
+      <!-- Not painted, and no height of its own; it is here to be measured, so
+           the view keeps one width whichever rows are drawn in it. -->
+      <div class="line gauge" aria-hidden="true">
+        <span class="no" />
+        <span class="no" />
+        <span class="sign" />
+        <span class="text">{{ longest }}</span>
+      </div>
+
+      <div class="rows" :style="{ height: `${laid.height}px` }">
+        <template v-for="row in visible" :key="`${row.kind}${row.top}`">
+          <div
+            v-if="row.kind === 'head'"
+            class="hunk-head mono"
+            :style="{ top: `${row.top}px` }"
+          >
+            <span class="truncate">{{ props.diff.hunks[row.hunk]?.header }}</span>
+            <!-- Discard sits away from the staging button, so the destructive
+                 one is never where the hand already is. -->
+            <span v-if="props.side" class="hunk-actions">
+              <button
+                v-if="props.side === 'unstaged'"
+                class="hunk-btn danger"
+                :disabled="props.busy"
+                title="Throw away just this hunk"
+                @click="emit('hunk', row.hunk, 'discard')"
+              >
+                Discard hunk
+              </button>
+              <button
+                class="hunk-btn"
+                :disabled="props.busy"
+                @click="emit('hunk', row.hunk, props.side === 'staged' ? 'unstage' : 'stage')"
+              >
+                {{ props.side === 'staged' ? 'Unstage hunk' : 'Stage hunk' }}
+              </button>
+            </span>
+          </div>
+          <div
+            v-else-if="row.line"
+            class="line"
+            :class="lineClass(row.line.origin)"
+            :style="{ top: `${row.top}px` }"
+          >
+            <span class="no">{{ row.line.old_lineno ?? '' }}</span>
+            <span class="no">{{ row.line.new_lineno ?? '' }}</span>
+            <span class="sign">{{ row.line.origin === ' ' ? '' : row.line.origin }}</span>
+            <span class="text" v-html="paint(row.line)" />
+          </div>
+        </template>
+
+        <!-- Where the sticky heading would have come to rest. -->
+        <div
+          v-if="pinned !== null"
+          class="hunk-head mono pin"
+          :style="{ top: `${props.top ?? 0}px` }"
+        >
+          <span class="truncate">{{ props.diff.hunks[pinned]?.header }}</span>
           <span v-if="props.side" class="hunk-actions">
             <button
               v-if="props.side === 'unstaged'"
               class="hunk-btn danger"
               :disabled="props.busy"
               title="Throw away just this hunk"
-              @click="emit('hunk', hi, 'discard')"
+              @click="emit('hunk', pinned, 'discard')"
             >
               Discard hunk
             </button>
             <button
               class="hunk-btn"
               :disabled="props.busy"
-              @click="emit('hunk', hi, props.side === 'staged' ? 'unstage' : 'stage')"
+              @click="emit('hunk', pinned, props.side === 'staged' ? 'unstage' : 'stage')"
             >
               {{ props.side === 'staged' ? 'Unstage hunk' : 'Stage hunk' }}
             </button>
           </span>
-        </div>
-        <div v-for="(line, li) in hunk.lines" :key="li" class="line" :class="lineClass(line.origin)">
-          <span class="no">{{ line.old_lineno ?? '' }}</span>
-          <span class="no">{{ line.new_lineno ?? '' }}</span>
-          <span class="sign">{{ line.origin === ' ' ? '' : line.origin }}</span>
-          <span class="text" v-html="paint(line)" />
         </div>
       </div>
 
@@ -146,17 +230,34 @@ function paint(line: DiffLine) {
   padding: 12px;
 }
 
+/* Rows are placed rather than stacked: only the ones on screen are drawn, and
+   each has to sit where it would have if they all were. */
+.rows {
+  position: relative;
+}
+
+.rows > * {
+  position: absolute;
+  left: 0;
+}
+
 .hunk-head {
   display: flex;
   align-items: center;
   gap: 10px;
+  height: 24px;
+  width: 100%;
   padding: 2px 10px;
   color: var(--text-faint);
   background: var(--bg-raised);
   border-top: 1px solid var(--line-soft);
   border-bottom: 1px solid var(--line-soft);
-  position: sticky;
-  top: 0;
+  box-sizing: border-box;
+}
+
+/* The one drawn at the top edge, over the rows it is the heading for. */
+.hunk-head.pin {
+  z-index: 3;
 }
 
 .hunk-actions {
@@ -199,6 +300,7 @@ function paint(line: DiffLine) {
 
 .line {
   display: flex;
+  height: 18px;
   white-space: pre;
   /* As wide as the widest line, and never narrower than the view. Without the
      first, the tint on an added or deleted row stops at the edge of the window
@@ -254,5 +356,14 @@ function paint(line: DiffLine) {
 
 .del {
   background: rgba(224, 87, 109, 0.11);
+}
+
+.gauge {
+  position: static;
+  width: max-content;
+  height: 0;
+  overflow: hidden;
+  visibility: hidden;
+  pointer-events: none;
 }
 </style>

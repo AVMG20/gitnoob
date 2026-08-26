@@ -1,10 +1,18 @@
 <script setup lang="ts">
-import { computed, nextTick, onMounted, onUnmounted, ref, watch } from 'vue'
+import { computed, nextTick, onBeforeUnmount, onMounted, onUnmounted, ref, watch } from 'vue'
 import { Check, Copy, FolderOpen, Minus, Undo2, X } from 'lucide-vue-next'
 import { copyText, useGit, type FileDiff } from '~/composables/useGit'
 import { labelFor } from '~/composables/useHighlight'
 import { diffMode } from '~/composables/useDiffMode'
 import { stepFile, useFileView, walkOrder, type FileStep } from '~/composables/useFileView'
+import {
+  CODE_ROW,
+  diffRows,
+  fileMarks,
+  firstChangedLine,
+  markedLines,
+  patchMarks
+} from '~/composables/useCode'
 
 const git = useGit()
 const store = git.store
@@ -18,6 +26,30 @@ const textError = ref<string | null>(null)
 
 /** The scrolling half of the viewer, which the ruler measures. */
 const body = ref<HTMLElement | null>(null)
+
+/**
+ * Where the box is scrolled to, and how tall it is.
+ *
+ * Both views draw only the lines these two put on screen, so they are tracked
+ * here — in the one element that actually scrolls — rather than each view
+ * reaching for an ancestor it does not own. Coalesced to a frame: scroll events
+ * arrive faster than frames do, and a second one in the same frame would only
+ * throw away the rows the first is still drawing.
+ */
+const top = ref(0)
+const boxHeight = ref(0)
+let queued = false
+
+function onScroll() {
+  if (queued) return
+  queued = true
+  requestAnimationFrame(() => {
+    queued = false
+    if (body.value) top.value = body.value.scrollTop
+  })
+}
+
+let sizer: ResizeObserver | null = null
 
 const target = computed(() => store.viewer)
 const language = computed(() => (target.value ? labelFor(target.value.path) : null))
@@ -62,17 +94,28 @@ async function load(settle = true) {
  * almost never what is being looked for — and in a long file the change can be
  * hundreds of lines down. The diff view needs none of this: it has nothing in
  * it but the changes.
+ *
+ * Worked out from the diff rather than by looking for the first marked row in
+ * the page, which was how it used to be done and no longer can be: the view
+ * draws only the rows on screen, and the first change is the one row that is
+ * reliably not among them yet.
  */
 async function toFirstChange() {
-  if (diffMode.mode !== 'file') return
-  await nextTick()
   const box = body.value
   if (!box) return
-  const first = box.querySelector('.line.added, .line.changed, .gone')
-  if (!first) return
-  const origin = box.getBoundingClientRect().top - box.scrollTop
+  // A file just opened is read from wherever its change is, not from wherever
+  // the last one happened to be left.
+  box.scrollTop = 0
+  top.value = 0
+  if (diffMode.mode !== 'file') return
+  const at = firstChangedLine(diff.value)
+  if (at === null) return
+  // The rows are placed by the model, so the view has to have been given its
+  // height before there is anywhere to scroll to.
+  await nextTick()
   // A few lines of what came before, so the change has somewhere to sit.
-  box.scrollTop = Math.max(0, first.getBoundingClientRect().top - origin - 72)
+  box.scrollTop = Math.max(0, (at - 1) * CODE_ROW - 72)
+  top.value = box.scrollTop
 }
 
 /**
@@ -103,11 +146,18 @@ watch(() => diffMode.mode, async () => {
   await toFirstChange()
 })
 
-/** What the ruler is looking at; a change here means measuring again. */
-const shown = computed(
-  () => `${target.value?.path ?? ''}:${target.value?.commit ?? target.value?.side ?? ''}` +
-    `:${diffMode.mode}:${loading.value}`
-)
+/**
+ * Where the changes are, for the strip beside the scrollbar.
+ *
+ * Worked out from whichever model the view on screen is drawn from, so the two
+ * always agree about where a change is — and so the strip still knows about
+ * changes that are nowhere near the part of the file being looked at.
+ */
+const marks = computed(() => {
+  if (diffMode.mode === 'file') return fileMarks(markedLines(text.value, diff.value?.hunks ?? []))
+  const laid = diffRows(diff.value?.hunks ?? [])
+  return patchMarks(laid.rows, laid.height)
+})
 
 function close() {
   store.viewer = null
@@ -223,7 +273,21 @@ watch(
 onMounted(() => {
   load()
   window.addEventListener('keydown', onKey)
+  const box = body.value
+  if (!box) return
+  box.addEventListener('scroll', onScroll, { passive: true })
+  boxHeight.value = box.clientHeight
+  sizer = new ResizeObserver(() => {
+    boxHeight.value = box.clientHeight
+  })
+  sizer.observe(box)
 })
+
+onBeforeUnmount(() => {
+  body.value?.removeEventListener('scroll', onScroll)
+  sizer?.disconnect()
+})
+
 onUnmounted(() => window.removeEventListener('keydown', onKey))
 </script>
 
@@ -303,6 +367,8 @@ onUnmounted(() => window.removeEventListener('keydown', onKey))
           :text="text"
           :loading="loading"
           :error="textError"
+          :top="top"
+          :view="boxHeight"
         />
         <DiffView
           v-else
@@ -311,10 +377,12 @@ onUnmounted(() => window.removeEventListener('keydown', onKey))
           :loading="loading"
           :side="target.commit ? null : (target.side ?? 'unstaged')"
           :busy="store.busy"
+          :top="top"
+          :view="boxHeight"
           @hunk="onHunk"
         />
       </div>
-      <ChangeRuler :container="body" :version="shown" />
+      <ChangeRuler :container="body" :marks="marks" />
     </div>
   </section>
 </template>
