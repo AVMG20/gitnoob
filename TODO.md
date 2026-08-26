@@ -262,10 +262,18 @@ Building it yourself was the only way to run it. Now a tag is.
       Mac you have; Linux builds on 22.04, because the AppImage carries the
       glibc it was built against as a floor and building on the newest Ubuntu
       quietly excludes everyone on an older one
-- [x] **The version comes from the tag.** `scripts/set-version.mjs` writes it
-      into `tauri.conf.json` and `Cargo.toml` before the build. The updater
-      compares that number against the newest release, so an app reporting a
-      version older than the one it is would offer to install itself, for ever
+- [x] **The version comes from the tag.** `scripts/release.mjs --write-only`
+      writes it into `tauri.conf.json`, `Cargo.toml` and `Cargo.lock` before the
+      build. The updater compares that number against the newest release, so an
+      app reporting a version older than the one it is would offer to install
+      itself, for ever
+- [x] **One command cuts a release.** `npm run release 0.3.0` runs both suites,
+      writes the version, commits, tags and pushes, and refuses before any of it
+      on a dirty tree, a branch that is not main, a tag that already exists here
+      or on the remote, or a version that does not go forwards. `--dry-run` is
+      the whole thing including the suites, changing nothing. The steps used to
+      be four lines in a comment, which is three too many to get right at the
+      moment you want them
 - [x] **Update from inside the window.** Settings → Updates: the installed
       version, a check button, the release notes of what is on offer, and one
       button that downloads it, verifies the signature against the public key

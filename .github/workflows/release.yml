@@ -1,7 +1,9 @@
 # Push a tag, get downloadable apps.
 #
-#   npm run set-version 0.2.0
-#   git commit -am "Version 0.2.0" && git tag v0.2.0 && git push --follow-tags
+#   npm run release 0.2.0
+#
+# — which sets the version, commits it, tags it and pushes, having run both
+# suites first and refused if either failed.
 #
 # One draft release is made first so the three build jobs have somewhere agreed
 # to upload to — running them without it races, and three jobs each creating
@@ -184,7 +186,7 @@ jobs:
       # Before the build, not after: the number compiled into the app is what
       # the updater compares a future release against.
       - name: Take the version from the tag
-        run: node scripts/set-version.mjs "${{ needs.draft.outputs.version }}"
+        run: node scripts/release.mjs "${{ needs.draft.outputs.version }}" --write-only
 
       - uses: tauri-apps/tauri-action@v0
         env:

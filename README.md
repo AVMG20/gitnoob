@@ -152,16 +152,22 @@ mostly indexing that Nuxt's strict settings want guarded.
 
 ## Releasing
 
-Push a tag and `.github/workflows/release.yml` builds the app for all three
-platforms and publishes a GitHub release with the installers attached, so
-nobody has to install Rust to run it.
+One command:
 
 ```sh
-npm run set-version 0.2.0     # writes tauri.conf.json and Cargo.toml
-git commit -am "Version 0.2.0"
-git tag v0.2.0
-git push --follow-tags
+npm run release 0.3.0
 ```
+
+It runs both suites and stops if either fails, writes the version into
+`tauri.conf.json`, `Cargo.toml` and `Cargo.lock`, commits that, tags it and
+pushes — and refuses before any of it on a dirty tree, a branch that is not
+main, a tag that already exists here or on the remote, or a version that is not
+above the current one. `--dry-run` runs every check and both suites and changes
+nothing; `--skip-tests`, `--any-branch` and `--force` lift one check each.
+
+The push of the `v*` tag is what starts `.github/workflows/release.yml`, which
+builds the app for all three platforms and publishes a GitHub release with the
+installers attached, so nobody has to install Rust to run it.
 
 What comes out: a universal `.dmg` for macOS covering Intel and Apple Silicon,
 an NSIS `.exe` and an `.msi` for Windows, and an `.AppImage`, a `.deb` and an
@@ -173,11 +179,12 @@ agreed place to upload to rather than three of them each creating "the"
 release, and it is published only once all three have finished. A release is
 never half a release.
 
-The version compiled into the app is taken from the tag by
-`scripts/set-version.mjs` before anything is built. It matters more than it
-looks: the updater compares that number against the newest release, and an app
-that reports a version older than the one it is would offer to install itself,
-for ever.
+The version compiled into the app is taken from the tag before anything is
+built — the workflow runs `scripts/release.mjs --write-only`, the same writing
+the release command does by hand, so the two cannot drift. It matters more than
+it looks: the updater compares that number against the newest release, and an
+app that reports a version older than the one it is would offer to install
+itself, for ever.
 
 ### Signing
 
