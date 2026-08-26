@@ -27,16 +27,30 @@ const stats = computed(() => {
   }
 })
 
-async function load() {
+/**
+ * Reads the file and its diff.
+ *
+ * `settle` says whether the view may be taken down while it reads. Opening a
+ * file has nothing to show yet and says so; a reload behind an open file must
+ * not, because it is triggered by the filesystem watcher — a build writing to
+ * the work tree replaces `store.status`, which lands here — and blanking the
+ * page for "Loading file…" every time anything on disk moved is what made the
+ * file flicker while it was being read.
+ */
+async function load(settle = true) {
   const current = target.value
   if (!current) return
-  loading.value = true
-  diff.value = current.commit
+  if (settle) loading.value = true
+  const fresh = current.commit
     ? await git.commitFileDiff(current.commit, current.path)
     : await git.workingFileDiff(current.path, current.side ?? 'unstaged')
+  // Another file was opened while this one was being read; that load owns the
+  // view now.
+  if (target.value !== current) return
+  diff.value = fresh
   await loadText()
   loading.value = false
-  await toFirstChange()
+  if (settle) await toFirstChange()
 }
 
 /**
@@ -124,9 +138,16 @@ function typing(event: KeyboardEvent) {
   )
 }
 
-watch(target, load, { deep: true })
-// Staging changes which side a file lives on, so follow the status.
-watch(() => store.status, load)
+watch(target, () => load(), { deep: true })
+// Staging changes which side a file lives on, so follow the status — quietly,
+// and only when what is on screen could actually have changed. The watcher
+// hands out a fresh status object for any write anywhere in the work tree, and
+// re-reading the file each time is cheap; throwing the reader's place away is
+// not.
+watch(
+  () => store.status,
+  () => load(false)
+)
 
 onMounted(() => {
   load()
