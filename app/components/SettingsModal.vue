@@ -36,6 +36,7 @@ import { useTheme } from '~/composables/useTheme'
 import { SHORTCUTS, SHORTCUT_GROUPS, keyLabel } from '~/composables/useShortcuts'
 import { useColumns } from '~/composables/useColumns'
 import { useUpdates } from '~/composables/useUpdates'
+import { useZoom } from '~/composables/useZoom'
 
 const config = useConfig()
 const forge = useForge()
@@ -44,6 +45,7 @@ const ai = useAi()
 const git = useGit()
 const { theme, themes, setTheme } = useTheme()
 const cols = useColumns()
+const { zoom, steps: zoomSteps, setZoom } = useZoom()
 const updates = useUpdates()
 
 const section = computed(() => config.store.settingsSection)
@@ -571,6 +573,26 @@ onMounted(async () => {
               <span class="theme-name">{{ one.name }}</span>
               <span class="faint small">{{ one.kind }}</span>
               <Check v-if="one.id === theme" :size="13" class="tick" />
+            </button>
+          </div>
+
+          <h3 class="sub">Text size</h3>
+          <p class="dim intro">
+            How large the window draws everything — text, rows and the graph together, so the
+            commit list stays in step with the lines drawn through it.
+            {{ keyLabel('mod+=') }} and {{ keyLabel('mod+-') }} step through the same sizes, and
+            {{ keyLabel('mod+0') }} comes back here.
+          </p>
+          <div class="sizes">
+            <button
+              v-for="factor in zoomSteps"
+              :key="factor"
+              class="size"
+              :class="{ on: Math.abs(factor - zoom) < 0.001 }"
+              @click="setZoom(factor)"
+            >
+              {{ Math.round(factor * 100) }}%
+              <span v-if="factor === 1" class="faint small block">standard</span>
             </button>
           </div>
 
@@ -1226,6 +1248,37 @@ select {
   flex-wrap: wrap;
   gap: 8px 20px;
   margin-bottom: 10px;
+}
+
+/* The sizes read as one row of steps rather than as a list, so which way is
+   bigger is the direction the eye already travels. */
+.sizes {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-bottom: 18px;
+}
+
+.size {
+  min-width: 62px;
+  padding: 6px 10px;
+  font-size: 12px;
+  text-align: center;
+  color: var(--text-dim);
+  background: var(--bg-raised);
+  border: 1px solid var(--line);
+  border-radius: 6px;
+}
+
+.size:hover {
+  color: var(--text);
+  border-color: var(--text-faint);
+}
+
+.size.on {
+  color: var(--text);
+  background: var(--bg-active);
+  border-color: var(--accent);
 }
 
 .cols .check {

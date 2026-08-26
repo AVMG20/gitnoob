@@ -69,7 +69,10 @@ export const SHORTCUTS: Shortcut[] = [
   { id: 'project.next', keys: 'mod+alt+ArrowRight', label: 'Next project tab', where: ANYWHERE, group: 'Projects and windows' },
   { id: 'project.previous', keys: 'mod+alt+ArrowLeft', label: 'Previous project tab', where: ANYWHERE, group: 'Projects and windows' },
   { id: 'project.nth', keys: 'mod+1…9', label: 'Jump to a project tab by position', where: ANYWHERE, group: 'Projects and windows' },
-  { id: 'dialog.close', keys: 'Escape', label: 'Close the dialog on top', where: 'Any dialog', group: 'Projects and windows' }
+  { id: 'dialog.close', keys: 'Escape', label: 'Close the dialog on top', where: 'Any dialog', group: 'Projects and windows' },
+  { id: 'zoom.in', keys: 'mod+=', label: 'Make everything larger', where: ANYWHERE, group: 'Projects and windows' },
+  { id: 'zoom.out', keys: 'mod+-', label: 'Make everything smaller', where: ANYWHERE, group: 'Projects and windows' },
+  { id: 'zoom.reset', keys: 'mod+0', label: 'Back to the standard size', where: ANYWHERE, group: 'Projects and windows' }
 ]
 
 export const SHORTCUT_GROUPS: ShortcutGroup[] = [
