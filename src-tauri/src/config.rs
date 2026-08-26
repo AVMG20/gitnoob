@@ -1,6 +1,7 @@
 use std::collections::HashMap;
 use std::fs;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Mutex;
 
 use serde::{Deserialize, Serialize};
@@ -261,12 +262,21 @@ pub fn save(dir: &Path, config: &Config) -> Result<(), String> {
 }
 
 /// A short unique id; enough for a local config file.
+///
+/// The clock alone is not enough. Two profiles made in the same tick of it —
+/// the first run, which writes a default profile and can have another added
+/// straight after — came out carrying the same id, and the one the config
+/// points at is then whichever the search reaches first. The counter is what
+/// makes them differ; the clock is what keeps them ordered and unlike the ids
+/// from any earlier run.
 pub fn new_id() -> String {
+    static SEQUENCE: AtomicU64 = AtomicU64::new(0);
     let nanos = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_nanos())
         .unwrap_or(0);
-    format!("{nanos:x}")
+    let count = SEQUENCE.fetch_add(1, Ordering::Relaxed);
+    format!("{nanos:x}{count:x}")
 }
 
 // --- secrets ---------------------------------------------------------------
