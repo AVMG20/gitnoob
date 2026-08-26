@@ -794,6 +794,8 @@ textarea {
   --hl-name: #e8bf6a;
   --hl-built_in: #a9b7c6;
   --hl-deletion: #cf7d7d;
+  --hl-property: #c8cdd4;
+  --hl-punctuation: #a9b7c6;
 }
 
 [data-theme='paper'],
@@ -811,24 +813,43 @@ textarea {
   --hl-name: #0f68a0;
   --hl-built_in: #7a3e9d;
   --hl-deletion: #cc5b5b;
+  --hl-property: #2b3138;
+  --hl-punctuation: #3b4149;
 }
 
+/* Which token wears which colour.
+ *
+ * The list is long on purpose. highlight.js emits some forty classes and the
+ * ten below covered about half of them, so every token it had a name for but we
+ * did not — a property, a parameter, an operator, the punctuation between them
+ * — fell through to the body colour. In a language where most of the tokens are
+ * property access that is a file which looks like it was never highlighted at
+ * all, which is precisely how it was being reported. Anything genuinely without
+ * a colour of its own is now spelled out at the bottom rather than left to
+ * default there by accident. */
 .hljs-keyword,
 .hljs-literal,
 .hljs-selector-tag,
+.hljs-keyword.hljs-type,
 .hljs-type {
   color: var(--hl-keyword);
 }
 
 .hljs-string,
 .hljs-regexp,
-.hljs-addition {
+.hljs-addition,
+.hljs-char,
+.hljs-char.escape_,
+.hljs-template-tag,
+.hljs-code,
+.hljs-link {
   color: var(--hl-string);
 }
 
 .hljs-number,
 .hljs-symbol,
-.hljs-bullet {
+.hljs-bullet,
+.hljs-formula {
   color: var(--hl-number);
 }
 
@@ -864,12 +885,35 @@ textarea {
 }
 
 .hljs-built_in,
+.hljs-title.class_,
+.hljs-title.class_.inherited__,
 .hljs-class .hljs-title {
   color: var(--hl-built_in);
 }
 
 .hljs-deletion {
   color: var(--hl-deletion);
+}
+
+/* The two commonest tokens in most files, and the reason a file could look
+   uncoloured even where everything else was working. Close to the body text
+   rather than equal to it: loud enough to register as highlighted, quiet enough
+   that a line of property access is still a line rather than a rainbow. */
+.hljs-property,
+.hljs-params,
+.hljs-variable.language_,
+.hljs-subst {
+  color: var(--hl-property);
+}
+
+.hljs-operator,
+.hljs-punctuation,
+.hljs-tag {
+  color: var(--hl-punctuation);
+}
+
+.hljs-selector-pseudo {
+  color: var(--hl-name);
 }
 
 .hljs-emphasis {
