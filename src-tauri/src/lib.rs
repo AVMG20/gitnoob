@@ -391,6 +391,16 @@ fn amend_draft(state: State<'_, AppState>) -> Result<work::AmendDraft, String> {
 }
 
 #[tauri::command]
+fn reword_check(oid: String, state: State<'_, AppState>) -> Result<work::RewordCheck, String> {
+    work::reword_check(&state, &oid)
+}
+
+#[tauri::command]
+async fn reword(oid: String, message: String, state: State<'_, AppState>) -> Result<String, String> {
+    work::reword(&state, &oid, &message)
+}
+
+#[tauri::command]
 async fn stash_push(
     message: Option<String>,
     include_untracked: Option<bool>,
@@ -960,6 +970,15 @@ async fn ai_commit_message(state: State<'_, AppState>) -> Result<ai::CommitMessa
     ai::commit_message(&state).await
 }
 
+/// A commit message for a commit that already exists, from its own diff.
+#[tauri::command]
+async fn ai_commit_message_for(
+    oid: String,
+    state: State<'_, AppState>,
+) -> Result<ai::CommitMessage, String> {
+    ai::commit_message_for(&state, &oid).await
+}
+
 /// The title and description of a review, written from the branch's commits.
 #[tauri::command]
 async fn ai_review_message(
@@ -1109,6 +1128,8 @@ pub fn run() {
             apply_hunk,
             commit,
             amend_draft,
+            reword_check,
+            reword,
             stash_push,
             stash_pop,
             stash_list,
@@ -1173,6 +1194,7 @@ pub fn run() {
             ai_status,
             ai_models,
             ai_commit_message,
+            ai_commit_message_for,
             ai_review_message,
             ai_resolve_conflict,
             open_external,

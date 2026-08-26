@@ -239,6 +239,17 @@ export interface BranchDeletion {
 export interface MergeOutcome { ok: boolean; message: string; conflicts: string[] }
 export interface AmendDraft { summary: string; body: string; is_pushed: boolean; short: string }
 
+/** What rewording a given commit would take, asked before the editor opens. */
+export interface RewordCheck {
+  summary: string
+  body: string
+  /** False when it is not the newest commit; `reason` says so. */
+  can: boolean
+  reason: string | null
+  /** True when a remote already has it, so rewording needs a force push. */
+  is_pushed: boolean
+}
+
 export interface StashEntry {
   index: number
   oid: string
@@ -889,6 +900,10 @@ export function useGit() {
     commit: (message: string, amend = false) =>
       run<string>('Commit', 'commit', { message, amend }),
     amendDraft: () => guard('Read HEAD', () => invoke<AmendDraft>('amend_draft')),
+    rewordCheck: (oid: string) =>
+      guard('Read commit', () => invoke<RewordCheck>('reword_check', { oid })),
+    /** Gives a commit a new message. Answers with the id it now has. */
+    reword: (oid: string, message: string) => run<string>('Reword', 'reword', { oid, message }),
     stashPush: (message?: string) => run<string>('Stash', 'stash_push', { message }),
     stashPop: (index: number) => run<string>('Stash pop', 'stash_pop', { index }),
     stashApply: (index: number) => run<string>('Stash apply', 'stash_apply', { index }),

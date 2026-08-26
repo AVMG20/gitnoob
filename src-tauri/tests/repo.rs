@@ -1186,6 +1186,85 @@ fn undo_of_an_amend_restores_the_original_commit() {
 }
 
 #[test]
+fn rewording_changes_the_message_and_nothing_else() {
+    let sandbox = Sandbox::new("reword");
+    sandbox.commit("a.txt", "one\n", "Frist commit");
+    let tree = sandbox.git(&["rev-parse", "HEAD^{tree}"]).trim().to_string();
+    let author = sandbox.git(&["log", "-1", "--format=%an <%ae> %at"]).trim().to_string();
+
+    let state = sandbox.state();
+    let now = work::reword(&state, "HEAD", "First commit\n\nWith a body this time").unwrap();
+
+    assert_eq!(sandbox.git(&["rev-parse", "HEAD"]).trim(), now);
+    assert_eq!(sandbox.git(&["log", "-1", "--format=%s"]).trim(), "First commit");
+    assert_eq!(
+        sandbox.git(&["log", "-1", "--format=%b"]).trim(),
+        "With a body this time"
+    );
+    // Same content, same authorship: only the message moved.
+    assert_eq!(sandbox.git(&["rev-parse", "HEAD^{tree}"]).trim(), tree);
+    assert_eq!(
+        sandbox.git(&["log", "-1", "--format=%an <%ae> %at"]).trim(),
+        author
+    );
+}
+
+#[test]
+fn rewording_leaves_staged_work_out_of_the_commit() {
+    let sandbox = Sandbox::new("reword-staged");
+    sandbox.commit("a.txt", "one\n", "First");
+
+    // Something staged but not meant to be part of the commit being reworded.
+    sandbox.write("b.txt", "later\n");
+    let state = sandbox.state();
+    work::stage(&state, &["b.txt".to_string()]).unwrap();
+
+    work::reword(&state, "HEAD", "First, said better").unwrap();
+
+    assert_eq!(sandbox.git(&["log", "-1", "--format=%s"]).trim(), "First, said better");
+    let files = sandbox.git(&["show", "--name-only", "--format=", "HEAD"]);
+    assert!(!files.contains("b.txt"), "the staged file was swept in: {files}");
+    let status = refs::status(&state).unwrap();
+    assert!(status.staged.iter().any(|entry| entry.path == "b.txt"));
+}
+
+#[test]
+fn only_the_newest_commit_can_be_reworded() {
+    let sandbox = Sandbox::new("reword-old");
+    sandbox.commit("a.txt", "one\n", "First");
+    let first = sandbox.git(&["rev-parse", "HEAD"]).trim().to_string();
+    sandbox.commit("a.txt", "two\n", "Second");
+
+    let state = sandbox.state();
+    let check = work::reword_check(&state, &first).unwrap();
+    assert!(!check.can);
+    assert_eq!(check.summary, "First");
+
+    let error = work::reword(&state, &first, "Something else").unwrap_err();
+    assert!(error.contains("newest"), "unexpected message: {error}");
+    // Refusing must not have touched anything.
+    assert_eq!(sandbox.git(&["log", "-1", "--format=%s"]).trim(), "Second");
+}
+
+#[test]
+fn undo_of_a_reword_restores_the_original_message() {
+    let sandbox = Sandbox::new("reword-undo");
+    sandbox.commit("a.txt", "one\n", "Original message");
+    let original = sandbox.git(&["rev-parse", "HEAD"]).trim().to_string();
+
+    let state = sandbox.state();
+    work::reword(&state, "HEAD", "Reworded message").unwrap();
+    assert_ne!(sandbox.git(&["rev-parse", "HEAD"]).trim(), original);
+
+    journal::undo(&state).unwrap();
+    assert_eq!(sandbox.git(&["rev-parse", "HEAD"]).trim(), original);
+    assert_eq!(
+        sandbox.git(&["log", "-1", "--format=%s"]).trim(),
+        "Original message"
+    );
+}
+
+#[test]
 fn undo_refuses_when_a_different_branch_is_checked_out() {
     let sandbox = Sandbox::new("undoguard");
     sandbox.commit("a.txt", "one\n", "First");

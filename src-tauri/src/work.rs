@@ -90,35 +90,126 @@ pub fn amend_draft(state: &AppState) -> Result<AmendDraft, String> {
     let commit = head.peel_to_commit().map_err(|e| e.message().to_string())?;
     let oid = commit.id();
 
-    let message = commit.message().unwrap_or("");
-    let summary = commit.summary().unwrap_or("").to_string();
-    let body = message
-        .strip_prefix(&summary)
-        .unwrap_or("")
-        .trim_start_matches('\n')
-        .trim_end()
-        .to_string();
-
-    // If any remote-tracking branch contains this commit, it is already
-    // published as far as this clone can tell.
-    let mut is_pushed = false;
-    if let Ok(branches) = repo.branches(Some(git2::BranchType::Remote)) {
-        for branch in branches.flatten() {
-            if let Some(target) = branch.0.get().target() {
-                if target == oid || repo.graph_descendant_of(target, oid).unwrap_or(false) {
-                    is_pushed = true;
-                    break;
-                }
-            }
-        }
-    }
+    let (summary, body) = split_message(commit.message().unwrap_or(""));
 
     Ok(AmendDraft {
         summary,
         body,
-        is_pushed,
+        is_pushed: published(&repo, oid),
         short: oid.to_string()[..7].to_string(),
     })
+}
+
+/// What rewording a particular commit would involve, asked before the editor
+/// opens so the panel can say no rather than letting the user type a message
+/// that cannot be applied.
+#[derive(Serialize)]
+pub struct RewordCheck {
+    pub summary: String,
+    pub body: String,
+    /// False when this commit is not the one an amend would rewrite, in which
+    /// case `reason` says so and the editor stays shut.
+    pub can: bool,
+    pub reason: Option<String>,
+    /// True when a remote-tracking branch already has it: rewording is then a
+    /// history rewrite that needs a force push to publish.
+    pub is_pushed: bool,
+}
+
+/// Splits a commit message the way git reads it: first line, then the rest.
+fn split_message(message: &str) -> (String, String) {
+    let mut lines = message.lines();
+    let summary = lines.next().unwrap_or("").trim().to_string();
+    let body = lines
+        .collect::<Vec<_>>()
+        .join("\n")
+        .trim_start_matches('\n')
+        .trim()
+        .to_string();
+    (summary, body)
+}
+
+/// Whether any remote-tracking branch already contains this commit.
+fn published(repo: &git2::Repository, oid: git2::Oid) -> bool {
+    let Ok(branches) = repo.branches(Some(git2::BranchType::Remote)) else {
+        return false;
+    };
+    for branch in branches.flatten() {
+        if let Some(target) = branch.0.get().target() {
+            if target == oid || repo.graph_descendant_of(target, oid).unwrap_or(false) {
+                return true;
+            }
+        }
+    }
+    false
+}
+
+pub fn reword_check(state: &AppState, oid: &str) -> Result<RewordCheck, String> {
+    let repo = state.repo()?;
+    let commit = repo
+        .revparse_single(oid)
+        .and_then(|object| object.peel_to_commit())
+        .map_err(|e| e.message().to_string())?;
+    let (summary, body) = split_message(commit.message().unwrap_or(""));
+
+    let head = repo
+        .head()
+        .ok()
+        .and_then(|head| head.peel_to_commit().ok())
+        .map(|head| head.id());
+
+    // Only the newest commit. Anything older would have to be replayed, which
+    // rewrites every commit above it, and the mistake this is for — a message
+    // typed in haste and regretted a second later — is always on the newest.
+    let reason = (head != Some(commit.id()))
+        .then(|| "Only the newest commit can be given a new message.".to_string());
+
+    Ok(RewordCheck {
+        summary,
+        body,
+        can: reason.is_none(),
+        reason,
+        is_pushed: published(&repo, commit.id()),
+    })
+}
+
+/// Gives the newest commit a new message, keeping everything else about it.
+///
+/// This is `git commit --amend` with `--only`, which is git's own way of
+/// saying "the message and nothing else": whatever is staged stays staged
+/// rather than being swept into the commit being reworded.
+pub fn reword(state: &AppState, oid: &str, message: &str) -> Result<String, String> {
+    let root = state.path()?;
+    if message.trim().is_empty() {
+        return Err("A commit needs a message".to_string());
+    }
+
+    let check = reword_check(state, oid)?;
+    if !check.can {
+        return Err(check.reason.unwrap_or_else(|| "Cannot reword that commit".to_string()));
+    }
+
+    let before = journal::head_oid(state);
+    let branch = journal::current_branch(state);
+    let (summary, _) = split_message(message);
+
+    git_cmd::run_checked(
+        &root,
+        &["commit", "--amend", "--only", "--allow-empty", "-m", message],
+    )?;
+
+    let after = journal::head_oid(state);
+    journal::record(
+        state,
+        "reword",
+        format!("Reword: {summary}"),
+        branch,
+        before,
+        after.clone(),
+        Mode::Soft,
+        false,
+    );
+    after.ok_or_else(|| "The reworded commit went missing".to_string())
 }
 
 pub fn stash_push(

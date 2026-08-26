@@ -68,6 +68,9 @@ export function useAi() {
     loadModels,
     commitMessage: () =>
       run('commit message', () => invoke<CommitMessage>('ai_commit_message')),
+    /** A message for a commit that already exists, written from its own diff. */
+    commitMessageFor: (oid: string) =>
+      run('commit message', () => invoke<CommitMessage>('ai_commit_message_for', { oid })),
     /** A review's title and description, written from the branch's commits. */
     reviewMessage: (source: string, target: string) =>
       run('review description', () =>

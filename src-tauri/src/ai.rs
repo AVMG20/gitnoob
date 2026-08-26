@@ -219,6 +219,43 @@ pub async fn commit_message(state: &AppState) -> Result<CommitMessage, String> {
     let files = git_cmd::run_checked(&root, &["diff", "--cached", "--name-status"])?;
     let recent = git_cmd::run_checked(&root, &["log", "-8", "--format=%s"]).unwrap_or_default();
 
+    describe_change(state, "Staged diff", &files, &diff, &recent).await
+}
+
+/// Writes a commit message from a commit that already exists.
+///
+/// The same job as [`commit_message`] with a different subject: the message
+/// being replaced is the one already on the commit, so what the model is shown
+/// is that commit's own diff rather than the index. Its own subject is left
+/// out of the recent ones deliberately — the point of asking is that the
+/// message it has is not the wanted one.
+pub async fn commit_message_for(state: &AppState, oid: &str) -> Result<CommitMessage, String> {
+    let root = state.path()?;
+    let oid = checked_ref(oid)?;
+    let diff = git_cmd::run_checked(
+        &root,
+        &["show", "--no-color", "--unified=3", "--format=", &oid],
+    )?;
+    if diff.trim().is_empty() {
+        return Err("That commit changed nothing, so there is nothing to describe".to_string());
+    }
+    let files = git_cmd::run_checked(&root, &["show", "--name-status", "--format=", &oid])?;
+    // A root commit has no parent to walk back from; tone is a nicety anyway.
+    let recent =
+        git_cmd::run_checked(&root, &["log", "-8", "--format=%s", &format!("{oid}^")])
+            .unwrap_or_default();
+
+    describe_change(state, "Diff", &files, &diff, &recent).await
+}
+
+/// Asks the model for a subject and body describing one set of changes.
+async fn describe_change(
+    state: &AppState,
+    label: &str,
+    files: &str,
+    diff: &str,
+    recent: &str,
+) -> Result<CommitMessage, String> {
     let truncated = diff.chars().count() > MAX_DIFF_CHARS;
     let diff: String = diff.chars().take(MAX_DIFF_CHARS).collect();
     let style = state.config().global.ai.commit_style;
@@ -231,7 +268,7 @@ pub async fn commit_message(state: &AppState) -> Result<CommitMessage, String> {
 
     let prompt = format!(
         "Files changed:\n{files}\n\nRecent commit subjects in this repository, \
-         to match tone and conventions:\n{recent}\n\nStaged diff{}:\n{diff}",
+         to match tone and conventions:\n{recent}\n\n{label}{}:\n{diff}",
         if truncated { " (truncated)" } else { "" }
     );
 
