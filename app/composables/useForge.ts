@@ -26,6 +26,23 @@ export interface Member {
   name: string
 }
 
+/**
+ * The repository a review's branch lives in.
+ *
+ * A review opened from a fork has its branch somewhere this clone has never
+ * spoken to, which is why checking one out needs the fork's address as well as
+ * the branch's name.
+ */
+export interface ReviewSource {
+  /** `owner/name` on the forge. */
+  full_name: string
+  owner: string
+  ssh_url: string
+  https_url: string
+  /** False when the branch is in the repository being reviewed. */
+  is_fork: boolean
+}
+
 export interface Review {
   number: number
   title: string
@@ -37,6 +54,10 @@ export interface Review {
   url: string
   updated_at: string
   is_current: boolean
+  /** The tip of the source branch when the forge was last asked. */
+  head_sha: string
+  /** Null for a review whose fork has been deleted. */
+  source: ReviewSource | null
   /** Set when the review opened but something after it did not. */
   warning: string | null
 }

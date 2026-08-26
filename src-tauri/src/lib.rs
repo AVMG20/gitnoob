@@ -10,6 +10,7 @@ pub mod graph;
 pub mod journal;
 pub mod refs;
 pub mod remote;
+pub mod review;
 pub mod ssh;
 pub mod state;
 pub mod watch;
@@ -196,6 +197,16 @@ async fn create_branch(
 #[tauri::command]
 async fn commit_depth(oid: String, state: State<'_, AppState>) -> Result<Option<usize>, String> {
     graph::depth(&state, &oid)
+}
+
+/// Checks out the branch a review was opened from, adding the fork it lives
+/// in as a remote when that is what standing on those commits takes.
+#[tauri::command]
+async fn checkout_review(
+    review: review::ReviewTarget,
+    state: State<'_, AppState>,
+) -> Result<String, String> {
+    review::checkout(&state, review)
 }
 
 /// What deleting a branch would cost, read before the question is asked.
@@ -1069,6 +1080,7 @@ pub fn run() {
             file_text,
             checkout,
             create_branch,
+            checkout_review,
             commit_depth,
             delete_branch,
             delete_branch_preview,

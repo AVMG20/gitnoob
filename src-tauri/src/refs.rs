@@ -394,7 +394,6 @@ fn unstaged_kind(s: git2::Status) -> Option<String> {
 /// Uncommitted work is stashed first and put back afterwards, so switching
 /// branches mid-change does not need the user to tidy up by hand.
 pub fn checkout(state: &AppState, name: &str) -> Result<String, String> {
-    let path = state.path()?;
     let previous = journal::current_branch(state);
 
     // Decide the argument list before touching the working tree; the repo handle
@@ -423,6 +422,49 @@ pub fn checkout(state: &AppState, name: &str) -> Result<String, String> {
         }
     };
 
+    switch(state, name, &args, previous)
+}
+
+/// Creates a local branch following a remote one and switches to it.
+///
+/// `checkout` does this for a name it recognises as remote-tracking; this is
+/// for the caller that has just fetched the remote branch and knows what the
+/// local one should be called, which is not always the last path segment.
+pub fn checkout_tracking(state: &AppState, local: &str, tracking: &str) -> Result<String, String> {
+    let previous = journal::current_branch(state);
+    let args = vec![
+        "checkout".to_string(),
+        "-b".to_string(),
+        local.to_string(),
+        "--track".to_string(),
+        tracking.to_string(),
+        "--".to_string(),
+    ];
+    switch(state, local, &args, previous)
+}
+
+/// Creates a local branch at a revision and switches to it, for commits that
+/// arrived without a branch to hang them on.
+pub fn checkout_at(state: &AppState, local: &str, revision: &str) -> Result<String, String> {
+    let previous = journal::current_branch(state);
+    let args = vec![
+        "checkout".to_string(),
+        "-b".to_string(),
+        local.to_string(),
+        revision.to_string(),
+        "--".to_string(),
+    ];
+    switch(state, local, &args, previous)
+}
+
+/// Runs a prepared checkout and records where it landed.
+fn switch(
+    state: &AppState,
+    name: &str,
+    args: &[String],
+    previous: Option<String>,
+) -> Result<String, String> {
+    let path = state.path()?;
     let borrowed: Vec<&str> = args.iter().map(|s| s.as_str()).collect();
 
     // Try the switch as it is first. Git carries uncommitted edits across a
@@ -457,6 +499,54 @@ pub fn checkout(state: &AppState, name: &str) -> Result<String, String> {
     }
 
     Ok(out)
+}
+
+/// Whether a name is already a branch here.
+pub fn has_local_branch(state: &AppState, name: &str) -> bool {
+    state
+        .repo()
+        .map(|repo| repo.find_branch(name, BranchType::Local).is_ok())
+        .unwrap_or(false)
+}
+
+/// Whether any remote this clone knows carries a branch by this name.
+pub fn has_remote_branch(state: &AppState, name: &str) -> bool {
+    let Ok(repo) = state.repo() else {
+        return false;
+    };
+    let Ok(list) = repo.branches(Some(BranchType::Remote)) else {
+        return false;
+    };
+    let mut found = false;
+    for (branch, _) in list.flatten() {
+        let matches = branch
+            .name()
+            .ok()
+            .flatten()
+            .and_then(|full| full.split_once('/').map(|(_, rest)| rest == name))
+            .unwrap_or(false);
+        if matches {
+            found = true;
+            break;
+        }
+    }
+    found
+}
+
+/// What a local branch tracks, as `remote/branch`.
+pub fn upstream_of(state: &AppState, name: &str) -> Option<String> {
+    let repo = state.repo().ok()?;
+    let branch = repo.find_branch(name, BranchType::Local).ok()?;
+    let upstream = branch.upstream().ok()?;
+    upstream.name().ok().flatten().map(|s| s.to_string())
+}
+
+/// Whether a revision is already in this clone's object store.
+pub fn has_commit(state: &AppState, revision: &str) -> bool {
+    state
+        .repo()
+        .map(|repo| repo.revparse_single(revision).is_ok())
+        .unwrap_or(false)
 }
 
 /// Whether git turned a checkout down because uncommitted work was in the way,

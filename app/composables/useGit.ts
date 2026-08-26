@@ -823,6 +823,24 @@ export function useGit() {
     report,
 
     checkout: (name: string) => run<string>('Checkout', 'checkout', { name }),
+    /**
+     * Checks out the branch a review was opened from, whatever it takes.
+     *
+     * A review from a fork has no branch in any remote this clone knows, so
+     * `checkout` by name fails; the backend adds the fork as a remote, fetches
+     * the one branch and tracks it.
+     */
+    checkoutReview: (review: {
+      number: number
+      branch: string
+      head_sha: string
+      source: {
+        owner: string
+        ssh_url: string
+        https_url: string
+        is_fork: boolean
+      } | null
+    }) => run<string>('Check out review', 'checkout_review', { review }),
     createBranch: (name: string, start?: string) =>
       run<string>('Create branch', 'create_branch', { name, start, checkout: true }),
     deleteBranch: (name: string, force = false) =>

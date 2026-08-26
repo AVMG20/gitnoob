@@ -29,7 +29,7 @@ import {
 import { copyText, fullTime, relativeTime, useGit, type Tag as TagRef } from '~/composables/useGit'
 import { useContextMenu } from '~/composables/useContextMenu'
 import { useDragDrop } from '~/composables/useDragDrop'
-import { useForge } from '~/composables/useForge'
+import { useForge, type Review } from '~/composables/useForge'
 import { useConfig } from '~/composables/useConfig'
 
 const git = useGit()
@@ -354,6 +354,53 @@ const reviews = computed(() =>
     match(`!${review.number} ${review.title} ${review.source_branch} ${review.author}`)
   )
 )
+
+/**
+ * How a review's branch reads when it belongs to somebody else: `them:fix-typo`
+ * is how the forges write it, and the bare name would be a lie — there is no
+ * `fix-typo` here, and there may well be a different one.
+ */
+function reviewBranch(review: Review) {
+  const from = review.source
+  return from?.is_fork && from.owner ? `${from.owner}:${review.source_branch}` : review.source_branch
+}
+
+function reviewTitle(review: Review) {
+  const where = review.source
+    ? review.source.is_fork
+      ? `from ${review.source.full_name}`
+      : ''
+    : 'the branch it came from has been deleted'
+  const lines = [review.title, `${reviewBranch(review)} → ${review.target_branch}`]
+  if (where) lines.push(where)
+  lines.push('Double-click to check it out')
+  return lines.join('\n')
+}
+
+/**
+ * A single click on a review: the same question a single click on a branch
+ * asks — where is it — answered without touching the working tree. The commits
+ * of a review from a fork are not here until it has been checked out, so there
+ * is nothing to point at and saying so beats moving nothing.
+ */
+async function showReview(review: Review) {
+  if (review.head_sha && (await git.revealCommit(review.head_sha))) return
+  git.note(
+    `!${review.number} is not in this clone yet — double-click to check it out`,
+    'info'
+  )
+}
+
+/** A double click: stand on it, fetching and adding the fork if that is what
+    having those commits takes. */
+function checkoutReview(review: Review) {
+  return git.checkoutReview({
+    number: review.number,
+    branch: review.source_branch,
+    head_sha: review.head_sha,
+    source: review.source
+  })
+}
 
 /** One remote branch, as the rows need it. */
 interface RemoteRef {
@@ -1016,17 +1063,18 @@ function stashMenu(event: MouseEvent, index: number, message: string) {
             :key="review.number"
             class="row"
             :class="{ on: review.is_current }"
-            :title="`${review.title}\n${review.source_branch} → ${review.target_branch}`"
-            @dblclick="git.checkout(review.source_branch)"
+            :title="reviewTitle(review)"
+            @click="showReview(review)"
+            @dblclick="checkoutReview(review)"
             @contextmenu="
               menu.show(
                 $event,
                 [
                   { label: 'Open in browser', icon: ExternalLink, action: () => forge.open(review.url) },
                   {
-                    label: `Check out ${review.source_branch}`,
+                    label: `Check out ${reviewBranch(review)}`,
                     icon: GitBranch,
-                    action: () => git.checkout(review.source_branch)
+                    action: () => checkoutReview(review)
                   },
                   { label: 'Copy link', icon: Copy, action: () => copyText(review.url, 'Link') }
                 ],

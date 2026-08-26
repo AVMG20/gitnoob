@@ -74,10 +74,36 @@ pub struct Review {
     pub updated_at: String,
     /// True when the source branch is checked out right now.
     pub is_current: bool,
+    /// The tip of the source branch when the forge was last asked. Enough to
+    /// point the graph at the review, and enough to check it out when the
+    /// branch it came from has since been deleted.
+    pub head_sha: String,
+    /// Where the branch actually lives. `None` for a review whose fork has
+    /// been deleted, which the forges keep listing all the same.
+    pub source: Option<ReviewSource>,
     /// Set when the review itself was opened but something after it was not:
     /// GitHub takes the people in separate requests, and one of those failing
     /// is worth saying out loud without pretending the whole thing failed.
     pub warning: Option<String>,
+}
+
+/// The repository a review's branch lives in, for the reviews that come from
+/// somewhere other than the repository being reviewed.
+///
+/// A fork's branch is not in any remote this clone has, which is why checking
+/// one out used to fail: there was no `origin/their-branch` to track. Carrying
+/// the fork's address here is what lets the checkout add the remote it needs.
+#[derive(Serialize, Clone)]
+pub struct ReviewSource {
+    /// `owner/name` on the forge.
+    pub full_name: String,
+    /// Who owns it, which is the name the added remote takes.
+    pub owner: String,
+    pub ssh_url: String,
+    pub https_url: String,
+    /// False when the branch is in the repository being reviewed, which is the
+    /// ordinary case and needs no remote adding.
+    pub is_fork: bool,
 }
 
 /// A repository the token can see, flattened to what picking one to clone
@@ -530,47 +556,130 @@ pub async fn reviews(state: &AppState) -> Result<Vec<Review>, String> {
     }
     let items: Vec<serde_json::Value> = response.json().await.map_err(|e| e.to_string())?;
 
-    Ok(items
-        .iter()
-        .map(|item| match call.kind {
-            ForgeKind::GitHub => github_review(item, call.current_branch.as_deref()),
-            _ => gitlab_review(item, call.current_branch.as_deref()),
-        })
-        .collect())
+    if call.kind == ForgeKind::GitHub {
+        return Ok(items
+            .iter()
+            .map(|item| github_review(item, call.current_branch.as_deref()))
+            .collect());
+    }
+
+    let mut out = Vec::new();
+    // One lookup per fork, not per review: several merge requests from the
+    // same fork are the normal shape of a busy project.
+    let mut known: HashMap<i64, Option<ReviewSource>> = HashMap::new();
+    for item in &items {
+        let (mut review, fork) = gitlab_review(item, call.current_branch.as_deref());
+        if let Some(id) = fork {
+            let source = match known.get(&id) {
+                Some(found) => found.clone(),
+                None => {
+                    let found = gitlab_project(&http, &base, &call.token, id).await;
+                    known.insert(id, found.clone());
+                    found
+                }
+            };
+            review.source = source;
+        }
+        out.push(review);
+    }
+    Ok(out)
 }
 
 fn github_review(item: &serde_json::Value, current: Option<&str>) -> Review {
     let source = string(item, &["head", "ref"]);
+    let base_repo = string(item, &["base", "repo", "full_name"]);
+    let head_repo = string(item, &["head", "repo", "full_name"]);
+    // GitHub leaves `head.repo` null once the fork is gone; the review stays in
+    // the list with a branch nobody can fetch by name.
+    let head_from = (!head_repo.is_empty()).then(|| ReviewSource {
+        owner: string(item, &["head", "repo", "owner", "login"]),
+        is_fork: head_repo != base_repo,
+        ssh_url: string(item, &["head", "repo", "ssh_url"]),
+        https_url: string(item, &["head", "repo", "clone_url"]),
+        full_name: head_repo,
+    });
     Review {
         number: item.get("number").and_then(|v| v.as_i64()).unwrap_or(0),
         title: string(item, &["title"]),
         author: string(item, &["user", "login"]),
         state: string(item, &["state"]),
         draft: item.get("draft").and_then(|v| v.as_bool()).unwrap_or(false),
-        is_current: current == Some(source.as_str()),
+        // A fork's branch can share a name with one of ours without being it.
+        is_current: current == Some(source.as_str())
+            && head_from.as_ref().map(|from| !from.is_fork).unwrap_or(false),
         source_branch: source,
         target_branch: string(item, &["base", "ref"]),
         url: string(item, &["html_url"]),
         updated_at: string(item, &["updated_at"]),
+        head_sha: string(item, &["head", "sha"]),
+        source: head_from,
         warning: None,
     }
 }
 
-fn gitlab_review(item: &serde_json::Value, current: Option<&str>) -> Review {
+/// A merge request, and the project id its branch lives in when that is not
+/// the project being reviewed. GitLab gives forks as an id rather than as an
+/// address, so the caller looks the address up separately.
+fn gitlab_review(item: &serde_json::Value, current: Option<&str>) -> (Review, Option<i64>) {
     let source = string(item, &["source_branch"]);
-    Review {
-        number: item.get("iid").and_then(|v| v.as_i64()).unwrap_or(0),
+    let number = |key: &str| item.get(key).and_then(|v| v.as_i64());
+    let project = number("project_id");
+    let source_project = number("source_project_id");
+    let from_fork = matches!((project, source_project), (Some(a), Some(b)) if a != b);
+
+    let review = Review {
+        number: number("iid").unwrap_or(0),
         title: string(item, &["title"]),
         author: string(item, &["author", "username"]),
         state: string(item, &["state"]),
         draft: item.get("draft").and_then(|v| v.as_bool()).unwrap_or(false),
-        is_current: current == Some(source.as_str()),
+        is_current: current == Some(source.as_str()) && !from_fork,
         source_branch: source,
         target_branch: string(item, &["target_branch"]),
         url: string(item, &["web_url"]),
         updated_at: string(item, &["updated_at"]),
+        head_sha: string(item, &["sha"]),
+        // Same project: nothing to add, the branch is already on the remote.
+        source: (!from_fork).then(|| ReviewSource {
+            full_name: String::new(),
+            owner: String::new(),
+            ssh_url: String::new(),
+            https_url: String::new(),
+            is_fork: false,
+        }),
         warning: None,
+    };
+    (review, from_fork.then(|| source_project).flatten())
+}
+
+/// Where a forked GitLab project lives, so its branch can be fetched.
+async fn gitlab_project(
+    http: &reqwest::Client,
+    base: &str,
+    token: &str,
+    id: i64,
+) -> Option<ReviewSource> {
+    let body: serde_json::Value = http
+        .get(format!("{base}/projects/{id}"))
+        .bearer_auth(token)
+        .send()
+        .await
+        .ok()
+        .filter(|response| response.status().is_success())?
+        .json()
+        .await
+        .ok()?;
+    let full_name = string(&body, &["path_with_namespace"]);
+    if full_name.is_empty() {
+        return None;
     }
+    Some(ReviewSource {
+        owner: string(&body, &["namespace", "path"]),
+        ssh_url: string(&body, &["ssh_url_to_repo"]),
+        https_url: string(&body, &["http_url_to_repo"]),
+        full_name,
+        is_fork: true,
+    })
 }
 
 /// Everyone this project's review can be handed to.
@@ -724,9 +833,11 @@ pub async fn create_review(
         return Err(describe(response).await);
     }
     let item: serde_json::Value = response.json().await.map_err(|e| e.to_string())?;
+    // A review opened from here always comes from this repository, so the
+    // fork lookup gitlab_review may ask for has nothing to find.
     let mut review = match call.kind {
         ForgeKind::GitHub => github_review(&item, Some(&source)),
-        _ => gitlab_review(&item, Some(&source)),
+        _ => gitlab_review(&item, Some(&source)).0,
     };
 
     if call.kind == ForgeKind::GitHub {
