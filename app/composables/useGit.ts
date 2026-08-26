@@ -879,17 +879,29 @@ export function laneTint(index: number, alpha: number) {
   return `rgba(${(value >> 16) & 255}, ${(value >> 8) & 255}, ${value & 255}, ${alpha})`
 }
 
+/*
+ * Built once and reused. `toLocaleDateString` and `toLocaleString` construct a
+ * formatter per call, which is the most expensive thing the commit list does
+ * per row: every commit older than a month takes the date branch below, so a
+ * window of fifty rows built a formatter fifty times on every scroll frame.
+ */
+const DATE_ONLY = new Intl.DateTimeFormat(undefined, { dateStyle: 'medium' })
+const DATE_TIME = new Intl.DateTimeFormat(undefined, {
+  dateStyle: 'medium',
+  timeStyle: 'short'
+})
+
 export function relativeTime(seconds: number) {
   const diff = Date.now() / 1000 - seconds
   if (diff < 60) return 'just now'
   if (diff < 3600) return `${Math.floor(diff / 60)}m ago`
   if (diff < 86400) return `${Math.floor(diff / 3600)}h ago`
   if (diff < 86400 * 30) return `${Math.floor(diff / 86400)}d ago`
-  return new Date(seconds * 1000).toLocaleDateString()
+  return DATE_ONLY.format(seconds * 1000)
 }
 
 export function fullTime(seconds: number) {
-  return new Date(seconds * 1000).toLocaleString()
+  return DATE_TIME.format(seconds * 1000)
 }
 
 /** Copies text, reporting through the activity log either way. */

@@ -19,6 +19,7 @@ import {
 import {
   WIP,
   copyText,
+  fullTime,
   highlight,
   laneColor,
   laneTint,
@@ -43,11 +44,16 @@ import { useContextMenu } from '~/composables/useContextMenu'
 import { useDragDrop } from '~/composables/useDragDrop'
 import { useShortcuts } from '~/composables/useShortcuts'
 import { useColumns, type ColumnId } from '~/composables/useColumns'
+import { useConfig } from '~/composables/useConfig'
 
 const git = useGit()
 const store = git.store
 const menu = useContextMenu()
 const drag = useDragDrop()
+const config = useConfig()
+
+/** Whether to draw author pictures at all, which Settings can turn off. */
+const avatars = computed(() => config.settings.value?.show_avatars !== false)
 
 const ROW = 27
 /**
@@ -91,9 +97,13 @@ const markedSet = computed(() => new Set(marked.value))
 const anchor = ref<string | null>(null)
 
 const total = computed(() => store.rows.length)
-const lanes = computed(() =>
-  Math.min(MAX_LANES, Math.max(2, ...store.rows.map((row) => row.width)))
-)
+const lanes = computed(() => {
+  // Walked rather than spread into `Math.max`: a history long enough to be
+  // worth virtualizing is also long enough to overflow the argument list.
+  let widest = 2
+  for (const row of store.rows) if (row.width > widest) widest = row.width
+  return Math.min(MAX_LANES, widest)
+})
 const graphWidth = computed(() => lanes.value * LANE + 8 + PAD)
 
 // --- columns
@@ -167,10 +177,91 @@ const first = computed(() => Math.max(0, Math.floor(scrollTop.value / ROW) - OVE
 const last = computed(() =>
   Math.min(total.value, Math.ceil((scrollTop.value + height.value) / ROW) + OVERSCAN)
 )
+/**
+ * Everything a row needs in order to draw, worked out once per commit.
+ *
+ * The template used to ask for the same things over and over — the face four
+ * times a row, the chips three, the ghost twice — and a scroll event re-renders
+ * every row in the window, so one flick of the wheel ran the lot thousands of
+ * times. None of it depends on where the list is scrolled to or on anything
+ * that changes while it sits there, so it is worked out once and kept.
+ */
+interface RowMemo {
+  /** The one ref chip there is room to draw, of however many the commit has. */
+  chip: RefChip | undefined
+  /** The rest, which live behind the counter beside it. */
+  hidden: RefChip[]
+  /**
+   * The branch a commit that is nobody's tip belongs to, ghosted on hover. A
+   * row that is a tip has a chip of its own and gets nothing here: the ghost
+   * answers "what is this commit on?", which that row already answers.
+   */
+  ghost: RefChip | null
+  /**
+   * Whether two lines become one here — a merge, and only a merge. It is the
+   * busiest node in the picture, so it is drawn as a plain dot rather than a
+   * face: the junction reads as a junction, and the lines meeting there are not
+   * hidden behind a picture. A branch point is left as an ordinary commit even
+   * though it is a junction of a kind; the line leaving it says so already, and
+   * there is one for every branch ever made from the trunk.
+   */
+  junction: boolean
+  letters: string
+  tint: string
+  when: string
+}
+
+const memos = new Map<string, RowMemo>()
+
+// A refresh rebuilds the rows wholesale, and what a commit is part of can
+// change with them — a branch deleted moves the ghost names — so the memos go
+// with them rather than being reconciled.
+watch(() => store.rows, () => memos.clear())
+
+function memoOf(row: GraphRow, index: number): RowMemo {
+  let memo = memos.get(row.oid)
+  if (!memo) {
+    const chips = refChips(row)
+    memo = {
+      chip: chips[0],
+      hidden: chips.slice(1),
+      ghost: row.labels.length ? null : (lineOwners.value[index] ?? null),
+      junction: row.parents.length > 1,
+      letters: initials(row.author, row.email),
+      tint: tint(row.email),
+      when: relativeTime(row.time)
+    }
+    memos.set(row.oid, memo)
+  }
+  return memo
+}
+
 const window_ = computed(() =>
-  store.rows
-    .slice(first.value, last.value)
-    .map((row, i) => ({ row, index: first.value + i, top: (first.value + i) * ROW }))
+  store.rows.slice(first.value, last.value).map((row, i) => {
+    const index = first.value + i
+    const memo = memoOf(row, index)
+    // Read here rather than in the memo: the answer arrives after the row has
+    // already been drawn once, and reading it inside the computed is what makes
+    // the row draw again when it does. Three states, not two — for the moment
+    // between asking and knowing the node is the colour alone, so nothing
+    // flickers from letters into a face.
+    const found = avatars.value ? avatarFor(row.email) : null
+    return {
+      row,
+      index,
+      top: index * ROW,
+      chip: memo.chip,
+      hidden: memo.hidden,
+      ghost: memo.ghost,
+      junction: memo.junction,
+      picture: found ?? null,
+      letters: found === null ? memo.letters : '',
+      tint: memo.tint,
+      when: memo.when,
+      whenFull: fullTime(row.time),
+      parts: highlight(row.summary, store.query)
+    }
+  })
 )
 
 const dirty = computed(
@@ -221,22 +312,6 @@ const x = (lane: number) => Math.min(lane, MAX_LANES - 1) * LANE + LANE / 2 + PA
 const y = (level: number) => (level === 0 ? 0 : level === 1 ? ROW / 2 : ROW)
 
 /**
- * What to draw inside a commit's node.
- *
- * The picture if there is one, the author's initials on their own colour if
- * there is not, and — for the moment between asking and knowing — the colour
- * alone, so nothing flickers from letters into a face.
- */
-function face(row: GraphRow) {
-  const picture = avatarFor(row.email)
-  return {
-    picture: picture ?? null,
-    letters: picture === null ? initials(row.author, row.email) : '',
-    tint: tint(row.email)
-  }
-}
-
-/**
  * One line segment: straight runs joined by a corner, never a diagonal.
  *
  * A line belongs to a lane, and the whole point of the picture is to show which
@@ -249,23 +324,6 @@ function face(row: GraphRow) {
  * other over the whole segment, which reads as a bulge rather than a junction
  * and leaves neither end of it clearly in a lane.
  */
-/**
- * Whether two lines become one at this commit.
- *
- * A merge, and only a merge. It is the busiest node in the picture — the one
- * row where several lines arrive at once — so it is drawn as a plain dot rather
- * than a face: the junction reads as a junction, and the lines meeting there
- * are not hidden behind a picture.
- *
- * A branch point is left as an ordinary commit even though it is a junction of
- * a kind. The line leaving it says so already, and there is one of them for
- * every branch ever made from the trunk: dotting those turns a column of faces
- * into a column of dots and buys nothing the elbow was not showing.
- */
-function junction(row: GraphRow) {
-  return row.parents.length > 1
-}
-
 function path(segment: Segment) {
   const x1 = x(segment.x1)
   const x2 = x(segment.x2)
@@ -292,8 +350,21 @@ function path(segment: Segment) {
   )
 }
 
+/**
+ * Scroll events arrive faster than frames do, and each one re-renders the whole
+ * window of rows. Coalescing them to one a frame is the difference between
+ * drawing the list once per flick of the wheel and drawing it once for every
+ * event the compositor felt like sending.
+ */
+let scrollQueued = false
+
 function onScroll() {
-  if (viewport.value) scrollTop.value = viewport.value.scrollTop
+  if (scrollQueued) return
+  scrollQueued = true
+  requestAnimationFrame(() => {
+    scrollQueued = false
+    if (viewport.value) scrollTop.value = viewport.value.scrollTop
+  })
 }
 
 function measure() {
@@ -455,20 +526,6 @@ function openReset(oid: string, mode: ResetMode) {
  * one row depends on every row above it.
  */
 const lineOwners = computed(() => lineChips(store.rows))
-
-/**
- * The chip to ghost on a row, if any: at most one, handed back as a list so the
- * template can loop it the way it loops the real one.
- *
- * A row that is the tip of something has a chip of its own and gets nothing
- * here — the ghost answers "what is this commit on?", which that row already
- * answers.
- */
-function ghostChips(row: GraphRow, index: number): RefChip[] {
-  if (row.labels.length) return []
-  const chip = lineOwners.value[index]
-  return chip ? [chip] : []
-}
 
 /** What checking a ref out would do, said before it happens. */
 function chipHint(chip: RefChip): string {
@@ -950,7 +1007,7 @@ onUnmounted(() => {
                reading the start of every message. -->
           <span v-if="cols.state.shown.refs" class="col-refs" :style="box('refs')">
             <span
-              v-for="chip in refChips(item.row).slice(0, 1)"
+              v-for="chip in (item.chip ? [item.chip] : [])"
               :key="chip.key"
               class="chip"
               :class="[`chip-${chip.kind}`, { 'chip-current': chip.head, 'chip-live': !chip.head }]"
@@ -985,12 +1042,12 @@ onUnmounted(() => {
                  carries several refs was the one row whose name did not start
                  where every other name in the column starts. -->
             <button
-              v-if="hiddenRefs(item.row).length"
+              v-if="item.hidden.length"
               class="more-refs"
-              :title="hiddenRefs(item.row).map(describeChip).join('\n')"
+              :title="item.hidden.map(describeChip).join('\n')"
               @click.stop="refsMenu($event, item.row)"
             >
-              +{{ hiddenRefs(item.row).length }}
+              +{{ item.hidden.length }}
             </button>
             <!-- The branch this commit is on, for the rows that are not the tip
                  of anything. Hidden until the pointer is on the row: printed at
@@ -1003,7 +1060,7 @@ onUnmounted(() => {
                  for the rows in between. The tick is left off: this commit is
                  on that branch, but it is not where the branch is. -->
             <template
-              v-for="chip in ghostChips(item.row, item.index)"
+              v-for="chip in (item.ghost ? [item.ghost] : [])"
               :key="chip.key"
             >
               <span
@@ -1055,7 +1112,7 @@ onUnmounted(() => {
             <!-- The ghost label's half of the leader, carrying it across to the
                  node so the name and the line it names are joined up. -->
             <path
-              v-if="ghostChips(item.row, item.index).length"
+              v-if="item.ghost"
               class="ghost-leader"
               :d="`M0,${ROW / 2} L${x(item.row.lane)},${ROW / 2}`"
               :stroke="laneColor(item.row.color)"
@@ -1087,7 +1144,7 @@ onUnmounted(() => {
                  colour, so the boundary between what the remote has and what is
                  still only here has to be a difference in shape. -->
             <circle
-              v-if="item.row.unpushed && !junction(item.row)"
+              v-if="item.row.unpushed && !item.junction"
               :cx="x(item.row.lane)"
               :cy="ROW / 2"
               :r="NODE + 3"
@@ -1099,7 +1156,7 @@ onUnmounted(() => {
             <!-- Where the history forked or came back together. Hollow while
                  the commit is only here, filled once the remote has it, which
                  is the same distinction the bigger nodes draw as a ring. -->
-            <g v-if="junction(item.row)">
+            <g v-if="item.junction">
               <circle
                 :cx="x(item.row.lane)"
                 :cy="ROW / 2"
@@ -1130,11 +1187,11 @@ onUnmounted(() => {
                 :cx="x(item.row.lane)"
                 :cy="ROW / 2"
                 :r="NODE"
-                :fill="face(item.row).picture ? 'var(--bg)' : face(item.row).tint"
+                :fill="item.picture ? 'var(--bg)' : item.tint"
               />
               <image
-                v-if="face(item.row).picture"
-                :href="face(item.row).picture ?? undefined"
+                v-if="item.picture"
+                :href="item.picture ?? undefined"
                 :x="x(item.row.lane) - NODE"
                 :y="ROW / 2 - NODE"
                 :width="NODE * 2"
@@ -1143,7 +1200,7 @@ onUnmounted(() => {
                 preserveAspectRatio="xMidYMid slice"
               />
               <text
-                v-else-if="face(item.row).letters"
+                v-else-if="item.letters"
                 :x="x(item.row.lane)"
                 :y="ROW / 2"
                 text-anchor="middle"
@@ -1152,7 +1209,7 @@ onUnmounted(() => {
                 font-weight="700"
                 fill="#fff"
               >
-                {{ face(item.row).letters }}
+                {{ item.letters }}
               </text>
               <!-- Every node is the same size, merge or not. A merge used to be
                    drawn hollow, back when a node was a dot; a second ring inside
@@ -1182,7 +1239,7 @@ onUnmounted(() => {
                  only passing over. -->
             <span class="summary truncate" :title="item.row.summary">
               <span
-                v-for="(part, i) in highlight(item.row.summary, store.query)"
+                v-for="(part, i) in item.parts"
                 :key="i"
                 :class="{ mark: part.hit }"
                 >{{ part.text }}</span
@@ -1196,9 +1253,9 @@ onUnmounted(() => {
             v-if="cols.state.shown.date"
             class="col-date faint"
             :style="box('date')"
-            :title="new Date(item.row.time * 1000).toLocaleString()"
+            :title="item.whenFull"
           >
-            {{ relativeTime(item.row.time) }}
+            {{ item.when }}
           </span>
         </div>
       </div>
