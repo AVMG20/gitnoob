@@ -621,15 +621,10 @@ function localMenu(event: MouseEvent, name: string, upstream: string | null) {
   menu.show(
     event,
     [
-      // Ordered by how often it is wanted: the two everyday moves, then the
-      // two that rewrite or combine history, then housekeeping, then the one
-      // that destroys something.
-      { label: 'Check out', icon: GitBranch, disabled: isHead, action: () => git.checkout(name) },
-      {
-        label: upstream ? `Push to ${upstream}` : 'Push and set upstream',
-        icon: Upload,
-        action: () => git.pushBranch(name, !upstream)
-      },
+      // Ordered by how often it is wanted: the two that move commits between
+      // here and the remote, then checking out, then the ones that rewrite or
+      // combine history, then housekeeping, then the one that destroys
+      // something.
       {
         // Works on a branch you are not standing on, open changes and all:
         // the backend moves the ref directly when it can, and visits the
@@ -640,6 +635,12 @@ function localMenu(event: MouseEvent, name: string, upstream: string | null) {
         hint: upstream ? '' : 'no upstream',
         action: () => git.pullBranch(name)
       },
+      {
+        label: upstream ? `Push to ${upstream}` : 'Push and set upstream',
+        icon: Upload,
+        action: () => git.pushBranch(name, !upstream)
+      },
+      { label: 'Check out', icon: GitBranch, disabled: isHead, action: () => git.checkout(name) },
       { separator: true, label: '' },
       // All three move history between two branches, in different directions,
       // and "merge" alone does not say which way. Name both branches and say
