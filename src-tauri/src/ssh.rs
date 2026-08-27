@@ -96,10 +96,23 @@ fn read_public(path: &Path) -> (String, String) {
 /// so pinning the key would change nothing.
 pub fn command_for(key: Option<&str>) -> Option<String> {
     let key = key.map(str::trim).filter(|k| !k.is_empty())?;
-    // git splits this string itself and hands the pieces to the shell, where a
+    // git splits this string itself and hands the pieces to a shell, where a
     // backslash inside quotes is an escape rather than a path separator. ssh
-    // accepts forward slashes on Windows, so use those and sidestep it.
-    let path = key.replace('\\', "/");
+    // accepts forward slashes on Windows, so use those and sidestep it. The
+    // rest a shell would read as its own — a quote ending the argument, an
+    // expansion — is escaped: a key path names a file and nothing else, and one
+    // is settable by hand in the config file.
+    let mut path = String::with_capacity(key.len());
+    for c in key.chars() {
+        match c {
+            '\\' => path.push('/'),
+            '"' | '$' | '`' => {
+                path.push('\\');
+                path.push(c);
+            }
+            _ => path.push(c),
+        }
+    }
     Some(format!("ssh -i \"{path}\" -o IdentitiesOnly=yes"))
 }
 
@@ -219,6 +232,24 @@ mod tests {
         let command = command_for(Some(r"C:\Users\a\.ssh\id_ed25519")).unwrap();
         assert!(command.contains("C:/Users/a/.ssh/id_ed25519"));
         assert!(!command.contains('\\'));
+    }
+
+    #[test]
+    fn a_quote_in_the_path_cannot_open_a_second_option() {
+        let command = command_for(Some(r#"/home/a/id" -o ProxyCommand=whatever "x"#)).unwrap();
+        assert_eq!(
+            command,
+            r#"ssh -i "/home/a/id\" -o ProxyCommand=whatever \"x" -o IdentitiesOnly=yes"#
+        );
+    }
+
+    #[test]
+    fn an_expansion_in_the_path_stays_part_of_the_path() {
+        let command = command_for(Some("/home/a/$(id)/`id`")).unwrap();
+        assert_eq!(
+            command,
+            r#"ssh -i "/home/a/\$(id)/\`id\`" -o IdentitiesOnly=yes"#
+        );
     }
 
     #[test]
