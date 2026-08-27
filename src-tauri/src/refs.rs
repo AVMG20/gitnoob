@@ -4,9 +4,9 @@ use git2::{BranchType, Repository, StatusOptions};
 use serde::Serialize;
 
 use crate::git_cmd;
-use crate::journal::{self, Mode};
 use crate::remote;
 use crate::state::AppState;
+use crate::work;
 
 #[derive(Serialize)]
 pub struct RepoInfo {
@@ -394,8 +394,6 @@ fn unstaged_kind(s: git2::Status) -> Option<String> {
 /// Uncommitted work is stashed first and put back afterwards, so switching
 /// branches mid-change does not need the user to tidy up by hand.
 pub fn checkout(state: &AppState, name: &str) -> Result<String, String> {
-    let previous = journal::current_branch(state);
-
     // Decide the argument list before touching the working tree; the repo handle
     // must not be alive while git runs.
     let args: Vec<String> = {
@@ -422,7 +420,7 @@ pub fn checkout(state: &AppState, name: &str) -> Result<String, String> {
         }
     };
 
-    switch(state, name, &args, previous)
+    switch(state, name, &args)
 }
 
 /// Creates a local branch following a remote one and switches to it.
@@ -431,7 +429,6 @@ pub fn checkout(state: &AppState, name: &str) -> Result<String, String> {
 /// for the caller that has just fetched the remote branch and knows what the
 /// local one should be called, which is not always the last path segment.
 pub fn checkout_tracking(state: &AppState, local: &str, tracking: &str) -> Result<String, String> {
-    let previous = journal::current_branch(state);
     let args = vec![
         "checkout".to_string(),
         "-b".to_string(),
@@ -440,13 +437,12 @@ pub fn checkout_tracking(state: &AppState, local: &str, tracking: &str) -> Resul
         tracking.to_string(),
         "--".to_string(),
     ];
-    switch(state, local, &args, previous)
+    switch(state, local, &args)
 }
 
 /// Creates a local branch at a revision and switches to it, for commits that
 /// arrived without a branch to hang them on.
 pub fn checkout_at(state: &AppState, local: &str, revision: &str) -> Result<String, String> {
-    let previous = journal::current_branch(state);
     let args = vec![
         "checkout".to_string(),
         "-b".to_string(),
@@ -454,16 +450,11 @@ pub fn checkout_at(state: &AppState, local: &str, revision: &str) -> Result<Stri
         revision.to_string(),
         "--".to_string(),
     ];
-    switch(state, local, &args, previous)
+    switch(state, local, &args)
 }
 
 /// Runs a prepared checkout and records where it landed.
-fn switch(
-    state: &AppState,
-    name: &str,
-    args: &[String],
-    previous: Option<String>,
-) -> Result<String, String> {
+fn switch(state: &AppState, name: &str, args: &[String]) -> Result<String, String> {
     let path = state.path()?;
     let borrowed: Vec<&str> = args.iter().map(|s| s.as_str()).collect();
 
@@ -474,31 +465,116 @@ fn switch(
     let out = match git_cmd::run_checked(&path, &borrowed) {
         Ok(message) => message,
         Err(error) if !refused_over_local_changes(&error) => return Err(error),
-        // The edits are in the way of the switch. Stashing them and putting them
-        // back afterwards would usually work and occasionally leave a conflicted
-        // tree with no merge to abort — a mess the user never asked for, arrived
-        // at by a click that said nothing about stashing. Say what is in the way
-        // and let them decide.
-        Err(error) => return Err(in_the_way(name, &error)),
+        // The edits are in the way of the switch. Try to bring them along, and
+        // say what is in the way only if that could not be done.
+        Err(error) => carry(state, name, &borrowed, &error)?,
     };
 
-    let landed = journal::current_branch(state);
-    if let (Some(from), Some(to)) = (previous.clone(), landed.clone()) {
-        if from != to {
-            journal::record(
-                state,
-                "checkout",
-                format!("Switch to {to}"),
-                None,
-                Some(from),
-                Some(to),
-                Mode::Checkout,
-                false,
-            );
-        }
+    // Not recorded in the history. Undo is for the things you did not mean to
+    // do — a commit, an amend, a reset, a pull that rewound the branch — and
+    // switching branches is neither hard to spot nor hard to reverse. It only
+    // filled the list, pushing the steps worth undoing off the end of it.
+    Ok(out)
+}
+
+/// Switches with the uncommitted work set down and picked back up again.
+///
+/// Git refuses a switch whenever a file you have changed differs between the
+/// two branches, which is a stricter test than whether the change would
+/// actually collide: nine times in ten the edit is nowhere near what the
+/// branches disagree about, and a stash, a switch and a three-way apply carry
+/// it across without a murmur. This is that, tried in the background.
+///
+/// What makes it safe to try is that it puts everything back when it does not
+/// work. The stash is applied rather than popped, so the work is still in it
+/// while the apply is being judged; a conflict means the working tree is reset,
+/// the old branch is checked out, the stash goes back on it, and the user is
+/// told what git said in the first place. Nobody is left standing in a
+/// half-applied stash on a branch they did not ask to be on.
+fn carry(state: &AppState, name: &str, args: &[&str], refusal: &str) -> Result<String, String> {
+    // The setting says "stash and restore around branch switches and pulls".
+    // Off means the user wants to be told, not helped.
+    if !state.config().global.auto_stash {
+        return Err(in_the_way(name, refusal));
+    }
+    let root = state.path()?;
+    let previous = crate::journal::current_branch(state);
+    // Where to put HEAD back if this does not work out. A detached HEAD has no
+    // branch to name, so the commit itself is the way back.
+    let was = previous
+        .clone()
+        .or_else(|| crate::journal::head_oid(state));
+    let message = match &previous {
+        Some(branch) => format!("{} on {branch}: switching to {name}", work::AUTO_STASH),
+        None => format!("{}: switching to {name}", work::AUTO_STASH),
+    };
+
+    // Untracked files too: git refuses over those as well, and a switch that
+    // left them behind would be a switch that lost them.
+    git_cmd::run_checked(
+        &root,
+        &["stash", "push", "--include-untracked", "-m", &message],
+    )
+    .map_err(|_| in_the_way(name, refusal))?;
+
+    // Which stash this is, so nothing else that lands on top of it can be
+    // dropped by mistake later.
+    let held = git_cmd::run_checked(&root, &["rev-parse", "stash@{0}"])
+        .map(|out| out.trim().to_string())
+        .unwrap_or_default();
+
+    // The switch itself, now that nothing is in its way.
+    if git_cmd::run_checked(&root, args).is_err() {
+        let _ = git_cmd::run_checked(&root, &["stash", "pop", "--index"]);
+        return Err(in_the_way(name, refusal));
     }
 
-    Ok(out)
+    // `apply`, not `pop`: the work stays in the stash until it is clear that it
+    // landed. `--index` keeps what was staged staged.
+    let landed = git_cmd::run_checked(&root, &["stash", "apply", "--index"]).is_ok()
+        // Only the staged/unstaged split could not be restored, which is not
+        // worth refusing the switch over. The tree is cleaned first: a failed
+        // apply can leave part of itself behind.
+        || (git_cmd::run_checked(&root, &["reset", "--hard", "HEAD"]).is_ok()
+            && git_cmd::run_checked(&root, &["stash", "apply"]).is_ok());
+
+    if landed {
+        drop_stash(&root, &held);
+        return Ok(format!("Switched to {name}, bringing your changes with you"));
+    }
+
+    // It would have conflicted. Put everything back exactly as it was: the
+    // tree, then the branch, then the work on top of it.
+    let _ = git_cmd::run_checked(&root, &["reset", "--hard", "HEAD"]);
+    if let Some(back) = &was {
+        let _ = git_cmd::run_checked(&root, &["checkout", back, "--"]);
+    }
+    if git_cmd::run_checked(&root, &["stash", "pop", "--index"]).is_err()
+        && git_cmd::run_checked(&root, &["stash", "pop"]).is_err()
+    {
+        return Err(format!(
+            "Switching to {name} would have conflicted with your changes, and putting them back \
+             afterwards did not work either. They are safe in the stash, at the top of the list."
+        ));
+    }
+    Err(in_the_way(name, refusal))
+}
+
+/// Removes the stash this made, and only if it is still the one on top.
+///
+/// Anything could have added a stash in between — the user, in another window,
+/// in a terminal — and dropping the top of the list without looking is how a
+/// tool eats work nobody asked it to touch.
+fn drop_stash(root: &std::path::Path, held: &str) {
+    if held.is_empty() {
+        return;
+    }
+    let top = git_cmd::run_checked(root, &["rev-parse", "stash@{0}"])
+        .map(|out| out.trim().to_string())
+        .unwrap_or_default();
+    if top == held {
+        let _ = git_cmd::run_checked(root, &["stash", "drop"]);
+    }
 }
 
 /// Whether a name is already a branch here.
