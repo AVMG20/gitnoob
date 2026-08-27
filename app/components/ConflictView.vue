@@ -23,7 +23,6 @@ import { highlightWhole, languageFor } from '~/composables/useHighlight'
 import { windowOf, type Mark } from '~/composables/useCode'
 import { usePanes } from '~/composables/usePanes'
 import { useContextMenu, type MenuItem } from '~/composables/useContextMenu'
-import { useToasts } from '~/composables/useToasts'
 import {
   HEAD,
   ROW,
@@ -50,7 +49,6 @@ const store = git.store
 const ai = useAi()
 const { layout } = usePanes()
 const menu = useContextMenu()
-const toasts = useToasts()
 
 type Conflict = Extract<ConflictBlock, { kind: 'conflict' }>
 
@@ -699,6 +697,7 @@ async function aiResolveAll() {
  *
  * Whatever is still conflicted becomes the file on screen; when nothing is, the
  * page has no reason to exist and closes, which is the point of these actions.
+ * That closing is the answer, so nothing is said on top of it.
  */
 async function afterAll(said: string | null) {
   if (said === null) return
@@ -706,7 +705,6 @@ async function afterAll(said: string | null) {
   const next = store.status?.conflicted[0]
   if (next) await load(next)
   else clear()
-  toasts.info(said)
 }
 
 /** Takes one side in every conflicted file, not just this one. */

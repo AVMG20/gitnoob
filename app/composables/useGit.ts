@@ -961,17 +961,16 @@ export function useGit() {
      * Checks a branch out into a new folder, so it and the current one are
      * open side by side. `track` names the remote-tracking ref to create the
      * branch from when it does not exist here yet.
+     *
+     * What git says while doing it — "Preparing worktree", "HEAD is now at
+     * …" — goes to the log and no further: the folder appears in the worktree
+     * list, which is the answer to the click, and a notice quoting git over the
+     * top of it is one more thing to dismiss.
      */
-    worktreeAdd: async (path: string, branch: string, track?: string) => {
-      const said = await run<string>('Add worktree', 'worktree_add', { path, branch, track })
-      if (said?.trim()) useToasts().info(said.trim())
-      return said
-    },
-    worktreeRemove: async (path: string, force = false) => {
-      const said = await run<string>('Remove worktree', 'worktree_remove', { path, force })
-      if (said?.trim()) useToasts().info(said.trim())
-      return said
-    },
+    worktreeAdd: (path: string, branch: string, track?: string) =>
+      run<string>('Add worktree', 'worktree_add', { path, branch, track }),
+    worktreeRemove: (path: string, force = false) =>
+      run<string>('Remove worktree', 'worktree_remove', { path, force }),
     /**
      * Checks out the branch a review was opened from, whatever it takes.
      *

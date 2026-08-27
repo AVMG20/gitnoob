@@ -11,6 +11,13 @@ import { explain } from './gitErrors'
  *
  * So a failure now also stands in the corner until it is dismissed, saying what
  * to do about it rather than what git said, with git's own words a click away.
+ *
+ * Good news gets one too, but only where the window would otherwise say nothing
+ * — and in the app's own words. What it must never carry is whatever git wrote
+ * on its way out: "Your branch is based on 'origin/x', but the upstream is
+ * gone", "Your branch is behind 'origin/main' by 63 commits". That is advice
+ * for someone at a terminal, about a state the branch bar is already showing,
+ * and a notice that repeats the screen is one more thing to dismiss.
  */
 
 export type ToastLevel = 'error' | 'info'
@@ -143,7 +150,13 @@ export function useToasts() {
     dismiss,
     clear,
     hold,
-    /** Good news, which takes itself away again. */
+    /**
+     * Good news, which takes itself away again.
+     *
+     * The words are the app's, not git's — a caller with git's output in hand
+     * says what the action did and leaves the output in the log, where a person
+     * who wants it can go and read it.
+     */
     info: (title: string, detail: string | null = null) => raise('info', title, detail),
     /**
      * A failure, said in the app's own words with git's kept underneath.

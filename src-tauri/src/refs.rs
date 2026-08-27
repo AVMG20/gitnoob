@@ -492,7 +492,20 @@ pub fn checkout(state: &AppState, name: &str) -> Result<CheckoutOutcome, String>
     };
 
     match plan {
-        Plan::Args(args) => switch(state, name, &args).map(CheckoutOutcome::said),
+        // A plain switch says nothing. Git's own words on the way out are a
+        // running commentary on how the branch stands — "Your branch is behind
+        // 'origin/main' by 63 commits", "the upstream is gone" — which is
+        // advice for a terminal and, in a window that shows the branch, its
+        // remote and the counts between them, something the user is already
+        // looking at. Only the switch that did more than switch has anything to
+        // add, and `carry` is the one that did.
+        Plan::Args(args) => switch(state, name, &args).map(|said| {
+            CheckoutOutcome::said(if said.contains(CARRIED) {
+                said.trim().to_string()
+            } else {
+                String::new()
+            })
+        }),
         Plan::Update(local) => checkout_and_update(state, &local, name),
     }
 }

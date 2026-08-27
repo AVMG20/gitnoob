@@ -44,10 +44,8 @@ import { useDragDrop } from '~/composables/useDragDrop'
 import { keyLabel, useShortcuts } from '~/composables/useShortcuts'
 import { useColumns, type ColumnId } from '~/composables/useColumns'
 import { useConfig } from '~/composables/useConfig'
-import { useToasts } from '~/composables/useToasts'
 
 const git = useGit()
-const toasts = useToasts()
 const store = git.store
 const menu = useContextMenu()
 const drag = useDragDrop()
@@ -561,11 +559,11 @@ async function openReset(oid: string, mode: ResetMode) {
     resetTarget.value = { oid, mode }
     return
   }
-  const message = await git.reset(oid, mode)
-  // Null is a failure, which has already said so; anything else went through,
-  // and with no dialog closing behind it there would otherwise be nothing on
-  // screen to say the branch had moved at all.
-  if (message !== null) toasts.info(message || 'Branch moved')
+  // Nothing is said about one that worked: the branch chip lands on the row
+  // that was reset to and the changes it took off the branch appear in the
+  // working list, both in the window the click was made in. A failure has
+  // already put up its own notice.
+  await git.reset(oid, mode)
 }
 
 // --- ref chips
