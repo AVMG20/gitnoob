@@ -77,6 +77,10 @@ impl Sandbox {
     }
 
     fn state(&self) -> AppState {
+        // Reading a token on an unsigned build puts a macOS password dialog on
+        // screen, and a test suite that stops to ask for a password is a test
+        // suite nobody can run.
+        gitnoob_lib::config::silence_keychain();
         // Point the config at the sandbox so tests never touch the real one.
         let state = AppState::new(self.root.join(".gitnoob-config"));
         state.set_path(self.root.clone());
@@ -1297,7 +1301,7 @@ fn undo_reports_when_there_is_nothing_to_do() {
 }
 
 #[test]
-fn switching_branches_stashes_and_restores_local_changes() {
+fn switching_branches_brings_local_changes_along() {
     let sandbox = Sandbox::new("autostash");
     sandbox.commit("shared.txt", "base\n", "Base");
     sandbox.git(&["checkout", "-q", "-b", "other"]);
@@ -1319,11 +1323,232 @@ fn switching_branches_stashes_and_restores_local_changes() {
     // And it is not left sitting in the stash.
     assert!(gitnoob_lib::work::stash_list(&state).unwrap().is_empty());
 
-    // The switch is undoable.
-    let stacks = gitnoob_lib::journal::stacks(&state);
-    assert_eq!(stacks.undo[0].label, "Switch to other");
-    gitnoob_lib::journal::undo(&state).unwrap();
+    // Not a step in the history: switching branches is neither hard to notice
+    // nor hard to reverse, and every one of them pushed something worth undoing
+    // off the end of the list.
+    assert!(gitnoob_lib::journal::stacks(&state).undo.is_empty());
+}
+
+/// A file long enough that two edits to it can be nowhere near each other.
+const LINES: &str = "one\ntwo\nthree\nfour\nfive\nsix\nseven\neight\n";
+
+/// The two branches differ in the last line of `f.txt` and nowhere else, which
+/// is what git refuses a switch over as soon as that file is dirty.
+fn carry_sandbox(tag: &str) -> Sandbox {
+    let sandbox = Sandbox::new(tag);
+    sandbox.commit("f.txt", LINES, "Base");
+    sandbox.git(&["checkout", "-q", "-b", "other"]);
+    sandbox.commit("f.txt", &LINES.replace("eight", "EIGHT-other"), "Their end");
+    sandbox.git(&["checkout", "-q", "main"]);
+    sandbox
+}
+
+#[test]
+fn a_change_that_does_not_collide_is_carried_across_the_switch() {
+    let sandbox = carry_sandbox("carryok");
+    // They changed the last line; this changes the first.
+    sandbox.write("f.txt", &LINES.replace("one\n", "ONE-mine\n"));
+    let state = sandbox.state();
+
+    refs::checkout(&state, "other").unwrap();
+
+    assert_eq!(refs::describe(&state).unwrap().head, "other");
+    let after = std::fs::read_to_string(sandbox.root.join("f.txt")).unwrap();
+    assert!(after.starts_with("ONE-mine"), "kept my line: {after}");
+    assert!(after.contains("EIGHT-other"), "took theirs: {after}");
+    // The stash it went through is gone again.
+    assert!(gitnoob_lib::work::stash_list(&state).unwrap().is_empty());
+}
+
+#[test]
+fn a_change_that_would_conflict_leaves_everything_where_it_was() {
+    let sandbox = carry_sandbox("carryconflict");
+    // The same line both sides changed, which is what cannot be carried.
+    sandbox.write("f.txt", &LINES.replace("eight", "EIGHT-mine"));
+    let state = sandbox.state();
+
+    let refused = refs::checkout(&state, "other").unwrap_err();
+
+    assert!(refused.contains("Cannot switch to other"), "{refused}");
     assert_eq!(refs::describe(&state).unwrap().head, "main");
+    assert!(std::fs::read_to_string(sandbox.root.join("f.txt"))
+        .unwrap()
+        .contains("EIGHT-mine"));
+    // Put back, not left in a stash for the user to find.
+    assert!(gitnoob_lib::work::stash_list(&state).unwrap().is_empty());
+}
+
+#[test]
+fn what_was_staged_is_still_staged_after_the_switch() {
+    let sandbox = carry_sandbox("carrystaged");
+    sandbox.write("f.txt", &LINES.replace("one\n", "ONE-staged\n"));
+    sandbox.git(&["add", "f.txt"]);
+    sandbox.write(
+        "f.txt",
+        &LINES
+            .replace("one\n", "ONE-staged\n")
+            .replace("three", "THREE-unstaged"),
+    );
+    sandbox.write("new.txt", "untracked\n");
+    let state = sandbox.state();
+
+    refs::checkout(&state, "other").unwrap();
+
+    let status = sandbox.git(&["status", "--porcelain"]);
+    // Half staged, half not, and the untracked file still untracked.
+    assert!(status.contains("MM f.txt"), "{status}");
+    assert!(status.contains("?? new.txt"), "{status}");
+}
+
+#[test]
+fn a_stash_made_by_hand_is_not_the_one_the_switch_drops() {
+    let sandbox = carry_sandbox("carrystash");
+    sandbox.write("f.txt", &LINES.replace("two", "TWO-stashed"));
+    sandbox.git(&["stash", "push", "-q", "-m", "mine to keep"]);
+    sandbox.write("f.txt", &LINES.replace("one\n", "ONE-mine\n"));
+    let state = sandbox.state();
+
+    refs::checkout(&state, "other").unwrap();
+
+    let left = gitnoob_lib::work::stash_list(&state).unwrap();
+    assert_eq!(left.len(), 1);
+    assert_eq!(left[0].message, "mine to keep");
+}
+
+#[test]
+fn with_auto_stash_off_the_switch_says_so_instead_of_helping() {
+    let sandbox = carry_sandbox("carryoff");
+    sandbox.write("f.txt", &LINES.replace("one\n", "ONE-mine\n"));
+    let state = sandbox.state();
+    state
+        .update_config(|config| config.global.auto_stash = false)
+        .unwrap();
+
+    let refused = refs::checkout(&state, "other").unwrap_err();
+
+    assert!(refused.contains("Cannot switch to other"), "{refused}");
+    assert_eq!(refs::describe(&state).unwrap().head, "main");
+    // Nothing was stashed on the way: the user asked to be told, not helped.
+    assert!(gitnoob_lib::work::stash_list(&state).unwrap().is_empty());
+}
+
+#[test]
+fn undoing_a_stash_puts_back_the_one_it_made() {
+    let sandbox = Sandbox::new("undostash");
+    sandbox.commit("a.txt", "one\n", "First");
+    let state = sandbox.state();
+
+    sandbox.write("a.txt", "one\nmine\n");
+    gitnoob_lib::work::stash_push(&state, Some("mine"), false).unwrap();
+
+    // Somebody stashes something else afterwards — here, or in a terminal.
+    sandbox.write("a.txt", "one\nsomething else\n");
+    sandbox.git(&["stash", "push", "-q", "-m", "later"]);
+
+    gitnoob_lib::journal::undo(&state).unwrap();
+
+    // The stash that came back is the one that was recorded, not whatever
+    // happened to be on top of the list.
+    assert_eq!(
+        std::fs::read_to_string(sandbox.root.join("a.txt")).unwrap(),
+        "one\nmine\n"
+    );
+    let left = gitnoob_lib::work::stash_list(&state).unwrap();
+    assert_eq!(left.len(), 1);
+    assert_eq!(left[0].message, "later");
+}
+
+#[test]
+fn undoing_a_stash_says_so_once_it_is_gone() {
+    let sandbox = Sandbox::new("undostashgone");
+    sandbox.commit("a.txt", "one\n", "First");
+    let state = sandbox.state();
+    sandbox.write("a.txt", "one\nmine\n");
+    gitnoob_lib::work::stash_push(&state, Some("mine"), false).unwrap();
+    sandbox.git(&["stash", "drop", "-q"]);
+
+    let refused = gitnoob_lib::journal::undo(&state).unwrap_err();
+
+    assert!(refused.contains("not in the list any more"), "{refused}");
+}
+
+#[test]
+fn undo_refuses_once_the_branch_has_moved_outside_the_history() {
+    let sandbox = Sandbox::new("undomoved");
+    sandbox.commit("a.txt", "one\n", "First");
+    let state = sandbox.state();
+    sandbox.write("a.txt", "one\ntwo\n");
+    gitnoob_lib::work::stage(&state, &["a.txt".to_string()]).unwrap();
+    gitnoob_lib::work::commit(&state, "Second", false).unwrap();
+
+    // A commit the app never saw: made in a terminal, in another window.
+    sandbox.commit("a.txt", "one\ntwo\nthree\n", "Third, elsewhere");
+
+    let refused = gitnoob_lib::journal::undo(&state).unwrap_err();
+
+    assert!(refused.contains("outside this history"), "{refused}");
+    // And it changed nothing.
+    assert_eq!(sandbox.git(&["log", "--oneline"]).lines().count(), 3);
+}
+
+#[test]
+fn renaming_a_stash_leaves_it_where_it_is_in_the_list() {
+    let sandbox = Sandbox::new("stashrename");
+    sandbox.commit("a.txt", "one\n", "First");
+    let state = sandbox.state();
+    for (name, line) in [("first", "a"), ("second", "b"), ("third", "c")] {
+        sandbox.write("a.txt", &format!("one\n{line}\n"));
+        gitnoob_lib::work::stash_push(&state, Some(name), false).unwrap();
+    }
+
+    // The middle one: `git stash store` would have moved it to the top, which
+    // is the whole reason the reflog is rewritten instead.
+    gitnoob_lib::work::stash_rename(&state, 1, "renamed in place").unwrap();
+
+    let list = gitnoob_lib::work::stash_list(&state).unwrap();
+    assert_eq!(list.len(), 3);
+    assert_eq!(list[0].message, "third");
+    assert_eq!(list[1].message, "renamed in place");
+    assert_eq!(list[2].message, "first");
+    // Still on the branch it was made on.
+    assert_eq!(list[1].branch.as_deref(), Some("main"));
+}
+
+#[test]
+fn a_renamed_stash_still_holds_what_it_held() {
+    let sandbox = Sandbox::new("stashrenamekeep");
+    sandbox.commit("a.txt", "one\n", "First");
+    let state = sandbox.state();
+    sandbox.write("a.txt", "one\nkept\n");
+    gitnoob_lib::work::stash_push(&state, Some("before"), false).unwrap();
+
+    gitnoob_lib::work::stash_rename(&state, 0, "after").unwrap();
+    sandbox.git(&["stash", "pop", "-q"]);
+
+    assert_eq!(
+        std::fs::read_to_string(sandbox.root.join("a.txt")).unwrap(),
+        "one\nkept\n"
+    );
+}
+
+#[test]
+fn deleting_new_files_leaves_the_tracked_ones_alone() {
+    let sandbox = Sandbox::new("deletenew");
+    sandbox.commit("a.txt", "one\n", "First");
+    let state = sandbox.state();
+    sandbox.write("new.txt", "never seen\n");
+    sandbox.write("a.txt", "one\nchanged\n");
+
+    gitnoob_lib::work::delete_untracked(&state, &["new.txt".to_string()]).unwrap();
+
+    assert!(!sandbox.root.join("new.txt").exists());
+    // `git clean` will not touch a tracked file, which is the guard that makes
+    // this safe to offer from the same place discard sits.
+    let _ = gitnoob_lib::work::delete_untracked(&state, &["a.txt".to_string()]);
+    assert_eq!(
+        std::fs::read_to_string(sandbox.root.join("a.txt")).unwrap(),
+        "one\nchanged\n"
+    );
 }
 
 #[test]

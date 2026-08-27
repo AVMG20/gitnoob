@@ -1080,7 +1080,6 @@ pub fn add_to_gitignore(state: &AppState, pattern: &str) -> Result<String, Strin
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::fixture::Fixture;
     use std::path::{Path, PathBuf};
     use std::process::Command;
     use std::sync::atomic::{AtomicUsize, Ordering};
@@ -1287,103 +1286,5 @@ mod tests {
 
         assert!(sandbox.preview("feature").is_head);
         assert!(!sandbox.preview("main").is_head);
-    }
-
-    // --- carrying uncommitted work across a switch
-
-
-    const LINES: &str = "one\ntwo\nthree\nfour\nfive\nsix\nseven\neight\n";
-
-    /// A repository with `main` and `other`, differing in their last line only.
-    fn two_branches() -> Fixture {
-        let repo = Fixture::new();
-        repo.write("f.txt", LINES);
-        repo.commit("base");
-        repo.git(&["checkout", "--quiet", "-b", "other"]);
-        repo.write("f.txt", &LINES.replace("eight", "EIGHT-other"));
-        repo.commit("other changes the end");
-        repo.git(&["checkout", "--quiet", "main"]);
-        repo
-    }
-
-    #[test]
-    fn a_change_that_does_not_collide_comes_across_with_you() {
-        let repo = two_branches();
-        // The other branch changed the last line; this changes the first.
-        repo.write("f.txt", &LINES.replace("one\n", "ONE-mine\n"));
-
-        checkout(&repo.state, "other").expect("the switch");
-
-        assert_eq!(repo.branch(), "other");
-        let after = repo.read("f.txt");
-        assert!(after.starts_with("ONE-mine"), "kept my line: {after}");
-        assert!(after.contains("EIGHT-other"), "took theirs: {after}");
-        // Nothing left behind: the stash it used is gone again.
-        assert!(repo.stashes().is_empty(), "{:?}", repo.stashes());
-    }
-
-    #[test]
-    fn a_change_that_would_conflict_leaves_everything_where_it_was() {
-        let repo = two_branches();
-        // The same line both sides changed, which is what cannot be carried.
-        repo.write("f.txt", &LINES.replace("eight", "EIGHT-mine"));
-
-        let refused = checkout(&repo.state, "other").expect_err("refused");
-
-        assert!(refused.contains("Cannot switch to other"), "{refused}");
-        assert_eq!(repo.branch(), "main");
-        assert!(repo.read("f.txt").contains("EIGHT-mine"), "my line is back");
-        assert!(repo.stashes().is_empty(), "{:?}", repo.stashes());
-    }
-
-    #[test]
-    fn what_was_staged_is_still_staged_on_the_other_side() {
-        let repo = two_branches();
-        repo.write("f.txt", &LINES.replace("one\n", "ONE-staged\n"));
-        repo.git(&["add", "f.txt"]);
-        repo.write(
-            "f.txt",
-            &LINES.replace("one\n", "ONE-staged\n").replace("three", "THREE-unstaged"),
-        );
-        repo.write("new.txt", "untracked\n");
-
-        checkout(&repo.state, "other").expect("the switch");
-
-        assert_eq!(repo.branch(), "other");
-        let status = repo.status();
-        // Half staged, half not, and the untracked file still untracked.
-        assert!(status.contains("MM f.txt"), "{status}");
-        assert!(status.contains("?? new.txt"), "{status}");
-    }
-
-    #[test]
-    fn a_stash_made_by_hand_is_left_alone() {
-        let repo = two_branches();
-        repo.write("f.txt", &LINES.replace("two", "TWO-stashed"));
-        repo.git(&["stash", "push", "--quiet", "-m", "mine to keep"]);
-        repo.write("f.txt", &LINES.replace("one\n", "ONE-mine\n"));
-
-        checkout(&repo.state, "other").expect("the switch");
-
-        // The one the switch made is gone; the one the user made is not.
-        let left = repo.stashes();
-        assert_eq!(left.len(), 1, "{left:?}");
-        assert!(left[0].contains("mine to keep"), "{left:?}");
-    }
-
-    #[test]
-    fn with_the_setting_off_it_says_so_instead_of_helping() {
-        let repo = two_branches();
-        repo.state
-            .update_config(|config| config.global.auto_stash = false)
-            .expect("write the setting");
-        repo.write("f.txt", &LINES.replace("one\n", "ONE-mine\n"));
-
-        let refused = checkout(&repo.state, "other").expect_err("refused");
-
-        assert!(refused.contains("Cannot switch to other"), "{refused}");
-        assert_eq!(repo.branch(), "main");
-        // Nothing was stashed on the way: the user asked to be told, not helped.
-        assert!(repo.stashes().is_empty(), "{:?}", repo.stashes());
     }
 }

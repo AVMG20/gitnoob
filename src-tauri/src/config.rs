@@ -347,6 +347,26 @@ pub fn secret_get(key: &str) -> Option<String> {
 /// which was three for a single profile with an AI key.
 const ALL: &str = "secrets";
 
+/// Whether the keychain may be asked at all.
+///
+/// Reading a secret on an unsigned build makes macOS put a password dialog on
+/// screen. That is the right thing when somebody is using the app and the wrong
+/// thing everywhere else: a test suite that stops to ask for a password is a
+/// test suite nobody can run, and it asks once per test that touches a token.
+/// Off by default under `cargo test`, and the end-to-end tests — which build
+/// the library without `cfg(test)` — turn it off themselves.
+static ASK_KEYCHAIN: std::sync::atomic::AtomicBool =
+    std::sync::atomic::AtomicBool::new(!cfg!(test));
+
+/// Stops this process ever asking the keychain for anything. For tests.
+pub fn silence_keychain() {
+    ASK_KEYCHAIN.store(false, std::sync::atomic::Ordering::Relaxed);
+}
+
+fn may_ask() -> bool {
+    ASK_KEYCHAIN.load(std::sync::atomic::Ordering::Relaxed)
+}
+
 fn entry(account: &str) -> Result<keyring::Entry, String> {
     keyring::Entry::new(SERVICE, account).map_err(|e| e.to_string())
 }
@@ -360,6 +380,9 @@ static BLOB: Mutex<Option<HashMap<String, String>>> = Mutex::new(None);
 /// a map missing every token it could not see, and deleting the item is what
 /// that would come to.
 fn blob() -> Option<HashMap<String, String>> {
+    if !may_ask() {
+        return Some(HashMap::new());
+    }
     let mut held = BLOB.lock().unwrap();
     if let Some(known) = held.as_ref() {
         return Some(known.clone());
@@ -444,6 +467,12 @@ fn dev_all() -> HashMap<String, String> {
 /// nothing. Looks in the one item first, then under the key's own old name.
 #[cfg(debug_assertions)]
 fn keychain_get(key: &str) -> Option<Option<String>> {
+    if !may_ask() {
+        // Answered, and the answer is that there is nothing. `None` would mean
+        // "the keychain would not say", which sends the caller back to ask
+        // again on the next read.
+        return Some(None);
+    }
     if let Some(found) = blob()?.get(key) {
         return Some(Some(found.clone()));
     }
