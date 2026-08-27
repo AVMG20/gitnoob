@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::path::Path;
 use std::sync::Mutex;
@@ -19,11 +19,22 @@ pub struct AmendDraft {
     pub short: String,
 }
 
+/// Wraps a user-given path in git's literal pathspec magic.
+///
+/// A pathspec after `--` still wildmatches by default — `--` only tells git
+/// where the revisions end and the paths begin, it does not make what follows
+/// literal. A file named `a*.txt`, `f[1].js`, or one starting with `:` would
+/// otherwise match more, or something else entirely, than the one path it
+/// names.
+fn literal_pathspecs(paths: &[String]) -> Vec<String> {
+    paths.iter().map(|p| format!(":(literal){p}")).collect()
+}
+
 pub fn stage(state: &AppState, paths: &[String]) -> Result<String, String> {
     let root = state.path()?;
+    let pathspecs = literal_pathspecs(paths);
     let mut args = vec!["add", "--"];
-    let refs: Vec<&str> = paths.iter().map(|s| s.as_str()).collect();
-    args.extend(refs);
+    args.extend(pathspecs.iter().map(String::as_str));
     git_cmd::run_checked(&root, &args)
 }
 
@@ -34,9 +45,9 @@ pub fn stage_all(state: &AppState) -> Result<String, String> {
 
 pub fn unstage(state: &AppState, paths: &[String]) -> Result<String, String> {
     let root = state.path()?;
+    let pathspecs = literal_pathspecs(paths);
     let mut args = vec!["restore", "--staged", "--"];
-    let refs: Vec<&str> = paths.iter().map(|s| s.as_str()).collect();
-    args.extend(refs);
+    args.extend(pathspecs.iter().map(String::as_str));
     git_cmd::run_checked(&root, &args)
 }
 
@@ -45,9 +56,9 @@ pub fn unstage(state: &AppState, paths: &[String]) -> Result<String, String> {
 /// side effect of "discard changes".
 pub fn discard(state: &AppState, paths: &[String]) -> Result<String, String> {
     let root = state.path()?;
+    let pathspecs = literal_pathspecs(paths);
     let mut args = vec!["restore", "--worktree", "--"];
-    let refs: Vec<&str> = paths.iter().map(|s| s.as_str()).collect();
-    args.extend(refs);
+    args.extend(pathspecs.iter().map(String::as_str));
     git_cmd::run_checked(&root, &args)
 }
 
@@ -62,9 +73,9 @@ pub fn delete_untracked(state: &AppState, paths: &[String]) -> Result<String, St
         return Err("Nothing to delete".to_string());
     }
     let root = state.path()?;
+    let pathspecs = literal_pathspecs(paths);
     let mut args = vec!["clean", "-f", "-d", "--"];
-    let refs: Vec<&str> = paths.iter().map(|s| s.as_str()).collect();
-    args.extend(refs);
+    args.extend(pathspecs.iter().map(String::as_str));
     git_cmd::run_checked(&root, &args)?;
     Ok(format!(
         "Deleted {} {}",
@@ -241,6 +252,8 @@ pub fn stash_push(
     include_untracked: bool,
 ) -> Result<String, String> {
     let root = state.path()?;
+    let before = journal::stash_ref(&root);
+
     let mut args = vec!["stash", "push"];
     if include_untracked {
         args.push("--include-untracked");
@@ -250,13 +263,19 @@ pub fn stash_push(
         args.push(message);
     }
     let output = git_cmd::run_checked(&root, &args)?;
+
     // Which stash this is, not just that there was one: undo pops the entry it
     // made, and by the time anyone reaches for undo there may be others on top
     // of it.
-    let made = git_cmd::run_checked(&root, &["rev-parse", "stash@{0}"])
-        .map(|out| out.trim().to_string())
-        .ok()
-        .filter(|oid| !oid.is_empty());
+    let made = journal::stash_ref(&root);
+    // A clean tree makes `stash push` exit 0 with "No local changes to save"
+    // rather than failing, and never touches `refs/stash`. Recording it anyway
+    // would journal whatever stash was already on top — somebody else's — as
+    // this operation's own, and undo would later pop that.
+    if made == before {
+        return Ok(output);
+    }
+
     journal::record(
         state,
         "stash",
@@ -273,7 +292,17 @@ pub fn stash_push(
 pub fn stash_pop(state: &AppState, index: usize) -> Result<String, String> {
     let root = state.path()?;
     let name = format!("stash@{{{index}}}");
-    git_cmd::run_checked(&root, &["stash", "pop", &name])
+    let oid = git_cmd::run_checked(&root, &["rev-parse", &name])
+        .map_err(|_| "There is no stash at that position".to_string())?
+        .trim()
+        .to_string();
+    // `pop` only understands `stash@{n}`, not a commit id, so the position is
+    // looked up again right before acting rather than trusted from the read
+    // above: a push or drop landing on the list in between, here or in another
+    // window, shifts what that number means.
+    let at = journal::stash_index(state, &oid)
+        .ok_or_else(|| "That stash is no longer there".to_string())?;
+    git_cmd::run_checked(&root, &["stash", "pop", &format!("stash@{{{at}}}")])
 }
 
 // --- stash -----------------------------------------------------------------
@@ -394,6 +423,12 @@ pub fn stash_rename(state: &AppState, index: usize, message: &str) -> Result<Str
     if message.is_empty() {
         return Err("A stash needs a name".to_string());
     }
+    // The message becomes one line of `logs/refs/stash`; a newline in it would
+    // write an extra, malformed line and corrupt the reflog everything else
+    // here reads the stash list from.
+    if message.contains(['\n', '\r']) {
+        return Err("A stash name can't contain a line break".to_string());
+    }
     let root = state.path()?;
     let selector = format!("stash@{{{index}}}");
     let oid = git_cmd::run_checked(&root, &["rev-parse", &selector])?
@@ -451,14 +486,30 @@ fn renamed_entry(line: &str, oid: &str, message: &str) -> Option<String> {
 pub fn stash_apply(state: &AppState, index: usize) -> Result<String, String> {
     let root = state.path()?;
     let name = format!("stash@{{{index}}}");
-    git_cmd::run_checked(&root, &["stash", "apply", &name])?;
+    let oid = git_cmd::run_checked(&root, &["rev-parse", &name])
+        .map_err(|_| "There is no stash at that position".to_string())?
+        .trim()
+        .to_string();
+    // Applying the commit id itself, rather than `stash@{index}` again, means
+    // the list shifting under this call — a push or drop elsewhere — cannot
+    // land it on an entry other than the one just looked up.
+    git_cmd::run_checked(&root, &["stash", "apply", &oid])?;
     Ok(format!("Applied {name}"))
 }
 
 pub fn stash_drop(state: &AppState, index: usize) -> Result<String, String> {
     let root = state.path()?;
     let name = format!("stash@{{{index}}}");
-    git_cmd::run_checked(&root, &["stash", "drop", &name])?;
+    let oid = git_cmd::run_checked(&root, &["rev-parse", &name])
+        .map_err(|_| "There is no stash at that position".to_string())?
+        .trim()
+        .to_string();
+    // `drop`, like `pop`, only understands `stash@{n}`; the position is
+    // re-resolved from the oid right before dropping so a shift in between
+    // cannot make this drop the wrong entry.
+    let at = journal::stash_index(state, &oid)
+        .ok_or_else(|| "That stash is no longer there".to_string())?;
+    git_cmd::run_checked(&root, &["stash", "drop", &format!("stash@{{{at}}}")])?;
     Ok(format!("Dropped {name}"))
 }
 
@@ -467,7 +518,9 @@ pub fn stash_drop(state: &AppState, index: usize) -> Result<String, String> {
 pub fn stash_branch(state: &AppState, index: usize, name: &str) -> Result<String, String> {
     let root = state.path()?;
     let selector = format!("stash@{{{index}}}");
-    git_cmd::run_checked(&root, &["stash", "branch", name, &selector])?;
+    // A branch fetched as `origin/-f` is real, and without this a name
+    // beginning with `-` is parsed as a flag rather than the branch to create.
+    git_cmd::run_checked(&root, &["stash", "branch", "--end-of-options", name, &selector])?;
     Ok(format!("Created {name} from {selector}"))
 }
 
@@ -529,6 +582,20 @@ pub fn restore_after(state: &AppState, held: Held) -> Result<Option<String>, Str
     }
 }
 
+/// Every path a stash entry touches, tracked or not.
+///
+/// Plain `git stash show` leaves out anything that only lives in the third,
+/// untracked-files parent an auto-stash always has, since it was pushed with
+/// `--include-untracked`; asking for that parent too is what `--include-untracked`
+/// on `show` itself is for.
+fn stash_touched_paths(root: &Path, selector: &str) -> Result<HashSet<String>, String> {
+    let raw = git_cmd::run_checked(
+        root,
+        &["stash", "show", "--include-untracked", "--name-only", selector],
+    )?;
+    Ok(raw.lines().map(str::to_string).filter(|l| !l.is_empty()).collect())
+}
+
 /// The branch an auto-stash was taken on, read back out of its message.
 fn stashed_on(message: &str) -> Option<&str> {
     let rest = message.split_once(AUTO_STASH)?.1;
@@ -553,6 +620,26 @@ pub fn undo_restore(state: &AppState) -> Result<String, String> {
              throw the conflicted files away. Resolve them, or stash them, instead."
                 .to_string(),
         );
+    }
+
+    // The message alone only says a matching stash exists, not that today's
+    // mess is what it made — a failed restore earlier leaves the stash on the
+    // list exactly as the guard above expects, and anything typed into the
+    // tree since then would be reset away with it. Every dirty path has to be
+    // one the stash itself touched, or there is no telling the two apart.
+    let touched = stash_touched_paths(&root, "stash@{0}")?;
+    let status = crate::refs::status(state)?;
+    let mut dirty = status
+        .staged
+        .iter()
+        .chain(status.unstaged.iter())
+        .map(|entry| &entry.path)
+        .chain(status.conflicted.iter());
+    if let Some(path) = dirty.find(|path| !touched.contains(path.as_str())) {
+        return Err(format!(
+            "{path} has changes the stash never made, so undoing would throw them away instead \
+             of just putting the stash back. Resolve or stash that first."
+        ));
     }
 
     // Clears the half-applied pop: conflicted files, and whatever else came
@@ -942,13 +1029,14 @@ pub fn apply_hunk(
 
     // Unstaging reads the index-versus-HEAD diff; the other two read the
     // working tree against the index.
+    let pathspec = format!(":(literal){path}");
     let diff = if action == HunkAction::Unstage {
         git_cmd::run_checked(
             &root,
-            &["diff", "--cached", "--no-color", "--unified=3", "--", path],
+            &["diff", "--cached", "--no-color", "--unified=3", "--", &pathspec],
         )?
     } else {
-        git_cmd::run_checked(&root, &["diff", "--no-color", "--unified=3", "--", path])?
+        git_cmd::run_checked(&root, &["diff", "--no-color", "--unified=3", "--", &pathspec])?
     };
 
     if diff.trim().is_empty() {

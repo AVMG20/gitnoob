@@ -1,3 +1,5 @@
+use std::path::Path;
+
 use serde::Serialize;
 
 use crate::git_cmd;
@@ -178,6 +180,21 @@ enum Direction {
     Forward,
 }
 
+/// The commit `refs/stash` currently points at, or `None` when there is no
+/// stash at all.
+///
+/// `git stash push` exits 0 whether or not it made anything — a clean tree
+/// prints "No local changes to save" and leaves `refs/stash` untouched. Reading
+/// this before and after a push is the only reliable way to tell "it made a
+/// stash" from "there was nothing to stash", since matching that message would
+/// break the moment git's wording changes or the locale isn't English.
+pub(crate) fn stash_ref(root: &Path) -> Option<String> {
+    git_cmd::run_checked(root, &["rev-parse", "--quiet", "--verify", "refs/stash"])
+        .ok()
+        .map(|out| out.trim().to_string())
+        .filter(|oid| !oid.is_empty())
+}
+
 /// The index a stash commit sits at now, or `None` if it is no longer listed.
 ///
 /// `stash@{0}` is whatever was stashed last, which is not the same thing as the
@@ -214,13 +231,23 @@ fn step(state: &AppState, entry: &mut Entry, direction: Direction) -> Result<Str
                 Ok(format!("Restored: {}", entry.label))
             }
             Direction::Forward => {
+                let before = stash_ref(&root);
                 git_cmd::run_checked(&root, &["stash", "push", "--include-untracked"])?;
+                let after = stash_ref(&root);
+                // A clean tree makes the push above exit 0 without creating a
+                // stash. `after` would then still name whatever `refs/stash`
+                // pointed at before — someone else's stash, not this redo's —
+                // and recording it would hand a later undo something to pop
+                // that was never this operation's to touch.
+                if after == before {
+                    return Err(
+                        "There is nothing to stash again; the working tree is already clean."
+                            .to_string(),
+                    );
+                }
                 // It is a different stash now, and undoing again has to find
                 // this one rather than the one that is gone.
-                entry.after = git_cmd::run_checked(&root, &["rev-parse", "stash@{0}"])
-                    .map(|out| out.trim().to_string())
-                    .ok()
-                    .filter(|oid| !oid.is_empty());
+                entry.after = after;
                 Ok(format!("Stashed again: {}", entry.label))
             }
         },
