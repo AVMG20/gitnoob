@@ -280,7 +280,21 @@ watch(target, () => load(), { deep: true })
 // not.
 watch(
   () => store.status,
-  () => load(false)
+  (status) => {
+    // A commit stays open whatever the working tree does; a working file is
+    // open because it had changes, and after a commit it has none — nor does
+    // anything else, so there is nothing to move on to and the viewer is left
+    // showing an empty page over the list you now want. Only when both sides
+    // are empty: with other files still changed, walking to them is the point
+    // of staying here.
+    const nothingLeft =
+      status && !status.staged.length && !status.unstaged.length && !status.conflicted.length
+    if (target.value && !target.value.commit && nothingLeft) {
+      close()
+      return
+    }
+    load(false)
+  }
 )
 
 onMounted(() => {
