@@ -78,7 +78,10 @@ async function copy(text: string) {
   flex-direction: column;
   align-items: flex-start;
   gap: 8px;
-  max-width: min(420px, calc(100vw - 24px));
+  /* A stated width rather than one taken from the longest sentence in the
+     stack: notices that arrive one after another should not each be a
+     different shape, and a fixed flex box shrinks to its content. */
+  width: min(420px, calc(100vw - 24px));
 }
 
 .clear {

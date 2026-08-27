@@ -134,8 +134,8 @@ function draftKey(line: DiffLine) {
             <div
               class="diff-line"
               :class="lineClass(line.origin)"
-              :data-line="line.new_lineno ?? line.old_lineno ?? ''"
-              :data-side="line.new_lineno !== null ? 'new' : 'old'"
+              :data-line="marker(line) ? null : (line.new_lineno ?? line.old_lineno ?? '')"
+              :data-side="marker(line) ? null : line.new_lineno !== null ? 'new' : 'old'"
             >
               <span class="no">{{ line.old_lineno ?? '' }}</span>
               <span class="no">{{ line.new_lineno ?? '' }}</span>

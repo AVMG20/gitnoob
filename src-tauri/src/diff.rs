@@ -283,7 +283,6 @@ fn collect_hunks(diff: &Diff, path: &str) -> Result<FileDiff, String> {
                     new_lineno: line.new_lineno(),
                     content: String::from_utf8_lossy(line.content())
                         .trim_end_matches('\n')
-                        .trim_end_matches('\r')
                         .to_string(),
                 }));
                 taken.set(taken.get() + 1);
