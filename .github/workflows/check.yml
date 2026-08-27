@@ -1,0 +1,123 @@
+# Both suites, on all three platforms, before anything is tagged.
+#
+# This exists because two tests failed on Windows for months without anyone
+# finding out: `npm run release` runs the suites on whichever machine cuts the
+# release, and that machine has always been a Mac. A platform nobody runs the
+# tests on is a platform nobody tests.
+#
+# The Rust suite builds real repositories with the `git` CLI, so what a checkout
+# does to line endings and what a filesystem will accept as a filename are both
+# part of what is under test. Those are exactly the differences a single-platform
+# run cannot see.
+
+name: Check
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  # So a suspected-flaky failure can be re-run without pushing an empty commit.
+  workflow_dispatch:
+
+# A second push to the same branch makes the first one's answer stale.
+concurrency:
+  group: check-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  frontend:
+    name: Frontend
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - run: npm ci
+
+      # vue-tsc over the frontend. It reports nothing today and the job fails if
+      # that changes: the errors were cleared once, and the only way they stay
+      # cleared is if something notices the first new one.
+      - name: Types
+        run: npm run typecheck
+
+      - name: Tests
+        run: npm test
+
+      # The bundle is what ships. A frontend that tests green and does not build
+      # is still a broken release.
+      - name: Bundle
+        run: npm run generate
+
+  rust:
+    name: Rust — ${{ matrix.name }}
+    strategy:
+      # One platform failing should still report on the other two, because
+      # "it fails on Windows" and "it fails everywhere" are different bugs.
+      fail-fast: false
+      matrix:
+        include:
+          - name: macOS
+            runner: macos-latest
+          - name: Linux
+            runner: ubuntu-22.04
+          - name: Windows
+            runner: windows-latest
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - uses: actions/checkout@v4
+
+      # The suite builds fixtures by running `git`, and compares checked-out
+      # files against strings written with bare newlines. A runner that converts
+      # on checkout would fail the comparison for a reason that has nothing to
+      # do with the app.
+      - name: Leave line endings alone
+        run: |
+          git config --global core.autocrlf false
+          git config --global core.eol lf
+
+      # Committing in a fixture repository needs an identity, and a runner has
+      # none by default.
+      - name: An identity for the fixtures
+        run: |
+          git config --global user.email "check@gitnoob.invalid"
+          git config --global user.name "gitnoob checks"
+          git config --global init.defaultBranch main
+
+      - name: GTK and WebKit
+        if: matrix.runner == 'ubuntu-22.04'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libwebkit2gtk-4.1-dev \
+            libjavascriptcoregtk-4.1-dev \
+            libsoup-3.0-dev \
+            libgtk-3-dev \
+            libayatana-appindicator3-dev \
+            librsvg2-dev \
+            libxdo-dev \
+            build-essential \
+            file
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy, rustfmt
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri -> target
+          key: check
+
+      - name: Formatting
+        if: matrix.runner == 'ubuntu-22.04'
+        run: cargo fmt --manifest-path src-tauri/Cargo.toml --check
+
+      - name: Clippy
+        if: matrix.runner == 'ubuntu-22.04'
+        run: cargo clippy --manifest-path src-tauri/Cargo.toml --all-targets -- -D warnings
+
+      - name: Tests
+        run: cargo test --manifest-path src-tauri/Cargo.toml
