@@ -109,16 +109,13 @@ async function open() {
   return wrapper
 }
 
-/** Opens one of the bulk menus and picks the row whose label starts with `label`. */
-async function pick(
+/** Clicks one of the bar buttons that answer every conflict in the file. */
+async function every(
   wrapper: Awaited<ReturnType<typeof open>>,
-  opener: string,
   label: string
 ) {
-  await wrapper.findAll('button').find((one) => one.text().includes(opener))!.trigger('click')
-  await flushPromises()
-  const row = wrapper.findAll('.menu .item').find((one) => one.text().includes(label))
-  await row!.trigger('click')
+  const button = wrapper.findAll('.seg-group .seg').find((one) => one.text() === label)
+  await button!.trigger('click')
   await flushPromises()
 }
 
@@ -256,7 +253,7 @@ describe('the conflict resolver', () => {
     // And the strip beside it has a bar per region, not per line.
     expect(wrapper.findAll('.output .ruler .mark')).toHaveLength(2)
 
-    await pick(wrapper, 'Every conflict', 'Take theirs in every conflict')
+    await every(wrapper, 'Theirs')
     expect(out().findAll('.from-ours')).toHaveLength(0)
     expect(out().findAll('.from-theirs')).toHaveLength(3)
 
@@ -267,14 +264,36 @@ describe('the conflict resolver', () => {
     expect(out().findAll('.from-theirs')).toHaveLength(3)
   })
 
-  it('answers every conflict at once from the menu', async () => {
+  it('answers every conflict at once from the bar', async () => {
     const wrapper = await open()
-    await pick(wrapper, 'Every conflict', 'Take theirs in every conflict')
+    await every(wrapper, 'Theirs')
     expect(choices()).toEqual([
       { take_ours: false, take_theirs: true, ours_first: true, custom: null },
       { take_ours: false, take_theirs: true, ours_first: true, custom: null }
     ])
     expect(wrapper.text()).toContain('all 2 decided')
+  })
+
+  it('lights a bar button only while every conflict agrees with it', async () => {
+    const wrapper = await open()
+    const lit = () =>
+      wrapper.findAll('.seg-group .seg').filter((one) => one.classes('on')).map((one) => one.text())
+    // Nothing is claimed before anything has been decided, even though the
+    // file opens showing our side.
+    expect(lit()).toEqual([])
+
+    await every(wrapper, 'Theirs')
+    expect(lit()).toEqual(['Theirs'])
+
+    // One line taken back from our side is enough to make the claim untrue.
+    await wrapper.findAll('.pane')[0]!.findAll('.line-box')[0]!.trigger('change')
+    await flushPromises()
+    expect(lit()).toEqual([])
+
+    await every(wrapper, 'Neither')
+    expect(lit()).toEqual(['Neither'])
+    await every(wrapper, 'Both')
+    expect(lit()).toEqual(['Both'])
   })
 
   it('writes the file the preview showed, then closes when nothing is left', async () => {

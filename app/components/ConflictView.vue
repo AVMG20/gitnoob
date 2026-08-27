@@ -6,7 +6,6 @@ import {
   ChevronsDown,
   ChevronsUp,
   FileCheck2,
-  ListChecks,
   Sparkles,
   Trash2,
   Undo2
@@ -432,16 +431,6 @@ function toggleSide(index: number, side: Side) {
   })
 }
 
-function setStance(index: number, want: 'ours' | 'theirs' | 'both' | 'none') {
-  edit(index, (pick) => {
-    pick.custom = null
-    for (let at = 0; at < pick.ours.length; at++) pick.ours[at] = want === 'ours' || want === 'both'
-    for (let at = 0; at < pick.theirs.length; at++) {
-      pick.theirs[at] = want === 'theirs' || want === 'both'
-    }
-  })
-}
-
 function swapOrder(index: number) {
   edit(index, (pick) => {
     pick.ours_first = !pick.ours_first
@@ -454,13 +443,21 @@ function undoEdit(index: number) {
   })
 }
 
-function takeAll(want: 'ours' | 'theirs' | 'both') {
+/**
+ * The answer for every conflict in the file at once.
+ *
+ * This is what the four buttons in the bar do. Answering one region at a time
+ * is what the checkboxes in the panes are for, and the common case by far is
+ * wanting one side of the whole file — so the buttons that sit in a fixed place
+ * on screen are the ones that say it once.
+ */
+function takeAll(want: 'ours' | 'theirs' | 'both' | 'none') {
   picks.value = picks.value.map((pick, index) => {
     const block = conflicts.value[index]
     if (!block) return pick
     return {
-      ours: block.ours.map(() => want !== 'theirs'),
-      theirs: block.theirs.map(() => want !== 'ours'),
+      ours: block.ours.map(() => want === 'ours' || want === 'both'),
+      theirs: block.theirs.map(() => want === 'theirs' || want === 'both'),
       ours_first: pick.ours_first,
       custom: null,
       touched: true
@@ -469,33 +466,22 @@ function takeAll(want: 'ours' | 'theirs' | 'both') {
 }
 
 /**
- * The two families of bulk action, behind the buttons that open them.
+ * The stance the whole file is in, or `null` when the regions disagree.
  *
- * Both used to sit spelled out in the bars — three "all" buttons beside three
- * per-region ones that read almost the same, and two whole-file ones above
- * them. The per-region answer is the one being made over and over, so it keeps
- * its buttons; the rest are a decision you make once for the file, which is
- * what a menu is for.
+ * A button is lit only while every region really is that way, so tweaking a
+ * single line out of "all theirs" puts the bar back to nothing selected rather
+ * than leaving a claim about the file that stopped being true.
+ *
+ * A region nobody has answered counts as disagreement even though it starts out
+ * looking like ours: a lit button says a choice was made, and on a file just
+ * opened none has been.
  */
-function everywhere(event: MouseEvent) {
-  const items: MenuItem[] = [
-    { label: 'Take ours in every conflict', icon: ListChecks, action: () => takeAll('ours') },
-    { label: 'Take theirs in every conflict', icon: ListChecks, action: () => takeAll('theirs') },
-    { label: 'Take both in every conflict', icon: ListChecks, action: () => takeAll('both') }
-  ]
-  if (ai.configured.value) {
-    items.push(
-      { separator: true, label: '' },
-      {
-        label: 'Ask the model to resolve every conflict',
-        icon: Sparkles,
-        disabled: thinking.value !== null,
-        action: aiResolveAll
-      }
-    )
-  }
-  menu.show(event, items, path.value ?? '')
-}
+const everyStance = computed<Stance | null>(() => {
+  if (!picks.value.length || picks.value.some((pick) => !pick.touched)) return null
+  const first = stanceOf(picks.value[0]!)
+  if (first === 'mixed' || first === 'edited') return null
+  return picks.value.every((pick) => stanceOf(pick) === first) ? first : null
+})
 
 /** The ways out that skip the regions entirely and answer for the file. */
 function forFile(event: MouseEvent) {
@@ -524,6 +510,16 @@ function forFile(event: MouseEvent) {
         icon: FileCheck2,
         disabled: store.busy,
         action: keepAsIs
+      }
+    )
+  } else if (ai.configured.value) {
+    items.push(
+      { separator: true, label: '' },
+      {
+        label: 'Ask the model to resolve every conflict',
+        icon: Sparkles,
+        disabled: thinking.value !== null,
+        action: aiResolveAll
       }
     )
   }
@@ -813,9 +809,10 @@ onUnmounted(() => window.removeEventListener('keydown', onKey))
           </button>
         </div>
 
-        <!-- Where you are, and what to do about it. The one region being worked
-             on gets its own buttons here, so the answer is always in the same
-             place on screen rather than wherever the region happens to be. -->
+        <!-- Where you are, and what to do about it. The buttons here answer the
+             whole file at once, in a fixed place on screen; picking a region
+             apart is done in the panes, on the region itself. A button is lit
+             only while every region agrees with it. -->
         <div v-if="!wholeFile" class="guide">
           <span class="walk">
             <button
@@ -844,36 +841,36 @@ onUnmounted(() => window.removeEventListener('keydown', onKey))
 
           <span class="sep" />
 
-          <span class="seg-group" role="group" aria-label="What to keep here">
+          <span class="seg-group" role="group" aria-label="What to keep in every conflict">
             <button
               class="seg ours"
-              :class="{ on: stance(active) === 'ours' }"
-              title="Keep our side of this conflict"
-              @click="setStance(active, 'ours')"
+              :class="{ on: everyStance === 'ours' }"
+              title="Keep our side of every conflict in this file"
+              @click="takeAll('ours')"
             >
               Ours
             </button>
             <button
               class="seg theirs"
-              :class="{ on: stance(active) === 'theirs' }"
-              title="Keep their side of this conflict"
-              @click="setStance(active, 'theirs')"
+              :class="{ on: everyStance === 'theirs' }"
+              title="Keep their side of every conflict in this file"
+              @click="takeAll('theirs')"
             >
               Theirs
             </button>
             <button
               class="seg both"
-              :class="{ on: stance(active) === 'both' }"
-              title="Keep both sides, one after the other"
-              @click="setStance(active, 'both')"
+              :class="{ on: everyStance === 'both' }"
+              title="Keep both sides of every conflict, one after the other"
+              @click="takeAll('both')"
             >
               Both
             </button>
             <button
               class="seg none"
-              :class="{ on: stance(active) === 'dropped' }"
-              title="Drop this region from the file"
-              @click="setStance(active, 'none')"
+              :class="{ on: everyStance === 'dropped' }"
+              title="Drop every conflicted region from the file"
+              @click="takeAll('none')"
             >
               Neither
             </button>
@@ -894,15 +891,6 @@ onUnmounted(() => window.removeEventListener('keydown', onKey))
 
           <span class="spacer" />
 
-          <button
-            class="btn tiny ghosty"
-            title="Answer every conflict in this file the same way"
-            @click="everywhere"
-          >
-            <Spinner v-if="thinking !== null" :size="12" />
-            Every conflict
-            <ChevronDown :size="11" />
-          </button>
           <label v-if="hasBase" class="tiny check" title="Show what both sides started from">
             <input v-model="showBase" type="checkbox" />
             Base
