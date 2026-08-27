@@ -81,6 +81,21 @@ export interface CheckoutOutcome {
   diverged: Diverged | null
 }
 
+/** One folder this repository is checked out into. */
+export interface Worktree {
+  path: string
+  /** The folder's own name, which is how the row reads. */
+  name: string
+  /** The branch checked out there; null for a detached HEAD. */
+  branch: string | null
+  oid: string
+  /** The folder the repository itself lives in. */
+  is_main: boolean
+  /** The folder this window has open right now. */
+  is_current: boolean
+  locked: boolean
+}
+
 /** What git is part-way through, so the way out can be named correctly. */
 export interface InProgress {
   merging: boolean
@@ -430,6 +445,8 @@ const fields = reactive({
   /** The branch this repository is organised around. */
   trunk: { name: null, chosen: false } as Trunk,
   status: null as WorkingStatus | null,
+  /** Every folder the repository is checked out into; one entry is this one. */
+  worktrees: [] as Worktree[],
   rows: [] as GraphRow[],
   hasMore: false,
   limit: COMMIT_PAGE,
@@ -511,6 +528,7 @@ interface Snapshot {
   refs: RefTree | null
   trunk: Trunk
   status: WorkingStatus | null
+  worktrees: Worktree[]
   rows: GraphRow[]
   hasMore: boolean
   limit: number
@@ -543,6 +561,7 @@ function clearData() {
   store.refs = null
   store.trunk = { name: null, chosen: false }
   store.status = null
+  store.worktrees = []
   store.rows = []
   store.hasMore = false
   store.limit = pageSize()
@@ -556,6 +575,7 @@ function paint(snapshot: Snapshot) {
   store.refs = snapshot.refs
   store.trunk = snapshot.trunk
   store.status = snapshot.status
+  store.worktrees = snapshot.worktrees
   store.rows = snapshot.rows
   store.hasMore = snapshot.hasMore
   store.limit = snapshot.limit
@@ -706,11 +726,12 @@ export function useGit() {
     if (!store.repo) return
     const path = store.repo.path
     const limit = store.limit
-    const [info, refs, trunk, status, page, stashes, history, progress] = await Promise.all([
+    const [info, refs, trunk, status, worktrees, page, stashes, history, progress] = await Promise.all([
       part('the repository', invoke<RepoInfo>('repo_info'), store.repo),
       part('the branches', invoke<RefTree>('ref_tree'), null),
       part('the main branch', invoke<Trunk>('trunk_branch'), store.trunk),
       part('the working tree', invoke<WorkingStatus>('working_status'), null),
+      part('the worktrees', invoke<Worktree[]>('worktree_list'), [] as Worktree[]),
       part(
         'the history',
         invoke<{ rows: GraphRow[]; has_more: boolean }>('commit_graph', { limit }),
@@ -741,6 +762,7 @@ export function useGit() {
     if (refs) store.refs = settle('refs', refs, store.refs)
     if (trunk) store.trunk = settle('trunk', trunk, store.trunk)
     if (status) store.status = settle('status', status, store.status)
+    store.worktrees = settle('worktrees', worktrees ?? [], store.worktrees)
     if (page) {
       store.rows = settle('rows', page.rows, store.rows)
       store.hasMore = page.has_more
@@ -754,6 +776,7 @@ export function useGit() {
       refs: store.refs,
       trunk: store.trunk,
       status: store.status,
+      worktrees: store.worktrees,
       rows: store.rows,
       hasMore: store.hasMore,
       limit,
@@ -928,6 +951,21 @@ export function useGit() {
     },
     dismissDiverged: () => {
       store.divergedCheckout = null
+    },
+    /**
+     * Checks a branch out into a new folder, so it and the current one are
+     * open side by side. `track` names the remote-tracking ref to create the
+     * branch from when it does not exist here yet.
+     */
+    worktreeAdd: async (path: string, branch: string, track?: string) => {
+      const said = await run<string>('Add worktree', 'worktree_add', { path, branch, track })
+      if (said?.trim()) useToasts().info(said.trim())
+      return said
+    },
+    worktreeRemove: async (path: string, force = false) => {
+      const said = await run<string>('Remove worktree', 'worktree_remove', { path, force })
+      if (said?.trim()) useToasts().info(said.trim())
+      return said
     },
     /**
      * Checks out the branch a review was opened from, whatever it takes.

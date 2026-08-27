@@ -9,7 +9,7 @@ use std::process::Command;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
 use gitnoob_lib::state::AppState;
-use gitnoob_lib::{conflict, create, diff, graph, journal, refs, remote, work};
+use gitnoob_lib::{conflict, create, diff, graph, journal, refs, remote, work, worktree};
 
 static COUNTER: AtomicUsize = AtomicUsize::new(0);
 
@@ -3257,4 +3257,103 @@ fn a_branch_with_no_upstream_starts_tracking_the_remote_it_was_synced_to() {
         "unexpected message: {}",
         outcome.message
     );
+}
+
+// --- worktrees ---------------------------------------------------------------
+
+#[test]
+fn a_worktree_is_added_listed_and_removed() {
+    let sandbox = Sandbox::new("worktree");
+    sandbox.commit("a.txt", "one\n", "First");
+    sandbox.git(&["branch", "side"]);
+    let state = sandbox.state();
+
+    let alone = worktree::list(&state).unwrap();
+    assert_eq!(alone.len(), 1);
+    assert!(alone[0].is_main && alone[0].is_current);
+    assert_eq!(alone[0].branch.as_deref(), Some("main"));
+
+    let parent = scratch("worktree-dest");
+    let dest = parent.join("side-folder");
+    let dest_arg = dest.to_string_lossy().into_owned();
+    worktree::add(&state, &dest_arg, "side", None).unwrap();
+
+    let both = worktree::list(&state).unwrap();
+    assert_eq!(both.len(), 2);
+    let added = both.iter().find(|tree| !tree.is_main).unwrap();
+    assert_eq!(added.name, "side-folder");
+    assert_eq!(added.branch.as_deref(), Some("side"));
+    assert!(!added.is_current);
+    // The folder is an ordinary checkout of the branch.
+    assert_eq!(
+        git_at(&dest, &["rev-parse", "--abbrev-ref", "HEAD"]).trim(),
+        "side"
+    );
+
+    // One branch, one folder: a second worktree on the same branch is refused,
+    // which is what makes the sidebar disable the menu item.
+    let second = parent.join("side-again").to_string_lossy().into_owned();
+    assert!(worktree::add(&state, &second, "side", None).is_err());
+
+    worktree::remove(&state, &dest_arg, false).unwrap();
+    assert_eq!(worktree::list(&state).unwrap().len(), 1);
+    assert!(!dest.exists());
+
+    let _ = std::fs::remove_dir_all(&parent);
+}
+
+#[test]
+fn a_worktree_with_open_changes_is_kept_unless_forced() {
+    let sandbox = Sandbox::new("worktree-dirty");
+    sandbox.commit("a.txt", "one\n", "First");
+    sandbox.git(&["branch", "side"]);
+    let state = sandbox.state();
+
+    let parent = scratch("worktree-dirty-dest");
+    let dest = parent.join("side-folder");
+    let dest_arg = dest.to_string_lossy().into_owned();
+    worktree::add(&state, &dest_arg, "side", None).unwrap();
+    std::fs::write(dest.join("forgotten.txt"), "half-finished\n").unwrap();
+
+    assert!(
+        worktree::remove(&state, &dest_arg, false).is_err(),
+        "uncommitted work is exactly what a remove must not eat quietly"
+    );
+    assert!(dest.exists());
+
+    worktree::remove(&state, &dest_arg, true).unwrap();
+    assert!(!dest.exists());
+
+    let _ = std::fs::remove_dir_all(&parent);
+}
+
+#[test]
+fn a_remote_only_branch_gets_a_tracking_branch_in_its_worktree() {
+    let sandbox = Sandbox::new("worktree-remote");
+    sandbox.commit("a.txt", "one\n", "First");
+    sandbox.git(&["checkout", "-q", "-b", "feature"]);
+    sandbox.commit("b.txt", "two\n", "Second");
+    sandbox.git(&["checkout", "-q", "main"]);
+    bare_origin(&sandbox, "worktree-remote");
+    sandbox.git(&["push", "-q", "origin", "feature"]);
+    sandbox.git(&["fetch", "-q", "origin"]);
+    sandbox.git(&["branch", "-q", "-D", "feature"]);
+    let state = sandbox.state();
+
+    let parent = scratch("worktree-remote-dest");
+    let dest = parent.join("feature-folder");
+    let dest_arg = dest.to_string_lossy().into_owned();
+    worktree::add(&state, &dest_arg, "feature", Some("origin/feature")).unwrap();
+
+    assert_eq!(
+        git_at(&dest, &["rev-parse", "--abbrev-ref", "HEAD"]).trim(),
+        "feature"
+    );
+    assert_eq!(
+        git_at(&dest, &["rev-parse", "--abbrev-ref", "feature@{upstream}"]).trim(),
+        "origin/feature",
+        "the branch should follow the remote one it was made from"
+    );
+
+    let _ = std::fs::remove_dir_all(&parent);
 }

@@ -13,6 +13,7 @@ import {
   EyeOff,
   ExternalLink,
   Folder,
+  FolderGit2,
   FolderOpen,
   GitBranch,
   GitMerge,
@@ -27,12 +28,22 @@ import {
   Trash2,
   Upload
 } from 'lucide-vue-next'
-import { copyText, fullTime, relativeTime, useGit, type Tag as TagRef } from '~/composables/useGit'
+import {
+  copyText,
+  fullTime,
+  relativeTime,
+  useGit,
+  type Tag as TagRef,
+  type Worktree
+} from '~/composables/useGit'
 import { useContextMenu } from '~/composables/useContextMenu'
 import { useDragDrop } from '~/composables/useDragDrop'
 import { useForge, type Review } from '~/composables/useForge'
 import { useReview } from '~/composables/useReview'
 import { useConfig } from '~/composables/useConfig'
+
+/** A worktree row opens its folder as a project tab, which is the shell's job. */
+const emit = defineEmits<{ open: [path: string] }>()
 
 const git = useGit()
 const store = git.store
@@ -54,11 +65,12 @@ function readSections() {
       locals: saved.locals !== false,
       remotes: saved.remotes !== false,
       tags: saved.tags === true,
+      worktrees: saved.worktrees !== false,
       stashes: saved.stashes !== false,
       reviews: saved.reviews !== false
     }
   } catch {
-    return { locals: true, remotes: true, tags: false, stashes: true, reviews: true }
+    return { locals: true, remotes: true, tags: false, worktrees: true, stashes: true, reviews: true }
   }
 }
 
@@ -201,7 +213,7 @@ function shelve<T extends { name: string }>(
 
 /** The sections that can be dragged. Stashes is not one: it is last, and takes
     whatever the others leave. */
-type Section = 'locals' | 'remotes' | 'reviews' | 'tags'
+type Section = 'locals' | 'remotes' | 'reviews' | 'tags' | 'worktrees'
 
 const SIZES_KEY = 'gitnoob:sidebar-sizes'
 
@@ -699,6 +711,15 @@ function localMenu(event: MouseEvent, name: string, upstream: string | null) {
         action: () => git.pushBranch(name, !upstream)
       },
       { label: 'Check out', icon: GitBranch, disabled: isHead, action: () => git.checkout(name) },
+      {
+        label: 'Open in a new worktree…',
+        icon: FolderGit2,
+        disabled: !!inWorktree(name),
+        hint: inWorktree(name)
+          ? `already checked out in ${inWorktree(name)!.name}`
+          : 'a second folder on this repository',
+        action: () => promptWorktree(name)
+      },
       { separator: true, label: '' },
       // All three move history between two branches, in different directions,
       // and "merge" alone does not say which way. Name both branches and say
@@ -794,6 +815,20 @@ function remoteMenu(event: MouseEvent, remote: string, name: string) {
         label: 'Check out as a local branch',
         icon: GitBranch,
         action: () => git.checkout(full)
+      },
+      {
+        // The branch may not exist here yet; the backend creates it following
+        // the remote one, the way an ordinary checkout of it would.
+        label: 'Check out in a new worktree…',
+        icon: FolderGit2,
+        disabled: !!inWorktree(name),
+        hint: inWorktree(name)
+          ? `already checked out in ${inWorktree(name)!.name}`
+          : 'this window stays where it is',
+        action: () => {
+          const local = store.refs?.locals.some((b) => b.name === name)
+          promptWorktree(name, local ? undefined : full)
+        }
       },
       {
         label: `Merge into ${head.value}`,
@@ -957,6 +992,133 @@ function stashMenu(event: MouseEvent, index: number, message: string) {
     ],
     message
   )
+}
+
+// --- worktrees
+
+/**
+ * The section only stands once the repository has a second folder: a worktree
+ * is a power tool, and every repository would otherwise carry a one-row
+ * section describing itself. The way in is the branch menu's "Open in a new
+ * worktree", which is where the feature is discovered.
+ */
+const worktrees = computed(() =>
+  store.worktrees.filter((tree) => match(`${tree.name} ${tree.branch ?? ''}`))
+)
+
+/** The worktree holding a branch, which is what blocks checking it out twice. */
+function inWorktree(branch: string) {
+  return store.worktrees.find((tree) => tree.branch === branch)
+}
+
+function describeWorktree(tree: Worktree) {
+  const lines = [tree.path, tree.branch ? `On ${tree.branch}` : 'Detached HEAD']
+  if (tree.is_main) lines.push('The main folder — the repository itself lives here.')
+  if (tree.locked) lines.push('Locked.')
+  lines.push(tree.is_current ? 'Open in this tab.' : 'Click to open it as a tab.')
+  return lines.join('\n')
+}
+
+function openWorktree(tree: Worktree) {
+  if (tree.is_current) return
+  emit('open', tree.path)
+}
+
+/** A sibling folder named after the repository and the branch. */
+function worktreeSuggestion(branch: string) {
+  const root = store.repo?.path ?? ''
+  return `${root}-${branch.replace(/[/\\]/g, '-')}`
+}
+
+/**
+ * Asks where the new folder should go, then opens it as a tab.
+ *
+ * `track` names the remote-tracking ref to create the branch from when it
+ * does not exist here yet, the same branch checking it out here would make.
+ */
+function promptWorktree(branch: string, track?: string) {
+  prompt.value = {
+    title: `Open ${branch} in a new worktree`,
+    label: 'Folder',
+    initial: worktreeSuggestion(branch),
+    confirm: 'Create worktree',
+    hint:
+      'A second folder with this branch checked out, opened as its own tab. ' +
+      'This window stays on what it has.',
+    run: (value) => {
+      void (async () => {
+        const made = await git.worktreeAdd(value.trim(), branch, track)
+        if (made !== null) emit('open', value.trim())
+      })()
+    }
+  }
+}
+
+function worktreeMenu(event: MouseEvent, tree: Worktree) {
+  menu.show(
+    event,
+    [
+      {
+        label: 'Open as a tab',
+        icon: FolderOpen,
+        disabled: tree.is_current,
+        hint: tree.is_current ? 'this tab' : '',
+        action: () => openWorktree(tree)
+      },
+      {
+        label: git.revealLabel,
+        icon: Folder,
+        action: () => {
+          void git.reveal(tree.path)
+        }
+      },
+      {
+        label: 'Copy path',
+        icon: Copy,
+        action: () => {
+          void copyText(tree.path, 'Path')
+        }
+      },
+      { separator: true, label: '' },
+      {
+        // Plain remove first: git refuses it over uncommitted work, which is
+        // the safety this row relies on. The forced one is for when that
+        // refusal has been read and meant nothing.
+        label: 'Remove worktree',
+        icon: Trash2,
+        danger: true,
+        disabled: tree.is_main || tree.is_current,
+        hint: tree.is_main ? 'the repository itself' : tree.is_current ? 'this tab' : '',
+        action: () => void removeWorktree(tree, false)
+      },
+      {
+        label: 'Remove even with changes…',
+        icon: Trash2,
+        danger: true,
+        disabled: tree.is_main || tree.is_current,
+        action: () => {
+          prompt.value = {
+            title: `Remove ${tree.name} and its changes?`,
+            label: 'Type the folder name to confirm',
+            confirm: 'Remove it all',
+            danger: true,
+            hint: 'Uncommitted work in that folder is deleted with it. Commits are safe.',
+            run: (value) => {
+              if (value === tree.name) void removeWorktree(tree, true)
+              else git.note('Name did not match; nothing was removed', 'error')
+            }
+          }
+        }
+      }
+    ],
+    tree.name
+  )
+}
+
+/** Removes the folder, and the tab that pointed at it when there was one. */
+async function removeWorktree(tree: Worktree, force: boolean) {
+  const said = await git.worktreeRemove(tree.path, force)
+  if (said !== null) await config.closeProject(tree.path)
 }
 </script>
 
@@ -1249,6 +1411,43 @@ function stashMenu(event: MouseEvent, index: number, message: string) {
         @pointerdown="grab($event, 'tags')"
         @dblclick="resetSize('tags')"
       />
+
+      <!-- Worktrees: other folders this repository is checked out into. Only
+           once there is a second one — the branch menu is the way to make it. -->
+      <template v-if="store.worktrees.length > 1">
+        <button class="section-title toggle" @click="open.worktrees = !open.worktrees">
+          <ChevronRight :size="12" class="chev" :class="{ down: open.worktrees }" />
+          <FolderGit2 :size="12" class="mark" />
+          Worktrees
+          <span class="count">{{ worktrees.length }}</span>
+        </button>
+        <div v-if="open.worktrees" class="group" :style="sizeOf('worktrees')">
+          <div
+            v-for="tree in worktrees"
+            :key="tree.path"
+            class="row stash"
+            :class="{ on: tree.is_current }"
+            :title="describeWorktree(tree)"
+            @click="openWorktree(tree)"
+            @contextmenu="worktreeMenu($event, tree)"
+          >
+            <FolderGit2 :size="13" class="glyph" :class="{ current: tree.is_current }" />
+            <span class="names">
+              <span class="name truncate">{{ tree.name }}</span>
+              <span class="faint meta">
+                {{ tree.branch ?? 'detached' }}{{ tree.is_main ? ' · main folder' : '' }}
+              </span>
+            </span>
+          </div>
+        </div>
+        <div
+          v-if="open.worktrees"
+          class="grip"
+          title="Drag to resize · double-click to reset"
+          @pointerdown="grab($event, 'worktrees')"
+          @dblclick="resetSize('worktrees')"
+        />
+      </template>
 
       <!-- Stashes -->
       <button class="section-title toggle" @click="open.stashes = !open.stashes">

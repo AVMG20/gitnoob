@@ -271,7 +271,7 @@ onUnmounted(() => {
           <ReviewPane />
         </template>
         <template v-else>
-          <SideBar />
+          <SideBar @open="openProject" />
           <ResizeHandle side="sidebar" />
           <GraphList />
         </template>

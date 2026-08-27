@@ -384,7 +384,7 @@ it. These are the gaps that hurt that person specifically.
       host-key failure and an HTTPS remote with no credential helper
 - [ ] Offer to fix a detached HEAD rather than only reporting it
 - [ ] Repository health: stale branches, old stashes, unmerged work
-- [ ] Submodules and worktrees
+- [~] Submodules and worktrees — worktrees are done (round 7); submodules are not
 - [ ] Large-repo paging: carry the graph's lane state across pages instead of
       re-walking from the first commit
 
@@ -480,6 +480,18 @@ thing happens here.
       refused push, standing only while the branch is still diverged), always
       rebase, always merge, or just switch. The strip's actions run the same
       rebase/merge paths the toolbar uses, conflicts and resolver included
+- [x] **Worktrees.** A `worktree.rs` module wraps `git worktree list
+      --porcelain`, `add` (with `--track -b` for a branch that only exists on a
+      remote) and `remove` (plain remove refuses over uncommitted work; forced
+      remove is a separate, typed-confirmation menu item). The sidebar grows a
+      Worktrees section — only once the repository has a second folder — where
+      a row opens the worktree as an ordinary project tab; right-click offers
+      open, reveal, copy path and the two removes, and removing also closes
+      the tab that pointed there. "Open in a new worktree…" on a local branch
+      and "Check out in a new worktree…" on a remote one suggest a sibling
+      folder named `<repo>-<branch>`; both are disabled with a reason when a
+      worktree already holds that branch, which is git's own one-branch-one-
+      folder rule
 
 ## How to run it
 

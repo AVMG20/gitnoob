@@ -15,6 +15,7 @@ pub mod ssh;
 pub mod state;
 pub mod watch;
 pub mod work;
+pub mod worktree;
 
 use std::path::PathBuf;
 
@@ -262,6 +263,36 @@ fn unset_upstream(branch: String, state: State<'_, AppState>) -> Result<String, 
 #[tauri::command]
 fn stale_branches(state: State<'_, AppState>) -> Result<Vec<String>, String> {
     refs::stale_branches(&state)
+}
+
+// --- worktrees ---------------------------------------------------------------
+
+/// Every folder this repository is checked out into.
+#[tauri::command]
+async fn worktree_list(state: State<'_, AppState>) -> Result<Vec<worktree::Worktree>, String> {
+    worktree::list(&state)
+}
+
+/// Checks a branch out into a new folder, creating it from a remote-tracking
+/// ref when `track` names one.
+#[tauri::command]
+async fn worktree_add(
+    path: String,
+    branch: String,
+    track: Option<String>,
+    state: State<'_, AppState>,
+) -> Result<String, String> {
+    worktree::add(&state, &path, &branch, track.as_deref())
+}
+
+/// Removes a worktree; `force` throws its uncommitted work away too.
+#[tauri::command]
+async fn worktree_remove(
+    path: String,
+    force: Option<bool>,
+    state: State<'_, AppState>,
+) -> Result<String, String> {
+    worktree::remove(&state, &path, force.unwrap_or(false))
 }
 
 #[tauri::command]
@@ -1359,6 +1390,9 @@ pub fn run() {
             set_upstream,
             unset_upstream,
             stale_branches,
+            worktree_list,
+            worktree_add,
+            worktree_remove,
             add_to_gitignore,
             remotes,
             remote_url,
