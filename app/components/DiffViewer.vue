@@ -38,6 +38,17 @@ const body = ref<HTMLElement | null>(null)
  */
 const top = ref(0)
 const boxHeight = ref(0)
+/**
+ * How far sideways it is scrolled, and how wide the box is.
+ *
+ * A hunk heading is as wide as the widest line in the file, so its buttons sat
+ * at the end of that width — off the right of the window in any file with a
+ * long line in it, reachable only by scrolling away from the code you were
+ * about to stage. The heading is drawn the width of the box instead and moved
+ * along with the scroll, which needs both of these.
+ */
+const left = ref(0)
+const boxWidth = ref(0)
 let queued = false
 
 function onScroll() {
@@ -45,7 +56,9 @@ function onScroll() {
   queued = true
   requestAnimationFrame(() => {
     queued = false
-    if (body.value) top.value = body.value.scrollTop
+    if (!body.value) return
+    top.value = body.value.scrollTop
+    left.value = body.value.scrollLeft
   })
 }
 
@@ -277,8 +290,10 @@ onMounted(() => {
   if (!box) return
   box.addEventListener('scroll', onScroll, { passive: true })
   boxHeight.value = box.clientHeight
+  boxWidth.value = box.clientWidth
   sizer = new ResizeObserver(() => {
     boxHeight.value = box.clientHeight
+    boxWidth.value = box.clientWidth
   })
   sizer.observe(box)
 })
@@ -379,6 +394,8 @@ onUnmounted(() => window.removeEventListener('keydown', onKey))
           :busy="store.busy"
           :top="top"
           :view="boxHeight"
+          :left="left"
+          :width="boxWidth"
           @hunk="onHunk"
         />
       </div>

@@ -15,6 +15,9 @@ const props = defineProps<{
   /** Where the box that scrolls this is scrolled to, and how tall it is. */
   top?: number
   view?: number
+  /** The same sideways: how far it is scrolled, and how wide the box is. */
+  left?: number
+  width?: number
 }>()
 const emit = defineEmits<{ hunk: [number, 'stage' | 'unstage' | 'discard'] }>()
 
@@ -107,6 +110,23 @@ const pinned = computed(() => {
   return hunk
 })
 
+/**
+ * Where a hunk heading is drawn, and how wide.
+ *
+ * As wide as the box rather than as wide as the file, and carried along by the
+ * horizontal scroll, so the heading and the buttons on it are in the same place
+ * whatever the longest line in the file did to the width. Without a box to
+ * measure — nothing has told it yet — it falls back to the old full width,
+ * which is right until the first scroll event.
+ */
+function headStyle(at: number) {
+  return {
+    top: `${at}px`,
+    width: props.width ? `${props.width}px` : '100%',
+    transform: props.left ? `translateX(${props.left}px)` : undefined
+  }
+}
+
 /** The longest line in the patch, which is what holds the view open sideways. */
 const longest = computed(() => {
   let found = ''
@@ -151,7 +171,7 @@ function paint(line: DiffLine) {
           <div
             v-if="row.kind === 'head'"
             class="hunk-head mono"
-            :style="{ top: `${row.top}px` }"
+            :style="headStyle(row.top)"
           >
             <span class="truncate">{{ props.diff.hunks[row.hunk]?.header }}</span>
             <!-- Discard sits away from the staging button, so the destructive
@@ -192,7 +212,7 @@ function paint(line: DiffLine) {
         <div
           v-if="pinned !== null"
           class="hunk-head mono pin"
-          :style="{ top: `${props.top ?? 0}px` }"
+          :style="headStyle(props.top ?? 0)"
         >
           <span class="truncate">{{ props.diff.hunks[pinned]?.header }}</span>
           <span v-if="props.side" class="hunk-actions">
