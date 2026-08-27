@@ -1472,6 +1472,62 @@ fn undoing_a_stash_says_so_once_it_is_gone() {
     assert!(refused.contains("not in the list any more"), "{refused}");
 }
 
+/// `git stash push` exits 0 on a clean tree without creating anything — the
+/// entry it would journal is whatever stash already topped the list, made by
+/// someone else entirely.
+#[test]
+fn stashing_a_clean_tree_does_not_journal_an_unrelated_stash() {
+    let sandbox = Sandbox::new("stashnoop");
+    sandbox.commit("a.txt", "one\n", "First");
+    let state = sandbox.state();
+
+    // A stash that already exists, made outside this call.
+    sandbox.write("a.txt", "one\nsomeone else's\n");
+    sandbox.git(&["stash", "push", "-q", "-m", "pre-existing"]);
+
+    let output = gitnoob_lib::work::stash_push(&state, Some("mine"), false).unwrap();
+    assert!(output.contains("No local changes"), "{output}");
+
+    // Nothing to undo, and certainly not a pop of the pre-existing stash.
+    assert!(gitnoob_lib::journal::stacks(&state).undo.is_empty());
+    assert!(gitnoob_lib::journal::undo(&state).is_err());
+    let left = gitnoob_lib::work::stash_list(&state).unwrap();
+    assert_eq!(left.len(), 1);
+    assert_eq!(left[0].message, "pre-existing");
+}
+
+/// The redo half of the same hazard: stashing again after an undo, on an
+/// already-clean tree, must not silently adopt whatever else is on the stash.
+#[test]
+fn redoing_a_stash_on_a_clean_tree_refuses_rather_than_stealing_one() {
+    let sandbox = Sandbox::new("stashredoclean");
+    sandbox.commit("a.txt", "one\n", "First");
+    sandbox.commit("b.txt", "one\n", "Second");
+    let state = sandbox.state();
+
+    sandbox.write("a.txt", "one\nmine\n");
+    gitnoob_lib::work::stash_push(&state, Some("mine"), false).unwrap();
+    let made = gitnoob_lib::journal::stacks(&state).undo[0].after.clone();
+
+    gitnoob_lib::journal::undo(&state).unwrap();
+    // Back to a clean tree, with a stash made elsewhere sitting on the list.
+    gitnoob_lib::work::discard(&state, &["a.txt".to_string()]).unwrap();
+    sandbox.write("b.txt", "one\nsomeone else's\n");
+    sandbox.git(&["stash", "push", "-q", "-m", "unrelated"]);
+
+    let error = gitnoob_lib::journal::redo(&state).unwrap_err();
+    assert!(error.contains("nothing to stash"), "{error}");
+
+    // Refusing must leave the step exactly as it was, for a later retry.
+    let stacks = gitnoob_lib::journal::stacks(&state);
+    assert_eq!(stacks.redo.len(), 1);
+    assert_eq!(stacks.redo[0].after, made);
+
+    let left = gitnoob_lib::work::stash_list(&state).unwrap();
+    assert_eq!(left.len(), 1);
+    assert_eq!(left[0].message, "unrelated");
+}
+
 #[test]
 fn undo_refuses_once_the_branch_has_moved_outside_the_history() {
     let sandbox = Sandbox::new("undomoved");
@@ -1531,6 +1587,24 @@ fn a_renamed_stash_still_holds_what_it_held() {
     );
 }
 
+/// The message becomes one line of `logs/refs/stash`; a newline in it would
+/// write an extra, malformed line and corrupt every other entry's indexing.
+#[test]
+fn stash_rename_rejects_a_message_with_a_line_break() {
+    let sandbox = Sandbox::new("stashrenamenewline");
+    sandbox.commit("a.txt", "one\n", "First");
+    let state = sandbox.state();
+    sandbox.write("a.txt", "one\nmine\n");
+    gitnoob_lib::work::stash_push(&state, Some("mine"), false).unwrap();
+
+    let error = gitnoob_lib::work::stash_rename(&state, 0, "line one\nline two").unwrap_err();
+    assert!(error.contains("line break"), "{error}");
+
+    // Refusing must not have touched the reflog.
+    let list = gitnoob_lib::work::stash_list(&state).unwrap();
+    assert_eq!(list[0].message, "mine");
+}
+
 #[test]
 fn deleting_new_files_leaves_the_tracked_ones_alone() {
     let sandbox = Sandbox::new("deletenew");
@@ -1548,6 +1622,46 @@ fn deleting_new_files_leaves_the_tracked_ones_alone() {
     assert_eq!(
         std::fs::read_to_string(sandbox.root.join("a.txt")).unwrap(),
         "one\nchanged\n"
+    );
+}
+
+/// A pathspec after `--` still wildmatches by default: asking to delete a file
+/// literally named `*` must not turn into `git clean -f -d -- '*'`, which would
+/// match — and delete — every untracked file in the repository.
+#[test]
+fn deleting_a_file_named_with_glob_characters_does_not_take_everything_with_it() {
+    let sandbox = Sandbox::new("globclean");
+    sandbox.commit("a.txt", "one\n", "First");
+    let state = sandbox.state();
+    sandbox.write("*", "literally named star\n");
+    sandbox.write("also-untracked.txt", "should survive\n");
+
+    gitnoob_lib::work::delete_untracked(&state, &["*".to_string()]).unwrap();
+
+    assert!(!sandbox.root.join("*").exists());
+    assert!(sandbox.root.join("also-untracked.txt").exists());
+}
+
+/// Same hazard for discard: `restore --worktree -- 'a*.txt'` would otherwise
+/// also discard `abc.txt`.
+#[test]
+fn discarding_a_path_with_glob_characters_leaves_similarly_named_files_alone() {
+    let sandbox = Sandbox::new("globdiscard");
+    sandbox.commit("a*.txt", "one\n", "First");
+    sandbox.commit("abc.txt", "one\n", "Second");
+    let state = sandbox.state();
+    sandbox.write("a*.txt", "one\nedited\n");
+    sandbox.write("abc.txt", "one\nedited\n");
+
+    gitnoob_lib::work::discard(&state, &["a*.txt".to_string()]).unwrap();
+
+    assert_eq!(
+        std::fs::read_to_string(sandbox.root.join("a*.txt")).unwrap(),
+        "one\n"
+    );
+    assert_eq!(
+        std::fs::read_to_string(sandbox.root.join("abc.txt")).unwrap(),
+        "one\nedited\n"
     );
 }
 
@@ -1618,6 +1732,26 @@ fn stash_apply_keeps_the_entry_and_drop_removes_it() {
     assert!(gitnoob_lib::work::stash_list(&state).unwrap().is_empty());
 }
 
+/// `pop`, `apply` and `drop` resolve the index they are given to a commit id
+/// before acting, so a position nothing is at any more says so plainly instead
+/// of surfacing git's own "ambiguous argument" text for a ref that never
+/// existed as far as the caller is concerned.
+#[test]
+fn stash_operations_on_a_position_that_is_not_there_say_so_plainly() {
+    let sandbox = Sandbox::new("stashgoneindex");
+    sandbox.commit("a.txt", "one\n", "First");
+    let state = sandbox.state();
+
+    let pop_error = gitnoob_lib::work::stash_pop(&state, 0).unwrap_err();
+    assert!(pop_error.contains("no stash"), "{pop_error}");
+
+    let apply_error = gitnoob_lib::work::stash_apply(&state, 0).unwrap_err();
+    assert!(apply_error.contains("no stash"), "{apply_error}");
+
+    let drop_error = gitnoob_lib::work::stash_drop(&state, 0).unwrap_err();
+    assert!(drop_error.contains("no stash"), "{drop_error}");
+}
+
 #[test]
 fn a_stash_can_become_a_branch() {
     let sandbox = Sandbox::new("stashbranch");
@@ -1635,6 +1769,71 @@ fn a_stash_can_become_a_branch() {
     );
     // `git stash branch` consumes the entry.
     assert!(gitnoob_lib::work::stash_list(&state).unwrap().is_empty());
+}
+
+/// A branch name beginning with `-` is real once it exists — a fetch can hand
+/// one back as `origin/-f` — and without `--end-of-options` git parses it as a
+/// flag rather than the name to give the rescued branch.
+#[test]
+fn stash_branch_treats_a_dash_led_name_as_a_name_not_a_flag() {
+    let sandbox = Sandbox::new("stashbranchdash");
+    sandbox.commit("a.txt", "one\n", "First");
+    sandbox.write("a.txt", "one\nwork\n");
+    let state = sandbox.state();
+    gitnoob_lib::work::stash_push(&state, Some("rescue this"), false).unwrap();
+
+    let error = gitnoob_lib::work::stash_branch(&state, 0, "-weird").unwrap_err();
+    // It should fail on git's branch-name validation, not on option parsing —
+    // proof the name reached the right argument slot.
+    assert!(!error.contains("unknown switch"), "{error}");
+    assert!(!error.contains("unknown option"), "{error}");
+}
+
+#[test]
+fn undo_restore_recovers_from_a_conflicted_auto_stash_pop() {
+    let sandbox = carry_sandbox("undorestoreok");
+    // The same line both sides changed, which is what a plain pop conflicts on.
+    sandbox.write("f.txt", &LINES.replace("eight", "EIGHT-mine"));
+    let state = sandbox.state();
+
+    let held = gitnoob_lib::work::stash_before(&state, "testing").unwrap();
+    sandbox.git(&["checkout", "-q", "other"]);
+    gitnoob_lib::work::restore_after(&state, held).unwrap_err();
+
+    gitnoob_lib::work::undo_restore(&state).unwrap();
+
+    assert_eq!(refs::describe(&state).unwrap().head, "main");
+    assert!(std::fs::read_to_string(sandbox.root.join("f.txt"))
+        .unwrap()
+        .contains("EIGHT-mine"));
+    assert!(gitnoob_lib::work::stash_list(&state).unwrap().is_empty());
+}
+
+/// A hard reset guarded only by "the top stash looks like an auto-stash" would
+/// throw away anything typed since a failed restore, because that new work
+/// exists nowhere else — not even in the stash it is being confused for.
+#[test]
+fn undo_restore_refuses_to_throw_away_changes_the_stash_never_made() {
+    let sandbox = carry_sandbox("undorestoreguard");
+    sandbox.write("f.txt", &LINES.replace("eight", "EIGHT-mine"));
+    let state = sandbox.state();
+
+    let held = gitnoob_lib::work::stash_before(&state, "testing").unwrap();
+    sandbox.git(&["checkout", "-q", "other"]);
+    gitnoob_lib::work::restore_after(&state, held).unwrap_err();
+
+    // New work since the failed restore, in a file the stash never touched.
+    sandbox.write("unrelated.txt", "brand new, never stashed\n");
+
+    let error = gitnoob_lib::work::undo_restore(&state).unwrap_err();
+    assert!(error.contains("unrelated.txt"), "{error}");
+
+    // Refusing must not have thrown anything away.
+    assert_eq!(
+        std::fs::read_to_string(sandbox.root.join("unrelated.txt")).unwrap(),
+        "brand new, never stashed\n"
+    );
+    assert_eq!(gitnoob_lib::work::stash_list(&state).unwrap().len(), 1);
 }
 
 #[test]
@@ -2699,6 +2898,115 @@ fn resolving_does_not_add_a_newline_the_file_never_had() {
 }
 
 #[test]
+fn a_setext_heading_in_our_side_does_not_flip_the_parser() {
+    let sandbox = Sandbox::new("conflict-setext");
+    sandbox.commit("a.txt", "Title\nintro\nbottom\n", "Base");
+    sandbox.git(&["checkout", "-q", "-b", "theirs"]);
+    sandbox.commit("a.txt", "Title\ntheir intro\nbottom\n", "Their change");
+    sandbox.git(&["checkout", "-q", "main"]);
+    // Our change turns the line into a Markdown heading, whose underline is
+    // eight `=` — one more than git's own split marker.
+    sandbox.commit("a.txt", "Title\n========\nour intro\nbottom\n", "Our change");
+    assert!(!sandbox.git_may_fail(&["merge", "theirs"]));
+
+    let state = sandbox.state();
+    let file = conflict::read(&state, "a.txt").unwrap();
+    assert_eq!(file.conflict_count, 1);
+
+    let (ours, theirs) = file
+        .blocks
+        .iter()
+        .find_map(|block| match block {
+            conflict::Block::Conflict { ours, theirs, .. } => Some((ours.clone(), theirs.clone())),
+            _ => None,
+        })
+        .expect("there should be one conflict region");
+
+    assert_eq!(ours, vec!["========".to_string(), "our intro".to_string()]);
+    assert_eq!(theirs, vec!["their intro".to_string()]);
+
+    let choices = vec![conflict::Resolution {
+        take_ours: true,
+        take_theirs: false,
+        ours_first: true,
+        custom: None,
+    }];
+    assert_eq!(
+        conflict::preview(&state, "a.txt", &choices).unwrap(),
+        "Title\n========\nour intro\nbottom\n"
+    );
+}
+
+/// Sets up a merge that conflicts in two separate regions of the same file.
+/// The regions are kept far enough apart that git treats them as distinct
+/// hunks rather than folding them into one.
+fn conflicted_twice() -> Sandbox {
+    let filler = "context\n".repeat(10);
+    let base = format!("one\ntwo\n{filler}three\nfour\n");
+    let theirs = format!("one\ntheir two\n{filler}three\ntheir four\n");
+    let ours = format!("one\nour two\n{filler}three\nour four\n");
+
+    let sandbox = Sandbox::new("conflict-twice");
+    sandbox.commit("a.txt", &base, "Base");
+    sandbox.git(&["checkout", "-q", "-b", "theirs"]);
+    sandbox.commit("a.txt", &theirs, "Their change");
+    sandbox.git(&["checkout", "-q", "main"]);
+    sandbox.commit("a.txt", &ours, "Our change");
+    assert!(!sandbox.git_may_fail(&["merge", "theirs"]));
+    sandbox
+}
+
+#[test]
+fn resolving_with_fewer_choices_than_conflicts_is_refused() {
+    let sandbox = conflicted_twice();
+    let state = sandbox.state();
+    let file = conflict::read(&state, "a.txt").unwrap();
+    assert_eq!(file.conflict_count, 2);
+
+    let one_choice = vec![conflict::Resolution {
+        take_ours: true,
+        take_theirs: false,
+        ours_first: true,
+        custom: None,
+    }];
+
+    // The preview stays forgiving, defaulting the unanswered region to ours,
+    // which here reproduces our commit exactly.
+    let filler = "context\n".repeat(10);
+    assert_eq!(
+        conflict::preview(&state, "a.txt", &one_choice).unwrap(),
+        format!("one\nour two\n{filler}three\nour four\n")
+    );
+
+    // Writing on that same guess would stage a region nobody actually chose.
+    let error = conflict::resolve(&state, "a.txt", &one_choice).unwrap_err();
+    assert!(error.contains('2') && error.contains('1'), "unexpected: {error}");
+    assert!(!conflict::list(&state).unwrap().is_empty(), "the conflict must not be cleared");
+
+    let empty: Vec<conflict::Resolution> = Vec::new();
+    assert!(conflict::resolve(&state, "a.txt", &empty).is_err());
+}
+
+#[test]
+fn a_non_utf8_conflicted_file_is_still_recognised_as_marked() {
+    let sandbox = conflicted();
+    // Overwrite the live markers with a copy that also carries a byte no
+    // encoding recognises, the way a Latin-1 comment or a mixed-encoding
+    // fixture would.
+    let mut broken = std::fs::read(sandbox.root.join("a.txt")).unwrap();
+    broken.push(b'\n');
+    broken.extend_from_slice(b"non-utf8: \xff\n");
+    assert!(String::from_utf8(broken.clone()).is_err());
+    std::fs::write(sandbox.root.join("a.txt"), &broken).unwrap();
+
+    let state = sandbox.state();
+    assert_eq!(conflict::marked(&state).unwrap(), vec!["a.txt".to_string()]);
+
+    let error = conflict::stage_all(&state).unwrap_err();
+    assert!(error.contains("a.txt"), "unexpected: {error}");
+}
+
+#[test]
 fn pulling_a_diverged_branch_does_not_ask_how_to_reconcile() {
     let sandbox = Sandbox::new("pull-divergent");
     sandbox.commit("a.txt", "one\n", "One");
@@ -2755,6 +3063,65 @@ fn a_branch_named_like_a_file_still_checks_out() {
     // for and what the `--` guarantees.
     refs::checkout(&state, "release").unwrap();
     assert_eq!(sandbox.git(&["branch", "--show-current"]).trim(), "release");
+}
+
+#[test]
+fn checking_out_a_branch_named_like_a_flag_does_not_discard_uncommitted_changes() {
+    let sandbox = Sandbox::new("checkout-dash-branch");
+    sandbox.commit("notes.txt", "committed\n", "One");
+    // Porcelain refuses to create a branch called `-f` — `git branch -- -f` is
+    // an error — but `update-ref` writes the ref directly, and a remote that
+    // carries one hands it to the app exactly like any other branch name.
+    sandbox.git(&["update-ref", "refs/heads/-f", "HEAD"]);
+    sandbox.write("notes.txt", "work in progress\n");
+
+    let state = sandbox.state();
+    // Without `--end-of-options`, `-f` is read as `checkout`'s force flag with
+    // no branch named on the command line, which resets the working tree to
+    // HEAD and throws the edit away without a word.
+    refs::checkout(&state, "-f").unwrap();
+
+    assert_eq!(sandbox.git(&["branch", "--show-current"]).trim(), "-f");
+    assert_eq!(
+        std::fs::read_to_string(sandbox.root.join("notes.txt")).unwrap(),
+        "work in progress\n",
+        "the uncommitted edit must survive switching to a branch named -f"
+    );
+}
+
+#[test]
+fn creating_a_branch_from_a_start_point_named_like_a_flag_uses_that_start_point() {
+    let sandbox = Sandbox::new("create-dash-start");
+    sandbox.commit("a.txt", "one\n", "Base");
+    sandbox.git(&["update-ref", "refs/heads/-f", "HEAD"]);
+    let base = sandbox.git(&["rev-parse", "HEAD"]).trim().to_string();
+    sandbox.commit("a.txt", "two\n", "Ahead");
+
+    let state = sandbox.state();
+    // Without `--end-of-options`, `-f` is read as `branch`'s force flag and the
+    // start point silently falls back to HEAD, which is the wrong commit here.
+    refs::create_branch(&state, "topic", Some("-f"), false).unwrap();
+
+    assert_eq!(
+        sandbox.git(&["rev-parse", "topic"]).trim(),
+        base,
+        "topic must be created from -f, not from whatever HEAD happens to be"
+    );
+}
+
+#[test]
+fn a_branch_named_like_a_flag_can_be_deleted() {
+    let sandbox = Sandbox::new("delete-dash-branch");
+    sandbox.commit("a.txt", "one\n", "Base");
+    sandbox.git(&["update-ref", "refs/heads/-f", "HEAD"]);
+
+    let state = sandbox.state();
+    // Without `--end-of-options`, `-f` is read as another flag, leaving no
+    // branch name on the command line at all — git then lists branches
+    // instead of deleting one, and the app reports success for nothing done.
+    refs::delete_branch(&state, "-f", true).unwrap();
+
+    assert!(refs::tree(&state).unwrap().locals.iter().all(|b| b.name != "-f"));
 }
 
 #[test]

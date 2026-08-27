@@ -132,9 +132,11 @@ const store = reactive({
 
   files: [] as RFileWithDiff[],
   loadingFiles: false,
+  filesError: null as string | null,
 
   commits: [] as RCommit[],
   loadingCommits: false,
+  commitsError: null as string | null,
 
   /** How the review stands: what ran, who said what, whether it can land. */
   status: null as ReviewStatus | null,
@@ -306,6 +308,8 @@ export function useReview() {
     store.loadingCommits = true
     store.detailError = null
     store.commentsError = null
+    store.filesError = null
+    store.commitsError = null
 
     void forge.loadReviewDetail(number).finally(() => {
       if (!stillOpen(number)) return
@@ -328,12 +332,20 @@ export function useReview() {
             hunks: file.binary ? [] : parsePatch(file.patch).hunks
           })))
       )
-      .catch(() => stillOpen(number) && (store.files = []))
+      .catch((error) => {
+        if (!stillOpen(number)) return
+        store.files = []
+        store.filesError = String(error)
+      })
       .finally(() => stillOpen(number) && (store.loadingFiles = false))
 
     void invoke<RCommit[]>('forge_review_commits', { number })
       .then((commits) => stillOpen(number) && (store.commits = commits))
-      .catch(() => stillOpen(number) && (store.commits = []))
+      .catch((error) => {
+        if (!stillOpen(number)) return
+        store.commits = []
+        store.commitsError = String(error)
+      })
       .finally(() => stillOpen(number) && (store.loadingCommits = false))
 
     void loadStatus(number)
@@ -614,13 +626,13 @@ export function useReview() {
       })
       delete store.drafts.lines[lineDraftKey(where.path, where.side, where.line)]
       await refreshConversation()
+      store.draft = null
       return true
     } catch (error) {
       forge.store.error = String(error)
       return false
     } finally {
       store.sending = false
-      store.draft = null
     }
   }
 
@@ -710,6 +722,9 @@ export function useReview() {
   async function merge(squash = false, deleteBranch = false) {
     const current = store.current
     if (!current) return
+    // Kept from before the optimistic set below, since a draft or a closed
+    // review has no business landing back on 'open' when the merge fails.
+    const priorState = store.detail?.state ?? null
     store.acting = 'merge'
     try {
       store.detail && (store.detail.state = 'merged')
@@ -727,8 +742,20 @@ export function useReview() {
       store.detail = forge.store.details[current.number] ?? store.detail
       return note
     } catch (error) {
+      if (store.detail && priorState !== null) store.detail.state = priorState
+      // A refusal is worth asking the forge about again — a protected branch,
+      // a check that just failed — rather than trusting a guess at the old
+      // standing. Falls back to what is already held when the ask itself
+      // fails too, so a network drop does not blank a page it just restored.
+      // Run after the rollback, and set below rather than above, since
+      // `loadReviews` clears this same field on its own success.
+      await Promise.all([
+        forge.loadReviewDetail(current.number, true),
+        forge.loadReviews(),
+        loadStatus(current.number)
+      ])
+      store.detail = forge.store.details[current.number] ?? store.detail
       forge.store.error = String(error)
-      store.detail && store.detail.state !== 'merged' && (store.detail.state = 'open')
       return null
     } finally {
       store.acting = null
