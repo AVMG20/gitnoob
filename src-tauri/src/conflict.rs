@@ -112,6 +112,20 @@ const BASE: &str = "|||||||";
 const SPLIT: &str = "=======";
 const THEIRS: &str = ">>>>>>>";
 
+/// Whether `line` opens or closes one side of a conflict: exactly seven of
+/// `marker_char`, then either the end of the line or a space before a label.
+/// Git never writes an eighth in a row, so a longer run — a Markdown setext
+/// heading underline, a deep email quote — is content, not a marker.
+fn is_side_marker(line: &str, marker_char: char) -> bool {
+    let mut rest = line.chars();
+    for _ in 0..7 {
+        if rest.next() != Some(marker_char) {
+            return false;
+        }
+    }
+    matches!(rest.next(), None | Some(' '))
+}
+
 /// Paths git currently reports as conflicted.
 pub fn list(state: &AppState) -> Result<Vec<String>, String> {
     let repo = state.repo()?;
@@ -179,7 +193,7 @@ pub fn read(state: &AppState, path: &str) -> Result<ConflictFile, String> {
     let mut lines = text.lines().peekable();
 
     while let Some(line) = lines.next() {
-        if !line.starts_with(OURS) {
+        if !is_side_marker(line, '<') {
             context.push(line.to_string());
             continue;
         }
@@ -200,12 +214,12 @@ pub fn read(state: &AppState, path: &str) -> Result<ConflictFile, String> {
         let mut section = 0u8; // 0 = ours, 1 = base, 2 = theirs
 
         while let Some(line) = lines.next() {
-            if line.starts_with(BASE) {
+            if is_side_marker(line, '|') {
                 has_base = true;
                 section = 1;
-            } else if line.starts_with(SPLIT) {
+            } else if line == SPLIT {
                 section = 2;
-            } else if line.starts_with(THEIRS) {
+            } else if is_side_marker(line, '>') {
                 theirs_label = label(line, THEIRS);
                 break;
             } else {
@@ -249,6 +263,13 @@ pub fn read(state: &AppState, path: &str) -> Result<ConflictFile, String> {
 /// come from the same code.
 pub fn preview(state: &AppState, path: &str, choices: &[Resolution]) -> Result<String, String> {
     let file = read(state, path)?;
+    Ok(render(&file, choices))
+}
+
+/// Turns a parsed file plus the choices made so far into the text it resolves
+/// to. Shared by the preview, which tolerates an incomplete `choices`, and
+/// the write path, which does not.
+fn render(file: &ConflictFile, choices: &[Resolution]) -> String {
     let mut out: Vec<String> = Vec::new();
 
     for block in &file.blocks {
@@ -298,12 +319,26 @@ pub fn preview(state: &AppState, path: &str, choices: &[Resolution]) -> Result<S
     if !text.is_empty() && file.final_newline {
         text.push_str(file.eol.as_str());
     }
-    Ok(text)
+    text
 }
 
 /// Writes the resolved file and stages it, which is what clears the conflict.
+///
+/// Unlike the preview, an incomplete `choices` is an error here rather than a
+/// guess: defaulting an unanswered region to "ours" is fine for a pane the
+/// user is still looking at, but doing that on a write would stage regions
+/// nobody actually decided.
 pub fn resolve(state: &AppState, path: &str, choices: &[Resolution]) -> Result<String, String> {
-    let text = preview(state, path, choices)?;
+    let file = read(state, path)?;
+    if choices.len() < file.conflict_count {
+        return Err(format!(
+            "{path} has {} conflicts but only {} {} answered",
+            file.conflict_count,
+            choices.len(),
+            if choices.len() == 1 { "was" } else { "were" }
+        ));
+    }
+    let text = render(&file, choices);
     let root = state.path()?;
     let full = root.join(path);
     fs::write(&full, text).map_err(|e| format!("Could not write {}: {}", full.display(), e))?;
@@ -401,11 +436,12 @@ pub fn marked(state: &AppState) -> Result<Vec<String>, String> {
     let mut out = Vec::new();
     for path in list(state)? {
         let full = root.join(&path);
-        // A file that is not there cannot hold a marker, and neither can one
-        // that is not text.
+        // A file that is not there cannot hold a marker. One that is not
+        // valid UTF-8 can: the markers are plain ASCII regardless of what
+        // encoding the rest of the file is in, and staging them live is the
+        // one outcome this check exists to prevent.
         let Ok(bytes) = fs::read(&full) else { continue };
-        let Ok(text) = String::from_utf8(bytes) else { continue };
-        if has_markers(&text) {
+        if has_markers(&String::from_utf8_lossy(&bytes)) {
             out.push(path);
         }
     }
@@ -419,9 +455,9 @@ pub fn marked(state: &AppState) -> Result<Vec<String>, String> {
 fn has_markers(text: &str) -> bool {
     let mut opened = false;
     for line in text.lines() {
-        if line.starts_with(OURS) {
+        if is_side_marker(line, '<') {
             opened = true;
-        } else if opened && line.starts_with(THEIRS) {
+        } else if opened && is_side_marker(line, '>') {
             return true;
         }
     }
@@ -458,6 +494,29 @@ mod tests {
         assert!(!has_markers("<<<<<<< in a code sample\nnothing follows it\n"));
         assert!(!has_markers(">>>>>>> on its own\n"));
         assert!(!has_markers("an ordinary file\nwith ordinary lines\n"));
+    }
+
+    #[test]
+    fn a_marker_needs_exactly_seven_of_the_character() {
+        // A Markdown setext heading underline, or any other line of content
+        // that happens to repeat the character, is one character too many
+        // (or, for the split line, anything at all after it) to be real.
+        assert!(!is_side_marker("========", '='));
+        assert!(!is_side_marker(">>>>>>>>", '>'));
+        assert!(is_side_marker("=======", '='));
+        assert!(is_side_marker("<<<<<<< HEAD", '<'));
+        assert!(is_side_marker("|||||||", '|'));
+        assert!(!is_side_marker("<<<<<<<nospace", '<'));
+    }
+
+    #[test]
+    fn has_markers_survives_a_non_utf8_byte() {
+        // A single stray byte anywhere in the file used to make the whole
+        // scan bail out via `String::from_utf8`, treating a live conflict as
+        // marker-free.
+        let bytes = b"<<<<<<< HEAD\nours \xff caf\xe9\n=======\ntheirs\n>>>>>>> other\n";
+        assert!(String::from_utf8(bytes.to_vec()).is_err());
+        assert!(has_markers(&String::from_utf8_lossy(bytes)));
     }
 
     #[test]
