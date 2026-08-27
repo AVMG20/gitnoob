@@ -198,7 +198,7 @@ onMounted(async () => {
   // the buttons do.
   unlistenCommand = await listen<{ line: string; ok: boolean }>(
     'git-command',
-    ({ payload }) => git.note(payload.line, payload.ok ? 'command' : 'error')
+    ({ payload }) => git.note(payload.line, payload.ok ? 'command' : 'failed')
   ).catch(() => undefined)
 
   // Whether a newer release exists, asked once and quietly: a machine that is
@@ -286,6 +286,7 @@ onUnmounted(() => {
     />
 
     <ActivityLog />
+    <Toasts />
 
     <SettingsModal v-if="config.store.settingsOpen" />
     <CloneDialog v-if="cloneOpen" @close="cloneOpen = false" @done="made" />

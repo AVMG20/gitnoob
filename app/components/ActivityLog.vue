@@ -15,7 +15,7 @@ const latest = computed(() => store.log[0] ?? null)
       <span class="chev" :class="{ up: open }">▴</span>
       <span v-if="store.busy" class="busy">working…</span>
       <span v-else-if="latest" class="line truncate" :class="latest.level">
-        <span v-if="latest.level === 'command'" class="prompt">$</span>{{ latest.text }}
+        <span v-if="latest.level === 'command' || latest.level === 'failed'" class="prompt">$</span>{{ latest.text }}
       </span>
       <span v-else class="faint">Ready</span>
       <span class="faint count">{{ store.log.length }}</span>
@@ -26,7 +26,7 @@ const latest = computed(() => store.log[0] ?? null)
         <span class="faint time">{{ new Date(entry.at).toLocaleTimeString() }}</span>
         <!-- A command is shown as it would be typed, so the log reads as the
              terminal session the clicks stood in for. -->
-        <span v-if="entry.level === 'command'" class="prompt">$</span>
+        <span v-if="entry.level === 'command' || entry.level === 'failed'" class="prompt">$</span>
         <pre class="text">{{ entry.text }}</pre>
       </div>
       <p v-if="!store.log.length" class="faint pad">Nothing yet.</p>
@@ -73,6 +73,13 @@ const latest = computed(() => store.log[0] ?? null)
 .line.command,
 .entry.command .text {
   color: var(--accent);
+}
+
+/* A command that came back non-zero: still the command line, in the colour of
+   what happened to it. What went wrong is said in a notice, not here. */
+.line.failed,
+.entry.failed .text {
+  color: var(--red-soft);
 }
 
 .prompt {

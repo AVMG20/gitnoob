@@ -1,6 +1,7 @@
 import { invoke } from '@tauri-apps/api/core'
 import { markRaw, reactive, ref } from 'vue'
 import { useConfig } from './useConfig'
+import { useToasts } from './useToasts'
 
 /**
  * What the platform calls its file manager. The backend already opens the right
@@ -352,10 +353,16 @@ export interface Resolution {
 
 /** One line in the activity log at the bottom of the window. */
 /**
- * `command` is a git command line the app ran, shown as it would be typed.
- * It reads differently from a result and is styled differently for it.
+ * `command` is a git command line the app ran, shown as it would be typed. It
+ * reads differently from a result and is styled differently for it, and
+ * `failed` is one of those that came back non-zero.
+ *
+ * A failed command line is not an `error`. The two shared a level while red
+ * text was all either of them got; now that an error also raises a notice, a
+ * sequence where six commands fail on the way to one reported failure would
+ * raise seven, and the one worth reading would be the one underneath.
  */
-export type LogLevel = 'info' | 'error' | 'command'
+export type LogLevel = 'info' | 'error' | 'command' | 'failed'
 
 export interface LogLine {
   id: number
@@ -530,10 +537,20 @@ function paint(snapshot: Snapshot) {
   store.progress = snapshot.progress
 }
 
+/**
+ * Writes a line to the activity log, and stands a failure up in the corner.
+ *
+ * The log is a record: it holds everything, in order, and it is where you go
+ * to find out what the app ran. That makes it the wrong place to be told
+ * something went wrong — the next refresh writes six more lines over it. So
+ * anything at `error` also becomes a notice that stays until it is dismissed,
+ * which is every failure the app reports and none of the command lines.
+ */
 function note(text: string, level: LogLevel = 'info') {
   if (!text.trim()) return
   store.log.unshift({ id: ++logSeq.value, at: Date.now(), level, text: text.trim() })
   if (store.log.length > 200) store.log.length = 200
+  if (level === 'error') useToasts().fail(text)
 }
 
 /** Runs a backend call, surfacing failures in the log instead of throwing. */
