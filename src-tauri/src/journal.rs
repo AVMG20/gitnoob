@@ -236,8 +236,8 @@ fn step(state: &AppState, entry: &mut Entry, direction: Direction) -> Result<Str
             if let (Some(expected), Some(actual)) = (standing, head_oid(state)) {
                 if expected != actual {
                     return Err(format!(
-                        "{} is not where that step left it, so undoing it would move something \
-                         else. Whatever moved it happened outside this history.",
+                        "{} is not where that step left it, so stepping it back would take \
+                         something else with it. Whatever moved it happened outside this history.",
                         entry.branch.clone().unwrap_or_else(|| "The branch".to_string())
                     ));
                 }
@@ -312,4 +312,96 @@ fn now() -> i64 {
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_secs() as i64)
         .unwrap_or(0)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::fixture::Fixture;
+    use crate::{refs, work};
+
+    /// A repository with one commit and a file to keep changing.
+    fn repo() -> Fixture {
+        let repo = Fixture::new();
+        repo.write("f.txt", "one\n");
+        repo.commit("base");
+        repo
+    }
+
+    #[test]
+    fn switching_branches_is_not_a_step_to_undo() {
+        let repo = repo();
+        repo.git(&["branch", "other"]);
+
+        refs::checkout(&repo.state, "other").expect("the switch");
+
+        // It is neither hard to notice nor hard to reverse, and every one of
+        // them used to push something worth undoing off the end of the list.
+        assert!(stacks(&repo.state).undo.is_empty());
+    }
+
+    #[test]
+    fn undoing_a_stash_puts_back_the_one_it_made() {
+        let repo = repo();
+        repo.write("f.txt", "one\nmine\n");
+        work::stash_push(&repo.state, Some("mine"), false).expect("stash");
+
+        // Somebody stashes something else afterwards — here, or in a terminal.
+        repo.write("f.txt", "one\nsomething else\n");
+        repo.git(&["stash", "push", "--quiet", "-m", "later"]);
+
+        undo(&repo.state).expect("undo the stash");
+
+        // The stash that was undone is the one that was recorded, not whatever
+        // happened to be on top of the list.
+        assert_eq!(repo.read("f.txt"), "one\nmine\n");
+        let left = repo.stashes();
+        assert_eq!(left.len(), 1, "{left:?}");
+        assert!(left[0].contains("later"), "{left:?}");
+    }
+
+    #[test]
+    fn undoing_a_stash_says_so_when_it_is_gone() {
+        let repo = repo();
+        repo.write("f.txt", "one\nmine\n");
+        work::stash_push(&repo.state, Some("mine"), false).expect("stash");
+        repo.git(&["stash", "drop", "--quiet"]);
+
+        let refused = undo(&repo.state).expect_err("nothing to put back");
+
+        assert!(refused.contains("not in the list any more"), "{refused}");
+    }
+
+    #[test]
+    fn undo_refuses_when_the_branch_moved_outside_the_history() {
+        let repo = repo();
+        repo.write("f.txt", "one\ntwo\n");
+        repo.git(&["add", "-A"]);
+        work::commit(&repo.state, "second", false).expect("commit");
+
+        // A commit the app never saw: made in a terminal, in another window.
+        repo.write("f.txt", "one\ntwo\nthree\n");
+        repo.commit("third, elsewhere");
+
+        let refused = undo(&repo.state).expect_err("refused");
+
+        assert!(refused.contains("outside this history"), "{refused}");
+        // And it changed nothing: the commit made elsewhere is still there.
+        assert_eq!(repo.git(&["log", "--oneline"]).lines().count(), 3);
+    }
+
+    #[test]
+    fn undoing_a_commit_leaves_its_changes_staged() {
+        let repo = repo();
+        repo.write("f.txt", "one\ntwo\n");
+        repo.git(&["add", "-A"]);
+        work::commit(&repo.state, "second", false).expect("commit");
+
+        undo(&repo.state).expect("undo");
+
+        assert_eq!(repo.git(&["log", "--oneline"]).lines().count(), 1);
+        // Soft: the work is still there, still staged, ready to be recommitted.
+        assert!(repo.status().contains("M  f.txt"), "{}", repo.status());
+        assert_eq!(repo.read("f.txt"), "one\ntwo\n");
+    }
 }

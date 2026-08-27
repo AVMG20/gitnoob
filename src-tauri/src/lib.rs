@@ -1,4 +1,6 @@
 pub mod ai;
+#[cfg(test)]
+pub mod fixture;
 pub mod avatar;
 pub mod conflict;
 pub mod config;

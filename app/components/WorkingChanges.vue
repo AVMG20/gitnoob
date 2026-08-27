@@ -147,13 +147,6 @@ async function generate() {
 }
 
 /**
- * The same moves as a file's menu, applied to everything under a folder.
- *
- * The paths are taken from the pane the folder was clicked in rather than
- * handed to git as a directory: what the menu offers is then exactly what the
- * rows underneath it show, with nothing swept in from the other pane.
- */
-/**
  * The untracked files a menu has offered to delete, while it is being asked.
  *
  * Discarding a tracked file takes its content back from the index or from HEAD,
@@ -169,6 +162,13 @@ async function deleteUntracked() {
   if (paths?.length) await git.deleteUntracked(paths)
 }
 
+/**
+ * The same moves as a file's menu, applied to everything under a folder.
+ *
+ * The paths are taken from the pane the folder was clicked in rather than
+ * handed to git as a directory: what the menu offers is then exactly what the
+ * rows underneath it show, with nothing swept in from the other pane.
+ */
 function dirMenu(event: MouseEvent, dir: string, side: 'staged' | 'unstaged') {
   const inside = (side === 'staged' ? staged.value : unstaged.value).filter((entry) =>
     entry.path.startsWith(`${dir}/`)
