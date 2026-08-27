@@ -18,6 +18,16 @@ function escapeHtml(text: string): string {
     .replace(/'/g, '&#39;')
 }
 
+/**
+ * The word after a fence's marks, kept only when it reads as a language name.
+ *
+ * It is the one thing a commenter writes that lands in an attribute rather
+ * than in text, so anything but a plain token is dropped rather than escaped.
+ */
+function languageToken(info: string): string {
+  return /^[\w+.#-]+$/.test(info) ? info : ''
+}
+
 function inline(text: string): string {
   let out = escapeHtml(text)
   // Code spans are lifted out first and put back last: everything between
@@ -92,7 +102,7 @@ export function renderMarkdown(source: string): string {
       // The closing fence carries the same three marks as the opening one.
       if (/^\s*```/.test(raw)) {
         const body = inline(fence.body.join('\n'))
-        const language = fence.language ? ` class="language-${fence.language}"` : ''
+        const language = fence.language ? ` class="language-${escapeHtml(fence.language)}"` : ''
         blocks.push(`<pre><code${language}>${body}</code></pre>`)
         fence = null
       } else {
@@ -105,7 +115,7 @@ export function renderMarkdown(source: string): string {
       flushParagraph()
       flushList()
       flushQuote()
-      fence = { language: opened[1] ?? '', body: [] }
+      fence = { language: languageToken(opened[1] ?? ''), body: [] }
       continue
     }
 

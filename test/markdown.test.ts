@@ -57,6 +57,28 @@ describe('renderMarkdown', () => {
     expect(renderMarkdown('  \n ')).toBe('')
   })
 
+  it('keeps a plain fence language as a class and drops anything else', () => {
+    expect(renderMarkdown('```ts\nx\n```')).toContain('<pre><code class="language-ts">')
+    expect(renderMarkdown('```c#\nx\n```')).toContain('<pre><code class="language-c#">')
+    expect(renderMarkdown('```objective-c++\nx\n```')).toContain(
+      '<pre><code class="language-objective-c++">'
+    )
+    expect(renderMarkdown('```\nx\n```')).toContain('<pre><code>')
+  })
+
+  it('does not let a fence language break out of its attribute', () => {
+    const spaced = renderMarkdown('```"><img src=x onerror=alert(document.domain)>\nx\n```')
+    const packed = renderMarkdown('```"><img/src=x/onerror=alert(document.domain)>\nx\n```')
+    const quoted = renderMarkdown('```ts"onmouseover="alert(1)\nx\n```')
+    for (const html of [spaced, packed, quoted]) {
+      expect(html).not.toContain('<img')
+      expect(html).not.toContain('<svg')
+      expect(html).not.toMatch(/class="language-/)
+    }
+    expect(packed).toContain('<pre><code>x</code></pre>')
+    expect(spaced).toContain('&lt;img')
+  })
+
   it('does not let list markers or emphasis inside code be transformed', () => {
     const html = renderMarkdown('`*not em*`')
     expect(html).not.toContain('<em>')
