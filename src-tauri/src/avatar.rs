@@ -194,19 +194,21 @@ async fn fetch(
     // people commit with. A public repository answers without a token, so this
     // is worth trying whether or not a profile is signed in.
     if let Some(slug) = &slug {
-        let kind = match &account {
-            Some((kind, _, _)) => *kind,
-            // No profile: go by the host the code is on.
-            None if slug.host == "github.com" => ForgeKind::GitHub,
-            None => ForgeKind::None,
-        };
-        let token = account.as_ref().map(|(_, _, token)| token.as_str());
-        if let Some(url) = author_map(&client, kind, &slug.host, token, slug)
-            .await
-            .get(email)
-        {
-            if let Some(bytes) = image(&client, &sized_to(url, SIZE)).await {
-                return Some(bytes);
+        let profile = account
+            .as_ref()
+            .map(|(kind, host, _)| (*kind, host.as_str()));
+        if let Some(lookup) = lookup_for(profile, &slug.host) {
+            let token = account
+                .as_ref()
+                .filter(|_| lookup.with_token)
+                .map(|(_, _, token)| token.as_str());
+            if let Some(url) = author_map(&client, &lookup.base, token, slug)
+                .await
+                .get(email)
+            {
+                if let Some(bytes) = image(&client, &sized_to(url, SIZE)).await {
+                    return Some(bytes);
+                }
             }
         }
     }
@@ -231,34 +233,59 @@ async fn gravatar(client: &reqwest::Client, digest: &str) -> Option<Vec<u8>> {
     image(client, &url).await
 }
 
+/// Where a repository's commits are asked for, and whether the signed-in
+/// profile's token is offered along with the question.
+struct Lookup {
+    base: String,
+    with_token: bool,
+}
+
+/// Works out how to ask about the repository that is open, if at all.
+///
+/// The host is the one written in that repository's own remote, and a
+/// repository is a thing a person can be handed: naming a host in a `.git`
+/// directory is all it would take to be sent to. A token belongs to the host
+/// the profile signed in to and travels nowhere else, so it rides along only
+/// when the two are the same host. Any other host is asked as a stranger, and
+/// the only stranger worth asking is public GitHub, which answers about a
+/// public repository without being told who wants to know. GitLab's commits
+/// carry no link to an account, so there is nothing to ask it for here.
+fn lookup_for(profile: Option<(ForgeKind, &str)>, host: &str) -> Option<Lookup> {
+    match profile {
+        Some((ForgeKind::GitHub, signed_in)) if signed_in == host => Some(Lookup {
+            base: if host == "github.com" {
+                "https://api.github.com".to_string()
+            } else {
+                format!("https://{host}/api/v3")
+            },
+            with_token: true,
+        }),
+        _ if host == "github.com" => Some(Lookup {
+            base: "https://api.github.com".to_string(),
+            with_token: false,
+        }),
+        _ => None,
+    }
+}
+
 /// Everyone who has written a commit in this repository lately, by the address
 /// they wrote it with.
 ///
 /// One request answers for the whole team, and it answers for addresses no
 /// search will match: GitHub resolves a commit to the account that made it
 /// from what it knows privately, which is the only way a colleague committing
-/// with a private work address gets a face. GitLab's commits carry no such
-/// link, so there is nothing to ask it for here.
+/// with a private work address gets a face.
 async fn author_map(
     client: &reqwest::Client,
-    kind: ForgeKind,
-    host: &str,
+    base: &str,
     token: Option<&str>,
     slug: &forge::RepoSlug,
 ) -> HashMap<String, String> {
-    if kind != ForgeKind::GitHub {
-        return HashMap::new();
-    }
-    let repo = format!("{host}/{}", slug.full());
+    let repo = format!("{}/{}", slug.host, slug.full());
     if let Some(known) = AUTHORS.lock().unwrap().as_ref().and_then(|by_repo| by_repo.get(&repo)) {
         return known.clone();
     }
 
-    let base = if host == "github.com" {
-        "https://api.github.com".to_string()
-    } else {
-        format!("https://{host}/api/v3")
-    };
     let mut found = HashMap::new();
     // Three pages of a hundred: enough to cover everyone still working on the
     // project, without walking the history of one to fill in a name that has
@@ -365,8 +392,10 @@ async fn gitlab_search(
 fn absolute(host: &str, url: &str) -> String {
     if url.starts_with("http") {
         url.to_string()
+    } else if url.starts_with('/') {
+        format!("https://{host}{url}")
     } else {
-        format!("https://{host}{}", if url.starts_with('/') { url } else { "/" })
+        format!("https://{host}/{url}")
     }
 }
 
@@ -483,6 +512,51 @@ mod tests {
             Some(format!("https://avatars.githubusercontent.com/in/1236702?s={SIZE}"))
         );
         assert_eq!(known_url("someone@example.com"), None);
+    }
+
+    #[test]
+    fn the_token_goes_only_to_the_host_the_profile_signed_in_to() {
+        assert!(lookup_for(Some((ForgeKind::GitHub, "github.com")), "attacker.example").is_none());
+
+        let own = lookup_for(Some((ForgeKind::GitHub, "github.com")), "github.com").unwrap();
+        assert_eq!(own.base, "https://api.github.com");
+        assert!(own.with_token);
+
+        let enterprise = lookup_for(Some((ForgeKind::GitHub, "ghe.example")), "ghe.example").unwrap();
+        assert_eq!(enterprise.base, "https://ghe.example/api/v3");
+        assert!(enterprise.with_token);
+
+        let public = lookup_for(Some((ForgeKind::GitHub, "ghe.example")), "github.com").unwrap();
+        assert_eq!(public.base, "https://api.github.com");
+        assert!(!public.with_token);
+
+        let gitlab = lookup_for(Some((ForgeKind::GitLab, "gitlab.com")), "github.com").unwrap();
+        assert!(!gitlab.with_token);
+        assert!(lookup_for(Some((ForgeKind::GitLab, "gitlab.com")), "gitlab.com").is_none());
+    }
+
+    #[test]
+    fn a_public_repository_is_asked_about_with_no_profile_at_all() {
+        let anyone = lookup_for(None, "github.com").unwrap();
+        assert_eq!(anyone.base, "https://api.github.com");
+        assert!(!anyone.with_token);
+        assert!(lookup_for(None, "ghe.example").is_none());
+    }
+
+    #[test]
+    fn a_gitlab_upload_keeps_its_path() {
+        assert_eq!(
+            absolute("gitlab.example", "/uploads/a.png"),
+            "https://gitlab.example/uploads/a.png"
+        );
+        assert_eq!(
+            absolute("gitlab.example", "uploads/a.png"),
+            "https://gitlab.example/uploads/a.png"
+        );
+        assert_eq!(
+            absolute("gitlab.example", "https://cdn.example/a.png"),
+            "https://cdn.example/a.png"
+        );
     }
 
     #[test]
