@@ -918,7 +918,22 @@ function stashMenu(event: MouseEvent, index: number, message: string) {
     [
       { label: 'Apply and keep', icon: Archive, action: () => git.stashApply(index) },
       { label: 'Pop (apply and remove)', icon: Archive, action: () => git.stashPop(index) },
-      { label: 'Show what is in it', icon: Search, action: () => git.selectStash(index) },
+      {
+        label: 'Rename…',
+        icon: Pencil,
+        action: () => {
+          prompt.value = {
+            title: 'Rename stash',
+            label: 'What is in it',
+            initial: message,
+            confirm: 'Rename',
+            hint: 'The branch it was made on stays as it is.',
+            run: (value) => {
+              git.stashRename(index, value)
+            }
+          }
+        }
+      },
       {
         label: 'Turn into a branch…',
         icon: GitBranch,
