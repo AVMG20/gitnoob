@@ -182,9 +182,22 @@ const matches = computed(() =>
 )
 const matchIds = computed(() => new Set(matches.value.map((row) => row.oid)))
 
-const first = computed(() => Math.max(0, Math.floor(scrollTop.value / ROW) - OVERSCAN))
+/**
+ * How far the commits sit below the top of the scroller.
+ *
+ * The working tree is the first row of the list rather than a strip pinned
+ * above it: it scrolls away like anything else, and being an ordinary row is
+ * what keeps its dot in line with the dots under it. Everything that turns a
+ * scroll position into a row index has to step over it.
+ */
+const ABOVE = ROW
+
+/** Where the list is scrolled to, counted from the first commit. */
+const listTop = computed(() => Math.max(0, scrollTop.value - ABOVE))
+
+const first = computed(() => Math.max(0, Math.floor(listTop.value / ROW) - OVERSCAN))
 const last = computed(() =>
-  Math.min(total.value, Math.ceil((scrollTop.value + height.value) / ROW) + OVERSCAN)
+  Math.min(total.value, Math.ceil((listTop.value + height.value) / ROW) + OVERSCAN)
 )
 /**
  * Everything a row needs in order to draw, worked out once per commit.
@@ -315,10 +328,10 @@ function headTrace(index: number) {
 const headOffScreen = computed(() => {
   if (headIndex.value < 0) return false
   const top = headIndex.value * ROW
-  return top + ROW < scrollTop.value || top > scrollTop.value + height.value
+  return top + ROW < listTop.value || top > listTop.value + height.value
 })
 /** Which way to send the eye — and the scroll — to reach it. */
-const headBelow = computed(() => headIndex.value * ROW > scrollTop.value)
+const headBelow = computed(() => headIndex.value * ROW > listTop.value)
 
 const x = (lane: number) => Math.min(lane, MAX_LANES - 1) * LANE + LANE / 2 + PAD
 
@@ -388,7 +401,7 @@ function measure() {
 function scrollTo(oid: string) {
   const index = store.rows.findIndex((row) => row.oid === oid)
   if (index < 0 || !viewport.value) return
-  const target = Math.max(0, index * ROW - height.value / 2 + ROW)
+  const target = Math.max(0, ABOVE + index * ROW - height.value / 2 + ROW)
   // Gliding is worth it across a screen or two. Across ten thousand rows it is
   // a long blur that ends somewhere the eye did not follow, so that jumps.
   const far = Math.abs(target - viewport.value.scrollTop) > height.value * 8
@@ -1024,65 +1037,67 @@ onUnmounted(() => {
       </span>
     </div>
 
-    <!-- The working tree, always the top row and selected by default. -->
-    <div
-      class="wip"
-      :class="{ on: store.selected === WIP }"
-      @click="git.select(WIP)"
-      @contextmenu="wipMenu($event)"
-    >
-      <span v-if="cols.state.shown.refs" class="col-refs" :style="box('refs')" />
-      <span v-if="cols.state.shown.graph" class="cell-box" :style="box('graph')">
-      <svg class="cell" :width="graphWidth" :height="ROW" :viewBox="`0 0 ${graphWidth} ${ROW}`">
-        <path
-          v-if="store.rows.length"
-          :d="`M${x(headLane)},${ROW / 2} L${x(headLane)},${ROW}`"
-          :stroke="laneColor(headColor)"
-          stroke-width="2"
-          stroke-dasharray="2 3"
-          stroke-linecap="round"
-          fill="none"
-        />
-        <!-- Dotted whether or not anything is changed: it is not a commit, and
-             the ring says so. Amber only says there is something in it. -->
-        <circle
-          :cx="x(headLane)"
-          :cy="ROW / 2"
-          r="4"
-          fill="var(--bg)"
-          :stroke="dirty || conflicts ? 'var(--warning)' : 'var(--fg-subtle)'"
-          stroke-width="1.8"
-          stroke-dasharray="2 2"
-        />
-      </svg>
-      </span>
-      <!-- One line rather than a badge and a line. The row is already the one
-           at the top, already selected, and already the only one with a hollow
-           ring on the graph; a coloured pill on top of that was the fourth way
-           of saying the same thing. -->
-      <span class="col-msg">
-        <span class="summary truncate" :class="{ quiet: !dirty && !conflicts }">
-          <template v-if="conflicts">
-            <strong class="count bad">{{ conflicts }}</strong> conflicted —
-            resolve before committing
-          </template>
-          <template v-else-if="dirty">
-            <strong class="count">{{ dirty }}</strong> uncommitted
-            {{ dirty === 1 ? 'change' : 'changes' }}
-          </template>
-          <template v-else>No local changes</template>
-        </span>
-      </span>
-      <!-- Whoever a commit made here would be authored by, rather than "you":
-           with a profile per context, which identity is in force is the thing
-           worth showing. -->
-      <span v-if="cols.state.shown.author" class="col-author faint truncate" :style="box('author')">
-        {{ store.repo?.author || 'no author set' }}
-      </span>
-      <span v-if="cols.state.shown.date" class="col-date faint" :style="box('date')">now</span>
-    </div>
-
     <div ref="viewport" class="viewport" @scroll.passive="onScroll">
+      <!-- The working tree: the first row of the list rather than a strip
+             pinned above it. It scrolls away like anything else, and being an
+             ordinary row is what keeps its dot in line with the dots below. -->
+      <div
+        class="wip"
+        :class="{ on: store.selected === WIP }"
+        @click="git.select(WIP)"
+        @contextmenu="wipMenu($event)"
+      >
+        <span v-if="cols.state.shown.refs" class="col-refs" :style="box('refs')" />
+        <span v-if="cols.state.shown.graph" class="cell-box" :style="box('graph')">
+        <svg class="cell" :width="graphWidth" :height="ROW" :viewBox="`0 0 ${graphWidth} ${ROW}`">
+          <path
+            v-if="store.rows.length"
+            :d="`M${x(headLane)},${ROW / 2} L${x(headLane)},${ROW}`"
+            :stroke="laneColor(headColor)"
+            stroke-width="2"
+            stroke-dasharray="2 3"
+            stroke-linecap="round"
+            fill="none"
+          />
+          <!-- Dotted whether or not anything is changed: it is not a commit, and
+               the ring says so. Amber only says there is something in it. -->
+          <circle
+            :cx="x(headLane)"
+            :cy="ROW / 2"
+            r="4"
+            fill="var(--bg)"
+            :stroke="dirty || conflicts ? 'var(--warning)' : 'var(--fg-subtle)'"
+            stroke-width="1.8"
+            stroke-dasharray="2 2"
+          />
+        </svg>
+        </span>
+        <!-- One line rather than a badge and a line. The row is already the one
+             at the top, already selected, and already the only one with a hollow
+             ring on the graph; a coloured pill on top of that was the fourth way
+             of saying the same thing. -->
+        <span class="col-msg">
+          <span class="summary truncate" :class="{ quiet: !dirty && !conflicts }">
+            <template v-if="conflicts">
+              <strong class="count bad">{{ conflicts }}</strong> conflicted —
+              resolve before committing
+            </template>
+            <template v-else-if="dirty">
+              <strong class="count">{{ dirty }}</strong> uncommitted
+              {{ dirty === 1 ? 'change' : 'changes' }}
+            </template>
+            <template v-else>No local changes</template>
+          </span>
+        </span>
+        <!-- Whoever a commit made here would be authored by, rather than "you":
+             with a profile per context, which identity is in force is the thing
+             worth showing. -->
+        <span v-if="cols.state.shown.author" class="col-author faint truncate" :style="box('author')">
+          {{ store.repo?.author || 'no author set' }}
+        </span>
+        <span v-if="cols.state.shown.date" class="col-date faint" :style="box('date')">now</span>
+      </div>
+
       <div class="spacer" :style="{ height: `${total * ROW}px` }">
         <div
           v-for="item in window_"
@@ -1557,15 +1572,15 @@ onUnmounted(() => {
   background: color-mix(in srgb, var(--accent) 16%, transparent);
 }
 
+/* The same box as `.row`, so the graph runs through both without a step in
+   it. A border here would eat a pixel of the row's height and lift everything
+   drawn in it above the dots underneath. */
 .wip {
   display: flex;
   align-items: center;
   gap: 10px;
-  flex: none;
-  height: 27px;
+  height: var(--row-h);
   padding: 0 12px 0 8px;
-  background: var(--bg-panel);
-  border-bottom: 1px solid var(--line);
   cursor: default;
   user-select: none;
 }

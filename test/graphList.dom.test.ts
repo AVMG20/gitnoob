@@ -5,6 +5,7 @@ import { invoke } from '@tauri-apps/api/core'
 import GraphList from '~/components/GraphList.vue'
 import ContextMenu from '~/components/ContextMenu.vue'
 import { useGit, type GraphRow } from '~/composables/useGit'
+import { CODE_ROW, OVERSCAN } from '~/composables/useCode'
 
 vi.mock('@tauri-apps/api/core', () => ({ invoke: vi.fn() }))
 
@@ -74,6 +75,33 @@ describe('the top of the commit list', () => {
     await wrapper.find('.head-tools .tool').trigger('click')
     await flushPromises()
     expect(wrapper.find('.search').exists()).toBe(false)
+  })
+
+  it('scrolls the working-tree row away with everything else', async () => {
+    // Enough rows to scroll through, so the window has to be worked out rather
+    // than being every row there is.
+    git.store.rows = Array.from({ length: 80 }, (_, at) =>
+      row(`c${String(at).padStart(7, '0')}`, `Commit ${at}`)
+    )
+    const wrapper = mount(Host)
+    await flushPromises()
+
+    const viewport = wrapper.find('.viewport')
+    // It is inside the scroller, not a strip pinned above it.
+    expect(viewport.find('.wip').exists()).toBe(true)
+
+    const box = viewport.element as HTMLElement
+    // Twenty rows down, plus the row the working tree takes at the top.
+    const ROW = 27
+    box.scrollTop = ROW + 20 * ROW
+    await viewport.trigger('scroll')
+    await new Promise((resolve) => requestAnimationFrame(resolve))
+    await flushPromises()
+
+    // Exactly the twentieth commit, less the margin drawn above the window.
+    // A row out either way is the row above having been forgotten.
+    const shown = wrapper.findAll('.spacer .row .summary').map((one) => one.text())
+    expect(shown[0]).toBe(`Commit ${20 - OVERSCAN}`)
   })
 
   it('opens the column menu from the cog beside it', async () => {
