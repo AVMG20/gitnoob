@@ -101,7 +101,14 @@ fn git(cwd: &Path, args: &[&str]) -> Command {
         .args(args)
         .current_dir(cwd)
         // Never let git stop and ask on stdin; we have no terminal to answer on.
-        .env("GIT_TERMINAL_PROMPT", "0");
+        .env("GIT_TERMINAL_PROMPT", "0")
+        // Refusals and transport failures are matched against git's own English
+        // wording elsewhere (`refused_over_local_changes`, `transport_hint`) to
+        // decide when to auto-stash or how to explain a failure. A localized
+        // git would translate the very words those matches look for, and the
+        // match would just never fire.
+        .env("LC_ALL", "C")
+        .env("LANG", "C");
     if let Some(ssh) = ssh_command() {
         command.env("GIT_SSH_COMMAND", ssh);
     }
