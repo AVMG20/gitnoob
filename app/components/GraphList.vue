@@ -12,6 +12,7 @@ import {
   GitCommitHorizontal,
   MonitorDot,
   Search,
+  Settings2,
   Tag,
   Undo2,
   X
@@ -40,7 +41,7 @@ import {
 import { avatarFor, initials, tint } from '~/composables/useAvatars'
 import { useContextMenu } from '~/composables/useContextMenu'
 import { useDragDrop } from '~/composables/useDragDrop'
-import { useShortcuts } from '~/composables/useShortcuts'
+import { keyLabel, useShortcuts } from '~/composables/useShortcuts'
 import { useColumns, type ColumnId } from '~/composables/useColumns'
 import { useConfig } from '~/composables/useConfig'
 import { useToasts } from '~/composables/useToasts'
@@ -1004,6 +1005,23 @@ onUnmounted(() => {
               @dblclick="cols.resetWidth('date')" />
         <span class="col-date" :style="box('date')">Date</span>
       </template>
+
+      <!-- The two things you had to know a keystroke to find. Right-clicking
+           the headings still opens the same column menu; this is the same door
+           with a handle on it. -->
+      <span class="head-tools">
+        <button
+          class="tool"
+          :class="{ on: searchOpen }"
+          :title="`Search commits (${keyLabel('mod+f')})`"
+          @click.stop="searchOpen ? closeSearch() : openSearch()"
+        >
+          <Search :size="13" />
+        </button>
+        <button class="tool" title="Which columns to show" @click.stop="columnMenu($event)">
+          <Settings2 :size="13" />
+        </button>
+      </span>
     </div>
 
     <!-- The working tree, always the top row and selected by default. -->
@@ -1025,24 +1043,32 @@ onUnmounted(() => {
           stroke-linecap="round"
           fill="none"
         />
+        <!-- Dotted whether or not anything is changed: it is not a commit, and
+             the ring says so. Amber only says there is something in it. -->
         <circle
           :cx="x(headLane)"
           :cy="ROW / 2"
           r="4"
           fill="var(--bg)"
-          :stroke="dirty || conflicts ? 'var(--amber)' : 'var(--text-faint)'"
+          :stroke="dirty || conflicts ? 'var(--warning)' : 'var(--fg-subtle)'"
           stroke-width="1.8"
-          :stroke-dasharray="dirty || conflicts ? '' : '2 2'"
+          stroke-dasharray="2 2"
         />
       </svg>
       </span>
+      <!-- One line rather than a badge and a line. The row is already the one
+           at the top, already selected, and already the only one with a hollow
+           ring on the graph; a coloured pill on top of that was the fourth way
+           of saying the same thing. -->
       <span class="col-msg">
-        <span v-if="conflicts" class="chip chip-conflict">{{ conflicts }} conflicted</span>
-        <span v-else-if="dirty" class="chip chip-wip">uncommitted</span>
         <span class="summary truncate" :class="{ quiet: !dirty && !conflicts }">
-          <template v-if="conflicts">Resolve conflicts before committing</template>
+          <template v-if="conflicts">
+            <strong class="count bad">{{ conflicts }}</strong> conflicted —
+            resolve before committing
+          </template>
           <template v-else-if="dirty">
-            {{ dirty }} {{ dirty === 1 ? 'change' : 'changes' }} in your working tree
+            <strong class="count">{{ dirty }}</strong> uncommitted
+            {{ dirty === 1 ? 'change' : 'changes' }}
           </template>
           <template v-else>No local changes</template>
         </span>
@@ -1774,6 +1800,7 @@ onUnmounted(() => {
 }
 
 .colhead {
+  position: relative;
   display: flex;
   align-items: center;
   gap: 10px;
@@ -1790,6 +1817,39 @@ onUnmounted(() => {
 .cell-head {
   flex: none;
   overflow: hidden;
+}
+
+/* Over the right-hand end of the headings rather than in the flow of them: a
+   button that took part in the layout would push the date heading out of line
+   with the dates underneath it. */
+.head-tools {
+  position: absolute;
+  right: 6px;
+  top: 0;
+  bottom: 0;
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  padding-left: 10px;
+  background: linear-gradient(to right, transparent, var(--surface) 10px);
+}
+
+.tool {
+  display: grid;
+  place-items: center;
+  width: 22px;
+  height: 20px;
+  border-radius: var(--radius-sm);
+  color: var(--fg-subtle);
+}
+
+.tool:hover {
+  color: var(--fg);
+  background: var(--hover);
+}
+
+.tool.on {
+  color: var(--primary);
 }
 
 /* The strip between two headings. It is wider than it looks: a four-pixel
@@ -1832,6 +1892,11 @@ onUnmounted(() => {
 .colhead .col-date {
   font-size: inherit;
   color: inherit;
+}
+
+/* Room for the two buttons at the end of the row. */
+.colhead .col-date {
+  padding-right: 50px;
 }
 
 .col-msg {
@@ -1986,14 +2051,14 @@ onUnmounted(() => {
   color: var(--green-soft);
 }
 
-.chip-wip {
-  background: var(--warning-bg);
-  color: var(--amber-soft);
+/* The number is the news on that row; the words around it are grammar. */
+.count {
+  color: var(--warning-soft);
+  font-weight: 600;
 }
 
-.chip-conflict {
-  background: var(--danger-bg);
-  color: var(--red-soft);
+.count.bad {
+  color: var(--danger-soft);
 }
 
 .more,
