@@ -15,30 +15,39 @@ describe('explaining a git failure', () => {
       'Aborting'
     ].join('\n')
     const said = explain(raw)
-    expect(said.title).toBe(
-      'You have open changes that this would overwrite. Commit or stash them first.'
-    )
+    expect(said.title).toBe('Cannot switch branch. Commit or stash your changes first.')
     // Nothing is lost: the files git named are still there to look at.
     expect(said.detail).toContain('app/app.vue')
+  })
+
+  it('reads the app\'s own refusal as the same thing git\'s was', () => {
+    // What `refs.rs` hands back once it has named the files: still a switch
+    // that did not happen, and still the same two ways out of it.
+    const said = explain(
+      'Checkout: Cannot switch to ASANA-1216746966251889-review-emails: 3 files would be overwritten.\napp/app.vue\nCommit, stash, or discard your changes first.'
+    )
+    expect(said.title).toBe('Cannot switch branch. Commit or stash your changes first.')
+    // The branch, the count and the files are a click away, not in the line.
+    expect(said.detail).toContain('ASANA-1216746966251889-review-emails')
   })
 
   it('tells untracked files apart from changed ones', () => {
     const said = explain(
       'error: The following untracked working tree files would be overwritten by checkout:\n\tnotes.md'
     )
-    expect(said.title).toBe('Untracked files are in the way. Move, delete, or commit them first.')
+    expect(said.title).toBe('New files are in the way. Move or delete them first.')
   })
 
   it('says what a rejected push needs', () => {
     const said = explain(
       'Push: ! [rejected] main -> main (fetch first)\nerror: failed to push some refs'
     )
-    expect(said.title).toBe('The remote has commits you have not got. Pull first, then push again.')
+    expect(said.title).toBe('The remote is ahead. Pull first, then push.')
   })
 
   it('names the key when the remote refuses it', () => {
     const said = explain('Pull: git@github.com: Permission denied (publickey).')
-    expect(said.title).toBe('The remote refused your SSH key. Check which key this profile pins.')
+    expect(said.title).toBe('The remote refused your SSH key. Check the profile.')
   })
 
   it('reads a lock as another process, not as a broken repository', () => {

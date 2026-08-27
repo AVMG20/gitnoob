@@ -76,6 +76,6 @@ describe('the notices in the corner', () => {
     toasts.fail('Commit: nothing to commit')
     toasts.dismiss(first.id)
     expect(toasts.items.value).toHaveLength(1)
-    expect(toasts.items.value[0]!.title).toContain('nothing staged')
+    expect(toasts.items.value[0]!.title).toContain('Nothing staged')
   })
 })

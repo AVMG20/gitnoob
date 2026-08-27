@@ -7,6 +7,12 @@
  * happen and the way out is to commit or stash. Each rule here recognises one
  * such refusal and answers it with what to do about it.
  *
+ * A sentence is what went wrong and what to do about it, in that order and in
+ * as few words as it takes. It is read in a corner of the window by somebody
+ * who was doing something else, so it says "Cannot switch branch. Commit or
+ * stash your changes first." rather than naming the branch, counting the files
+ * and quoting the tool — all of which are a click away.
+ *
  * Nothing is thrown away. The whole message git wrote is kept as the detail
  * behind the sentence, because the rules cover the failures worth naming and
  * not the ones nobody has hit yet — and for those the raw text is the only
@@ -42,68 +48,72 @@ interface Rule {
 const RULES: Rule[] = [
   {
     when: /untracked working tree files would be overwritten/i,
-    say: 'Untracked files are in the way. Move, delete, or commit them first.'
+    say: 'New files are in the way. Move or delete them first.'
   },
   {
-    when: /would be overwritten by checkout|would be overwritten by (?:merge|rebase)|Please commit your changes or stash them/i,
-    say: 'You have open changes that this would overwrite. Commit or stash them first.'
+    when: /would be overwritten by checkout|Cannot switch to .*would be overwritten|Please commit your changes or stash them/i,
+    say: 'Cannot switch branch. Commit or stash your changes first.'
   },
   {
-    when: /cannot (?:pull|rebase) with rebase: You have unstaged changes|cannot rebase: You have unstaged changes|Cannot rebase: You have unstaged changes/i,
-    say: 'Rebasing needs a clean working tree. Commit or stash your changes first.'
+    when: /would be overwritten by (?:merge|rebase)/i,
+    say: 'Not with open changes. Commit or stash them first.'
+  },
+  {
+    when: /cannot (?:pull|rebase) with rebase: You have unstaged changes|[Cc]annot rebase: You have unstaged changes/i,
+    say: 'Rebase needs a clean tree. Commit or stash first.'
   },
   {
     when: /Automatic merge failed|^CONFLICT \(|\nCONFLICT \(/i,
-    say: 'It stopped on conflicts. Resolve the conflicted files, then commit.',
+    say: 'It stopped on conflicts. Resolve the files, then commit.',
     quiet: true
   },
   {
     when: /You have not concluded your merge|MERGE_HEAD exists|a rebase is in progress|is already in progress/i,
-    say: 'Something is still half-done in this repository. Finish or abort it first.'
+    say: 'Something here is half finished. Finish or abort it first.'
   },
   {
     when: /Updates were rejected|non-fast-forward|fetch first|behind its remote counterpart/i,
-    say: 'The remote has commits you have not got. Pull first, then push again.'
+    say: 'The remote is ahead. Pull first, then push.'
   },
   {
     when: /has no upstream branch|no upstream configured/i,
-    say: 'This branch is not on the remote yet. Push it to create it there.'
+    say: 'Not on the remote yet. Push to create it there.'
   },
   {
     when: /Need to specify how to reconcile divergent branches|You have divergent branches/i,
-    say: 'The branch and its remote have both moved. Choose merge or rebase for the pull.'
+    say: 'Both sides moved. Pick merge or rebase for pulls.'
   },
   {
     when: /refusing to merge unrelated histories/i,
-    say: 'These two branches share no history, so git will not merge them.'
+    say: 'No shared history. Git will not merge these.'
   },
   {
     when: /is not fully merged/i,
-    say: 'That branch has commits no other branch has. Delete it by force to lose them.'
+    say: 'It has commits no other branch has. Delete by force to lose them.'
   },
   {
     when: /Permission denied \(publickey\)/i,
-    say: 'The remote refused your SSH key. Check which key this profile pins.'
+    say: 'The remote refused your SSH key. Check the profile.'
   },
   {
     when: /could not read Username|Authentication failed|Invalid username or password|Support for password authentication was removed|401 Unauthorized/i,
-    say: 'The remote would not take your credentials. Check the token for this profile.'
+    say: 'The remote refused your credentials. Check the profile.'
   },
   {
     when: /403 Forbidden|remote: Write access to repository not granted/i,
-    say: 'Your account may read this repository but not write to it.'
+    say: 'Read access only. Your account cannot write here.'
   },
   {
     when: /Could not resolve host|Could not resolve hostname|Failed to connect|Connection timed out|Network is unreachable/i,
-    say: 'The remote could not be reached. Check the connection and the remote address.'
+    say: 'Cannot reach the remote. Check your connection.'
   },
   {
     when: /Repository not found|does not appear to be a git repository/i,
-    say: 'The remote does not have that repository, or will not admit it to you.'
+    say: 'The remote has no such repository.'
   },
   {
     when: /index\.lock|Unable to create .*\.lock|cannot lock ref/i,
-    say: 'Another git process has this repository locked. Wait for it, or remove the lock file.'
+    say: 'Another git process is running. Wait, or delete index.lock.'
   },
   {
     when: /did not match any file\(s\) known to git|unknown revision or path not in the working tree|not something we can merge|bad revision/i,
@@ -111,11 +121,11 @@ const RULES: Rule[] = [
   },
   {
     when: /nothing to commit|no changes added to commit/i,
-    say: 'There is nothing staged to commit.'
+    say: 'Nothing staged to commit.'
   },
   {
     when: /Your branch is up to date|Already up to date/i,
-    say: 'Nothing to do — this is already up to date.'
+    say: 'Already up to date.'
   },
   {
     when: /would clobber existing tag|already exists/i,
