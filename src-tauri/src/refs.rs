@@ -423,6 +423,14 @@ pub struct Diverged {
     pub behind: usize,
 }
 
+/// Stops a positional ref name from being read as a flag. `--` alone does not
+/// do this — it separates revisions from paths, and a leading-dash revision is
+/// still parsed as an option before `--` is ever reached. A branch is not
+/// restricted to names `git branch` itself would create: `update-ref` writes
+/// `refs/heads/-f` without complaint, and a remote that carries one hands it
+/// straight to a click that means "check this out".
+const END_OF_OPTIONS: &str = "--end-of-options";
+
 /// Checks out an existing local branch, or a remote branch by creating a local
 /// tracking branch for it — or, when that local branch already exists, by
 /// standing on it and bringing it up to date.
@@ -449,7 +457,7 @@ pub fn checkout(state: &AppState, name: &str) -> Result<CheckoutOutcome, String>
         // without a word. With it, a name that is not a ref is an error, which
         // is the truth.
         if repo.find_branch(name, BranchType::Local).is_ok() {
-            Plan::Args(vec!["checkout".into(), name.into(), "--".into()])
+            Plan::Args(vec!["checkout".into(), END_OF_OPTIONS.into(), name.into(), "--".into()])
         } else if repo.find_branch(name, BranchType::Remote).is_ok() {
             let local = name.split_once('/').map(|(_, n)| n).unwrap_or(name);
             if repo.find_branch(local, BranchType::Local).is_ok() {
@@ -460,13 +468,14 @@ pub fn checkout(state: &AppState, name: &str) -> Result<CheckoutOutcome, String>
                     "-b".into(),
                     local.into(),
                     "--track".into(),
+                    END_OF_OPTIONS.into(),
                     name.into(),
                     "--".into(),
                 ])
             }
         } else {
             // Could be a tag or a raw revision; let git decide and report.
-            Plan::Args(vec!["checkout".into(), name.into(), "--".into()])
+            Plan::Args(vec!["checkout".into(), END_OF_OPTIONS.into(), name.into(), "--".into()])
         }
     };
 
@@ -531,7 +540,12 @@ fn checkout_and_update(
         let path = state.path()?;
         git_cmd::run_checked(
             &path,
-            &["branch", &format!("--set-upstream-to={remote_ref}"), local],
+            &[
+                "branch",
+                &format!("--set-upstream-to={remote_ref}"),
+                END_OF_OPTIONS,
+                local,
+            ],
         )?;
     }
 
@@ -567,7 +581,12 @@ fn checkout_and_update(
 /// the branch stands against its upstream, and the caller here is about to
 /// change exactly that.
 fn switch_to(state: &AppState, local: &str) -> Result<String, String> {
-    let args = vec!["checkout".to_string(), local.to_string(), "--".to_string()];
+    let args = vec![
+        "checkout".to_string(),
+        END_OF_OPTIONS.to_string(),
+        local.to_string(),
+        "--".to_string(),
+    ];
     let said = switch(state, local, &args)?;
     Ok(if said.contains(CARRIED) {
         said.trim().to_string()
@@ -597,7 +616,7 @@ fn fast_forward_to(
     let mut notes = Vec::new();
 
     let base = if standing {
-        let args = ["merge", "--ff-only", remote_ref];
+        let args = ["merge", "--ff-only", END_OF_OPTIONS, remote_ref];
         match git_cmd::run_checked(&path, &args) {
             Ok(_) => {}
             Err(error)
@@ -616,7 +635,10 @@ fn fast_forward_to(
         }
         format!("Pulled {behind} {}", commits(behind))
     } else {
-        git_cmd::run_checked(&path, &["fetch", ".", &format!("{remote_ref}:{local}")])?;
+        git_cmd::run_checked(
+            &path,
+            &["fetch", ".", END_OF_OPTIONS, &format!("{remote_ref}:{local}")],
+        )?;
         let said = switch_to(state, local).map_err(|error| {
             format!("{local} was brought up to date with {remote_ref}, but switching to it did not work.\n{error}")
         })?;
@@ -721,6 +743,7 @@ pub fn checkout_tracking(state: &AppState, local: &str, tracking: &str) -> Resul
         "-b".to_string(),
         local.to_string(),
         "--track".to_string(),
+        END_OF_OPTIONS.to_string(),
         tracking.to_string(),
         "--".to_string(),
     ];
@@ -734,6 +757,7 @@ pub fn checkout_at(state: &AppState, local: &str, revision: &str) -> Result<Stri
         "checkout".to_string(),
         "-b".to_string(),
         local.to_string(),
+        END_OF_OPTIONS.to_string(),
         revision.to_string(),
         "--".to_string(),
     ];
@@ -839,7 +863,7 @@ fn carry(state: &AppState, name: &str, args: &[&str], refusal: &str) -> Result<S
     // tree, then the branch, then the work on top of it.
     let _ = git_cmd::run_checked(&root, &["reset", "--hard", "HEAD"]);
     if let Some(back) = &was {
-        let _ = git_cmd::run_checked(&root, &["checkout", back, "--"]);
+        let _ = git_cmd::run_checked(&root, &["checkout", END_OF_OPTIONS, back, "--"]);
     }
     if git_cmd::run_checked(&root, &["stash", "pop", "--index"]).is_err()
         && git_cmd::run_checked(&root, &["stash", "pop"]).is_err()
@@ -971,16 +995,20 @@ fn in_the_way(name: &str, error: &str) -> String {
 pub fn create_branch(state: &AppState, name: &str, start: Option<&str>, checkout: bool) -> Result<String, String> {
     let path = state.path()?;
     let mut args: Vec<&str> = if checkout {
-        vec!["checkout", "-b", name]
+        vec!["checkout", "-b", name, END_OF_OPTIONS]
     } else {
-        vec!["branch", name]
+        vec!["branch", END_OF_OPTIONS, name]
     };
     if let Some(start) = start {
         args.push(start);
     }
-    // See `checkout`: the trailing `--` stops a start point that is not a ref
-    // from being read as a path.
-    args.push("--");
+    // `checkout -b` keeps the `revs -- paths` grammar even though a start
+    // point is never read as a path; plain `branch` has no such grammar, and a
+    // trailing `--` there is read as a bogus second start point instead of
+    // being discarded.
+    if checkout {
+        args.push("--");
+    }
     // `git checkout -b` says "Switched to a new branch" on stderr, so its stdout
     // is empty on success. Say it ourselves rather than hand back nothing.
     git_cmd::run_checked(&path, &args)?;
@@ -1277,7 +1305,7 @@ pub fn deletion_preview(state: &AppState, name: &str) -> Result<BranchDeletion, 
 pub fn delete_branch(state: &AppState, name: &str, force: bool) -> Result<String, String> {
     let path = state.path()?;
     let flag = if force { "-D" } else { "-d" };
-    git_cmd::run_checked(&path, &["branch", flag, name])
+    git_cmd::run_checked(&path, &["branch", flag, END_OF_OPTIONS, name])
 }
 
 fn err(e: git2::Error) -> String {
@@ -1305,10 +1333,10 @@ pub fn rename_branch(state: &AppState, from: &str, to: &str) -> Result<String, S
             }
             suffix += 1;
         };
-        git_cmd::run_checked(&root, &["branch", "-m", from, &temp])?;
-        git_cmd::run_checked(&root, &["branch", "-m", &temp, to])?;
+        git_cmd::run_checked(&root, &["branch", "-m", END_OF_OPTIONS, from, &temp])?;
+        git_cmd::run_checked(&root, &["branch", "-m", END_OF_OPTIONS, &temp, to])?;
     } else {
-        git_cmd::run_checked(&root, &["branch", "-m", from, to])?;
+        git_cmd::run_checked(&root, &["branch", "-m", END_OF_OPTIONS, from, to])?;
     }
     Ok(format!("Renamed {from} to {to}"))
 }
@@ -1318,14 +1346,19 @@ pub fn set_upstream(state: &AppState, branch: &str, upstream: &str) -> Result<St
     let root = state.path()?;
     git_cmd::run_checked(
         &root,
-        &["branch", &format!("--set-upstream-to={upstream}"), branch],
+        &[
+            "branch",
+            &format!("--set-upstream-to={upstream}"),
+            END_OF_OPTIONS,
+            branch,
+        ],
     )?;
     Ok(format!("{branch} now tracks {upstream}"))
 }
 
 pub fn unset_upstream(state: &AppState, branch: &str) -> Result<String, String> {
     let root = state.path()?;
-    git_cmd::run_checked(&root, &["branch", "--unset-upstream", branch])?;
+    git_cmd::run_checked(&root, &["branch", "--unset-upstream", END_OF_OPTIONS, branch])?;
     Ok(format!("{branch} no longer tracks anything"))
 }
 
