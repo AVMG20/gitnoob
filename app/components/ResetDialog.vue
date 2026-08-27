@@ -172,7 +172,7 @@ onMounted(async () => {
 
 .mode.on.danger {
   border-color: var(--red);
-  background: rgba(224, 87, 109, 0.1);
+  background: var(--danger-bg);
 }
 
 .mode-title {
@@ -243,8 +243,8 @@ onMounted(async () => {
   font-size: 12px;
   line-height: 1.5;
   color: var(--amber-soft);
-  background: rgba(240, 168, 60, 0.08);
-  border: 1px solid rgba(240, 168, 60, 0.3);
+  background: var(--warning-bg);
+  border: 1px solid var(--warning-line);
 }
 
 .dirty:not(.bad) {
@@ -255,8 +255,8 @@ onMounted(async () => {
 
 .dirty.bad {
   color: var(--red-soft);
-  background: rgba(224, 87, 109, 0.08);
-  border-color: rgba(224, 87, 109, 0.35);
+  background: var(--danger-bg);
+  border-color: var(--danger-line);
 }
 
 .ack {

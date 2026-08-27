@@ -530,7 +530,7 @@ function more(event: MouseEvent) {
 }
 
 .tab.on .count {
-  background: rgba(0, 0, 0, 0.22);
+  background: var(--shadow);
   color: var(--text);
 }
 

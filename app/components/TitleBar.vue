@@ -396,7 +396,7 @@ watch(
 }
 
 .up {
-  background: rgba(87, 193, 132, 0.16);
+  background: var(--success-bg);
   color: var(--green);
 }
 
@@ -421,7 +421,7 @@ watch(
   font-size: 12px;
   color: #f2bd6e;
   background: #2a2114;
-  border-bottom: 1px solid rgba(240, 168, 60, 0.35);
+  border-bottom: 1px solid var(--warning-line);
 }
 
 .tiny {
@@ -435,7 +435,7 @@ watch(
 .tiny.ghost {
   background: none;
   color: #f2bd6e;
-  border: 1px solid rgba(240, 168, 60, 0.4);
+  border: 1px solid var(--warning-line);
 }
 
 /* The rejected-push strip. Two states in one place: the offer, then the
@@ -452,12 +452,12 @@ watch(
 .banner.danger {
   color: #f3a1ad;
   background: #2c1519;
-  border-bottom-color: rgba(224, 87, 109, 0.4);
+  border-bottom-color: var(--danger-line);
 }
 
 .banner.danger .tiny.ghost {
   color: #f3a1ad;
-  border-color: rgba(224, 87, 109, 0.45);
+  border-color: var(--danger-line);
 }
 
 .danger-btn {

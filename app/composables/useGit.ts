@@ -1189,16 +1189,16 @@ export function useGit() {
  *
  * The whole job of a lane colour is that two lines running side by side are
  * told apart at a glance, so every entry has to be an unmistakably different
- * hue rather than a lighter version of one already in the list. The greyed
- * slate and the dull gold that used to sit at the end failed that twice over:
- * against this background they read as a line that had been dimmed on purpose,
- * and next to the blue at the top the pale blue at the bottom read as the same
- * line.
+ * hue rather than a lighter version of one already in the list. Index 0 is the
+ * trunk's, and the backend holds it back from every other line: its `PALETTE`
+ * counts these, so the two lists have to stay the same length.
  *
- * Index 0 is the trunk's, and the backend holds it back from every other line.
- * Its `PALETTE` counts these, so the two lists have to stay the same length.
+ * They live in the stylesheet — `--lane-1` to `--lane-10` — because a lane on
+ * white has to be darker than the same lane on black to read as the same line,
+ * and only the theme knows which it is. Read once when the theme changes rather
+ * than per row: the graph asks for a colour thousands of times a frame.
  */
-export const LANE_COLORS = [
+const FALLBACK_LANES = [
   '#4f9cf9',
   '#f0a83c',
   '#57c184',
@@ -1211,8 +1211,23 @@ export const LANE_COLORS = [
   '#7d8cf8'
 ]
 
+const lanes = ref<string[]>(FALLBACK_LANES)
+
+/** Reads the lane colours out of the stylesheet. Called when the theme lands. */
+export function refreshLanes() {
+  if (typeof window === 'undefined') return
+  const style = getComputedStyle(document.documentElement)
+  const found = FALLBACK_LANES.map((_, at) =>
+    style.getPropertyValue(`--lane-${at + 1}`).trim()
+  )
+  // A stylesheet that has not arrived yet answers with empty strings, and a
+  // graph drawn in no colour at all is worse than one drawn in the old ones.
+  if (found.every((one) => one.length > 0)) lanes.value = found
+}
+
 /** The modulo keeps the index in range, which the checker cannot work out. */
-export const laneColor = (index: number): string => LANE_COLORS[index % LANE_COLORS.length]!
+export const laneColor = (index: number): string =>
+  lanes.value[index % lanes.value.length] ?? FALLBACK_LANES[0]!
 
 /**
  * A lane's colour at a given opacity.

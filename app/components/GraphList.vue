@@ -1600,7 +1600,7 @@ onUnmounted(() => {
 }
 
 .row.hit {
-  background: rgba(240, 168, 60, 0.08);
+  background: var(--warning-bg);
 }
 
 .row.drop {
@@ -1720,7 +1720,7 @@ onUnmounted(() => {
   padding: 6px 8px 6px 0;
   border-radius: 5px;
   background: var(--bg-hover);
-  box-shadow: 0 3px 14px rgba(0, 0, 0, 0.35);
+  box-shadow: 0 3px 14px var(--shadow);
 }
 
 /* The last rows in the window have no room below them, so they grow the other
@@ -1852,7 +1852,7 @@ onUnmounted(() => {
 }
 
 .mark {
-  background: rgba(240, 168, 60, 0.32);
+  background: var(--warning-line);
   border-radius: 2px;
   color: var(--amber-soft);
 }
@@ -1972,27 +1972,27 @@ onUnmounted(() => {
 }
 
 .chip-remote {
-  background: rgba(169, 123, 240, 0.16);
+  background: var(--info-bg);
   color: var(--purple-soft);
 }
 
 .chip-tag {
-  background: rgba(240, 168, 60, 0.16);
+  background: var(--warning-bg);
   color: var(--amber-soft);
 }
 
 .chip-head {
-  background: rgba(87, 193, 132, 0.18);
+  background: var(--success-bg);
   color: var(--green-soft);
 }
 
 .chip-wip {
-  background: rgba(240, 168, 60, 0.16);
+  background: var(--warning-bg);
   color: var(--amber-soft);
 }
 
 .chip-conflict {
-  background: rgba(224, 87, 109, 0.2);
+  background: var(--danger-bg);
   color: var(--red-soft);
 }
 

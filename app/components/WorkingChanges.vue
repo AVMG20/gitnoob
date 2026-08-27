@@ -519,7 +519,7 @@ function fileMenu(event: MouseEvent, path: string, side: 'staged' | 'unstaged', 
   padding: 6px 12px;
   font-size: 12px;
   color: var(--amber-soft);
-  background: rgba(240, 168, 60, 0.1);
+  background: var(--warning-bg);
   border-bottom: 1px solid var(--line-soft);
 }
 
@@ -582,7 +582,7 @@ function fileMenu(event: MouseEvent, path: string, side: 'staged' | 'unstaged', 
 
 .tiny.ai {
   color: var(--purple);
-  border: 1px solid rgba(169, 123, 240, 0.4);
+  border: 1px solid var(--info);
 }
 
 .tiny.warn {
