@@ -141,8 +141,8 @@ function tokens(theme, level) {
     '--fg-muted': fgAt(shift.muted),
     '--fg-subtle': fgAt(shift.subtle),
 
-    '--border': lineAt(shift.border, 1.6),
-    '--border-soft': lineAt(shift.borderSoft, 1.3),
+    '--border': lineAt(shift.border, 1.25),
+    '--border-soft': lineAt(shift.borderSoft, 1.1),
     '--ring': primary,
 
     '--primary': primary,

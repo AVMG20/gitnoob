@@ -86,11 +86,17 @@ const LADDERS = {
  *
  * 4.5 is what WCAG asks of body text, and the faintest text in the app was at
  * 2.4 to 3.3 before this.
+ *
+ * The lines are deliberately below what the same standard asks of a control's
+ * edge. Most of the lines in this window group things rather than bound them —
+ * the cards down the side of a review, the rule under a heading — and a window
+ * of boxes all drawn at 3:1 reads as a grid, not as a page. High contrast is
+ * where they step up for the people who need them to.
  */
 const CONTRAST = {
-  cosy: { fg: 12, muted: 5.4, subtle: 3.5, border: 1.55, borderSoft: 1.25 },
-  normal: { fg: 13, muted: 6.5, subtle: 4.5, border: 1.95, borderSoft: 1.4 },
-  high: { fg: 15.5, muted: 8.5, subtle: 6.2, border: 3, borderSoft: 2 }
+  cosy: { fg: 12, muted: 5.4, subtle: 3.5, border: 1.35, borderSoft: 1.15 },
+  normal: { fg: 13, muted: 6.5, subtle: 4.5, border: 1.62, borderSoft: 1.28 },
+  high: { fg: 15.5, muted: 8.5, subtle: 6.2, border: 2.6, borderSoft: 1.75 }
 }
 
 /**

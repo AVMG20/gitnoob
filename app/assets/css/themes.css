@@ -18,8 +18,8 @@
   --fg: #d4dde9;
   --fg-muted: #959da8;
   --fg-subtle: #78818b;
-  --border: #414952;
-  --border-soft: #2d333a;
+  --border: #373d44;
+  --border-soft: #282d33;
   --ring: #4f9cf9;
   --primary: #4f9cf9;
   --primary-fg: #020d1e;
@@ -92,14 +92,14 @@
 :root[data-contrast='cosy'] {
   --fg-muted: #868f99;
   --fg-subtle: #676f79;
-  --border: #323a43;
-  --border-soft: #252b32;
+  --border: #2b3137;
+  --border-soft: #000000;
 }
 :root[data-contrast='high'] {
   --fg-muted: #abb4bf;
   --fg-subtle: #919aa5;
-  --border: #5d656f;
-  --border-soft: #454b52;
+  --border: #555b63;
+  --border-soft: #3c4248;
 }
 
 /* Fjord — Slate with more blue in the ground. */
@@ -113,8 +113,8 @@
   --fg: #d5e1ec;
   --fg-muted: #94a0aa;
   --fg-subtle: #79838e;
-  --border: #3a4c5c;
-  --border-soft: #283642;
+  --border: #323f4c;
+  --border-soft: #242f3a;
   --ring: #42addf;
   --primary: #42addf;
   --primary-fg: #000f19;
@@ -187,14 +187,14 @@
 [data-theme='fjord'][data-contrast='cosy'] {
   --fg-muted: #86919b;
   --fg-subtle: #67717b;
-  --border: #2b3d4c;
-  --border-soft: #202e3a;
+  --border: #26333f;
+  --border-soft: #000000;
 }
 [data-theme='fjord'][data-contrast='high'] {
   --fg-muted: #abb7c1;
   --fg-subtle: #909ca6;
-  --border: #556879;
-  --border-soft: #3e4d5a;
+  --border: #4f5e6b;
+  --border-soft: #394550;
 }
 
 /* Pine — A green-grey window; the accent is a deep teal. */
@@ -208,8 +208,8 @@
   --fg: #cadbd4;
   --fg-muted: #8c9c95;
   --fg-subtle: #718079;
-  --border: #354941;
-  --border-soft: #23322c;
+  --border: #2d3c36;
+  --border-soft: #1e2b26;
   --ring: #3ebca5;
   --primary: #3ebca5;
   --primary-fg: #01110d;
@@ -282,14 +282,14 @@
 [data-theme='pine'][data-contrast='cosy'] {
   --fg-muted: #7e8d87;
   --fg-subtle: #5f6e68;
-  --border: #263a32;
-  --border-soft: #1b2a24;
+  --border: #21302a;
+  --border-soft: #16231e;
 }
 [data-theme='pine'][data-contrast='high'] {
   --fg-muted: #a3b3ac;
   --fg-subtle: #889891;
-  --border: #50655c;
-  --border-soft: #3a4a43;
+  --border: #4b5b54;
+  --border-soft: #33413b;
 }
 
 /* Dusk — Warm grey, with a violet accent. */
@@ -303,8 +303,8 @@
   --fg: #e4ddea;
   --fg-muted: #a29ca8;
   --fg-subtle: #86808c;
-  --border: #4e4754;
-  --border-soft: #38323c;
+  --border: #413c46;
+  --border-soft: #312c35;
   --ring: #a787ef;
   --primary: #a787ef;
   --primary-fg: #0f091c;
@@ -377,14 +377,14 @@
 [data-theme='dusk'][data-contrast='cosy'] {
   --fg-muted: #948d9a;
   --fg-subtle: #746e7a;
-  --border: #3f3945;
-  --border-soft: #302b34;
+  --border: #353039;
+  --border-soft: #000000;
 }
 [data-theme='dusk'][data-contrast='high'] {
   --fg-muted: #bab3c0;
   --fg-subtle: #9f98a5;
-  --border: #6a6371;
-  --border-soft: #4f4954;
+  --border: #605a65;
+  --border-soft: #46414a;
 }
 
 /* Plum — A purple-tinted window and a pink accent. */
@@ -398,8 +398,8 @@
   --fg: #e4d8e3;
   --fg-muted: #a499a3;
   --fg-subtle: #877c87;
-  --border: #544253;
-  --border-soft: #3b2e3b;
+  --border: #453845;
+  --border-soft: #332833;
   --ring: #ea7ab2;
   --primary: #ea7ab2;
   --primary-fg: #190610;
@@ -472,14 +472,14 @@
 [data-theme='plum'][data-contrast='cosy'] {
   --fg-muted: #958a94;
   --fg-subtle: #756b75;
-  --border: #453444;
-  --border-soft: #332632;
+  --border: #392c38;
+  --border-soft: #000000;
 }
 [data-theme='plum'][data-contrast='high'] {
   --fg-muted: #bbafba;
   --fg-subtle: #a0959f;
-  --border: #705e70;
-  --border-soft: #534552;
+  --border: #645663;
+  --border-soft: #493d48;
 }
 
 /* Moss — An olive window with a lime accent. */
@@ -493,8 +493,8 @@
   --fg: #dae0d3;
   --fg-muted: #99a093;
   --fg-subtle: #7d8477;
-  --border: #444d39;
-  --border-soft: #2f3627;
+  --border: #394031;
+  --border-soft: #2a2f23;
   --ring: #9bcf59;
   --primary: #9bcf59;
   --primary-fg: #081001;
@@ -567,14 +567,14 @@
 [data-theme='moss'][data-contrast='cosy'] {
   --fg-muted: #8b9184;
   --fg-subtle: #6c7265;
-  --border: #353d2b;
-  --border-soft: #272e1f;
+  --border: #2d3426;
+  --border-soft: #000000;
 }
 [data-theme='moss'][data-contrast='high'] {
   --fg-muted: #b0b7a9;
   --fg-subtle: #959c8f;
-  --border: #5f6854;
-  --border-soft: #464e3e;
+  --border: #575e4f;
+  --border-soft: #3e4538;
 }
 
 /* Ink — Nearly black, with a colder blue. */
@@ -588,8 +588,8 @@
   --fg: #ccd6e2;
   --fg-muted: #8e97a3;
   --fg-subtle: #737c87;
-  --border: #3c444f;
-  --border-soft: #272e36;
+  --border: #313840;
+  --border-soft: #21272e;
   --ring: #459ced;
   --primary: #459ced;
   --primary-fg: #010e1d;
@@ -662,14 +662,14 @@
 [data-theme='ink'][data-contrast='cosy'] {
   --fg-muted: #808994;
   --fg-subtle: #616a75;
-  --border: #2d353f;
-  --border-soft: #1f262e;
+  --border: #252b33;
+  --border-soft: #191e24;
 }
 [data-theme='ink'][data-contrast='high'] {
   --fg-muted: #a4aeb9;
   --fg-subtle: #8b949f;
-  --border: #57606b;
-  --border-soft: #3f464f;
+  --border: #50565f;
+  --border-soft: #373d44;
 }
 
 /* Obsidian — Neutral charcoal, no colour in the ground at all. */
@@ -683,8 +683,8 @@
   --fg: #d0d1d4;
   --fg-muted: #939396;
   --fg-subtle: #77787a;
-  --border: #414143;
-  --border-soft: #2b2b2c;
+  --border: #353536;
+  --border-soft: #242425;
   --ring: #5295ec;
   --primary: #5295ec;
   --primary-fg: #030d1e;
@@ -757,14 +757,14 @@
 [data-theme='obsidian'][data-contrast='cosy'] {
   --fg-muted: #858588;
   --fg-subtle: #666769;
-  --border: #313234;
-  --border-soft: #222223;
+  --border: #282829;
+  --border-soft: #1a1a1c;
 }
 [data-theme='obsidian'][data-contrast='high'] {
   --fg-muted: #aaaaad;
   --fg-subtle: #909093;
-  --border: #5d5d5f;
-  --border-soft: #434345;
+  --border: #545456;
+  --border-soft: #3a3a3b;
 }
 
 /* Mono — Grey, and one colour: everything that is not meaning is grey. */
@@ -778,8 +778,8 @@
   --fg: #d2d2d2;
   --fg-muted: #949494;
   --fg-subtle: #797979;
-  --border: #424242;
-  --border-soft: #2b2b2b;
+  --border: #363636;
+  --border-soft: #242424;
   --ring: #e5e5e7;
   --primary: #e5e5e7;
   --primary-fg: var(--bg);
@@ -852,14 +852,14 @@
 [data-theme='mono'][data-contrast='cosy'] {
   --fg-muted: #868686;
   --fg-subtle: #676767;
-  --border: #333333;
-  --border-soft: #232323;
+  --border: #292929;
+  --border-soft: #1b1b1b;
 }
 [data-theme='mono'][data-contrast='high'] {
   --fg-muted: #aaaaaa;
   --fg-subtle: #909090;
-  --border: #5d5d5d;
-  --border-soft: #434343;
+  --border: #545454;
+  --border-soft: #3b3b3b;
 }
 
 /* Void — Pure black, with a cyan accent. */
@@ -873,8 +873,8 @@
   --fg: #cccccc;
   --fg-muted: #909090;
   --fg-subtle: #757575;
-  --border: #3e3e3e;
-  --border-soft: #272727;
+  --border: #323232;
+  --border-soft: #202020;
   --ring: #37b9c7;
   --primary: #37b9c7;
   --primary-fg: #011013;
@@ -947,14 +947,14 @@
 [data-theme='void'][data-contrast='cosy'] {
   --fg-muted: #828282;
   --fg-subtle: #636363;
-  --border: #2e2e2e;
-  --border-soft: #1d1d1d;
+  --border: #242424;
+  --border-soft: #151515;
 }
 [data-theme='void'][data-contrast='high'] {
   --fg-muted: #a5a5a5;
   --fg-subtle: #8c8c8c;
-  --border: #595959;
-  --border-soft: #404040;
+  --border: #505050;
+  --border-soft: #373737;
 }
 
 /* Jade — Black, lit green — the additions move yellow to stay apart from it. */
@@ -968,8 +968,8 @@
   --fg: #cccccc;
   --fg-muted: #909090;
   --fg-subtle: #757575;
-  --border: #3e3e3e;
-  --border-soft: #272727;
+  --border: #323232;
+  --border-soft: #202020;
   --ring: #49df71;
   --primary: #49df71;
   --primary-fg: #021204;
@@ -1042,14 +1042,14 @@
 [data-theme='jade'][data-contrast='cosy'] {
   --fg-muted: #828282;
   --fg-subtle: #636363;
-  --border: #2e2e2e;
-  --border-soft: #1d1d1d;
+  --border: #242424;
+  --border-soft: #151515;
 }
 [data-theme='jade'][data-contrast='high'] {
   --fg-muted: #a5a5a5;
   --fg-subtle: #8c8c8c;
-  --border: #595959;
-  --border-soft: #404040;
+  --border: #505050;
+  --border-soft: #373737;
 }
 
 /* Crimson — Black, lit red — a deletion keeps a redder red to stay apart. */
@@ -1063,8 +1063,8 @@
   --fg: #cccccc;
   --fg-muted: #909090;
   --fg-subtle: #757575;
-  --border: #3e3e3e;
-  --border-soft: #272727;
+  --border: #323232;
+  --border-soft: #202020;
   --ring: #fa4a52;
   --primary: #fa4a52;
   --primary-fg: #1b0606;
@@ -1137,14 +1137,14 @@
 [data-theme='crimson'][data-contrast='cosy'] {
   --fg-muted: #828282;
   --fg-subtle: #636363;
-  --border: #2e2e2e;
-  --border-soft: #1d1d1d;
+  --border: #242424;
+  --border-soft: #151515;
 }
 [data-theme='crimson'][data-contrast='high'] {
   --fg-muted: #a5a5a5;
   --fg-subtle: #8c8c8c;
-  --border: #595959;
-  --border-soft: #404040;
+  --border: #505050;
+  --border-soft: #373737;
 }
 
 /* Ember — Black, lit amber — a warning moves yellower to stay apart. */
@@ -1158,8 +1158,8 @@
   --fg: #cccccc;
   --fg-muted: #909090;
   --fg-subtle: #757575;
-  --border: #3e3e3e;
-  --border-soft: #272727;
+  --border: #323232;
+  --border-soft: #202020;
   --ring: #fa8c31;
   --primary: #fa8c31;
   --primary-fg: #1a0800;
@@ -1232,14 +1232,14 @@
 [data-theme='ember'][data-contrast='cosy'] {
   --fg-muted: #828282;
   --fg-subtle: #636363;
-  --border: #2e2e2e;
-  --border-soft: #1d1d1d;
+  --border: #242424;
+  --border-soft: #151515;
 }
 [data-theme='ember'][data-contrast='high'] {
   --fg-muted: #a5a5a5;
   --fg-subtle: #8c8c8c;
-  --border: #595959;
-  --border-soft: #404040;
+  --border: #505050;
+  --border-soft: #373737;
 }
 
 /* Paper — Plain white, blue accent. */
@@ -1253,8 +1253,8 @@
   --fg: #313131;
   --fg-muted: #5d5d5d;
   --fg-subtle: #767676;
-  --border: #b9b9b9;
-  --border-soft: #dadada;
+  --border: #cbcbcb;
+  --border-soft: #e3e3e3;
   --ring: #2476d6;
   --primary: #2476d6;
   --primary-fg: #ffffff;
@@ -1327,14 +1327,14 @@
 [data-theme='paper'][data-contrast='cosy'] {
   --fg-muted: #6a6a6a;
   --fg-subtle: #898989;
-  --border: #cfcfcf;
-  --border-soft: #e6e6e6;
+  --border: #dedede;
+  --border-soft: #efefef;
 }
 [data-theme='paper'][data-contrast='high'] {
   --fg-muted: #4c4c4c;
   --fg-subtle: #606060;
-  --border: #959595;
-  --border-soft: #b7b7b7;
+  --border: #a0a0a0;
+  --border-soft: #c3c3c3;
 }
 
 /* Mist — A cool off-white, easier on the eyes than plain white. */
@@ -1348,8 +1348,8 @@
   --fg: #26282d;
   --fg-muted: #53565b;
   --fg-subtle: #6c6e74;
-  --border: #abaeb4;
-  --border-soft: #cbced3;
+  --border: #bdbfc4;
+  --border-soft: #d4d6db;
   --ring: #3373d6;
   --primary: #3373d6;
   --primary-fg: #ffffff;
@@ -1422,14 +1422,14 @@
 [data-theme='mist'][data-contrast='cosy'] {
   --fg-muted: #5f6268;
   --fg-subtle: #7d8086;
-  --border: #c1c4ca;
-  --border-soft: #d7d9de;
+  --border: #cfd1d6;
+  --border-soft: #e0e2e7;
 }
 [data-theme='mist'][data-contrast='high'] {
   --fg-muted: #42454a;
   --fg-subtle: #56595f;
-  --border: #888b91;
-  --border-soft: #aaacb1;
+  --border: #94969b;
+  --border-soft: #b6b8bc;
 }
 
 /* Sand — Warm paper, for people who find white screens cold. */
@@ -1443,8 +1443,8 @@
   --fg: #302c22;
   --fg-muted: #5d594e;
   --fg-subtle: #767165;
-  --border: #b8b3a6;
-  --border-soft: #d7d3c8;
+  --border: #c8c4ba;
+  --border-soft: #dfdcd3;
   --ring: #2677c1;
   --primary: #2677c1;
   --primary-fg: #ffffff;
@@ -1517,14 +1517,14 @@
 [data-theme='sand'][data-contrast='cosy'] {
   --fg-muted: #696559;
   --fg-subtle: #888377;
-  --border: #cdc9bb;
-  --border-soft: #e2ded3;
+  --border: #dad7cc;
+  --border-soft: #ebe8de;
 }
 [data-theme='sand'][data-contrast='high'] {
   --fg-muted: #4c483d;
   --fg-subtle: #605c51;
-  --border: #948f83;
-  --border-soft: #b5b1a7;
+  --border: #9e9b91;
+  --border-soft: #c0bdb4;
 }
 
 /* Frost — Pale blue paper with a teal accent. */
@@ -1538,8 +1538,8 @@
   --fg: #242f32;
   --fg-muted: #505d60;
   --fg-subtle: #687579;
-  --border: #aab8bb;
-  --border-soft: #ccd7da;
+  --border: #bdc8cb;
+  --border-soft: #d6e0e3;
   --ring: #05809c;
   --primary: #05809c;
   --primary-fg: #ffffff;
@@ -1612,14 +1612,14 @@
 [data-theme='frost'][data-contrast='cosy'] {
   --fg-muted: #5d696c;
   --fg-subtle: #7a888b;
-  --border: #bfcdd1;
-  --border-soft: #d8e3e6;
+  --border: #d0dbde;
+  --border-soft: #e2ecee;
 }
 [data-theme='frost'][data-contrast='high'] {
   --fg-muted: #3f4b4e;
   --fg-subtle: #536063;
-  --border: #869397;
-  --border-soft: #aab5b8;
+  --border: #949ea1;
+  --border-soft: #b8c1c4;
 }
 
 /* Lilac — Pale violet paper, purple accent. */
@@ -1633,8 +1633,8 @@
   --fg: #312c36;
   --fg-muted: #5e5964;
   --fg-subtle: #77717e;
-  --border: #bab3c2;
-  --border-soft: #d9d3e0;
+  --border: #cac5d1;
+  --border-soft: #e2dde8;
   --ring: #763fcc;
   --primary: #763fcc;
   --primary-fg: #ffffff;
@@ -1707,12 +1707,12 @@
 [data-theme='lilac'][data-contrast='cosy'] {
   --fg-muted: #6a6571;
   --fg-subtle: #898390;
-  --border: #cfc8d7;
-  --border-soft: #e5dfec;
+  --border: #ddd7e3;
+  --border-soft: #ede8f3;
 }
 [data-theme='lilac'][data-contrast='high'] {
   --fg-muted: #4d4753;
   --fg-subtle: #615c68;
-  --border: #958f9d;
-  --border-soft: #b7b1bd;
+  --border: #a09ba6;
+  --border-soft: #c2bec8;
 }
