@@ -950,6 +950,9 @@ export function useGit() {
     stageAll: () => run<string>('Stage all', 'stage_all'),
     unstage: (paths: string[]) => run<string>('Unstage', 'unstage', { paths }),
     discard: (paths: string[]) => run<string>('Discard', 'discard', { paths }),
+    /** Deletes files git is not tracking, which is what discarding one means. */
+    deleteUntracked: (paths: string[]) =>
+      run<string>('Delete', 'delete_untracked', { paths }),
     commit: (message: string, amend = false) =>
       run<string>('Commit', 'commit', { message, amend }),
     amendDraft: () => guard('Read HEAD', () => invoke<AmendDraft>('amend_draft')),
@@ -961,6 +964,9 @@ export function useGit() {
     stashPop: (index: number) => run<string>('Stash pop', 'stash_pop', { index }),
     stashApply: (index: number) => run<string>('Stash apply', 'stash_apply', { index }),
     stashDrop: (index: number) => run<string>('Stash drop', 'stash_drop', { index }),
+    /** Gives a stash a new description, leaving it where it is in the list. */
+    stashRename: (index: number, message: string) =>
+      run<string>('Rename stash', 'stash_rename', { index, message }),
     stashBranch: (index: number, name: string) =>
       run<string>('Branch from stash', 'stash_branch', { index, name }),
 

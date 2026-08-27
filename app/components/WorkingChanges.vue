@@ -10,6 +10,7 @@ import {
   Minus,
   Plus,
   Sparkles,
+  Trash2,
   TriangleAlert,
   Undo2
 } from 'lucide-vue-next'
@@ -152,6 +153,22 @@ async function generate() {
  * handed to git as a directory: what the menu offers is then exactly what the
  * rows underneath it show, with nothing swept in from the other pane.
  */
+/**
+ * The untracked files a menu has offered to delete, while it is being asked.
+ *
+ * Discarding a tracked file takes its content back from the index or from HEAD,
+ * where it still is. An untracked file has no copy anywhere — deleting it is
+ * the only thing "discard" could mean, and there is nothing to undo it with, so
+ * it is the one thing here worth a question first.
+ */
+const deleting = ref<string[] | null>(null)
+
+async function deleteUntracked() {
+  const paths = deleting.value
+  deleting.value = null
+  if (paths?.length) await git.deleteUntracked(paths)
+}
+
 function dirMenu(event: MouseEvent, dir: string, side: 'staged' | 'unstaged') {
   const inside = (side === 'staged' ? staged.value : unstaged.value).filter((entry) =>
     entry.path.startsWith(`${dir}/`)
@@ -162,6 +179,8 @@ function dirMenu(event: MouseEvent, dir: string, side: 'staged' | 'unstaged') {
   // Git will not discard a file it has never seen, and deleting one is not
   // something to do as a side effect of "discard changes".
   const tracked = inside.filter((entry) => entry.kind !== 'untracked').map((entry) => entry.path)
+  // The ones git has never seen, which discard cannot touch and delete can.
+  const fresh = inside.filter((entry) => entry.kind === 'untracked').map((entry) => entry.path)
 
   menu.show(
     event,
@@ -178,6 +197,20 @@ function dirMenu(event: MouseEvent, dir: string, side: 'staged' | 'unstaged') {
         disabled: !tracked.length,
         action: () => git.discard(tracked)
       },
+      ...(fresh.length
+        ? [
+            {
+              label: `Delete the ${fresh.length} new ${
+                fresh.length === 1 ? 'file' : 'files'
+              } in it`,
+              icon: Trash2,
+              danger: true,
+              action: () => {
+                deleting.value = fresh
+              }
+            }
+          ]
+        : []),
       { separator: true, label: '' },
       { label: `Ignore everything in ${dir}/`, icon: EyeOff, action: () => git.addToGitignore(`${dir}/`) },
       { label: git.revealLabel, icon: FolderOpen, action: () => git.reveal(dir) },
@@ -194,13 +227,24 @@ function fileMenu(event: MouseEvent, path: string, side: 'staged' | 'unstaged', 
       side === 'staged'
         ? { label: 'Unstage', icon: Minus, action: () => git.unstage([path]) }
         : { label: 'Stage', icon: Plus, action: () => git.stage([path]) },
-      {
-        label: 'Discard changes to this file',
-        icon: Undo2,
-        danger: true,
-        disabled: kind === 'untracked',
-        action: () => git.discard([path])
-      },
+      // A file git has never seen has no changes to take back — the whole
+      // file is the change — so the same place in the menu offers the only
+      // thing that could have meant.
+      kind === 'untracked'
+        ? {
+            label: 'Delete this file',
+            icon: Trash2,
+            danger: true,
+            action: () => {
+              deleting.value = [path]
+            }
+          }
+        : {
+            label: 'Discard changes to this file',
+            icon: Undo2,
+            danger: true,
+            action: () => git.discard([path])
+          },
       { separator: true, label: '' },
       {
         label: 'Add to .gitignore',
@@ -411,9 +455,56 @@ function fileMenu(event: MouseEvent, path: string, side: 'staged' | 'unstaged', 
       </p>
     </div>
   </div>
+
+  <!-- Asked because there is nothing behind it: an untracked file is not in
+       the index and not in a commit, so nothing here or in git can bring it
+       back. -->
+  <AppModal
+    v-if="deleting"
+    :title="deleting.length === 1 ? 'Delete this file?' : `Delete ${deleting.length} files?`"
+    :width="420"
+    tone="danger"
+    @close="deleting = null"
+  >
+    <p class="gone">
+      Git is not tracking
+      {{ deleting.length === 1 ? 'it' : 'them' }}, so
+      {{ deleting.length === 1 ? 'it is' : 'they are' }} only on disk. Deleting cannot be undone.
+    </p>
+    <ul class="gone-list mono">
+      <li v-for="path in deleting.slice(0, 8)" :key="path" class="truncate">{{ path }}</li>
+      <li v-if="deleting.length > 8" class="faint">…and {{ deleting.length - 8 }} more</li>
+    </ul>
+
+    <template #footer>
+      <button class="btn btn-ghost" @click="deleting = null">Cancel</button>
+      <button class="btn btn-danger" @click="deleteUntracked">
+        {{ deleting.length === 1 ? 'Delete the file' : `Delete ${deleting.length} files` }}
+      </button>
+    </template>
+  </AppModal>
 </template>
 
 <style scoped>
+.gone {
+  margin: 0 0 10px;
+  font-size: 12.5px;
+  line-height: 1.55;
+}
+
+.gone-list {
+  margin: 0;
+  padding: 8px 10px;
+  list-style: none;
+  max-height: 160px;
+  overflow: auto;
+  font-size: 11.5px;
+  color: var(--text-dim);
+  background: var(--bg-deep);
+  border: 1px solid var(--line-soft);
+  border-radius: 6px;
+}
+
 .working {
   display: grid;
   grid-template-columns: minmax(0, 1fr);

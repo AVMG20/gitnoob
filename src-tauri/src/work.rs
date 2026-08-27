@@ -1,4 +1,5 @@
 use std::collections::HashMap;
+use std::fs;
 use std::path::Path;
 use std::sync::Mutex;
 
@@ -48,6 +49,28 @@ pub fn discard(state: &AppState, paths: &[String]) -> Result<String, String> {
     let refs: Vec<&str> = paths.iter().map(|s| s.as_str()).collect();
     args.extend(refs);
     git_cmd::run_checked(&root, &args)
+}
+
+/// Deletes files git is not tracking, which is what discarding one comes to.
+///
+/// `git clean -f` rather than removing them here: it refuses to touch anything
+/// tracked, so a path that turns out to be in the index is left alone instead
+/// of being deleted by a menu item that promised something else. `-d` for the
+/// directories an untracked folder full of files shows up as.
+pub fn delete_untracked(state: &AppState, paths: &[String]) -> Result<String, String> {
+    if paths.is_empty() {
+        return Err("Nothing to delete".to_string());
+    }
+    let root = state.path()?;
+    let mut args = vec!["clean", "-f", "-d", "--"];
+    let refs: Vec<&str> = paths.iter().map(|s| s.as_str()).collect();
+    args.extend(refs);
+    git_cmd::run_checked(&root, &args)?;
+    Ok(format!(
+        "Deleted {} {}",
+        paths.len(),
+        if paths.len() == 1 { "file" } else { "files" }
+    ))
 }
 
 pub fn commit(state: &AppState, message: &str, amend: bool) -> Result<String, String> {
@@ -350,6 +373,71 @@ pub fn stash_oid(state: &AppState, index: usize) -> Result<String, String> {
     Ok(git_cmd::run_checked(&root, &["rev-parse", &name])?
         .trim()
         .to_string())
+}
+
+/// Gives a stash a new description, leaving it where it is in the list.
+///
+/// Git has no command for this. `git stash store` can put a stash commit back
+/// under a new message, but only on top of the list — renaming the third stash
+/// would silently make it the first, which is not what renaming means. The
+/// message lives in the reflog for `refs/stash`, one line per entry, so that
+/// line is what gets rewritten.
+pub fn stash_rename(state: &AppState, index: usize, message: &str) -> Result<String, String> {
+    let message = message.trim();
+    if message.is_empty() {
+        return Err("A stash needs a name".to_string());
+    }
+    let root = state.path()?;
+    let selector = format!("stash@{{{index}}}");
+    let oid = git_cmd::run_checked(&root, &["rev-parse", &selector])?
+        .trim()
+        .to_string();
+
+    // `--git-path` answers correctly inside a worktree or a submodule, where
+    // `.git` is a file pointing somewhere else entirely.
+    let logs = git_cmd::run_checked(&root, &["rev-parse", "--git-path", "logs/refs/stash"])?
+        .trim()
+        .to_string();
+    let logs = root.join(logs);
+    let text = fs::read_to_string(&logs).map_err(|e| format!("Could not read the stash log: {e}"))?;
+
+    let mut lines: Vec<String> = text.lines().map(str::to_string).collect();
+    // The newest entry is the last line, and `stash@{0}` is the newest.
+    let at = lines
+        .len()
+        .checked_sub(index + 1)
+        .ok_or("There is no stash at that position")?;
+    let line = lines.get(at).ok_or("There is no stash at that position")?;
+
+    let renamed = renamed_entry(line, &oid, message)
+        .ok_or("The stash list moved while it was being renamed")?;
+    lines[at] = renamed;
+
+    let mut out = lines.join("\n");
+    out.push('\n');
+    fs::write(&logs, out).map_err(|e| format!("Could not write the stash log: {e}"))?;
+    Ok(format!("Renamed {selector}"))
+}
+
+/// One reflog line with its description replaced, or `None` if it is not the
+/// entry it was meant to be.
+///
+/// A line reads `<before> <after> <who> <when> <zone>\t<message>`. Only the
+/// message changes, and the "On main: " part of it stays: it says where the
+/// stash was made, which is not the user's to rename.
+fn renamed_entry(line: &str, oid: &str, message: &str) -> Option<String> {
+    let (meta, said) = line.split_once('\t')?;
+    // The second field is the commit the entry points at. If it is not the
+    // stash being renamed, the list is not what it was when it was read.
+    if meta.split_whitespace().nth(1)? != oid {
+        return None;
+    }
+    let prefix = said
+        .find(": ")
+        .filter(|_| said.starts_with("On ") || said.starts_with("WIP on "))
+        .map(|at| &said[..at + 2])
+        .unwrap_or("");
+    Some(format!("{meta}\t{prefix}{message}"))
 }
 
 /// Applies a stash and keeps it in the list.
@@ -926,6 +1014,34 @@ fn single_hunk_patch(diff: &str, hunk_index: usize) -> Result<String, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A line as git writes it into `.git/logs/refs/stash`.
+    const ENTRY: &str = "0000000000000000000000000000000000000000 abc123 A <a@b.c> 1700000000 +0100\tOn main: the old name";
+
+    #[test]
+    fn renaming_keeps_the_branch_the_stash_was_made_on() {
+        let out = renamed_entry(ENTRY, "abc123", "the new name").expect("renamed");
+        assert!(out.ends_with("\tOn main: the new name"));
+        // Everything before the message is the reflog's own bookkeeping and is
+        // left exactly as it was.
+        assert_eq!(
+            out.split('\t').next(),
+            ENTRY.split('\t').next()
+        );
+    }
+
+    #[test]
+    fn a_message_with_no_branch_in_it_is_replaced_whole() {
+        let line = "0000 abc123 A <a@b.c> 1700000000 +0100\twhatever this was";
+        let out = renamed_entry(line, "abc123", "named").expect("renamed");
+        assert!(out.ends_with("\tnamed"));
+    }
+
+    #[test]
+    fn a_line_pointing_somewhere_else_is_refused() {
+        // The list changed under us: renaming it would rename another stash.
+        assert!(renamed_entry(ENTRY, "def456", "nope").is_none());
+    }
 
     const DIFF: &str = "\
 diff --git a/a.txt b/a.txt

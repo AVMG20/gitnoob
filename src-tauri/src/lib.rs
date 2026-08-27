@@ -445,6 +445,25 @@ async fn stash_drop(index: usize, state: State<'_, AppState>) -> Result<String, 
     work::stash_drop(&state, index)
 }
 
+/// Gives a stash a new description, leaving it where it is in the list.
+#[tauri::command]
+async fn stash_rename(
+    index: usize,
+    message: String,
+    state: State<'_, AppState>,
+) -> Result<String, String> {
+    work::stash_rename(&state, index, &message)
+}
+
+/// Deletes files git is not tracking.
+#[tauri::command]
+async fn delete_untracked(
+    paths: Vec<String>,
+    state: State<'_, AppState>,
+) -> Result<String, String> {
+    work::delete_untracked(&state, &paths)
+}
+
 #[tauri::command]
 async fn stash_branch(index: usize, name: String, state: State<'_, AppState>) -> Result<String, String> {
     work::stash_branch(&state, index, &name)
@@ -1368,6 +1387,8 @@ pub fn run() {
             stash_list,
             stash_apply,
             stash_drop,
+            stash_rename,
+            delete_untracked,
             stash_branch,
             stash_oid,
             reset_preview,
