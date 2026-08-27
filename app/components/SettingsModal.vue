@@ -585,21 +585,18 @@ onMounted(async () => {
 
           <h3 class="sub">Contrast</h3>
           <p class="dim intro">
-            How hard the quiet parts of the window work: dimmed text, and the lines between one
-            panel and the next. It applies to whichever theme is on, so a theme stays a choice
-            about colour rather than about legibility.
+            How hard the dimmed text and the lines between panels work, on whichever theme is on.
           </p>
           <div class="sizes">
             <button
               v-for="one in contrasts"
               :key="one.id"
-              class="size wide"
+              class="size"
               :class="{ on: one.id === contrast }"
-              :title="one.note"
               @click="setContrast(one.id)"
             >
-              <span class="contrast-name">{{ one.name }}</span>
-              <span class="faint small">{{ one.note }}</span>
+              {{ one.name }}
+              <span class="faint small block">{{ one.note }}</span>
             </button>
           </div>
 
@@ -976,20 +973,6 @@ h3 {
   display: flex;
   flex-direction: column;
   gap: 5px;
-}
-
-.size.wide {
-  flex-direction: column;
-  align-items: flex-start;
-  gap: 2px;
-  min-width: 150px;
-  padding: 8px 11px;
-  text-align: left;
-}
-
-.contrast-name {
-  font-weight: 600;
-  font-size: 12.5px;
 }
 
 .themes {

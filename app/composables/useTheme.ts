@@ -14,9 +14,9 @@ import { THEMES, type ThemeId } from './themeList'
 export type Contrast = 'cosy' | 'normal' | 'high'
 
 export const CONTRASTS: { id: Contrast; name: string; note: string }[] = [
-  { id: 'cosy', name: 'Cosy', note: 'Softer. The quiet parts recede further.' },
-  { id: 'normal', name: 'Normal', note: 'Every theme reads at 4.5:1 or better.' },
-  { id: 'high', name: 'High', note: 'Dim text and panel edges step forward.' }
+  { id: 'cosy', name: 'Cosy', note: 'softer' },
+  { id: 'normal', name: 'Normal', note: '4.5:1 or better' },
+  { id: 'high', name: 'High', note: 'stronger' }
 ]
 
 const KEY = 'gitnoob.theme'
