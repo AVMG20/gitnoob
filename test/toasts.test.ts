@@ -40,11 +40,29 @@ describe('the notices in the corner', () => {
     expect(toasts.items.value).toHaveLength(2)
   })
 
-  it('takes good news away again, and leaves failures standing', () => {
+  it('takes good news away first, and a failure a while later', () => {
     toasts.info('Branch moved to 1a2b3c4')
     toasts.fail('Push: rejected (fetch first)')
     vi.advanceTimersByTime(10_000)
+    // Long enough for the good news, not for something to act on.
     expect(toasts.items.value.map((one) => one.level)).toEqual(['error'])
+
+    vi.advanceTimersByTime(10_000)
+    expect(toasts.items.value).toHaveLength(0)
+  })
+
+  it('stops the clock while the stack is being read', () => {
+    toasts.fail('Push: rejected (fetch first)')
+    toasts.hold(true)
+    vi.advanceTimersByTime(60_000)
+    expect(toasts.items.value).toHaveLength(1)
+
+    // Letting go starts the wait again rather than finishing what was left.
+    toasts.hold(false)
+    vi.advanceTimersByTime(14_000)
+    expect(toasts.items.value).toHaveLength(1)
+    vi.advanceTimersByTime(2_000)
+    expect(toasts.items.value).toHaveLength(0)
   })
 
   it('drops the oldest rather than filling the window', () => {

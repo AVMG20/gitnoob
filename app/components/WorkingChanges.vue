@@ -93,6 +93,23 @@ const rows = computed(() => {
   return parts.join(' ')
 })
 
+/**
+ * Fills the box with the message git already wrote, while it is still empty.
+ *
+ * Finishing a merge is not writing a commit message: git named the merge when
+ * it started it, that name is what every tool expects to see, and the box was
+ * refusing to commit without being told again. Only into an empty box, and only
+ * once — whatever is typed over it stays typed, and clearing the box back to
+ * nothing hands the merge's own words back.
+ */
+watch(
+  () => store.progress?.prepared ?? null,
+  (ready) => {
+    if (ready && !message.value.trim() && !amend.value) message.value = ready
+  },
+  { immediate: true }
+)
+
 /** Committing straight to a shared branch is worth a word of warning. */
 const onProtected = computed(() => ['main', 'master', 'develop'].includes(store.repo?.head ?? ''))
 

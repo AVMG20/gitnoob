@@ -26,8 +26,20 @@ export interface Toast {
   at: number
 }
 
-/** How long a piece of good news stays up. Failures stay until dismissed. */
+/** How long a piece of good news stays up. */
 const INFO_MS = 5000
+
+/**
+ * How long a failure stays up.
+ *
+ * Longer than good news, because it says something you have to act on and the
+ * words are worth reading twice — but not forever: a notice nobody dismissed is
+ * a notice standing over the window an hour later. The clock stops while the
+ * pointer is on the stack, so a failure being read is never taken away
+ * mid-sentence, and one being opened up to see what git said keeps its place
+ * for as long as it is open.
+ */
+const ERROR_MS = 15_000
 
 /**
  * How long the same message keeps counting up rather than stacking.
@@ -42,6 +54,8 @@ const SAME_MS = 30_000
 const LIMIT = 4
 
 const items = ref<Toast[]>([])
+/** True while the pointer is on the stack, which stops every clock in it. */
+const held = ref(false)
 let seq = 0
 const timers = new Map<number, ReturnType<typeof setTimeout>>()
 
@@ -56,20 +70,43 @@ function forget(id: number) {
 function dismiss(id: number) {
   forget(id)
   items.value = items.value.filter((one) => one.id !== id)
+  // The stack is gone from under the pointer, so the mouse will never leave it
+  // and nothing would ever start a clock again.
+  if (!items.value.length) held.value = false
 }
 
 function clear() {
   for (const one of items.value) forget(one.id)
   items.value = []
+  held.value = false
 }
 
+/** Starts, or restarts, one notice's clock. */
 function fade(toast: Toast) {
-  if (toast.level !== 'info') return
   forget(toast.id)
+  if (held.value) return
+  const after = toast.level === 'info' ? INFO_MS : ERROR_MS
   timers.set(
     toast.id,
-    setTimeout(() => dismiss(toast.id), INFO_MS)
+    setTimeout(() => dismiss(toast.id), after)
   )
+}
+
+/**
+ * Holds the stack, or lets it go again.
+ *
+ * Letting go starts every clock from the beginning rather than from wherever it
+ * was: someone who moved the pointer away has just finished reading, and the
+ * few seconds they had left are not what should decide how long the notice is
+ * still there.
+ */
+function hold(on: boolean) {
+  held.value = on
+  if (on) {
+    for (const one of items.value) forget(one.id)
+    return
+  }
+  for (const one of items.value) fade(one)
 }
 
 /** Puts one up, or counts up the one already saying it. */
@@ -105,6 +142,7 @@ export function useToasts() {
     items,
     dismiss,
     clear,
+    hold,
     /** Good news, which takes itself away again. */
     info: (title: string, detail: string | null = null) => raise('info', title, detail),
     /**
@@ -114,7 +152,10 @@ export function useToasts() {
      * reports a failure gets a notice out of it without being rewritten.
      */
     fail: (text: string) => {
-      const { title, detail } = explain(text)
+      const { title, detail, quiet } = explain(text)
+      // Some failures are answered by the window itself — a merge stopping on
+      // conflicts opens the resolver — and a notice over that is noise.
+      if (quiet) return null
       return raise('error', title, detail)
     }
   }

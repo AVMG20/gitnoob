@@ -14,10 +14,26 @@ const toasts = useToasts()
 /** Which notices have been opened up to show what git actually said. */
 const opened = ref(new Set<number>())
 
+/** True while the pointer or the keyboard is in the stack. */
+const inside = ref(false)
+
+/**
+ * Stops the clocks while the stack is being read.
+ *
+ * Being read is either of two things: the pointer is on it, or something in it
+ * has been opened up to show what git said. A notice taken away in the middle
+ * of either is a notice that may as well not have been shown.
+ */
+function watching(on: boolean) {
+  inside.value = on
+  toasts.hold(on || opened.value.size > 0)
+}
+
 function toggle(id: number) {
   const next = new Set(opened.value)
   if (!next.delete(id)) next.add(id)
   opened.value = next
+  toasts.hold(inside.value || next.size > 0)
 }
 
 async function copy(text: string) {
@@ -30,7 +46,14 @@ async function copy(text: string) {
 </script>
 
 <template>
-  <div v-if="toasts.items.value.length" class="toasts">
+  <div
+    v-if="toasts.items.value.length"
+    class="toasts"
+    @mouseenter="watching(true)"
+    @mouseleave="watching(false)"
+    @focusin="watching(true)"
+    @focusout="watching(false)"
+  >
     <button
       v-if="toasts.items.value.length > 1"
       class="clear"

@@ -735,6 +735,14 @@ pub struct InProgress {
     /// Files are conflicted but git is running nothing, which is what a `stash
     /// pop` leaves behind. There is no merge to abort in this state.
     pub restoring: bool,
+    /// The message git has already written for what it is part-way through.
+    ///
+    /// A merge names itself — "Merge branch 'x' into 'y'" — and git keeps that
+    /// sentence in `MERGE_MSG` from the moment the merge starts, conflicts or
+    /// not. Nobody wants to retype it, and a commit box that insists on a
+    /// message it is already holding is a box asking a question it knows the
+    /// answer to.
+    pub prepared: Option<String>,
 }
 
 pub fn in_progress(state: &AppState) -> Result<InProgress, String> {
@@ -765,7 +773,30 @@ pub fn in_progress(state: &AppState) -> Result<InProgress, String> {
         cherry_picking,
         reverting,
         restoring: !running && has_unmerged(&root),
+        prepared: prepared_message(&git_dir),
     })
+}
+
+/// The message git wrote for the merge or squash it is part-way through.
+///
+/// Comment lines go: git strips them itself at commit time, and the list of
+/// conflicted files it puts under `# Conflicts:` is a note to the person doing
+/// the merge, not part of what they are committing.
+fn prepared_message(git_dir: &std::path::Path) -> Option<String> {
+    for name in ["MERGE_MSG", "SQUASH_MSG"] {
+        let Ok(text) = std::fs::read_to_string(git_dir.join(name)) else {
+            continue;
+        };
+        let kept: Vec<&str> = text
+            .lines()
+            .filter(|line| !line.starts_with('#'))
+            .collect();
+        let message = kept.join("\n").trim().to_string();
+        if !message.is_empty() {
+            return Some(message);
+        }
+    }
+    None
 }
 
 /// True when the index holds unmerged entries, whatever put them there.

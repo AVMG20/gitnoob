@@ -18,11 +18,21 @@ export interface Explained {
   title: string
   /** Everything git said, or `null` when the title already is that. */
   detail: string | null
+  /** True for the failures the window itself already answers. */
+  quiet: boolean
 }
 
 interface Rule {
   when: RegExp
   say: string
+  /**
+   * Set where the app's own response says it better than a notice would.
+   *
+   * A merge that stops on conflicts opens the resolver with every conflicted
+   * file in it — a notice repeating that, over the page that is already
+   * answering it, is one more thing to dismiss.
+   */
+  quiet?: boolean
 }
 
 /**
@@ -44,7 +54,8 @@ const RULES: Rule[] = [
   },
   {
     when: /Automatic merge failed|^CONFLICT \(|\nCONFLICT \(/i,
-    say: 'It stopped on conflicts. Resolve the conflicted files, then commit.'
+    say: 'It stopped on conflicts. Resolve the conflicted files, then commit.',
+    quiet: true
   },
   {
     when: /You have not concluded your merge|MERGE_HEAD exists|a rebase is in progress|is already in progress/i,
@@ -130,14 +141,14 @@ function firstLine(text: string): string {
  */
 export function explain(text: string): Explained {
   const whole = text.trim()
-  if (!whole) return { title: 'Something went wrong', detail: null }
+  if (!whole) return { title: 'Something went wrong', detail: null, quiet: false }
 
   const rule = RULES.find((one) => one.when.test(whole))
-  if (rule) return { title: rule.say, detail: whole }
+  if (rule) return { title: rule.say, detail: whole, quiet: !!rule.quiet }
 
   const head = firstLine(whole)
   // A one-line message is its own explanation; repeating it under itself as a
   // detail would only give the toast a disclosure triangle that reveals what is
   // already on screen.
-  return { title: head, detail: whole === head ? null : whole }
+  return { title: head, detail: whole === head ? null : whole, quiet: false }
 }

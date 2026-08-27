@@ -48,6 +48,11 @@ describe('explaining a git failure', () => {
     expect(said.title).toContain('Another git process')
   })
 
+  it('says nothing about a merge stopping, since the resolver opens itself', () => {
+    const said = explain('Merge: Auto-merging app.vue\nCONFLICT (content): Merge conflict in app.vue\nAutomatic merge failed; fix conflicts and then commit the result.')
+    expect(said.quiet).toBe(true)
+  })
+
   it('hands back anything it does not recognise, whole', () => {
     const raw = 'Rebase: fatal: something nobody has hit yet\nwith a second line of it'
     const said = explain(raw)
