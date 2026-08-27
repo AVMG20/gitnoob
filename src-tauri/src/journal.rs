@@ -109,6 +109,9 @@ pub fn current_branch(state: &AppState) -> Option<String> {
 }
 
 /// Records an operation. Called after it succeeded, never before.
+// One entry in the undo history, described in full at the call site so that
+// nothing is recorded by accident. A struct here would be the same list.
+#[allow(clippy::too_many_arguments)]
 pub fn record(
     state: &AppState,
     kind: &str,
@@ -265,7 +268,10 @@ fn step(state: &AppState, entry: &mut Entry, direction: Direction) -> Result<Str
                     return Err(format!(
                         "{} is not where that step left it, so stepping it back would take \
                          something else with it. Whatever moved it happened outside this history.",
-                        entry.branch.clone().unwrap_or_else(|| "The branch".to_string())
+                        entry
+                            .branch
+                            .clone()
+                            .unwrap_or_else(|| "The branch".to_string())
                     ));
                 }
             }
@@ -321,7 +327,11 @@ pub fn still_published(state: &AppState, entry: &Entry) -> Option<String> {
 
     let upstream = git_cmd::run(
         &root,
-        &["rev-parse", "--abbrev-ref", &format!("{branch}@{{upstream}}")],
+        &[
+            "rev-parse",
+            "--abbrev-ref",
+            &format!("{branch}@{{upstream}}"),
+        ],
     )
     .ok()
     .filter(|out| out.ok)

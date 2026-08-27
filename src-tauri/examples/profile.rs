@@ -19,7 +19,10 @@ fn time<T>(label: &str, runs: usize, mut f: impl FnMut() -> T) -> T {
         best = best.min(ms);
         total += ms;
     }
-    println!("{label:<28} best {best:>9.2} ms   avg {:>9.2} ms", total / runs as f64);
+    println!(
+        "{label:<28} best {best:>9.2} ms   avg {:>9.2} ms",
+        total / runs as f64
+    );
     last.unwrap()
 }
 
@@ -34,7 +37,9 @@ fn main() {
 
     println!("repo {}   limit {limit}   runs {runs}\n", path.display());
 
-    time("Repository::open", runs, || state.repo().map(|_| ()).unwrap());
+    time("Repository::open", runs, || {
+        state.repo().map(|_| ()).unwrap()
+    });
     let info = time("repo_info", runs, || refs::describe(&state).unwrap());
     println!("   head {} state {}", info.head, info.state);
 
@@ -55,7 +60,9 @@ fn main() {
         status.conflicted.len()
     );
 
-    let page = time("commit_graph", runs, || graph::build(&state, limit).unwrap());
+    let page = time("commit_graph", runs, || {
+        graph::build(&state, limit).unwrap()
+    });
     let json = serde_json::to_string(&page.rows).unwrap();
     println!("   rows {}  json {} KB", page.rows.len(), json.len() / 1024);
 
@@ -66,9 +73,15 @@ fn main() {
     let repo = state.repo().unwrap();
     time("  branches(Local)+ahead", runs, || {
         let mut n = 0;
-        for b in repo.branches(Some(git2::BranchType::Local)).unwrap().flatten() {
+        for b in repo
+            .branches(Some(git2::BranchType::Local))
+            .unwrap()
+            .flatten()
+        {
             let (b, _) = b;
-            let Some(oid) = b.get().target() else { continue };
+            let Some(oid) = b.get().target() else {
+                continue;
+            };
             if let Ok(up) = b.upstream() {
                 if let Some(u) = up.get().target() {
                     let _ = repo.graph_ahead_behind(oid, u);
@@ -84,11 +97,14 @@ fn main() {
             .flatten()
             .count()
     });
-    time("  references()", runs, || repo.references().unwrap().flatten().count());
+    time("  references()", runs, || {
+        repo.references().unwrap().flatten().count()
+    });
     time("  labels_by_oid", runs, || refs::labels_by_oid(&repo).len());
     time("  revwalk all refs", runs, || {
         let mut walk = repo.revwalk().unwrap();
-        walk.set_sorting(git2::Sort::TOPOLOGICAL | git2::Sort::TIME).unwrap();
+        walk.set_sorting(git2::Sort::TOPOLOGICAL | git2::Sort::TIME)
+            .unwrap();
         walk.push_glob("refs/heads/*").unwrap();
         let _ = walk.push_glob("refs/remotes/*");
         let _ = walk.push_glob("refs/tags/*");
@@ -99,7 +115,9 @@ fn main() {
             let c = repo.find_commit(oid).unwrap();
             let _ = c.summary();
             n += 1;
-            if n >= limit { break }
+            if n >= limit {
+                break;
+            }
         }
         n
     });

@@ -217,7 +217,10 @@ fn file_changes(diff: &Diff) -> Result<Vec<FileChange>, String> {
                 .path()
                 .map(|p| p.to_string_lossy().into_owned());
             files.borrow_mut().push(FileChange {
-                path: new_path.clone().or_else(|| old_path.clone()).unwrap_or_default(),
+                path: new_path
+                    .clone()
+                    .or_else(|| old_path.clone())
+                    .unwrap_or_default(),
                 old_path: old_path.filter(|p| Some(p) != new_path.as_ref()),
                 status: status_name(delta.status()).to_string(),
                 additions: 0,
@@ -266,7 +269,9 @@ fn collect_hunks(diff: &Diff, path: &str) -> Result<FileDiff, String> {
                 return true;
             }
             hunks.borrow_mut().push(DiffHunk {
-                header: String::from_utf8_lossy(hunk.header()).trim_end().to_string(),
+                header: String::from_utf8_lossy(hunk.header())
+                    .trim_end()
+                    .to_string(),
                 lines: Vec::new(),
             });
             true
@@ -277,13 +282,15 @@ fn collect_hunks(diff: &Diff, path: &str) -> Result<FileDiff, String> {
                 return true;
             }
             if let Some(current) = hunks.borrow_mut().last_mut() {
-                current.lines.push(eofnl(line.origin()).unwrap_or_else(|| DiffLine {
-                    origin: line.origin(),
-                    old_lineno: line.old_lineno(),
-                    new_lineno: line.new_lineno(),
-                    content: String::from_utf8_lossy(line.content())
-                        .trim_end_matches('\n')
-                        .to_string(),
+                current.lines.push(eofnl(line.origin()).unwrap_or_else(|| {
+                    DiffLine {
+                        origin: line.origin(),
+                        old_lineno: line.old_lineno(),
+                        new_lineno: line.new_lineno(),
+                        content: String::from_utf8_lossy(line.content())
+                            .trim_end_matches('\n')
+                            .to_string(),
+                    }
                 }));
                 taken.set(taken.get() + 1);
             }

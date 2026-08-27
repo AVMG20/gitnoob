@@ -305,11 +305,56 @@ pub fn load(dir: &Path) -> Config {
         return Config::default();
     };
     match serde_json::from_str::<Config>(&text) {
-        Ok(config) => config,
+        Ok(mut config) => {
+            tidy_projects(&mut config);
+            config
+        }
         Err(_) => {
             let _ = fs::rename(&path, path.with_extension("json.broken"));
             Config::default()
         }
+    }
+}
+
+/// Settles a project list written by an earlier run, or by hand.
+///
+/// A work tree used to be recorded exactly as libgit2 handed it over, which is
+/// with a separator on the end, while a path typed or restored from elsewhere
+/// has none. The two were compared as strings, so one repository could be
+/// listed twice and open as two identical tabs. Both spellings collapse to one
+/// here, and the first entry keeps its place — the tab strip's order is the
+/// user's, not the file's.
+fn tidy_projects(config: &mut Config) {
+    for profile in &mut config.profiles {
+        let mut seen: Vec<String> = Vec::new();
+        profile.projects.retain_mut(|project| {
+            project.path = trim_separator(&project.path);
+            if seen.contains(&project.path) {
+                false
+            } else {
+                seen.push(project.path.clone());
+                true
+            }
+        });
+        if let Some(active) = profile.active_project.as_mut() {
+            *active = trim_separator(active);
+        }
+        // An active project that is no longer in the list cannot be restored.
+        if let Some(active) = profile.active_project.clone() {
+            if !seen.contains(&active) {
+                profile.active_project = None;
+            }
+        }
+    }
+}
+
+/// The same path, without the separator some spellings of it end on.
+fn trim_separator(path: &str) -> String {
+    let trimmed = path.trim_end_matches(['/', '\\']);
+    if trimmed.is_empty() || trimmed.ends_with(':') {
+        path.to_string()
+    } else {
+        trimmed.to_string()
     }
 }
 
@@ -603,37 +648,128 @@ pub const OPENROUTER_KEY: &str = "openrouter";
 
 #[cfg(test)]
 mod tests {
+    use super::{Config, ForgeKind, Profile, Project};
+
+    /// One repository, spelled two ways, is one tab.
+    #[test]
+    fn a_project_listed_with_and_without_its_trailing_slash_is_one_project() {
+        let mut config = Config {
+            profiles: vec![Profile {
+                projects: vec![
+                    Project {
+                        path: "C:/repos/thing".to_string(),
+                        name: "thing".to_string(),
+                    },
+                    Project {
+                        path: "C:/repos/thing/".to_string(),
+                        name: "thing".to_string(),
+                    },
+                    Project {
+                        path: "C:/repos/other".to_string(),
+                        name: "other".to_string(),
+                    },
+                ],
+                active_project: Some("C:/repos/thing/".to_string()),
+                ..Profile::new("Personal", ForgeKind::None)
+            }],
+            ..Config::default()
+        };
+
+        super::tidy_projects(&mut config);
+
+        let profile = &config.profiles[0];
+        assert_eq!(
+            profile
+                .projects
+                .iter()
+                .map(|p| p.path.as_str())
+                .collect::<Vec<_>>(),
+            vec!["C:/repos/thing", "C:/repos/other"]
+        );
+        // The one that was open is still the one that is open.
+        assert_eq!(profile.active_project.as_deref(), Some("C:/repos/thing"));
+    }
+
+    /// A root is all separator, and trimming it away leaves nothing usable.
+    #[test]
+    fn a_root_path_keeps_its_separator() {
+        assert_eq!(super::trim_separator("C:/"), "C:/");
+        assert_eq!(super::trim_separator("/"), "/");
+        assert_eq!(super::trim_separator("/home/arno/repo/"), "/home/arno/repo");
+    }
+
+    /// An active project that de-duplication removed cannot be restored.
+    #[test]
+    fn an_active_project_that_is_not_listed_is_forgotten() {
+        let mut config = Config {
+            profiles: vec![Profile {
+                projects: vec![Project {
+                    path: "/repos/kept".to_string(),
+                    name: "kept".to_string(),
+                }],
+                active_project: Some("/repos/gone".to_string()),
+                ..Profile::new("Personal", ForgeKind::None)
+            }],
+            ..Config::default()
+        };
+        super::tidy_projects(&mut config);
+        assert_eq!(config.profiles[0].active_project, None);
+    }
 
     #[test]
     fn a_saved_window_size_is_clamped_to_something_reachable() {
-        let tiny = WindowSize { width: 40.0, height: 12.0, maximized: false };
+        let tiny = WindowSize {
+            width: 40.0,
+            height: 12.0,
+            maximized: false,
+        };
         let fitted = tiny.sane(None).expect("a size");
         assert_eq!(fitted.width, WindowSize::MIN);
         assert_eq!(fitted.height, WindowSize::MIN);
 
         // A window bigger than the screen it is opening on is a title bar out
         // of reach, which is the way this goes wrong that nobody can undo.
-        let huge = WindowSize { width: 5000.0, height: 3000.0, maximized: false };
+        let huge = WindowSize {
+            width: 5000.0,
+            height: 3000.0,
+            maximized: false,
+        };
         let fitted = huge.sane(Some((1440.0, 900.0))).expect("a size");
         assert_eq!(fitted.width, 1440.0);
         assert_eq!(fitted.height, 900.0);
 
         // With no screen to measure against, only the absurd is refused.
-        let vast = WindowSize { width: 99_000.0, height: 99_000.0, maximized: false };
+        let vast = WindowSize {
+            width: 99_000.0,
+            height: 99_000.0,
+            maximized: false,
+        };
         assert_eq!(vast.sane(None).unwrap().width, WindowSize::MAX);
     }
 
     #[test]
     fn a_size_that_is_not_a_number_is_refused_rather_than_repaired() {
-        let broken = WindowSize { width: f64::NAN, height: 800.0, maximized: false };
+        let broken = WindowSize {
+            width: f64::NAN,
+            height: 800.0,
+            maximized: false,
+        };
         assert!(broken.sane(None).is_none());
-        let endless = WindowSize { width: 900.0, height: f64::INFINITY, maximized: false };
+        let endless = WindowSize {
+            width: 900.0,
+            height: f64::INFINITY,
+            maximized: false,
+        };
         assert!(endless.sane(None).is_none());
     }
 
     #[test]
     fn a_size_that_was_already_sensible_is_left_alone() {
-        let mine = WindowSize { width: 1680.0, height: 1040.0, maximized: false };
+        let mine = WindowSize {
+            width: 1680.0,
+            height: 1040.0,
+            maximized: false,
+        };
         assert_eq!(mine.sane(Some((3840.0, 2160.0))), Some(mine));
     }
     use super::*;
@@ -700,7 +836,9 @@ mod tests {
         save(dir.path(), &config).unwrap();
         let read = load(dir.path());
 
-        let back = read.active().expect("the active profile should survive a save");
+        let back = read
+            .active()
+            .expect("the active profile should survive a save");
         assert_eq!(back.name, "Work");
         assert_eq!(back.forge, ForgeKind::GitLab);
         assert_eq!(back.host, "gitlab.example.com");
@@ -816,7 +954,10 @@ mod tests {
         current.profiles[0].name = "Current".into();
         save(&now, &current).unwrap();
 
-        assert_eq!(load(&now).active().map(|p| p.name.as_str()), Some("Current"));
+        assert_eq!(
+            load(&now).active().map(|p| p.name.as_str()),
+            Some("Current")
+        );
     }
 
     #[test]

@@ -108,7 +108,6 @@ fn yes() -> bool {
 }
 
 const OURS: &str = "<<<<<<<";
-const BASE: &str = "|||||||";
 const SPLIT: &str = "=======";
 const THEIRS: &str = ">>>>>>>";
 
@@ -213,7 +212,7 @@ pub fn read(state: &AppState, path: &str) -> Result<ConflictFile, String> {
         // Which side of the markers we are currently reading into.
         let mut section = 0u8; // 0 = ours, 1 = base, 2 = theirs
 
-        while let Some(line) = lines.next() {
+        for line in lines.by_ref() {
             if is_side_marker(line, '|') {
                 has_base = true;
                 section = 1;
@@ -480,6 +479,11 @@ pub fn resolve_as_is(state: &AppState, path: &str) -> Result<String, String> {
     Ok(format!("Resolved {path} as it stands"))
 }
 
+/// Extracts the branch name a conflict marker carries, e.g. `<<<<<<< HEAD`.
+fn label(line: &str, marker: &str) -> String {
+    line.trim_start_matches(marker).trim().to_string()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -491,7 +495,9 @@ mod tests {
 
         // The opening line alone is text somebody wrote, not a conflict: a
         // fixture, a pasted diff, documentation about merges.
-        assert!(!has_markers("<<<<<<< in a code sample\nnothing follows it\n"));
+        assert!(!has_markers(
+            "<<<<<<< in a code sample\nnothing follows it\n"
+        ));
         assert!(!has_markers(">>>>>>> on its own\n"));
         assert!(!has_markers("an ordinary file\nwith ordinary lines\n"));
     }
@@ -525,7 +531,11 @@ mod tests {
         let all = "100644 aaa 1\tsrc/a.rs\n100644 bbb 2\tsrc/a.rs\n100644 ccc 3\tsrc/a.rs\n";
         assert_eq!(
             parse_stages(all),
-            Stages { base: true, ours: true, theirs: true }
+            Stages {
+                base: true,
+                ours: true,
+                theirs: true
+            }
         );
 
         // Deleted by us, modified by them: no stage 2, and so no markers in the
@@ -533,21 +543,24 @@ mod tests {
         let deleted_by_us = "100644 aaa 1\ttests/T.php\n100644 ccc 3\ttests/T.php\n";
         assert_eq!(
             parse_stages(deleted_by_us),
-            Stages { base: true, ours: false, theirs: true }
+            Stages {
+                base: true,
+                ours: false,
+                theirs: true
+            }
         );
 
         // Added on both sides, with no common ancestor.
         let add_add = "100644 bbb 2\tnew.txt\n100644 ccc 3\tnew.txt\n";
         assert_eq!(
             parse_stages(add_add),
-            Stages { base: false, ours: true, theirs: true }
+            Stages {
+                base: false,
+                ours: true,
+                theirs: true
+            }
         );
 
         assert_eq!(parse_stages(""), Stages::default());
     }
-}
-
-/// Extracts the branch name a conflict marker carries, e.g. `<<<<<<< HEAD`.
-fn label(line: &str, marker: &str) -> String {
-    line.trim_start_matches(marker).trim().to_string()
 }

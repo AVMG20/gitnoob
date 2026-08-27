@@ -220,7 +220,9 @@ pub fn reword(state: &AppState, oid: &str, message: &str) -> Result<String, Stri
 
     let check = reword_check(state, oid)?;
     if !check.can {
-        return Err(check.reason.unwrap_or_else(|| "Cannot reword that commit".to_string()));
+        return Err(check
+            .reason
+            .unwrap_or_else(|| "Cannot reword that commit".to_string()));
     }
 
     let before = journal::head_oid(state);
@@ -229,7 +231,14 @@ pub fn reword(state: &AppState, oid: &str, message: &str) -> Result<String, Stri
 
     git_cmd::run_checked(
         &root,
-        &["commit", "--amend", "--only", "--allow-empty", "-m", message],
+        &[
+            "commit",
+            "--amend",
+            "--only",
+            "--allow-empty",
+            "-m",
+            message,
+        ],
     )?;
 
     let after = journal::head_oid(state);
@@ -324,11 +333,7 @@ pub fn stash_list(state: &AppState) -> Result<Vec<StashEntry>, String> {
     // A record per line: index, hash, subject, branch, unix time.
     let raw = git_cmd::run_checked(
         &root,
-        &[
-            "stash",
-            "list",
-            "--format=%gd%x00%H%x00%gs%x00%at",
-        ],
+        &["stash", "list", "--format=%gd%x00%H%x00%gs%x00%at"],
     )?;
 
     let mut out = Vec::new();
@@ -373,7 +378,12 @@ fn file_count(root: &Path, oid: &str, index: usize) -> usize {
     }
     let count = git_cmd::run_checked(
         root,
-        &["stash", "show", "--name-only", &format!("stash@{{{index}}}")],
+        &[
+            "stash",
+            "show",
+            "--name-only",
+            &format!("stash@{{{index}}}"),
+        ],
     )
     .map(|text| text.lines().filter(|l| !l.trim().is_empty()).count())
     .unwrap_or(0);
@@ -441,7 +451,8 @@ pub fn stash_rename(state: &AppState, index: usize, message: &str) -> Result<Str
         .trim()
         .to_string();
     let logs = root.join(logs);
-    let text = fs::read_to_string(&logs).map_err(|e| format!("Could not read the stash log: {e}"))?;
+    let text =
+        fs::read_to_string(&logs).map_err(|e| format!("Could not read the stash log: {e}"))?;
 
     let mut lines: Vec<String> = text.lines().map(str::to_string).collect();
     // The newest entry is the last line, and `stash@{0}` is the newest.
@@ -520,7 +531,10 @@ pub fn stash_branch(state: &AppState, index: usize, name: &str) -> Result<String
     let selector = format!("stash@{{{index}}}");
     // A branch fetched as `origin/-f` is real, and without this a name
     // beginning with `-` is parsed as a flag rather than the branch to create.
-    git_cmd::run_checked(&root, &["stash", "branch", "--end-of-options", name, &selector])?;
+    git_cmd::run_checked(
+        &root,
+        &["stash", "branch", "--end-of-options", name, &selector],
+    )?;
     Ok(format!("Created {name} from {selector}"))
 }
 
@@ -591,9 +605,19 @@ pub fn restore_after(state: &AppState, held: Held) -> Result<Option<String>, Str
 fn stash_touched_paths(root: &Path, selector: &str) -> Result<HashSet<String>, String> {
     let raw = git_cmd::run_checked(
         root,
-        &["stash", "show", "--include-untracked", "--name-only", selector],
+        &[
+            "stash",
+            "show",
+            "--include-untracked",
+            "--name-only",
+            selector,
+        ],
     )?;
-    Ok(raw.lines().map(str::to_string).filter(|l| !l.is_empty()).collect())
+    Ok(raw
+        .lines()
+        .map(str::to_string)
+        .filter(|l| !l.is_empty())
+        .collect())
 }
 
 /// The branch an auto-stash was taken on, read back out of its message.
@@ -716,7 +740,11 @@ pub fn reset_preview(state: &AppState, oid: &str) -> Result<ResetPreview, String
     // Commits on the branch now that would not be on it afterwards.
     let raw = git_cmd::run_checked(
         &root,
-        &["log", "--format=%H%x00%h%x00%s%x00%an%x00%at", &format!("{oid}..HEAD")],
+        &[
+            "log",
+            "--format=%H%x00%h%x00%s%x00%an%x00%at",
+            &format!("{oid}..HEAD"),
+        ],
     )
     .unwrap_or_default();
     let dropped: Vec<crate::remote::CommitSummary> = raw
@@ -964,9 +992,11 @@ pub fn delete_tag(state: &AppState, name: &str) -> Result<String, String> {
 /// Full message of one commit, for the copy-to-clipboard actions.
 pub fn commit_message_text(state: &AppState, oid: &str) -> Result<String, String> {
     let root = state.path()?;
-    Ok(git_cmd::run_checked(&root, &["log", "-1", "--format=%B", oid])?
-        .trim_end()
-        .to_string())
+    Ok(
+        git_cmd::run_checked(&root, &["log", "-1", "--format=%B", oid])?
+            .trim_end()
+            .to_string(),
+    )
 }
 
 /// The full patch for a commit, for the "copy patch" action.
@@ -983,7 +1013,10 @@ pub fn reveal(state: &AppState, relative: &str) -> Result<(), String> {
         return Err(format!("{} is not there any more", target.display()));
     }
     let (program, args): (&str, Vec<String>) = if cfg!(target_os = "macos") {
-        ("open", vec!["-R".into(), target.to_string_lossy().into_owned()])
+        (
+            "open",
+            vec!["-R".into(), target.to_string_lossy().into_owned()],
+        )
     } else if cfg!(target_os = "windows") {
         ("explorer", vec![format!("/select,{}", target.display())])
     } else {
@@ -1033,10 +1066,20 @@ pub fn apply_hunk(
     let diff = if action == HunkAction::Unstage {
         git_cmd::run_checked(
             &root,
-            &["diff", "--cached", "--no-color", "--unified=3", "--", &pathspec],
+            &[
+                "diff",
+                "--cached",
+                "--no-color",
+                "--unified=3",
+                "--",
+                &pathspec,
+            ],
         )?
     } else {
-        git_cmd::run_checked(&root, &["diff", "--no-color", "--unified=3", "--", &pathspec])?
+        git_cmd::run_checked(
+            &root,
+            &["diff", "--no-color", "--unified=3", "--", &pathspec],
+        )?
     };
 
     if diff.trim().is_empty() {
@@ -1119,10 +1162,7 @@ mod tests {
         assert!(out.ends_with("\tOn main: the new name"));
         // Everything before the message is the reflog's own bookkeeping and is
         // left exactly as it was.
-        assert_eq!(
-            out.split('\t').next(),
-            ENTRY.split('\t').next()
-        );
+        assert_eq!(out.split('\t').next(), ENTRY.split('\t').next());
     }
 
     #[test]
@@ -1192,7 +1232,13 @@ index 1234567..89abcde 100644
             Some("feature/ASANA-12")
         );
         // Stashes from before the branch was recorded, and the user's own.
-        assert_eq!(stashed_on("stash@{0}: On main: gitnoob auto-stash: pulling"), None);
-        assert_eq!(stashed_on("stash@{0}: WIP on main: 1234567 something"), None);
+        assert_eq!(
+            stashed_on("stash@{0}: On main: gitnoob auto-stash: pulling"),
+            None
+        );
+        assert_eq!(
+            stashed_on("stash@{0}: WIP on main: 1234567 something"),
+            None
+        );
     }
 }

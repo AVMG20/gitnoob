@@ -103,6 +103,26 @@ pub fn discover_workdir(input: &Path) -> Result<PathBuf, String> {
     let repo = Repository::discover(input)
         .map_err(|_| format!("{} is not inside a Git repository", input.display()))?;
     repo.workdir()
-        .map(|p| p.to_path_buf())
+        .map(trim_separator)
         .ok_or_else(|| "Bare repositories are not supported yet".to_string())
+}
+
+/// A work tree path without the separator libgit2 leaves on the end of it.
+///
+/// The path recorded for an open project is compared against the ones already
+/// recorded, and `C:/repos/thing` and `C:/repos/thing/` are the same repository
+/// spelled two ways. Comparing them as strings said they were not, so opening a
+/// repository whose entry had been written the other way added a *second* entry
+/// for it — and the window drew two tabs, both called the same thing, both
+/// pointing at one folder.
+pub fn trim_separator(path: &Path) -> PathBuf {
+    let text = path.to_string_lossy();
+    let trimmed = text.trim_end_matches(['/', '\\']);
+    // A root — `/` or `C:\` — is all separator, and trimming it away would
+    // leave something that is not a path at all.
+    if trimmed.is_empty() || trimmed.ends_with(':') {
+        path.to_path_buf()
+    } else {
+        PathBuf::from(trimmed)
+    }
 }

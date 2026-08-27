@@ -1,7 +1,7 @@
 pub mod ai;
 pub mod avatar;
-pub mod conflict;
 pub mod config;
+pub mod conflict;
 pub mod create;
 pub mod diff;
 pub mod forge;
@@ -131,13 +131,19 @@ async fn working_status(state: State<'_, AppState>) -> Result<refs::WorkingStatu
 // --- history ----------------------------------------------------------------
 
 #[tauri::command]
-async fn commit_graph(limit: Option<usize>, state: State<'_, AppState>) -> Result<graph::GraphPage, String> {
+async fn commit_graph(
+    limit: Option<usize>,
+    state: State<'_, AppState>,
+) -> Result<graph::GraphPage, String> {
     let fallback = state.config().global.graph_page_size;
     graph::build(&state, limit.unwrap_or(fallback))
 }
 
 #[tauri::command]
-async fn commit_detail(oid: String, state: State<'_, AppState>) -> Result<diff::CommitDetail, String> {
+async fn commit_detail(
+    oid: String,
+    state: State<'_, AppState>,
+) -> Result<diff::CommitDetail, String> {
     diff::commit_detail(&state, &oid)
 }
 
@@ -179,7 +185,10 @@ async fn file_text(
 // --- branches ---------------------------------------------------------------
 
 #[tauri::command]
-async fn checkout(name: String, state: State<'_, AppState>) -> Result<refs::CheckoutOutcome, String> {
+async fn checkout(
+    name: String,
+    state: State<'_, AppState>,
+) -> Result<refs::CheckoutOutcome, String> {
     refs::checkout(&state, &name)
 }
 
@@ -245,12 +254,20 @@ async fn delete_branch(
 }
 
 #[tauri::command]
-async fn rename_branch(from: String, to: String, state: State<'_, AppState>) -> Result<String, String> {
+async fn rename_branch(
+    from: String,
+    to: String,
+    state: State<'_, AppState>,
+) -> Result<String, String> {
     refs::rename_branch(&state, &from, &to)
 }
 
 #[tauri::command]
-fn set_upstream(branch: String, upstream: String, state: State<'_, AppState>) -> Result<String, String> {
+fn set_upstream(
+    branch: String,
+    upstream: String,
+    state: State<'_, AppState>,
+) -> Result<String, String> {
     refs::set_upstream(&state, &branch, &upstream)
 }
 
@@ -314,7 +331,11 @@ fn remote_url(remote: String, state: State<'_, AppState>) -> Result<String, Stri
 }
 
 #[tauri::command]
-async fn remote_add(name: String, url: String, state: State<'_, AppState>) -> Result<String, String> {
+async fn remote_add(
+    name: String,
+    url: String,
+    state: State<'_, AppState>,
+) -> Result<String, String> {
     remote::remote_add(&state, &name, &url)
 }
 
@@ -328,7 +349,11 @@ async fn remote_set_url(
 }
 
 #[tauri::command]
-async fn remote_rename(from: String, to: String, state: State<'_, AppState>) -> Result<String, String> {
+async fn remote_rename(
+    from: String,
+    to: String,
+    state: State<'_, AppState>,
+) -> Result<String, String> {
     remote::remote_rename(&state, &from, &to)
 }
 
@@ -428,7 +453,11 @@ async fn apply_hunk(
 }
 
 #[tauri::command]
-async fn commit(message: String, amend: Option<bool>, state: State<'_, AppState>) -> Result<String, String> {
+async fn commit(
+    message: String,
+    amend: Option<bool>,
+    state: State<'_, AppState>,
+) -> Result<String, String> {
     work::commit(&state, &message, amend.unwrap_or(false))
 }
 
@@ -443,7 +472,11 @@ fn reword_check(oid: String, state: State<'_, AppState>) -> Result<work::RewordC
 }
 
 #[tauri::command]
-async fn reword(oid: String, message: String, state: State<'_, AppState>) -> Result<String, String> {
+async fn reword(
+    oid: String,
+    message: String,
+    state: State<'_, AppState>,
+) -> Result<String, String> {
     work::reword(&state, &oid, &message)
 }
 
@@ -453,7 +486,11 @@ async fn stash_push(
     include_untracked: Option<bool>,
     state: State<'_, AppState>,
 ) -> Result<String, String> {
-    work::stash_push(&state, message.as_deref(), include_untracked.unwrap_or(true))
+    work::stash_push(
+        &state,
+        message.as_deref(),
+        include_untracked.unwrap_or(true),
+    )
 }
 
 #[tauri::command]
@@ -496,7 +533,11 @@ async fn delete_untracked(
 }
 
 #[tauri::command]
-async fn stash_branch(index: usize, name: String, state: State<'_, AppState>) -> Result<String, String> {
+async fn stash_branch(
+    index: usize,
+    name: String,
+    state: State<'_, AppState>,
+) -> Result<String, String> {
     work::stash_branch(&state, index, &name)
 }
 
@@ -509,12 +550,19 @@ fn stash_oid(index: usize, state: State<'_, AppState>) -> Result<String, String>
 // --- moving a branch and replaying commits ----------------------------------
 
 #[tauri::command]
-async fn reset_preview(oid: String, state: State<'_, AppState>) -> Result<work::ResetPreview, String> {
+async fn reset_preview(
+    oid: String,
+    state: State<'_, AppState>,
+) -> Result<work::ResetPreview, String> {
     work::reset_preview(&state, &oid)
 }
 
 #[tauri::command]
-async fn reset(oid: String, mode: work::ResetMode, state: State<'_, AppState>) -> Result<String, String> {
+async fn reset(
+    oid: String,
+    mode: work::ResetMode,
+    state: State<'_, AppState>,
+) -> Result<String, String> {
     work::reset(&state, &oid, mode)
 }
 
@@ -572,12 +620,18 @@ async fn redo(state: State<'_, AppState>) -> Result<String, String> {
 // --- remotes ----------------------------------------------------------------
 
 #[tauri::command]
-async fn fetch(remote: Option<String>, state: State<'_, AppState>) -> Result<git_cmd::CmdOutput, String> {
+async fn fetch(
+    remote: Option<String>,
+    state: State<'_, AppState>,
+) -> Result<git_cmd::CmdOutput, String> {
     remote::fetch(&state, remote.as_deref())
 }
 
 #[tauri::command]
-async fn pull(rebase: Option<bool>, state: State<'_, AppState>) -> Result<git_cmd::CmdOutput, String> {
+async fn pull(
+    rebase: Option<bool>,
+    state: State<'_, AppState>,
+) -> Result<git_cmd::CmdOutput, String> {
     remote::pull(&state, rebase.unwrap_or(false))
 }
 
@@ -688,7 +742,10 @@ fn conflict_list(state: State<'_, AppState>) -> Result<Vec<String>, String> {
 }
 
 #[tauri::command]
-async fn conflict_read(path: String, state: State<'_, AppState>) -> Result<conflict::ConflictFile, String> {
+async fn conflict_read(
+    path: String,
+    state: State<'_, AppState>,
+) -> Result<conflict::ConflictFile, String> {
     conflict::read(&state, &path)
 }
 
@@ -730,7 +787,10 @@ async fn conflict_marked(state: State<'_, AppState>) -> Result<Vec<String>, Stri
 
 /// Ends a conflict by staging the file exactly as it stands on disk.
 #[tauri::command]
-async fn conflict_resolve_as_is(path: String, state: State<'_, AppState>) -> Result<String, String> {
+async fn conflict_resolve_as_is(
+    path: String,
+    state: State<'_, AppState>,
+) -> Result<String, String> {
     conflict::resolve_as_is(&state, &path)
 }
 
@@ -751,14 +811,20 @@ fn config_get(state: State<'_, AppState>) -> config::Config {
 }
 
 #[tauri::command]
-fn config_set_global(global: config::Global, state: State<'_, AppState>) -> Result<config::Config, String> {
+fn config_set_global(
+    global: config::Global,
+    state: State<'_, AppState>,
+) -> Result<config::Config, String> {
     state.update_config(|config| config.global = global)?;
     Ok(state.config())
 }
 
 /// Creates the profile when its id is unknown, updates it otherwise.
 #[tauri::command]
-fn profile_save(profile: config::Profile, state: State<'_, AppState>) -> Result<config::Config, String> {
+fn profile_save(
+    profile: config::Profile,
+    state: State<'_, AppState>,
+) -> Result<config::Config, String> {
     state.update_config(|config| {
         match config.profiles.iter_mut().find(|p| p.id == profile.id) {
             Some(existing) => {
@@ -830,7 +896,10 @@ fn project_close(path: String, state: State<'_, AppState>) -> Result<config::Con
 
 /// Reorders the tab strip after a drag.
 #[tauri::command]
-fn project_reorder(paths: Vec<String>, state: State<'_, AppState>) -> Result<config::Config, String> {
+fn project_reorder(
+    paths: Vec<String>,
+    state: State<'_, AppState>,
+) -> Result<config::Config, String> {
     state.update_config(|config| {
         if let Some(profile) = config.active_mut() {
             let mut ordered: Vec<config::Project> = Vec::with_capacity(profile.projects.len());
@@ -1325,15 +1394,13 @@ fn open_external(url: String) -> Result<(), String> {
 fn restore_size(window: &tauri::WebviewWindow, saved: Option<config::WindowSize>) {
     let Some(saved) = saved else { return };
     // What the screen can show, in the same units the window is sized in.
-    let screen = window
-        .current_monitor()
-        .ok()
-        .flatten()
-        .map(|monitor| {
-            let size = monitor.size().to_logical::<f64>(monitor.scale_factor());
-            (size.width, size.height)
-        });
-    let Some(size) = saved.sane(screen) else { return };
+    let screen = window.current_monitor().ok().flatten().map(|monitor| {
+        let size = monitor.size().to_logical::<f64>(monitor.scale_factor());
+        (size.width, size.height)
+    });
+    let Some(size) = saved.sane(screen) else {
+        return;
+    };
 
     if saved.maximized {
         let _ = window.maximize();
@@ -1383,7 +1450,9 @@ fn remember_size(app: &tauri::AppHandle) {
                 return;
             }
             let maximized = window.is_maximized().unwrap_or(false);
-            let Ok(size) = window.inner_size() else { return };
+            let Ok(size) = window.inner_size() else {
+                return;
+            };
             let scale = window.scale_factor().unwrap_or(1.0);
             let logical = size.to_logical::<f64>(scale);
             let size = config::WindowSize {
@@ -1455,7 +1524,7 @@ pub fn run() {
             }
             Ok(())
         })
-        .invoke_handler(tauri::generate_handler![
+        .invoke_handler(aimed(tauri::generate_handler![
             open_repo,
             startup_repo,
             clone_repo,
@@ -1597,7 +1666,41 @@ pub fn run() {
             ai_review_message,
             ai_resolve_conflict,
             open_external,
-        ])
+        ]))
         .run(tauri::generate_context!())
         .expect("error while running gitnoob");
+}
+
+/// Points the open repository at whichever one the caller meant, per call.
+///
+/// The window has project tabs; underneath, one path is open at a time. That
+/// was a race: a fetch on a large repository takes seconds, and a tab switched
+/// while it ran moved the path out from under everything that had not read it
+/// yet — so the second half of an operation could act on a different repository
+/// from the first, with nothing on screen to say so.
+///
+/// Every call from the window now carries `__repo`, the repository the window
+/// believes it is asking about, and it is applied here — after the message has
+/// arrived and before the command runs. Since the git work itself is
+/// synchronous, a command reads the path before anything else can dispatch, and
+/// what it reads is what its own caller meant rather than whatever was open by
+/// the time it got there.
+///
+/// Commands with nothing to do with a repository — settings, profiles, the
+/// model list — carry it too and are unaffected by it.
+fn aimed<R: tauri::Runtime>(
+    handler: impl Fn(tauri::ipc::Invoke<R>) -> bool + Send + Sync + 'static,
+) -> impl Fn(tauri::ipc::Invoke<R>) -> bool + Send + Sync + 'static {
+    move |invoke| {
+        if let tauri::ipc::InvokeBody::Json(payload) = invoke.message.payload() {
+            if let Some(repo) = payload.get("__repo").and_then(|value| value.as_str()) {
+                if !repo.is_empty() {
+                    if let Some(state) = invoke.message.state_ref().try_get::<AppState>() {
+                        state.set_path(PathBuf::from(repo));
+                    }
+                }
+            }
+        }
+        handler(invoke)
+    }
 }

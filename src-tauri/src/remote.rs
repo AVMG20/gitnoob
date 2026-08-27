@@ -528,11 +528,7 @@ fn merge_by_visiting(
 /// git's rather than ours; all this adds is the way home and the stash around
 /// it. As with a merge, a conflict keeps us there, because that is where the
 /// rebase has to be finished.
-pub fn rebase_branch(
-    state: &AppState,
-    branch: &str,
-    onto: &str,
-) -> Result<MergeOutcome, String> {
+pub fn rebase_branch(state: &AppState, branch: &str, onto: &str) -> Result<MergeOutcome, String> {
     let path = state.path()?;
     let original = journal::current_branch(state)
         .ok_or_else(|| "HEAD is detached; check out a branch first".to_string())?;
@@ -599,13 +595,19 @@ pub fn rebase_branch(
 }
 
 /// Commits in `head` that are not in `base` — the `base..head` range.
-fn range(state: &AppState, base: &str, head: &str, limit: usize) -> Result<Vec<CommitSummary>, String> {
+fn range(
+    state: &AppState,
+    base: &str,
+    head: &str,
+    limit: usize,
+) -> Result<Vec<CommitSummary>, String> {
     let repo = state.repo()?;
     let base = git2::Oid::from_str(base).map_err(|_| "Bad revision".to_string())?;
     let head = git2::Oid::from_str(head).map_err(|_| "Bad revision".to_string())?;
 
     let mut walk = repo.revwalk().map_err(err)?;
-    walk.set_sorting(Sort::TOPOLOGICAL | Sort::TIME).map_err(err)?;
+    walk.set_sorting(Sort::TOPOLOGICAL | Sort::TIME)
+        .map_err(err)?;
     walk.push(head).map_err(err)?;
     walk.hide(base).map_err(err)?;
     take(&repo, walk, limit)
@@ -615,7 +617,8 @@ fn range_from(state: &AppState, head: &str, limit: usize) -> Result<Vec<CommitSu
     let repo = state.repo()?;
     let head = git2::Oid::from_str(head).map_err(|_| "Bad revision".to_string())?;
     let mut walk = repo.revwalk().map_err(err)?;
-    walk.set_sorting(Sort::TOPOLOGICAL | Sort::TIME).map_err(err)?;
+    walk.set_sorting(Sort::TOPOLOGICAL | Sort::TIME)
+        .map_err(err)?;
     walk.push(head).map_err(err)?;
     take(&repo, walk, limit)
 }
@@ -787,10 +790,7 @@ fn prepared_message(git_dir: &std::path::Path) -> Option<String> {
         let Ok(text) = std::fs::read_to_string(git_dir.join(name)) else {
             continue;
         };
-        let kept: Vec<&str> = text
-            .lines()
-            .filter(|line| !line.starts_with('#'))
-            .collect();
+        let kept: Vec<&str> = text.lines().filter(|line| !line.starts_with('#')).collect();
         let message = kept.join("\n").trim().to_string();
         if !message.is_empty() {
             return Some(message);
@@ -823,7 +823,10 @@ pub fn push_tag(state: &AppState, remote: &str, tag: &str) -> Result<CmdOutput, 
 
 pub fn delete_remote_tag(state: &AppState, remote: &str, tag: &str) -> Result<CmdOutput, String> {
     let path = state.path()?;
-    git_cmd::run(&path, &["push", remote, "--delete", &format!("refs/tags/{tag}")])
+    git_cmd::run(
+        &path,
+        &["push", remote, "--delete", &format!("refs/tags/{tag}")],
+    )
 }
 
 /// The remote this repository is really about.
@@ -838,7 +841,10 @@ pub fn primary(state: &AppState) -> Option<String> {
         .ok()
         .filter(|head| head.is_branch())
         .and_then(|head| head.shorthand().map(|s| s.to_string()))
-        .and_then(|branch| repo.branch_upstream_remote(&format!("refs/heads/{branch}")).ok())
+        .and_then(|branch| {
+            repo.branch_upstream_remote(&format!("refs/heads/{branch}"))
+                .ok()
+        })
         .and_then(|buf| buf.as_str().map(|s| s.to_string()));
     if tracked.is_some() {
         return tracked;
@@ -870,8 +876,7 @@ pub fn remotes(state: &AppState) -> Result<Vec<String>, String> {
 /// The address a remote fetches from, shown when it is about to be edited.
 pub fn remote_url(state: &AppState, remote: &str) -> Result<String, String> {
     let path = state.path()?;
-    git_cmd::run_checked(&path, &["remote", "get-url", remote])
-        .map(|url| url.trim().to_string())
+    git_cmd::run_checked(&path, &["remote", "get-url", remote]).map(|url| url.trim().to_string())
 }
 
 /// A remote name git will accept: it becomes a section header in the config
@@ -919,7 +924,9 @@ pub fn remote_rename(state: &AppState, from: &str, to: &str) -> Result<String, S
     // git moves the remote-tracking branches with the name; the local branches
     // still point at the old ones, which is worth saying rather than leaving
     // to be discovered as upstreams that suddenly do not exist.
-    Ok(format!("Renamed remote {from} to {to}; branches tracking {from}/ now track {to}/"))
+    Ok(format!(
+        "Renamed remote {from} to {to}; branches tracking {from}/ now track {to}/"
+    ))
 }
 
 /// Removes a remote and its remote-tracking branches. Nothing local is touched

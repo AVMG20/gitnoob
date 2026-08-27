@@ -159,7 +159,10 @@ mod tests {
 
     #[test]
     fn a_write_under_git_asks_for_everything() {
-        assert_eq!(classify(&root().join(".git/refs/heads/main"), &root()), Some(true));
+        assert_eq!(
+            classify(&root().join(".git/refs/heads/main"), &root()),
+            Some(true)
+        );
         assert_eq!(classify(&root().join(".git/HEAD"), &root()), Some(true));
     }
 
@@ -170,8 +173,14 @@ mod tests {
 
     #[test]
     fn build_output_is_not_worth_waking_up_for() {
-        assert_eq!(classify(&root().join("node_modules/x/index.js"), &root()), None);
-        assert_eq!(classify(&root().join("src-tauri/target/debug/app.exe"), &root()), None);
+        assert_eq!(
+            classify(&root().join("node_modules/x/index.js"), &root()),
+            None
+        );
+        assert_eq!(
+            classify(&root().join("src-tauri/target/debug/app.exe"), &root()),
+            None
+        );
         assert_eq!(classify(&root().join(".output/public/x.js"), &root()), None);
     }
 

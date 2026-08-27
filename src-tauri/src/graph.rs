@@ -72,7 +72,8 @@ pub fn depth(state: &AppState, oid: &str) -> Result<Option<usize>, String> {
     let mut walk = repo.revwalk().map_err(err)?;
     // The same ordering and the same refs as `build`, or the number counted
     // here would not be the row the graph draws.
-    walk.set_sorting(Sort::TOPOLOGICAL | Sort::TIME).map_err(err)?;
+    walk.set_sorting(Sort::TOPOLOGICAL | Sort::TIME)
+        .map_err(err)?;
     walk.push_glob("refs/heads/*").map_err(err)?;
     let _ = walk.push_glob("refs/remotes/*");
     let _ = walk.push_glob("refs/tags/*");
@@ -106,7 +107,8 @@ pub fn build(state: &AppState, limit: usize) -> Result<GraphPage, String> {
     let mut walk = repo.revwalk().map_err(err)?;
     // Topological order keeps a branch's commits contiguous; the time secondary
     // sort keeps the result close to what the user expects to read.
-    walk.set_sorting(Sort::TOPOLOGICAL | Sort::TIME).map_err(err)?;
+    walk.set_sorting(Sort::TOPOLOGICAL | Sort::TIME)
+        .map_err(err)?;
     // Push every ref, not just HEAD, so unmerged branches are visible.
     walk.push_glob("refs/heads/*").map_err(err)?;
     let _ = walk.push_glob("refs/remotes/*");
@@ -252,9 +254,9 @@ fn plot(commits: &[Commit], anchor: Option<Oid>) -> Vec<Place> {
 
         // 2. Release any other lane that was also waiting for this commit —
         //    several children merging back into one line.
-        for i in 0..lanes.len() {
-            if i != lane && lanes[i] == Some(oid) {
-                lanes[i] = None;
+        for (i, slot) in lanes.iter_mut().enumerate() {
+            if i != lane && *slot == Some(oid) {
+                *slot = None;
             }
         }
 
@@ -273,7 +275,7 @@ fn plot(commits: &[Commit], anchor: Option<Oid>) -> Vec<Place> {
                 // there is anything there to join.
                 lanes[lane] = Some(*first);
                 for parent in rest {
-                    if lanes.iter().any(|l| *l == Some(*parent)) {
+                    if lanes.contains(&Some(*parent)) {
                         continue;
                     }
                     let i = alloc(&mut lanes, &mut colors);
@@ -295,7 +297,9 @@ fn plot(commits: &[Commit], anchor: Option<Oid>) -> Vec<Place> {
             if lanes_after.get(prefer).and_then(|slot| slot.as_ref()) == Some(want) {
                 return Some(prefer);
             }
-            lanes_after.iter().position(|slot| slot.as_ref() == Some(want))
+            lanes_after
+                .iter()
+                .position(|slot| slot.as_ref() == Some(want))
         };
 
         let mut segments = Vec::new();
@@ -398,7 +402,9 @@ fn unpushed_commits(repo: &git2::Repository, limit: usize) -> HashSet<String> {
             continue;
         }
 
-        let Ok(mut walk) = repo.revwalk() else { continue };
+        let Ok(mut walk) = repo.revwalk() else {
+            continue;
+        };
         if walk.push(local).is_err() || walk.hide(upstream).is_err() {
             continue;
         }
@@ -520,7 +526,11 @@ mod tests {
     use std::process::Command;
 
     fn git(dir: &Path, args: &[&str]) -> String {
-        let out = Command::new("git").args(args).current_dir(dir).output().unwrap();
+        let out = Command::new("git")
+            .args(args)
+            .current_dir(dir)
+            .output()
+            .unwrap();
         assert!(
             out.status.success(),
             "git {args:?} failed: {}",
@@ -544,7 +554,10 @@ mod tests {
         for step in 0..12 {
             std::fs::write(root.join("log.txt"), format!("{step}\n")).unwrap();
             git(&root, &["add", "-A"]);
-            git(&root, &["commit", "--quiet", "-m", &format!("commit {step}")]);
+            git(
+                &root,
+                &["commit", "--quiet", "-m", &format!("commit {step}")],
+            );
             // A branch left behind partway, the shape that goes missing from a
             // page in a repository big enough for one.
             if step == 3 {
@@ -636,7 +649,9 @@ mod tests {
                     out.push(format!("row {row}: a line leaves from beside the node"));
                 }
                 if segment.x1 >= place.width || segment.x2 >= place.width {
-                    out.push(format!("row {row}: a line is drawn outside the row's width"));
+                    out.push(format!(
+                        "row {row}: a line is drawn outside the row's width"
+                    ));
                 }
             }
             // A commit with parents keeps its line going; only a root ends one.
@@ -729,9 +744,9 @@ mod tests {
         check(&history, Some(id(5)));
 
         let places = plot(&history, Some(id(5)));
-        for row in 1..=3 {
+        for (row, place) in places.iter().enumerate().take(4).skip(1) {
             assert!(
-                places[row].segments.iter().any(|s| s.x1 == 0 && s.y1 == 0),
+                place.segments.iter().any(|s| s.x1 == 0 && s.y1 == 0),
                 "row {row} drops the line the merge put into HEAD's lane"
             );
         }
@@ -752,7 +767,10 @@ mod tests {
         check(&history, Some(id(2)));
 
         let places = plot(&history, Some(id(2)));
-        assert_eq!(places[0].lane, 1, "the newer branch took the trunk's column");
+        assert_eq!(
+            places[0].lane, 1,
+            "the newer branch took the trunk's column"
+        );
         assert_eq!(places[1].lane, 0, "the trunk is not in the leftmost column");
         assert_eq!(places[2].lane, 0);
         assert_eq!(places[1].color, TRUNK_COLOR);
@@ -841,7 +859,9 @@ mod tests {
             // the last row, and sometimes HEAD is an older commit than the tip.
             let cut = history.len() - random(3) as usize;
             let history = &history[..cut];
-            let head = history.get(random(history.len() as u32) as usize).map(|c| c.oid);
+            let head = history
+                .get(random(history.len() as u32) as usize)
+                .map(|c| c.oid);
 
             let faults = faults(history, head);
             assert!(
@@ -852,7 +872,10 @@ mod tests {
                     .iter()
                     .map(|c| (
                         c.summary.clone(),
-                        c.parents.iter().map(|p| p.to_string()[38..].to_string()).collect::<Vec<_>>()
+                        c.parents
+                            .iter()
+                            .map(|p| p.to_string()[38..].to_string())
+                            .collect::<Vec<_>>()
                     ))
                     .collect::<Vec<_>>()
             );

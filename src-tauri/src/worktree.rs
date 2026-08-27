@@ -165,7 +165,10 @@ detached
         assert_eq!(trees.len(), 3);
 
         assert_eq!(trees[0].name, "widget");
-        assert!(trees[0].is_main, "the first paragraph is the repository itself");
+        assert!(
+            trees[0].is_main,
+            "the first paragraph is the repository itself"
+        );
         assert_eq!(trees[0].branch.as_deref(), Some("main"));
         assert!(!trees[0].locked);
 

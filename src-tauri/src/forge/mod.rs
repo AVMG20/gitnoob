@@ -1,125 +1,21 @@
 use std::collections::HashMap;
-use std::sync::Mutex;
-
-use serde::{Deserialize, Serialize};
 
 use crate::avatar;
 use crate::config::{self, ForgeKind};
 use crate::state::AppState;
 
-/// Faces already fetched this run, by profile id. `None` records a profile
-/// whose forge had nothing to show, so it is not asked again on every opening.
-static FACES: Mutex<Option<HashMap<String, Option<String>>>> = Mutex::new(None);
+mod github;
+mod gitlab;
+mod http;
+mod people;
+mod types;
 
-/// The `owner/name` pair a forge API needs, parsed out of a git remote URL.
-#[derive(Serialize, Clone, Debug, PartialEq, Eq)]
-pub struct RepoSlug {
-    pub host: String,
-    /// Everything between the host and the repository name. GitLab allows
-    /// nested groups, so this can contain slashes.
-    pub owner: String,
-    pub name: String,
-}
+pub use types::*;
 
-impl RepoSlug {
-    pub fn full(&self) -> String {
-        format!("{}/{}", self.owner, self.name)
-    }
-}
-
-#[derive(Serialize)]
-pub struct ForgeStatus {
-    pub kind: ForgeKind,
-    pub host: String,
-    pub has_token: bool,
-    /// The account the token belongs to, once it has been checked.
-    pub user: Option<String>,
-    pub slug: Option<RepoSlug>,
-    pub error: Option<String>,
-}
-
-/// The account an access token belongs to.
-#[derive(Serialize, Clone)]
-pub struct ForgeUser {
-    pub login: String,
-    /// GitLab addresses people by number rather than by name, so the id is kept
-    /// alongside the login and the picker hands back whichever the forge wants.
-    pub id: i64,
-    /// Their picture as a `data:` URL, when the forge has one for them.
-    pub avatar: Option<String>,
-}
-
-/// Someone a review can be handed to, either to own it or to look at it.
-#[derive(Serialize, Deserialize, Clone)]
-pub struct Member {
-    /// What GitLab wants: the numeric user id.
-    pub id: i64,
-    /// What GitHub wants: the account name.
-    pub login: String,
-    /// Their real name, when the forge admits to one; the login otherwise.
-    pub name: String,
-}
-
-/// A pull request or merge request, flattened to the fields both forges share.
-#[derive(Serialize)]
-pub struct Review {
-    pub number: i64,
-    pub title: String,
-    pub author: String,
-    pub state: String,
-    pub draft: bool,
-    pub source_branch: String,
-    pub target_branch: String,
-    pub url: String,
-    pub updated_at: String,
-    /// True when the source branch is checked out right now.
-    pub is_current: bool,
-    /// The tip of the source branch when the forge was last asked. Enough to
-    /// point the graph at the review, and enough to check it out when the
-    /// branch it came from has since been deleted.
-    pub head_sha: String,
-    /// Where the branch actually lives. `None` for a review whose fork has
-    /// been deleted, which the forges keep listing all the same.
-    pub source: Option<ReviewSource>,
-    /// Set when the review itself was opened but something after it was not:
-    /// GitHub takes the people in separate requests, and one of those failing
-    /// is worth saying out loud without pretending the whole thing failed.
-    pub warning: Option<String>,
-}
-
-/// The repository a review's branch lives in, for the reviews that come from
-/// somewhere other than the repository being reviewed.
-///
-/// A fork's branch is not in any remote this clone has, which is why checking
-/// one out used to fail: there was no `origin/their-branch` to track. Carrying
-/// the fork's address here is what lets the checkout add the remote it needs.
-#[derive(Serialize, Clone)]
-pub struct ReviewSource {
-    /// `owner/name` on the forge.
-    pub full_name: String,
-    /// Who owns it, which is the name the added remote takes.
-    pub owner: String,
-    pub ssh_url: String,
-    pub https_url: String,
-    /// False when the branch is in the repository being reviewed, which is the
-    /// ordinary case and needs no remote adding.
-    pub is_fork: bool,
-}
-
-/// A repository the token can see, flattened to what picking one to clone
-/// needs. `full_name` keeps the forge's own nesting (`group/sub/app`).
-#[derive(Serialize, Clone, Debug)]
-pub struct ForgeRepo {
-    pub name: String,
-    pub full_name: String,
-    /// Who owns it: an account, an organisation, a group.
-    pub owner: String,
-    /// The address to clone over ssh, using the profile's key.
-    pub ssh_url: String,
-    /// The same repository over https, for a machine with no key.
-    pub https_url: String,
-    pub updated_at: String,
-}
+use github::*;
+use gitlab::*;
+pub use http::*;
+pub use people::*;
 
 /// The repositories the active profile's token can see.
 ///
@@ -175,7 +71,11 @@ pub async fn repos(state: &AppState) -> Result<Vec<ForgeRepo>, String> {
                     updated_at: string(item, &["updated_at"]),
                 },
                 _ => ForgeRepo {
-                    name: string(item, &["path"]).rsplit('/').next().unwrap_or_default().to_string(),
+                    name: string(item, &["path"])
+                        .rsplit('/')
+                        .next()
+                        .unwrap_or_default()
+                        .to_string(),
                     full_name: string(item, &["path_with_namespace"]),
                     owner: string(item, &["namespace", "path"]),
                     ssh_url: string(item, &["ssh_url_to_repo"]),
@@ -198,7 +98,6 @@ pub async fn repos(state: &AppState) -> Result<Vec<ForgeRepo>, String> {
     out.dedup_by(|a, b| a.full_name == b.full_name);
     Ok(out)
 }
-
 /// Turns a git remote URL into a slug.
 ///
 /// Handles the three shapes in the wild: `git@host:path.git`,
@@ -210,20 +109,18 @@ pub fn parse_remote(url: &str) -> Option<RepoSlug> {
         // scp-like syntax: git@host:owner/repo.git
         let (host, path) = rest.split_once(':')?;
         (host.to_string(), path.to_string())
-    } else if let Some(rest) = trimmed
-        .strip_prefix("ssh://")
-        .or_else(|| trimmed.strip_prefix("https://"))
-        .or_else(|| trimmed.strip_prefix("http://"))
-        .or_else(|| trimmed.strip_prefix("git://"))
-    {
+    } else {
+        let rest = trimmed
+            .strip_prefix("ssh://")
+            .or_else(|| trimmed.strip_prefix("https://"))
+            .or_else(|| trimmed.strip_prefix("http://"))
+            .or_else(|| trimmed.strip_prefix("git://"))?;
         // Drop any userinfo, then split host from path.
         let rest = rest.split_once('@').map(|(_, r)| r).unwrap_or(rest);
         let (host, path) = rest.split_once('/')?;
         // A port in the host is not part of the API host name.
         let host = host.split_once(':').map(|(h, _)| h).unwrap_or(host);
         (host.to_string(), path.to_string())
-    } else {
-        return None;
     };
 
     let path = path.trim_start_matches('/').trim_end_matches(".git");
@@ -238,7 +135,6 @@ pub fn parse_remote(url: &str) -> Option<RepoSlug> {
         name: name.to_string(),
     })
 }
-
 /// Reads the push URL of the remote a branch tracks, falling back to `origin`.
 pub fn remote_slug(state: &AppState) -> Option<RepoSlug> {
     let repo = state.repo().ok()?;
@@ -246,14 +142,19 @@ pub fn remote_slug(state: &AppState) -> Option<RepoSlug> {
         .head()
         .ok()
         .and_then(|head| head.shorthand().map(|s| s.to_string()))
-        .and_then(|branch| repo.branch_upstream_remote(&format!("refs/heads/{branch}")).ok())
+        .and_then(|branch| {
+            repo.branch_upstream_remote(&format!("refs/heads/{branch}"))
+                .ok()
+        })
         .and_then(|buf| buf.as_str().map(|s| s.to_string()));
 
     let name = preferred.unwrap_or_else(|| "origin".to_string());
-    let remote = repo.find_remote(&name).or_else(|_| repo.find_remote("origin")).ok()?;
+    let remote = repo
+        .find_remote(&name)
+        .or_else(|_| repo.find_remote("origin"))
+        .ok()?;
     remote.url().and_then(parse_remote)
 }
-
 pub fn status(state: &AppState) -> ForgeStatus {
     let config = state.config();
     let profile = config.active();
@@ -280,98 +181,6 @@ pub fn status(state: &AppState) -> ForgeStatus {
         error: None,
     }
 }
-
-/// Everything a request needs, gathered before any `await` so no `!Send` git2
-/// handle is held across it.
-struct Call {
-    kind: ForgeKind,
-    host: String,
-    token: String,
-    slug: RepoSlug,
-    current_branch: Option<String>,
-}
-
-/// The forge, host and token of the active profile: everything a request needs
-/// that has nothing to do with which repository happens to be open.
-pub fn account(state: &AppState) -> Result<(ForgeKind, String, String), String> {
-    let config = state.config();
-    let profile = config
-        .active()
-        .ok_or_else(|| "No profile is active".to_string())?;
-    if profile.forge == ForgeKind::None {
-        return Err("This profile has no forge configured".to_string());
-    }
-    let token = config::secret_get(&config::forge_key(&profile.id))
-        .ok_or_else(|| format!("No access token stored for the {} profile", profile.name))?;
-    let host = if profile.host.is_empty() {
-        profile.forge.default_host().to_string()
-    } else {
-        profile.host.clone()
-    };
-    Ok((profile.forge, host, token))
-}
-
-fn prepare(state: &AppState) -> Result<Call, String> {
-    let (kind, host, token) = account(state)?;
-    let slug = remote_slug(state)
-        .ok_or_else(|| "Could not work out the project from the git remote".to_string())?;
-    let current_branch = state.repo().ok().and_then(|repo| {
-        repo.head()
-            .ok()
-            .and_then(|head| head.shorthand().map(|s| s.to_string()))
-    });
-
-    Ok(Call {
-        kind,
-        host,
-        token,
-        slug,
-        current_branch,
-    })
-}
-
-fn client() -> Result<reqwest::Client, String> {
-    reqwest::Client::builder()
-        .user_agent("gitnoob/0.1")
-        .timeout(std::time::Duration::from_secs(20))
-        .build()
-        .map_err(|e| e.to_string())
-}
-
-/// GitHub's API lives on a separate host; GitLab's sits under the web host.
-fn api_base(kind: ForgeKind, host: &str) -> String {
-    match kind {
-        ForgeKind::GitHub if host == "github.com" => "https://api.github.com".to_string(),
-        // GitHub Enterprise.
-        ForgeKind::GitHub => format!("https://{host}/api/v3"),
-        ForgeKind::GitLab => format!("https://{host}/api/v4"),
-        ForgeKind::None => String::new(),
-    }
-}
-
-/// The forge's own page for creating an access token, with the scopes this
-/// app needs already ticked and a name filled in.
-///
-/// A real OAuth sign-in would need an application registered with each forge;
-/// until there is one, a link is the same number of clicks without that
-/// dependency. It only opens a page — the token still has to be pasted back.
-pub fn token_url(kind: ForgeKind, host: &str) -> Option<String> {
-    let host = if host.trim().is_empty() {
-        kind.default_host()
-    } else {
-        host.trim()
-    };
-    match kind {
-        ForgeKind::GitHub => Some(format!(
-            "https://{host}/settings/tokens/new?description=gitnoob&scopes=repo,read:org,read:user"
-        )),
-        ForgeKind::GitLab => Some(format!(
-            "https://{host}/-/user_settings/personal_access_tokens?name=gitnoob&scopes=api,read_user"
-        )),
-        ForgeKind::None => None,
-    }
-}
-
 /// Checks a token and returns the account it belongs to.
 pub async fn check(state: &AppState) -> Result<String, String> {
     let call = prepare(state)?;
@@ -401,7 +210,6 @@ pub async fn check(state: &AppState) -> Result<String, String> {
         .to_string();
     Ok(user)
 }
-
 /// Who the stored token belongs to, with their picture.
 ///
 /// Unlike `check`, this asks nothing about the repository: a profile has an
@@ -449,7 +257,11 @@ pub async fn me(state: &AppState) -> Result<ForgeUser, String> {
             .filter_map(|field| body.get(*field).and_then(|v| v.as_str()))
             .map(String::from)
             .collect();
-        addresses.extend(config.active().and_then(|profile| profile.git_email.clone()));
+        addresses.extend(
+            config
+                .active()
+                .and_then(|profile| profile.git_email.clone()),
+        );
         for address in addresses {
             avatar::note(&address, picture);
         }
@@ -459,74 +271,6 @@ pub async fn me(state: &AppState) -> Result<ForgeUser, String> {
 
     Ok(ForgeUser { login, id, avatar })
 }
-
-/// The faces of every profile, so the switcher shows accounts rather than a
-/// list of names.
-///
-/// One request per profile, once per run: the menu is opened often and the
-/// answer does not change between openings.
-pub async fn faces(state: &AppState) -> HashMap<String, String> {
-    let profiles: Vec<(String, ForgeKind, String, String)> = {
-        let config = state.config();
-        config
-            .profiles
-            .iter()
-            .filter(|profile| profile.forge != ForgeKind::None)
-            .filter_map(|profile| {
-                let token = config::secret_get(&config::forge_key(&profile.id))?;
-                let host = if profile.host.is_empty() {
-                    profile.forge.default_host().to_string()
-                } else {
-                    profile.host.clone()
-                };
-                Some((profile.id.clone(), profile.forge, host, token))
-            })
-            .collect()
-    };
-
-    let mut found = HashMap::new();
-    for (id, kind, host, token) in profiles {
-        let known = FACES
-            .lock()
-            .unwrap()
-            .as_ref()
-            .and_then(|seen| seen.get(&id).cloned());
-        if let Some(known) = known {
-            if let Some(picture) = known {
-                found.insert(id, picture);
-            }
-            continue;
-        }
-        let picture = one_face(kind, &host, &token).await;
-        FACES
-            .lock()
-            .unwrap()
-            .get_or_insert_with(HashMap::new)
-            .insert(id.clone(), picture.clone());
-        if let Some(picture) = picture {
-            found.insert(id, picture);
-        }
-    }
-    found
-}
-
-async fn one_face(kind: ForgeKind, host: &str, token: &str) -> Option<String> {
-    let base = api_base(kind, host);
-    let body: serde_json::Value = client()
-        .ok()?
-        .get(format!("{base}/user"))
-        .bearer_auth(token)
-        .send()
-        .await
-        .ok()
-        .filter(|response| response.status().is_success())?
-        .json()
-        .await
-        .ok()?;
-    let url = body.get("avatar_url")?.as_str().filter(|url| !url.is_empty())?;
-    avatar::from_url(url).await
-}
-
 pub async fn reviews(state: &AppState) -> Result<Vec<Review>, String> {
     let call = prepare(state)?;
     let base = api_base(call.kind, &call.host);
@@ -534,7 +278,10 @@ pub async fn reviews(state: &AppState) -> Result<Vec<Review>, String> {
 
     let response = match call.kind {
         ForgeKind::GitHub => {
-            let url = format!("{base}/repos/{}/pulls?state=open&per_page=50", call.slug.full());
+            let url = format!(
+                "{base}/repos/{}/pulls?state=open&per_page=50",
+                call.slug.full()
+            );
             http.get(url)
                 .bearer_auth(&call.token)
                 .header("Accept", "application/vnd.github+json")
@@ -584,268 +331,6 @@ pub async fn reviews(state: &AppState) -> Result<Vec<Review>, String> {
     }
     Ok(out)
 }
-
-fn github_review(item: &serde_json::Value, current: Option<&str>) -> Review {
-    let source = string(item, &["head", "ref"]);
-    let base_repo = string(item, &["base", "repo", "full_name"]);
-    let head_repo = string(item, &["head", "repo", "full_name"]);
-    // GitHub leaves `head.repo` null once the fork is gone; the review stays in
-    // the list with a branch nobody can fetch by name.
-    let head_from = (!head_repo.is_empty()).then(|| ReviewSource {
-        owner: string(item, &["head", "repo", "owner", "login"]),
-        is_fork: head_repo != base_repo,
-        ssh_url: string(item, &["head", "repo", "ssh_url"]),
-        https_url: string(item, &["head", "repo", "clone_url"]),
-        full_name: head_repo,
-    });
-    Review {
-        number: item.get("number").and_then(|v| v.as_i64()).unwrap_or(0),
-        title: string(item, &["title"]),
-        author: string(item, &["user", "login"]),
-        state: string(item, &["state"]),
-        draft: item.get("draft").and_then(|v| v.as_bool()).unwrap_or(false),
-        // A fork's branch can share a name with one of ours without being it.
-        is_current: current == Some(source.as_str())
-            && head_from.as_ref().map(|from| !from.is_fork).unwrap_or(false),
-        source_branch: source,
-        target_branch: string(item, &["base", "ref"]),
-        url: string(item, &["html_url"]),
-        updated_at: string(item, &["updated_at"]),
-        head_sha: string(item, &["head", "sha"]),
-        source: head_from,
-        warning: None,
-    }
-}
-
-/// A merge request, and the project id its branch lives in when that is not
-/// the project being reviewed. GitLab gives forks as an id rather than as an
-/// address, so the caller looks the address up separately.
-fn gitlab_review(item: &serde_json::Value, current: Option<&str>) -> (Review, Option<i64>) {
-    let source = string(item, &["source_branch"]);
-    let number = |key: &str| item.get(key).and_then(|v| v.as_i64());
-    let project = number("project_id");
-    let source_project = number("source_project_id");
-    let from_fork = matches!((project, source_project), (Some(a), Some(b)) if a != b);
-
-    let review = Review {
-        number: number("iid").unwrap_or(0),
-        title: string(item, &["title"]),
-        author: string(item, &["author", "username"]),
-        state: string(item, &["state"]),
-        draft: item.get("draft").and_then(|v| v.as_bool()).unwrap_or(false),
-        is_current: current == Some(source.as_str()) && !from_fork,
-        source_branch: source,
-        target_branch: string(item, &["target_branch"]),
-        url: string(item, &["web_url"]),
-        updated_at: string(item, &["updated_at"]),
-        head_sha: string(item, &["sha"]),
-        // Same project: nothing to add, the branch is already on the remote.
-        source: (!from_fork).then(|| ReviewSource {
-            full_name: String::new(),
-            owner: String::new(),
-            ssh_url: String::new(),
-            https_url: String::new(),
-            is_fork: false,
-        }),
-        warning: None,
-    };
-    (review, from_fork.then(|| source_project).flatten())
-}
-
-/// Where a forked GitLab project lives, so its branch can be fetched.
-async fn gitlab_project(
-    http: &reqwest::Client,
-    base: &str,
-    token: &str,
-    id: i64,
-) -> Option<ReviewSource> {
-    let body: serde_json::Value = http
-        .get(format!("{base}/projects/{id}"))
-        .bearer_auth(token)
-        .send()
-        .await
-        .ok()
-        .filter(|response| response.status().is_success())?
-        .json()
-        .await
-        .ok()?;
-    let full_name = string(&body, &["path_with_namespace"]);
-    if full_name.is_empty() {
-        return None;
-    }
-    Some(ReviewSource {
-        owner: string(&body, &["namespace", "path"]),
-        ssh_url: string(&body, &["ssh_url_to_repo"]),
-        https_url: string(&body, &["http_url_to_repo"]),
-        full_name,
-        is_fork: true,
-    })
-}
-
-/// Somebody a review names: its author, an assignee, a reviewer.
-#[derive(Serialize, Clone)]
-pub struct Person {
-    /// The account name, which is what the forges show next to an action.
-    pub login: String,
-    /// Their real name where the forge has one; the login otherwise.
-    pub name: String,
-    /// Their picture as a `data:` URL, when there was one to fetch.
-    pub avatar: Option<String>,
-}
-
-/// One of a review's labels, with the colour the forge gave it.
-#[derive(Serialize, Clone)]
-pub struct Label {
-    pub name: String,
-    /// `#rrggbb`, or empty where the forge does not colour its labels.
-    pub color: String,
-}
-
-/// Everything about one review that the list of them leaves out.
-///
-/// The sidebar's list is deliberately thin — it is asked for on every
-/// refresh — so the facts that only matter once a particular review is open
-/// are fetched separately, when it is.
-#[derive(Serialize)]
-pub struct ReviewDetail {
-    pub number: i64,
-    pub title: String,
-    /// The review's own description, which is not the head commit's message.
-    pub body: String,
-    pub state: String,
-    pub draft: bool,
-    pub author: Person,
-    pub assignees: Vec<Person>,
-    pub reviewers: Vec<Person>,
-    pub labels: Vec<Label>,
-    pub milestone: Option<String>,
-    pub source_branch: String,
-    pub target_branch: String,
-    pub url: String,
-    pub created_at: String,
-    pub updated_at: String,
-    /// How many comments have been left on it.
-    pub comments: i64,
-    /// Whether it can be merged, in the forge's own vocabulary —
-    /// the two have no shared one worth inventing.
-    pub merge_status: Option<String>,
-    /// The review's three tips, which anchoring a comment to a line of a diff
-    /// needs naming: GitLab wants all of them, GitHub the head. Empty where
-    /// the forge does not say.
-    pub base_sha: String,
-    pub head_sha: String,
-    pub start_sha: String,
-}
-
-/// Faces already fetched this run, by URL. Each one is a request and a base64
-/// blob, and a project's reviews name the same few people over and over.
-static PEOPLE: Mutex<Option<HashMap<String, Option<String>>>> = Mutex::new(None);
-
-/// A picture for somebody a review names, fetched at most once per URL.
-async fn face(url: &str) -> Option<String> {
-    if url.is_empty() {
-        return None;
-    }
-    if let Some(known) = PEOPLE.lock().unwrap().as_ref().and_then(|map| map.get(url)) {
-        return known.clone();
-    }
-    let found = avatar::from_url(url).await;
-    PEOPLE
-        .lock()
-        .unwrap()
-        .get_or_insert_with(HashMap::new)
-        .insert(url.to_string(), found.clone());
-    found
-}
-
-/// Reads one person out of a forge's JSON, whichever forge wrote it, along with
-/// where their picture lives.
-///
-/// GitHub gives an account a `login` and nothing else here; GitLab gives a
-/// `username` and a display name. Taking both and falling back keeps one
-/// reader for the two shapes. Kept apart from fetching the picture so the
-/// reading can be checked without a network.
-fn read_person(value: &serde_json::Value) -> (Person, String) {
-    let login = {
-        let github = string(value, &["login"]);
-        if github.is_empty() {
-            string(value, &["username"])
-        } else {
-            github
-        }
-    };
-    let name = {
-        let given = string(value, &["name"]);
-        if given.is_empty() {
-            login.clone()
-        } else {
-            given
-        }
-    };
-    (
-        Person {
-            login,
-            name,
-            avatar: None,
-        },
-        string(value, &["avatar_url"]),
-    )
-}
-
-/// One person, with their picture fetched.
-async fn person(value: &serde_json::Value) -> Person {
-    let (mut read, picture) = read_person(value);
-    read.avatar = face(&picture).await;
-    read
-}
-
-/// The same, for the arrays of people a review carries. Anyone the forge lists
-/// without an account name is not somebody to show.
-async fn people(value: Option<&serde_json::Value>) -> Vec<Person> {
-    let Some(items) = value.and_then(|v| v.as_array()) else {
-        return Vec::new();
-    };
-    let mut out = Vec::new();
-    for item in items {
-        if read_person(item).0.login.is_empty() {
-            continue;
-        }
-        out.push(person(item).await);
-    }
-    out
-}
-
-/// A review's labels. GitHub writes its colours without the `#`; GitLab writes
-/// them with one, and only when asked for the detailed form.
-fn labels(value: Option<&serde_json::Value>) -> Vec<Label> {
-    let Some(items) = value.and_then(|v| v.as_array()) else {
-        return Vec::new();
-    };
-    items
-        .iter()
-        .filter_map(|item| {
-            // GitLab without `with_labels_details` gives bare strings.
-            if let Some(name) = item.as_str() {
-                return Some(Label {
-                    name: name.to_string(),
-                    color: String::new(),
-                });
-            }
-            let name = string(item, &["name"]);
-            if name.is_empty() {
-                return None;
-            }
-            let color = string(item, &["color"]);
-            let color = if color.is_empty() || color.starts_with('#') {
-                color
-            } else {
-                format!("#{color}")
-            };
-            Some(Label { name, color })
-        })
-        .collect()
-}
-
 /// Everything one review says about itself.
 pub async fn review_detail(state: &AppState, number: i64) -> Result<ReviewDetail, String> {
     let call = prepare(state)?;
@@ -876,7 +361,12 @@ pub async fn review_detail(state: &AppState, number: i64) -> Result<ReviewDetail
         return Err(describe(response).await);
     }
     let item: serde_json::Value = response.json().await.map_err(|e| e.to_string())?;
-    let text = |key: &str| item.get(key).and_then(|v| v.as_str()).unwrap_or("").to_string();
+    let text = |key: &str| {
+        item.get(key)
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .to_string()
+    };
     let flag = |key: &str| item.get(key).and_then(|v| v.as_bool()).unwrap_or(false);
     let count = |key: &str| item.get(key).and_then(|v| v.as_i64()).unwrap_or(0);
     let milestone = {
@@ -886,7 +376,10 @@ pub async fn review_detail(state: &AppState, number: i64) -> Result<ReviewDetail
 
     Ok(match call.kind {
         ForgeKind::GitHub => ReviewDetail {
-            number: item.get("number").and_then(|v| v.as_i64()).unwrap_or(number),
+            number: item
+                .get("number")
+                .and_then(|v| v.as_i64())
+                .unwrap_or(number),
             title: text("title"),
             body: text("body"),
             // GitHub leaves a merged review's state as `closed`, and merged
@@ -952,7 +445,6 @@ pub async fn review_detail(state: &AppState, number: i64) -> Result<ReviewDetail
         },
     })
 }
-
 /// Everyone this project's review can be handed to.
 ///
 /// Assignees and reviewers come from the same list on both forges, so one
@@ -998,8 +490,14 @@ pub async fn members(state: &AppState) -> Result<Vec<Member>, String> {
             // account cannot be given anything, so offering either would only
             // produce a request that fails once the review already exists.
             ForgeKind::GitLab => {
-                let level = item.get("access_level").and_then(|v| v.as_i64()).unwrap_or(0);
-                let state = item.get("state").and_then(|v| v.as_str()).unwrap_or("active");
+                let level = item
+                    .get("access_level")
+                    .and_then(|v| v.as_i64())
+                    .unwrap_or(0);
+                let state = item
+                    .get("state")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("active");
                 level >= 20 && state == "active"
             }
             _ => true,
@@ -1028,12 +526,14 @@ pub async fn members(state: &AppState) -> Result<Vec<Member>, String> {
 
     // `members/all` lists someone once per level they hold: the project, the
     // group it is in, and every group above that.
-    people.sort_by(|a, b| a.login.to_lowercase().cmp(&b.login.to_lowercase()));
+    people.sort_by_key(|a| a.login.to_lowercase());
     people.dedup_by(|a, b| a.login == b.login);
     Ok(people)
 }
-
 /// Opens a pull request or merge request.
+// Everything a forge insists on knowing to open a request, and there are
+// eight of them. Bundling them into a struct would only move the list.
+#[allow(clippy::too_many_arguments)]
 pub async fn create_review(
     state: &AppState,
     source: Option<String>,
@@ -1116,67 +616,6 @@ pub async fn create_review(
     }
     Ok(review)
 }
-
-/// Hands a freshly opened pull request to its people.
-///
-/// GitHub takes neither assignees nor reviewers when the pull request is
-/// created: assignees belong to the issue underneath it, reviewers to an
-/// endpoint of their own. Both run after the fact, so a failure here leaves a
-/// pull request that exists and is only missing its names. That is reported as
-/// a warning rather than raised as an error, which would suggest nothing
-/// happened and invite a second attempt the forge would refuse.
-async fn github_people(
-    http: &reqwest::Client,
-    call: &Call,
-    number: i64,
-    assignees: &[Member],
-    reviewers: &[Member],
-) -> Option<String> {
-    let base = api_base(call.kind, &call.host);
-    let slug = call.slug.full();
-    let mut trouble = Vec::new();
-
-    if !assignees.is_empty() {
-        let logins: Vec<&str> = assignees.iter().map(|m| m.login.as_str()).collect();
-        let url = format!("{base}/repos/{slug}/issues/{number}/assignees");
-        match http
-            .post(url)
-            .bearer_auth(&call.token)
-            .header("Accept", "application/vnd.github+json")
-            .json(&serde_json::json!({ "assignees": logins }))
-            .send()
-            .await
-        {
-            Ok(response) if response.status().is_success() => {}
-            Ok(response) => trouble.push(format!("assignees: {}", describe(response).await)),
-            Err(error) => trouble.push(format!("assignees: {error}")),
-        }
-    }
-
-    if !reviewers.is_empty() {
-        let logins: Vec<&str> = reviewers.iter().map(|m| m.login.as_str()).collect();
-        let url = format!("{base}/repos/{slug}/pulls/{number}/requested_reviewers");
-        match http
-            .post(url)
-            .bearer_auth(&call.token)
-            .header("Accept", "application/vnd.github+json")
-            .json(&serde_json::json!({ "reviewers": logins }))
-            .send()
-            .await
-        {
-            Ok(response) if response.status().is_success() => {}
-            Ok(response) => trouble.push(format!("reviewers: {}", describe(response).await)),
-            Err(error) => trouble.push(format!("reviewers: {error}")),
-        }
-    }
-
-    if trouble.is_empty() {
-        None
-    } else {
-        Some(format!("Opened, but {}", trouble.join("; ")))
-    }
-}
-
 /// The forge's own "new review" page, with what has been typed already in it.
 ///
 /// For everything the API does not carry — labels, milestones, the template a
@@ -1224,148 +663,6 @@ pub fn compare_url(
 // and the actions taken on it — comment, reply, approve, request changes,
 // merge, close.
 
-/// One entry of a review's conversation, flattened to what both forges share.
-///
-/// The two forges name their conversations differently — GitHub splits them
-/// into issue comments (the conversation tab) and review comments (hanging off
-/// lines of the diff); GitLab keeps one notes list where some carry a diff
-/// position — so the reading side is given one shape and both feeds are
-/// mapped into it here.
-#[derive(Serialize, Clone)]
-pub struct ReviewComment {
-    pub id: i64,
-    pub author: Person,
-    pub body: String,
-    pub created_at: String,
-    /// Same as `created_at` unless the forge edited one; kept for the tooltip.
-    pub updated_at: String,
-    /// `issue` for a conversation comment, `diff` for one anchored to a line.
-    pub kind: String,
-    /// Diff comments only: the file, in the review's own terms.
-    pub path: Option<String>,
-    pub line: Option<i64>,
-    /// Which half of the diff the line sits on: `new`, or `old`.
-    pub side: Option<String>,
-    /// The comment this answers, already normalised: GitHub says
-    /// `in_reply_to_id`, GitLab buries the answer inside a discussion id, and
-    /// both end up pointing at the root of their thread.
-    pub reply_to: Option<i64>,
-    /// The thread this remark belongs to, in whatever the forge needs back to
-    /// resolve it: GitLab's discussion id, GitHub's review-thread node id.
-    /// Empty where there is no thread to resolve — a plain conversation
-    /// comment, or a forge that did not answer the question.
-    pub thread: String,
-    /// Whether the forge lets this thread be marked settled at all.
-    pub resolvable: bool,
-    /// Whether it already is.
-    pub resolved: bool,
-    /// Whether the lines it was written against have since moved on.
-    pub outdated: bool,
-}
-
-/// A remark written on a line and held back until the verdict goes with it.
-///
-/// This is what a review is on GitHub — remarks pending under one review,
-/// sent when it is submitted — and what a reader expects everywhere else: a
-/// pass through the diff should not fire a notification per line.
-#[derive(Serialize, Deserialize, Clone)]
-pub struct PendingComment {
-    pub path: String,
-    pub line: i64,
-    /// `new` or `old`, as the rest of the app names the halves of a diff.
-    pub side: String,
-    pub body: String,
-}
-
-/// The held-back remarks in the shape GitHub takes them alongside a verdict.
-fn github_pending_comments(comments: &[PendingComment]) -> serde_json::Value {
-    serde_json::Value::Array(
-        comments
-            .iter()
-            .map(|comment| {
-                serde_json::json!({
-                    "path": comment.path,
-                    "body": comment.body,
-                    "line": comment.line,
-                    "side": if comment.side == "old" { "LEFT" } else { "RIGHT" }
-                })
-            })
-            .collect(),
-    )
-}
-
-/// One check a forge ran against the review's head: a CI job, a status.
-#[derive(Serialize, Clone)]
-pub struct Check {
-    pub name: String,
-    /// success | failure | pending | cancelled | skipped.
-    pub state: String,
-    /// What the forge says about it, where it says anything.
-    pub description: String,
-    /// Where the run itself can be read.
-    pub url: String,
-}
-
-/// What one person has said about the review as a whole.
-#[derive(Serialize, Clone)]
-pub struct Verdict {
-    pub author: Person,
-    /// approved | changes_requested | commented | dismissed.
-    pub state: String,
-    pub submitted_at: String,
-    pub body: String,
-}
-
-/// Whether the review can land, and what stands in the way of it.
-///
-/// Kept apart from the detail because it is the half that changes while the
-/// page is open — a pipeline finishes, somebody approves — and because it
-/// costs several requests that reading the description should not wait for.
-#[derive(Serialize, Clone, Default)]
-pub struct ReviewStatus {
-    pub checks: Vec<Check>,
-    /// The checks rolled into one word: failure, pending, success, skipped,
-    /// or none where nothing ran at all.
-    pub checks_state: String,
-    pub verdicts: Vec<Verdict>,
-    pub approvals: i64,
-    /// How many the forge insists on; zero where it does not count them.
-    pub approvals_required: i64,
-    /// The forge's own yes or no, where it has made its mind up.
-    pub mergeable: Option<bool>,
-    /// Its own word for the state: `clean`, `blocked`, `not_approved`, …
-    pub merge_status: Option<String>,
-    pub conflicts: bool,
-}
-
-/// A file a review touches, counted across every commit of it rather than just
-/// the last one.
-#[derive(Serialize, Clone)]
-pub struct ReviewFileChange {
-    pub path: String,
-    /// Where the file used to live, when it moved.
-    pub old_path: Option<String>,
-    /// added | deleted | modified | renamed.
-    pub status: String,
-    pub additions: i64,
-    pub deletions: i64,
-    /// Nothing to colour: either a real binary, or a patch too large to send.
-    pub binary: bool,
-    /// The unified patch text, which the window reads straight into the same
-    /// hunk shape a local diff takes. Empty when there is nothing to read.
-    pub patch: String,
-}
-
-/// One commit of a review's source branch, as the Commits pane lists them.
-#[derive(Serialize, Clone)]
-pub struct ReviewCommit {
-    pub sha: String,
-    /// Full message; the pane shows the first line and keeps the rest.
-    pub message: String,
-    pub author: String,
-    pub created_at: String,
-}
-
 /* ---------- pure mappers, checked without a network --------------------------- */
 
 /// Reads an author off a comment without fetching their picture.
@@ -1374,155 +671,6 @@ fn comment_author(item: &serde_json::Value, person_key: &str) -> Person {
     person.avatar = None;
     person
 }
-
-/// One GitHub review comment — the kind anchored to a line of the diff.
-fn github_diff_comment(item: &serde_json::Value) -> ReviewComment {
-    // Newer answers name the side outright; older ones leave the line only on
-    // the half it belongs to, which says the same thing.
-    let named = string(item, &["side"]);
-    let line = item.get("line").and_then(|v| v.as_i64());
-    let side = if named == "LEFT" || (line.is_none() && named.is_empty()) {
-        "old"
-    } else {
-        "new"
-    };
-    let resolved = line.or_else(|| item.get("original_line").and_then(|v| v.as_i64()));
-    let path = string(item, &["path"]);
-    ReviewComment {
-        id: item.get("id").and_then(|v| v.as_i64()).unwrap_or(0),
-        author: comment_author(item, "user"),
-        body: string(item, &["body"]),
-        created_at: string(item, &["created_at"]),
-        updated_at: string(item, &["updated_at"]),
-        kind: "diff".to_string(),
-        path: (!path.is_empty()).then_some(path),
-        line: resolved,
-        side: Some(side.to_string()),
-        reply_to: item.get("in_reply_to_id").and_then(|v| v.as_i64()),
-        // GitHub keeps resolution out of REST entirely; the GraphQL pass
-        // below fills these in, and leaves them alone when it cannot answer.
-        thread: String::new(),
-        resolvable: false,
-        resolved: false,
-        // No live line but an original one: the code it was written against
-        // has moved on since.
-        outdated: line.is_none() && item.get("original_line").is_some(),
-    }
-}
-
-/// One GitHub conversation comment.
-fn github_issue_comment(item: &serde_json::Value) -> ReviewComment {
-    ReviewComment {
-        id: item.get("id").and_then(|v| v.as_i64()).unwrap_or(0),
-        author: comment_author(item, "user"),
-        body: string(item, &["body"]),
-        created_at: string(item, &["created_at"]),
-        updated_at: string(item, &["updated_at"]),
-        kind: "issue".to_string(),
-        path: None,
-        line: None,
-        side: None,
-        reply_to: None,
-        // A conversation comment is not a thread anybody settles.
-        thread: String::new(),
-        resolvable: false,
-        resolved: false,
-        outdated: false,
-    }
-}
-
-/// One GitLab note, when it is worth keeping.
-///
-/// Notes are the one list everything lives in over there: conversation
-/// comments, system notices and diff-anchored ones alike, told apart by having
-/// a `position` and by being marked `system`.
-fn gitlab_note(item: &serde_json::Value) -> Option<ReviewComment> {
-    if item.get("system").and_then(|v| v.as_bool()).unwrap_or(false) {
-        return None;
-    }
-    let position = item.get("position");
-    let new_line = position.and_then(|p| p.get("new_line")).and_then(|v| v.as_i64());
-    let old_line = position.and_then(|p| p.get("old_line")).and_then(|v| v.as_i64());
-    let kind = if position.is_some() { "diff" } else { "issue" };
-    let new_path = position.map(|p| string(p, &["new_path"]));
-    let old_path = position.map(|p| string(p, &["old_path"]));
-    let path = match (&new_path, &old_path) {
-        (Some(path), _) if !path.is_empty() => Some(path.clone()),
-        (_, Some(path)) if !path.is_empty() => Some(path.clone()),
-        _ => None,
-    };
-    let line = new_line.or(old_line);
-    Some(ReviewComment {
-        id: item.get("id").and_then(|v| v.as_i64()).unwrap_or(0),
-        author: comment_author(item, "author"),
-        body: string(item, &["body"]),
-        created_at: string(item, &["created_at"]),
-        updated_at: string(item, &["updated_at"]),
-        kind: kind.to_string(),
-        path,
-        line,
-        side: if position.is_none() {
-            None
-        } else {
-            Some(if new_line.is_some() { "new" } else { "old" }.to_string())
-        },
-        // Filled in once every note of the merge request is on hand: GitLab
-        // points threads with a shared discussion id instead of a parent.
-        reply_to: None,
-        thread: string(item, &["discussion_id"]),
-        resolvable: item
-            .get("resolvable")
-            .and_then(|v| v.as_bool())
-            .unwrap_or(position.is_some()),
-        resolved: item.get("resolved").and_then(|v| v.as_bool()).unwrap_or(false),
-        // GitLab marks the position itself when the line has moved out from
-        // under the remark.
-        outdated: position
-            .and_then(|p| p.get("outdated"))
-            .and_then(|v| v.as_bool())
-            .unwrap_or(false),
-    })
-}
-
-fn is_system_note(item: &serde_json::Value) -> bool {
-    item.get("system").and_then(|v| v.as_bool()).unwrap_or(false)
-}
-
-/// Answers GitLab notes to the root of their thread.
-///
-/// Every note of a thread shares a discussion id; walking the notes in order,
-/// the first note seen under each id is its opening remark and every later one
-/// answers it. The kept comments ride along in the same order as their raw
-/// notes, so pairing the two walks stays aligned.
-fn gitlab_thread_replies(comments: &mut [ReviewComment], notes_in_order: &[serde_json::Value]) {
-    // Discussion id -> the note id that opened the thread.
-    let mut roots: HashMap<String, i64> = HashMap::new();
-    for (item, comment) in notes_in_order.iter().zip(comments.iter_mut()) {
-        let Some(discussion) = item.get("discussion_id").and_then(|v| v.as_str()) else {
-            continue;
-        };
-        match roots.get(discussion) {
-            Some(root) => comment.reply_to = Some(*root),
-            None => {
-                roots.insert(discussion.to_string(), comment.id);
-            }
-        }
-    }
-}
-
-/// Splits GitLab's three booleans into the one status word both sides read.
-fn gitlab_file_status(new_file: bool, deleted: bool, renamed: bool) -> &'static str {
-    if new_file {
-        "added"
-    } else if deleted {
-        "deleted"
-    } else if renamed {
-        "renamed"
-    } else {
-        "modified"
-    }
-}
-
 /// Counts the changed lines a unified patch holds.
 ///
 /// The file headers carry a sign like the body does — `+++ b/path` reads as an
@@ -1546,43 +694,6 @@ fn count_patch_lines(patch: &str) -> (i64, i64) {
 
 /* ---------- endpoints --------------------------------------------------------- */
 
-/// Fetches a paginated collection of JSON items until a short page arrives.
-///
-/// Ten pages of a hundred is the same ceiling `repos` walks to. The first page
-/// failing means the answer cannot be given at all; a later one failing leaves
-/// what already arrived rather than nothing.
-async fn paged(
-    http: &reqwest::Client,
-    token: &str,
-    url_for_page: impl Fn(usize) -> String,
-) -> Result<Vec<serde_json::Value>, String> {
-    const PER_PAGE: usize = 100;
-    const PAGE_LIMIT: usize = 10;
-    let mut out = Vec::new();
-    for page in 1..=PAGE_LIMIT {
-        let response = http
-            .get(url_for_page(page))
-            .bearer_auth(token)
-            .send()
-            .await
-            .map_err(|e| e.to_string())?;
-        if !response.status().is_success() {
-            if page == 1 {
-                return Err(describe(response).await);
-            }
-            break;
-        }
-        let mut items: Vec<serde_json::Value> =
-            response.json().await.map_err(|e| e.to_string())?;
-        let full = items.len() >= PER_PAGE;
-        out.append(&mut items);
-        if !full {
-            break;
-        }
-    }
-    Ok(out)
-}
-
 /// Everything said under one review: the conversation and every diff thread.
 pub async fn review_comments(state: &AppState, number: i64) -> Result<Vec<ReviewComment>, String> {
     let call = prepare(state)?;
@@ -1590,7 +701,8 @@ pub async fn review_comments(state: &AppState, number: i64) -> Result<Vec<Review
     let http = client()?;
     let slug = call.slug.full();
 
-    let (mut comments, notes_in_order) = match call.kind {        ForgeKind::GitHub => {
+    let (mut comments, notes_in_order) = match call.kind {
+        ForgeKind::GitHub => {
             let pulls = format!("{base}/repos/{slug}/pulls/{number}");
             let issues = format!("{base}/repos/{slug}/issues/{number}");
             let diff = paged(&http, &call.token, move |page| {
@@ -1639,8 +751,11 @@ pub async fn review_comments(state: &AppState, number: i64) -> Result<Vec<Review
             // The kept notes again, as raw JSON in the same order, for the
             // thread walk: system notices were dropped from both sides alike,
             // so the two lists stay paired.
-            let cloned: Vec<serde_json::Value> =
-                notes.iter().filter(|item| !is_system_note(item)).cloned().collect();
+            let cloned: Vec<serde_json::Value> = notes
+                .iter()
+                .filter(|item| !is_system_note(item))
+                .cloned()
+                .collect();
             (kept, cloned)
         }
         ForgeKind::None => return Err("No forge configured".to_string()),
@@ -1655,7 +770,6 @@ pub async fn review_comments(state: &AppState, number: i64) -> Result<Vec<Review
     comments.sort_by(|a, b| a.created_at.cmp(&b.created_at).then(a.id.cmp(&b.id)));
     Ok(comments)
 }
-
 /// Every file a review changes, counted across all of its commits.
 pub async fn review_files(state: &AppState, number: i64) -> Result<Vec<ReviewFileChange>, String> {
     let call = prepare(state)?;
@@ -1683,8 +797,7 @@ pub async fn review_files(state: &AppState, number: i64) -> Result<Vec<ReviewFil
                     let patch = string(item, &["patch"]);
                     ReviewFileChange {
                         path: string(item, &["filename"]),
-                        old_path: (status == "renamed" && !previous.is_empty())
-                            .then_some(previous),
+                        old_path: (status == "renamed" && !previous.is_empty()).then_some(previous),
                         status: status.to_string(),
                         additions: item.get("additions").and_then(|v| v.as_i64()).unwrap_or(0),
                         deletions: item.get("deletions").and_then(|v| v.as_i64()).unwrap_or(0),
@@ -1719,7 +832,11 @@ pub async fn review_files(state: &AppState, number: i64) -> Result<Vec<ReviewFil
                         .unwrap_or(additions == 0 && deletions == 0 && !flag("deleted_file"));
                     let is_new = new_path.is_empty();
                     ReviewFileChange {
-                        path: if is_new { old_path.clone() } else { new_path.clone() },
+                        path: if is_new {
+                            old_path.clone()
+                        } else {
+                            new_path.clone()
+                        },
                         old_path: (renamed && old_path != new_path).then_some(old_path),
                         status: gitlab_file_status(flag("new_file"), flag("deleted_file"), renamed)
                             .to_string(),
@@ -1735,7 +852,6 @@ pub async fn review_files(state: &AppState, number: i64) -> Result<Vec<ReviewFil
     };
     Ok(files)
 }
-
 /// The commits a review's source branch puts ahead of its target.
 pub async fn review_commits(state: &AppState, number: i64) -> Result<Vec<ReviewCommit>, String> {
     let call = prepare(state)?;
@@ -1771,13 +887,27 @@ pub async fn review_commits(state: &AppState, number: i64) -> Result<Vec<ReviewC
             // commit itself. The reader tries the flat key first, then the
             // git-commit object, then that object's author and committer.
             let inner = item.get("commit");
-            let person = || inner.and_then(|c| c.get("author")).or(inner.and_then(|c| c.get("committer")));
+            let person = || {
+                inner
+                    .and_then(|c| c.get("author"))
+                    .or(inner.and_then(|c| c.get("committer")))
+            };
             let read = |key: &str| -> Option<String> {
                 item.get(key)
                     .and_then(|v| v.as_str())
                     .map(String::from)
-                    .or_else(|| inner.and_then(|c| c.get(key)).and_then(|v| v.as_str()).map(String::from))
-                    .or_else(|| person().and_then(|p| p.get(key)).and_then(|v| v.as_str()).map(String::from))
+                    .or_else(|| {
+                        inner
+                            .and_then(|c| c.get(key))
+                            .and_then(|v| v.as_str())
+                            .map(String::from)
+                    })
+                    .or_else(|| {
+                        person()
+                            .and_then(|p| p.get(key))
+                            .and_then(|v| v.as_str())
+                            .map(String::from)
+                    })
             };
             let author = read("author_name")
                 .or_else(|| read("name"))
@@ -1787,12 +917,13 @@ pub async fn review_commits(state: &AppState, number: i64) -> Result<Vec<ReviewC
                 sha: read("id").or_else(|| read("sha")).unwrap_or_default(),
                 message: read("message").unwrap_or_default(),
                 author,
-                created_at: read("created_at").or_else(|| read("date")).unwrap_or_default(),
+                created_at: read("created_at")
+                    .or_else(|| read("date"))
+                    .unwrap_or_default(),
             }
         })
         .collect())
 }
-
 /// Leaves one comment on the conversation itself.
 ///
 /// A single-shot note rather than the start of a formal review with pending
@@ -1805,13 +936,14 @@ pub async fn post_comment(state: &AppState, number: i64, body: &str) -> Result<(
     let slug = call.slug.full();
 
     let response = match call.kind {
-        ForgeKind::GitHub => http
-            .post(format!("{base}/repos/{slug}/issues/{number}/comments"))
-            .bearer_auth(&call.token)
-            .header("Accept", "application/vnd.github+json")
-            .json(&serde_json::json!({ "body": body }))
-            .send()
-            .await,
+        ForgeKind::GitHub => {
+            http.post(format!("{base}/repos/{slug}/issues/{number}/comments"))
+                .bearer_auth(&call.token)
+                .header("Accept", "application/vnd.github+json")
+                .json(&serde_json::json!({ "body": body }))
+                .send()
+                .await
+        }
         ForgeKind::GitLab => {
             let project = urlencode(&slug);
             http.post(format!(
@@ -1830,7 +962,6 @@ pub async fn post_comment(state: &AppState, number: i64, body: &str) -> Result<(
     }
     Ok(())
 }
-
 /// Answers one comment, keeping whatever thread shape each forge has.
 ///
 /// A reply to a diff comment stays attached to its line this way: GitHub takes
@@ -1912,7 +1043,6 @@ pub async fn reply_comment(
     }
     Ok(())
 }
-
 /// Starts a fresh thread on one line of one file's diff.
 ///
 /// The three tips name which versions were compared, because GitLab positions
@@ -1986,7 +1116,6 @@ pub async fn add_diff_comment(
     }
     Ok(())
 }
-
 /// Hands down a verdict.
 ///
 /// On GitLab, approval has an endpoint but requesting changes does not —
@@ -2080,7 +1209,9 @@ pub async fn submit_review(
                     }
                 }
                 let response = http
-                    .post(format!("{base}/projects/{project}/merge_requests/{number}/approve"))
+                    .post(format!(
+                        "{base}/projects/{project}/merge_requests/{number}/approve"
+                    ))
                     .bearer_auth(&call.token)
                     .send()
                     .await
@@ -2114,7 +1245,6 @@ pub async fn submit_review(
     }
     Ok(())
 }
-
 /// Merges the review, squashed or not, or says why the forge refused.
 ///
 /// Deleting the branch afterwards is one flag on GitLab and a request of its
@@ -2134,7 +1264,12 @@ pub async fn merge_review(
     // GitHub needs the branch's name before the merge, since the answer to a
     // merge does not carry it and the pull request is closed by then.
     let branch = if delete_branch && call.kind == ForgeKind::GitHub {
-        let pull = fetch(&http, &call.token, &format!("{base}/repos/{slug}/pulls/{number}")).await?;
+        let pull = fetch(
+            &http,
+            &call.token,
+            &format!("{base}/repos/{slug}/pulls/{number}"),
+        )
+        .await?;
         let same_repo = string(&pull, &["head", "repo", "full_name"]) == slug;
         same_repo.then(|| string(&pull, &["head", "ref"]))
     } else {
@@ -2190,7 +1325,6 @@ pub async fn merge_review(
     }
     Ok("Merged".to_string())
 }
-
 /// Closes or reopens a review.
 pub async fn set_review_state(state: &AppState, number: i64, action: &str) -> Result<(), String> {
     let call = prepare(state)?;
@@ -2210,15 +1344,13 @@ pub async fn set_review_state(state: &AppState, number: i64, action: &str) -> Re
         }
         ForgeKind::GitLab => {
             let project = urlencode(&slug);
-            http.put(format!(
-                "{base}/projects/{project}/merge_requests/{number}"
-            ))
-            .bearer_auth(&call.token)
-            .json(&serde_json::json!({
-                "state_event": if action == "close" { "close" } else { "reopen" }
-            }))
-            .send()
-            .await
+            http.put(format!("{base}/projects/{project}/merge_requests/{number}"))
+                .bearer_auth(&call.token)
+                .json(&serde_json::json!({
+                    "state_event": if action == "close" { "close" } else { "reopen" }
+                }))
+                .send()
+                .await
         }
         ForgeKind::None => return Err("No forge configured".to_string()),
     }
@@ -2230,61 +1362,6 @@ pub async fn set_review_state(state: &AppState, number: i64, action: &str) -> Re
 }
 
 /* ---------- how the review stands ---------------------------------------- */
-
-/// One GET that answers with JSON, or with whatever the forge complained.
-async fn fetch(
-    http: &reqwest::Client,
-    token: &str,
-    url: &str,
-) -> Result<serde_json::Value, String> {
-    let response = http
-        .get(url)
-        .bearer_auth(token)
-        .header("Accept", "application/vnd.github+json")
-        .send()
-        .await
-        .map_err(|e| e.to_string())?;
-    if !response.status().is_success() {
-        return Err(describe(response).await);
-    }
-    response.json().await.map_err(|e| e.to_string())
-}
-
-/// GitHub's own word for a check run, in the five this app draws.
-fn github_check_state(status: &str, conclusion: &str) -> &'static str {
-    if status != "completed" {
-        return "pending";
-    }
-    match conclusion {
-        "success" => "success",
-        "failure" | "timed_out" | "action_required" | "startup_failure" => "failure",
-        "cancelled" => "cancelled",
-        // neutral, skipped, stale: it ran, and it has nothing to say.
-        _ => "skipped",
-    }
-}
-
-/// The same, for the older commit-status API that some projects still use.
-fn github_status_state(state: &str) -> &'static str {
-    match state {
-        "success" => "success",
-        "failure" | "error" => "failure",
-        "pending" => "pending",
-        _ => "skipped",
-    }
-}
-
-/// The same again, for a GitLab job.
-fn gitlab_job_state(status: &str) -> &'static str {
-    match status {
-        "success" => "success",
-        "failed" => "failure",
-        "canceled" | "canceling" => "cancelled",
-        "skipped" | "manual" => "skipped",
-        // created, pending, running, preparing, scheduled, waiting_for_resource
-        _ => "pending",
-    }
-}
 
 /// The one word a wall of checks adds up to.
 ///
@@ -2305,152 +1382,6 @@ fn roll_up(checks: &[Check]) -> String {
     }
     .to_string()
 }
-
-/// The standing verdicts, one per person, out of GitHub's list of reviews.
-///
-/// They arrive oldest first and one person can leave several. The last
-/// position they took is the one that stands; a passing comment afterwards
-/// does not unseat the approval they already gave, and a pending review is one
-/// they have not sent yet.
-fn fold_github_verdicts(items: &[serde_json::Value]) -> Vec<Verdict> {
-    let mut out: Vec<Verdict> = Vec::new();
-    for item in items {
-        let state = string(item, &["state"]).to_lowercase();
-        if state.is_empty() || state == "pending" {
-            continue;
-        }
-        let (author, _) = read_person(item.get("user").unwrap_or(&serde_json::Value::Null));
-        if author.login.is_empty() {
-            continue;
-        }
-        let verdict = Verdict {
-            author,
-            state: state.clone(),
-            submitted_at: string(item, &["submitted_at"]),
-            body: string(item, &["body"]),
-        };
-        match out
-            .iter()
-            .position(|seen| seen.author.login == verdict.author.login)
-        {
-            Some(at) => {
-                if state == "commented" && out[at].state != "commented" {
-                    continue;
-                }
-                out[at] = verdict;
-            }
-            None => out.push(verdict),
-        }
-    }
-    out
-}
-
-/// Where GitHub answers GraphQL, which is not under the REST base on either
-/// github.com or an Enterprise install.
-fn github_graphql_url(host: &str) -> String {
-    if host == "github.com" {
-        "https://api.github.com/graphql".to_string()
-    } else {
-        format!("https://{host}/api/graphql")
-    }
-}
-
-/// Asks GitHub's GraphQL endpoint one question.
-async fn github_graphql(
-    http: &reqwest::Client,
-    token: &str,
-    host: &str,
-    query: &str,
-    variables: serde_json::Value,
-) -> Result<serde_json::Value, String> {
-    let response = http
-        .post(github_graphql_url(host))
-        .bearer_auth(token)
-        .json(&serde_json::json!({ "query": query, "variables": variables }))
-        .send()
-        .await
-        .map_err(|e| e.to_string())?;
-    if !response.status().is_success() {
-        return Err(describe(response).await);
-    }
-    let body: serde_json::Value = response.json().await.map_err(|e| e.to_string())?;
-    // GraphQL answers 200 with the failure inside the body.
-    if let Some(problem) = body
-        .get("errors")
-        .and_then(|v| v.as_array())
-        .and_then(|list| list.first())
-    {
-        return Err(string(problem, &["message"]));
-    }
-    Ok(body.get("data").cloned().unwrap_or(serde_json::Value::Null))
-}
-
-/// What each of a GitHub pull request's review threads knows about itself,
-/// keyed by every comment id in it.
-///
-/// REST neither says whether a thread is settled nor offers a way to settle
-/// one, so this is the single place GraphQL earns its extra request. A forge
-/// that refuses the question — an old Enterprise, a token without the
-/// scope — simply leaves the threads unresolvable rather than failing the read.
-async fn github_threads(
-    http: &reqwest::Client,
-    token: &str,
-    host: &str,
-    owner: &str,
-    name: &str,
-    number: i64,
-) -> HashMap<i64, (String, bool, bool)> {
-    const QUERY: &str = "query($owner:String!,$name:String!,$number:Int!,$after:String){\
-        repository(owner:$owner,name:$name){pullRequest(number:$number){\
-        reviewThreads(first:100,after:$after){pageInfo{hasNextPage endCursor}\
-        nodes{id isResolved isOutdated comments(first:100){nodes{databaseId}}}}}}}";
-
-    let mut out: HashMap<i64, (String, bool, bool)> = HashMap::new();
-    let mut after = serde_json::Value::Null;
-    for _ in 0..10 {
-        let variables = serde_json::json!({
-            "owner": owner, "name": name, "number": number, "after": after
-        });
-        let Ok(data) = github_graphql(http, token, host, QUERY, variables).await else {
-            return out;
-        };
-        let threads = data
-            .pointer("/repository/pullRequest/reviewThreads")
-            .cloned()
-            .unwrap_or(serde_json::Value::Null);
-        for node in threads
-            .get("nodes")
-            .and_then(|v| v.as_array())
-            .unwrap_or(&Vec::new())
-        {
-            let id = string(node, &["id"]);
-            let resolved = node.get("isResolved").and_then(|v| v.as_bool()).unwrap_or(false);
-            let outdated = node.get("isOutdated").and_then(|v| v.as_bool()).unwrap_or(false);
-            for comment in node
-                .pointer("/comments/nodes")
-                .and_then(|v| v.as_array())
-                .unwrap_or(&Vec::new())
-            {
-                if let Some(comment_id) = comment.get("databaseId").and_then(|v| v.as_i64()) {
-                    out.insert(comment_id, (id.clone(), resolved, outdated));
-                }
-            }
-        }
-        let more = threads
-            .pointer("/pageInfo/hasNextPage")
-            .and_then(|v| v.as_bool())
-            .unwrap_or(false);
-        if !more {
-            break;
-        }
-        after = threads
-            .pointer("/pageInfo/endCursor")
-            .cloned()
-            .unwrap_or(serde_json::Value::Null);
-    }
-    out
-}
-
 /// Whether the review can land, what ran against it, and who has said what.
 pub async fn review_status(state: &AppState, number: i64) -> Result<ReviewStatus, String> {
     let call = prepare(state)?;
@@ -2461,7 +1392,12 @@ pub async fn review_status(state: &AppState, number: i64) -> Result<ReviewStatus
 
     match call.kind {
         ForgeKind::GitHub => {
-            let item = fetch(&http, &call.token, &format!("{base}/repos/{slug}/pulls/{number}")).await?;
+            let item = fetch(
+                &http,
+                &call.token,
+                &format!("{base}/repos/{slug}/pulls/{number}"),
+            )
+            .await?;
             out.mergeable = item.get("mergeable").and_then(|v| v.as_bool());
             let word = string(&item, &["mergeable_state"]);
             out.conflicts = word == "dirty";
@@ -2638,7 +1574,6 @@ pub async fn review_status(state: &AppState, number: i64) -> Result<ReviewStatus
     }
     Ok(out)
 }
-
 /// Marks one thread settled, or unsettles it again.
 pub async fn resolve_thread(
     state: &AppState,
@@ -2723,7 +1658,12 @@ pub async fn set_review_people(
             }
 
             let wanted: Vec<String> = reviewers.iter().map(|one| one.login.clone()).collect();
-            let pull = fetch(&http, &call.token, &format!("{base}/repos/{slug}/pulls/{number}")).await?;
+            let pull = fetch(
+                &http,
+                &call.token,
+                &format!("{base}/repos/{slug}/pulls/{number}"),
+            )
+            .await?;
             let asked: Vec<String> = pull
                 .get("requested_reviewers")
                 .and_then(|v| v.as_array())
@@ -2798,7 +1738,6 @@ pub async fn set_review_people(
     }
     Ok(())
 }
-
 /// Every label this project has, for the picker to offer.
 pub async fn project_labels(state: &AppState) -> Result<Vec<Label>, String> {
     let call = prepare(state)?;
@@ -2826,7 +1765,6 @@ pub async fn project_labels(state: &AppState) -> Result<Vec<Label>, String> {
     };
     Ok(labels(Some(&serde_json::Value::Array(items))))
 }
-
 /// Sets the review's labels to exactly these.
 pub async fn set_labels(state: &AppState, number: i64, names: Vec<String>) -> Result<(), String> {
     let call = prepare(state)?;
@@ -2835,13 +1773,14 @@ pub async fn set_labels(state: &AppState, number: i64, names: Vec<String>) -> Re
     let slug = call.slug.full();
 
     let response = match call.kind {
-        ForgeKind::GitHub => http
-            .put(format!("{base}/repos/{slug}/issues/{number}/labels"))
-            .bearer_auth(&call.token)
-            .header("Accept", "application/vnd.github+json")
-            .json(&serde_json::json!({ "labels": names }))
-            .send()
-            .await,
+        ForgeKind::GitHub => {
+            http.put(format!("{base}/repos/{slug}/issues/{number}/labels"))
+                .bearer_auth(&call.token)
+                .header("Accept", "application/vnd.github+json")
+                .json(&serde_json::json!({ "labels": names }))
+                .send()
+                .await
+        }
         ForgeKind::GitLab => {
             let project = urlencode(&slug);
             http.put(format!("{base}/projects/{project}/merge_requests/{number}"))
@@ -2858,7 +1797,6 @@ pub async fn set_labels(state: &AppState, number: i64, names: Vec<String>) -> Re
     }
     Ok(())
 }
-
 /// Rewrites the review's title and description.
 pub async fn update_review(
     state: &AppState,
@@ -2872,13 +1810,14 @@ pub async fn update_review(
     let slug = call.slug.full();
 
     let response = match call.kind {
-        ForgeKind::GitHub => http
-            .patch(format!("{base}/repos/{slug}/pulls/{number}"))
-            .bearer_auth(&call.token)
-            .header("Accept", "application/vnd.github+json")
-            .json(&serde_json::json!({ "title": title, "body": body }))
-            .send()
-            .await,
+        ForgeKind::GitHub => {
+            http.patch(format!("{base}/repos/{slug}/pulls/{number}"))
+                .bearer_auth(&call.token)
+                .header("Accept", "application/vnd.github+json")
+                .json(&serde_json::json!({ "title": title, "body": body }))
+                .send()
+                .await
+        }
         ForgeKind::GitLab => {
             let project = urlencode(&slug);
             http.put(format!("{base}/projects/{project}/merge_requests/{number}"))
@@ -2895,26 +1834,6 @@ pub async fn update_review(
     }
     Ok(())
 }
-
-/// The title a GitLab merge request wears for the draft it is or is not.
-///
-/// GitLab has no draft flag to set: a merge request is a draft because its
-/// title begins with the word, so marking one ready is a rename.
-fn gitlab_draft_title(title: &str, draft: bool) -> String {
-    let bare = title
-        .trim_start_matches("Draft:")
-        .trim_start_matches("draft:")
-        .trim_start_matches("WIP:")
-        .trim_start_matches("wip:")
-        .trim()
-        .to_string();
-    if draft {
-        format!("Draft: {bare}")
-    } else {
-        bare
-    }
-}
-
 /// Marks the review ready to be read, or puts it back to a draft.
 pub async fn set_draft(state: &AppState, number: i64, draft: bool) -> Result<(), String> {
     let call = prepare(state)?;
@@ -2980,18 +1899,13 @@ pub async fn set_draft(state: &AppState, number: i64, draft: bool) -> Result<(),
     }
     Ok(())
 }
-
 /// One file as it stands at the review's head, for reading the change in
 /// place rather than as a patch.
 ///
 /// The patch only carries the lines around what changed; the file view wants
 /// the whole thing, which neither forge offers as part of the review itself —
 /// so the head sha is read off the review and the file fetched at it.
-pub async fn review_file_text(
-    state: &AppState,
-    number: i64,
-    path: &str,
-) -> Result<String, String> {
+pub async fn review_file_text(state: &AppState, number: i64, path: &str) -> Result<String, String> {
     let call = prepare(state)?;
     let base = api_base(call.kind, &call.host);
     let http = client()?;
@@ -3000,12 +1914,13 @@ pub async fn review_file_text(
     // The review's head, which is the only ref that names what is being read.
     let head = {
         let response = match call.kind {
-            ForgeKind::GitHub => http
-                .get(format!("{base}/repos/{slug}/pulls/{number}"))
-                .bearer_auth(&call.token)
-                .header("Accept", "application/vnd.github+json")
-                .send()
-                .await,
+            ForgeKind::GitHub => {
+                http.get(format!("{base}/repos/{slug}/pulls/{number}"))
+                    .bearer_auth(&call.token)
+                    .header("Accept", "application/vnd.github+json")
+                    .send()
+                    .await
+            }
             ForgeKind::GitLab => {
                 let project = urlencode(&slug);
                 http.get(format!("{base}/projects/{project}/merge_requests/{number}"))
@@ -3038,13 +1953,17 @@ pub async fn review_file_text(
 
     let response = match call.kind {
         // The raw media type turns the contents endpoint into the file itself.
-        ForgeKind::GitHub => http
-            .get(format!("{base}/repos/{slug}/contents/{}", urlencode_path(path)))
+        ForgeKind::GitHub => {
+            http.get(format!(
+                "{base}/repos/{slug}/contents/{}",
+                urlencode_path(path)
+            ))
             .bearer_auth(&call.token)
             .header("Accept", "application/vnd.github.raw")
             .query(&[("ref", head.as_str())])
             .send()
-            .await,
+            .await
+        }
         ForgeKind::GitLab => {
             let project = urlencode(&slug);
             http.get(format!(
@@ -3062,67 +1981,8 @@ pub async fn review_file_text(
     if !response.status().is_success() {
         return Err(describe(response).await);
     }
-    Ok(response.text().await.map_err(|e| e.to_string())?)
+    response.text().await.map_err(|e| e.to_string())
 }
-
-/// Percent-encodes a path for a URL segment while keeping its own slashes:
-/// `src/review/pane.ts` stays readable as the path it names.
-fn urlencode_path(path: &str) -> String {
-    path.split('/')
-        .map(urlencode)
-        .collect::<Vec<_>>()
-        .join("/")
-}
-
-
-
-/// Turns a failed response into a message worth showing, using the forge's own
-/// wording where there is one.
-async fn describe(response: reqwest::Response) -> String {
-    let status = response.status();
-    let text = response.text().await.unwrap_or_default();
-    let detail = serde_json::from_str::<serde_json::Value>(&text)
-        .ok()
-        .and_then(|body| {
-            body.get("message")
-                .or_else(|| body.get("error"))
-                .or_else(|| body.get("error_description"))
-                .and_then(|v| v.as_str().map(|s| s.to_string()))
-        })
-        .unwrap_or_else(|| text.chars().take(200).collect());
-
-    if status == reqwest::StatusCode::UNAUTHORIZED || status == reqwest::StatusCode::FORBIDDEN {
-        format!("{status}: {detail} — check the profile's access token and its scopes")
-    } else {
-        format!("{status}: {detail}")
-    }
-}
-
-fn string(value: &serde_json::Value, path: &[&str]) -> String {
-    let mut current = value;
-    for key in path {
-        match current.get(key) {
-            Some(next) => current = next,
-            None => return String::new(),
-        }
-    }
-    current.as_str().unwrap_or("").to_string()
-}
-
-/// Percent-encodes the characters that matter for a path segment.
-pub fn urlencode(input: &str) -> String {
-    let mut out = String::with_capacity(input.len() + 8);
-    for byte in input.bytes() {
-        match byte {
-            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => {
-                out.push(byte as char)
-            }
-            _ => out.push_str(&format!("%{byte:02X}")),
-        }
-    }
-    out
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -3136,13 +1996,48 @@ mod tests {
             assert_eq!(slug.name, name, "name for {url}");
         };
 
-        expect("git@github.com:arno/gitnoob.git", "github.com", "arno", "gitnoob");
-        expect("https://github.com/arno/gitnoob.git", "github.com", "arno", "gitnoob");
-        expect("https://github.com/arno/gitnoob", "github.com", "arno", "gitnoob");
-        expect("ssh://git@gitlab.com/group/sub/app.git", "gitlab.com", "group/sub", "app");
-        expect("git@gitlab.bigbridge.nl:team/deep/nest/app.git", "gitlab.bigbridge.nl", "team/deep/nest", "app");
-        expect("https://gitlab.example.com:8443/team/app.git", "gitlab.example.com", "team", "app");
-        expect("https://user:token@github.com/arno/gitnoob.git", "github.com", "arno", "gitnoob");
+        expect(
+            "git@github.com:arno/gitnoob.git",
+            "github.com",
+            "arno",
+            "gitnoob",
+        );
+        expect(
+            "https://github.com/arno/gitnoob.git",
+            "github.com",
+            "arno",
+            "gitnoob",
+        );
+        expect(
+            "https://github.com/arno/gitnoob",
+            "github.com",
+            "arno",
+            "gitnoob",
+        );
+        expect(
+            "ssh://git@gitlab.com/group/sub/app.git",
+            "gitlab.com",
+            "group/sub",
+            "app",
+        );
+        expect(
+            "git@gitlab.bigbridge.nl:team/deep/nest/app.git",
+            "gitlab.bigbridge.nl",
+            "team/deep/nest",
+            "app",
+        );
+        expect(
+            "https://gitlab.example.com:8443/team/app.git",
+            "gitlab.example.com",
+            "team",
+            "app",
+        );
+        expect(
+            "https://user:token@github.com/arno/gitnoob.git",
+            "github.com",
+            "arno",
+            "gitnoob",
+        );
 
         assert!(parse_remote("/local/path/repo").is_none());
         assert!(parse_remote("git@github.com:noslash").is_none());
@@ -3199,7 +2094,10 @@ mod tests {
 
     #[test]
     fn builds_api_bases() {
-        assert_eq!(api_base(ForgeKind::GitHub, "github.com"), "https://api.github.com");
+        assert_eq!(
+            api_base(ForgeKind::GitHub, "github.com"),
+            "https://api.github.com"
+        );
         assert_eq!(
             api_base(ForgeKind::GitHub, "github.acme.dev"),
             "https://github.acme.dev/api/v3"
@@ -3300,7 +2198,7 @@ mod tests {
 
     #[test]
     fn answers_gitlab_replies_to_the_root_of_their_discussion() {
-        let raw = vec![
+        let raw = [
             serde_json::json!({ "id": 100, "discussion_id": "d1", "body": "root" }),
             serde_json::json!({ "id": 101, "discussion_id": "d2", "body": "other root" }),
             serde_json::json!({ "id": 102, "discussion_id": "d1", "body": "reply" }),
@@ -3308,18 +2206,26 @@ mod tests {
         ];
         let mut comments: Vec<ReviewComment> = raw
             .iter()
-            .filter_map(|item| {
-                gitlab_note(&clone_json(item))
-            })
+            .filter_map(|item| gitlab_note(&clone_json(item)))
             .collect();
-        let in_order: Vec<serde_json::Value> =
-            raw.iter().filter(|item| !is_system_note(item)).cloned().collect();
+        let in_order: Vec<serde_json::Value> = raw
+            .iter()
+            .filter(|item| !is_system_note(item))
+            .cloned()
+            .collect();
         gitlab_thread_replies(&mut comments, &in_order);
 
         assert_eq!(comments[0].reply_to, None, "the first of a thread opens it");
         assert_eq!(comments[2].reply_to, Some(100));
-        assert_eq!(comments[3].reply_to, Some(100), "replies chain to the root, not each other");
-        assert_eq!(comments[1].reply_to, None, "another thread stays another thread");
+        assert_eq!(
+            comments[3].reply_to,
+            Some(100),
+            "replies chain to the root, not each other"
+        );
+        assert_eq!(
+            comments[1].reply_to, None,
+            "another thread stays another thread"
+        );
     }
 
     fn clone_json(value: &serde_json::Value) -> serde_json::Value {
@@ -3342,7 +2248,10 @@ mod tests {
         assert_eq!(github_check_state("completed", "success"), "success");
         assert_eq!(github_check_state("completed", "failure"), "failure");
         assert_eq!(github_check_state("completed", "timed_out"), "failure");
-        assert_eq!(github_check_state("completed", "action_required"), "failure");
+        assert_eq!(
+            github_check_state("completed", "action_required"),
+            "failure"
+        );
         assert_eq!(github_check_state("completed", "cancelled"), "cancelled");
         assert_eq!(github_check_state("completed", "neutral"), "skipped");
 
@@ -3388,9 +2297,7 @@ mod tests {
 
     #[test]
     fn keeps_one_standing_verdict_per_person() {
-        let review = |login: &str, state: &str, at: &str| {
-            serde_json::json!({ "user": { "login": login }, "state": state, "submitted_at": at, "body": "" })
-        };
+        let review = |login: &str, state: &str, at: &str| serde_json::json!({ "user": { "login": login }, "state": state, "submitted_at": at, "body": "" });
         let folded = fold_github_verdicts(&[
             review("kai", "COMMENTED", "1"),
             review("kai", "APPROVED", "2"),
@@ -3404,10 +2311,16 @@ mod tests {
         ]);
 
         assert_eq!(folded.len(), 2, "one row per person who took a position");
-        let kai = folded.iter().find(|v| v.author.login == "kai").expect("kai");
+        let kai = folded
+            .iter()
+            .find(|v| v.author.login == "kai")
+            .expect("kai");
         assert_eq!(kai.state, "approved");
         assert_eq!(kai.submitted_at, "2");
-        let nadia = folded.iter().find(|v| v.author.login == "nadia").expect("nadia");
+        let nadia = folded
+            .iter()
+            .find(|v| v.author.login == "nadia")
+            .expect("nadia");
         assert_eq!(nadia.state, "approved", "the later position stands");
 
         // Somebody who has only ever commented still reads as having spoken.
@@ -3446,9 +2359,18 @@ mod tests {
 
     #[test]
     fn renames_a_gitlab_merge_request_into_and_out_of_draft() {
-        assert_eq!(gitlab_draft_title("Add the pane", true), "Draft: Add the pane");
-        assert_eq!(gitlab_draft_title("Draft: Add the pane", false), "Add the pane");
-        assert_eq!(gitlab_draft_title("WIP: Add the pane", false), "Add the pane");
+        assert_eq!(
+            gitlab_draft_title("Add the pane", true),
+            "Draft: Add the pane"
+        );
+        assert_eq!(
+            gitlab_draft_title("Draft: Add the pane", false),
+            "Add the pane"
+        );
+        assert_eq!(
+            gitlab_draft_title("WIP: Add the pane", false),
+            "Add the pane"
+        );
         // Marking a draft a draft again is not two prefixes.
         assert_eq!(
             gitlab_draft_title("Draft: Add the pane", true),
@@ -3520,5 +2442,3 @@ mod tests {
         assert_eq!(count_patch_lines(""), (0, 0));
     }
 }
-
-

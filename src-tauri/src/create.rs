@@ -63,11 +63,16 @@ pub fn clone(url: &str, parent: &Path) -> Result<NewRepo, String> {
     }
     let name = folder_name(url);
     if name.is_empty() {
-        return Err(format!("Could not tell what to call a folder cloned from {url}"));
+        return Err(format!(
+            "Could not tell what to call a folder cloned from {url}"
+        ));
     }
     let dest = parent.join(&name);
     if dest.exists() {
-        return Err(format!("{} already has a folder named {name}", parent.display()));
+        return Err(format!(
+            "{} already has a folder named {name}",
+            parent.display()
+        ));
     }
     // `--` keeps an address beginning with a dash from being read as a flag,
     // the same discipline every other ref-taking command follows.
@@ -118,7 +123,10 @@ pub fn init(
     }
     let root = parent.join(name);
     if root.exists() {
-        return Err(format!("{} already has a folder named {name}", parent.display()));
+        return Err(format!(
+            "{} already has a folder named {name}",
+            parent.display()
+        ));
     }
     std::fs::create_dir_all(&root)
         .map_err(|e| format!("Could not create {}: {e}", root.display()))?;
@@ -130,8 +138,10 @@ pub fn init(
         git_cmd::run_checked(&root, &["config", "--local", "user.email", &email])?;
     }
     git_cmd::run_checked(&root, &["add", "--", ".gitignore"])?;
-    let committed =
-        git_cmd::run(&root, &["commit", "-q", "-m", "First commit: a starter .gitignore"])?;
+    let committed = git_cmd::run(
+        &root,
+        &["commit", "-q", "-m", "First commit: a starter .gitignore"],
+    )?;
     let note = if committed.ok {
         None
     } else {
@@ -155,8 +165,14 @@ mod tests {
     fn a_clone_is_named_after_the_repository() {
         assert_eq!(folder_name("git@github.com:acme/widget.git"), "widget");
         assert_eq!(folder_name("https://github.com/acme/widget.git"), "widget");
-        assert_eq!(folder_name("ssh://git@git.example.com:2222/acme/widget.git"), "widget");
-        assert_eq!(folder_name("https://gitlab.com/group/subgroup/widget/"), "widget");
+        assert_eq!(
+            folder_name("ssh://git@git.example.com:2222/acme/widget.git"),
+            "widget"
+        );
+        assert_eq!(
+            folder_name("https://gitlab.com/group/subgroup/widget/"),
+            "widget"
+        );
 
         // A path on this machine is a path, not an address: the colon after a
         // drive letter separates nothing.

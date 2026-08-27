@@ -98,7 +98,11 @@ fn pick_url(state: &AppState, fork: &Source) -> String {
     } else {
         (&fork.https_url, &fork.ssh_url)
     };
-    if first.is_empty() { second.clone() } else { first.clone() }
+    if first.is_empty() {
+        second.clone()
+    } else {
+        first.clone()
+    }
 }
 
 /// The remote to fetch the fork from: the one already pointing at it if there
@@ -117,14 +121,24 @@ fn remote_named(state: &AppState, owner: &str, url: &str) -> Result<String, Stri
     // hold characters that break both.
     let cleaned: String = owner
         .chars()
-        .map(|c| if c.is_ascii_alphanumeric() || c == '-' || c == '_' || c == '.' { c } else { '-' })
+        .map(|c| {
+            if c.is_ascii_alphanumeric() || c == '-' || c == '_' || c == '.' {
+                c
+            } else {
+                '-'
+            }
+        })
         .collect();
     let base = cleaned.trim_matches(['-', '.']).to_string();
-    let base = if base.is_empty() { "fork".to_string() } else { base };
+    let base = if base.is_empty() {
+        "fork".to_string()
+    } else {
+        base
+    };
 
     let mut name = base.clone();
     let mut suffix = 2;
-    while existing.iter().any(|taken| *taken == name) {
+    while existing.contains(&name) {
         name = format!("{base}-{suffix}");
         suffix += 1;
     }
@@ -280,13 +294,38 @@ mod tests {
             std::fs::write(seed.join("readme.md"), "start\n").unwrap();
             git(&seed, &["add", "-A"]);
             git(&seed, &["commit", "--quiet", "-m", "start"]);
-            git(&seed, &["remote", "add", "origin", root.join("upstream.git").to_str().unwrap()]);
+            git(
+                &seed,
+                &[
+                    "remote",
+                    "add",
+                    "origin",
+                    root.join("upstream.git").to_str().unwrap(),
+                ],
+            );
             git(&seed, &["push", "--quiet", "-u", "origin", "main"]);
 
             // Their fork of it, with the branch the review was opened from.
-            git(&root, &["clone", "--quiet", "--bare", root.join("upstream.git").to_str().unwrap(), "fork.git"]);
+            git(
+                &root,
+                &[
+                    "clone",
+                    "--quiet",
+                    "--bare",
+                    root.join("upstream.git").to_str().unwrap(),
+                    "fork.git",
+                ],
+            );
             let theirs = root.join("theirs");
-            git(&root, &["clone", "--quiet", root.join("fork.git").to_str().unwrap(), "theirs"]);
+            git(
+                &root,
+                &[
+                    "clone",
+                    "--quiet",
+                    root.join("fork.git").to_str().unwrap(),
+                    "theirs",
+                ],
+            );
             git(&theirs, &["config", "user.email", "them@example.com"]);
             git(&theirs, &["config", "user.name", "Them"]);
             git(&theirs, &["checkout", "--quiet", "-b", "fix-typo"]);
@@ -297,17 +336,30 @@ mod tests {
 
             // Our own clone, which has never heard of the fork.
             let work = root.join("work");
-            git(&root, &["clone", "--quiet", root.join("upstream.git").to_str().unwrap(), "work"]);
+            git(
+                &root,
+                &[
+                    "clone",
+                    "--quiet",
+                    root.join("upstream.git").to_str().unwrap(),
+                    "work",
+                ],
+            );
             git(&work, &["config", "user.email", "us@example.com"]);
             git(&work, &["config", "user.name", "Us"]);
 
             let state = AppState::new(root.join("config"));
             state.set_path(work.clone());
-            Sandbox { fork: root.join("fork.git"), root, work, state }
+            Sandbox {
+                fork: root.join("fork.git"),
+                root,
+                work,
+                state,
+            }
         }
 
         /// A review from the fork, the way the forge would describe it.
-        fn from_fork(&self, branch: &str) -> ReviewTarget {
+        fn review_from_fork(&self, branch: &str) -> ReviewTarget {
             ReviewTarget {
                 number: 7,
                 branch: branch.to_string(),
@@ -322,7 +374,9 @@ mod tests {
         }
 
         fn head(&self) -> String {
-            git(&self.work, &["rev-parse", "--abbrev-ref", "HEAD"]).trim().to_string()
+            git(&self.work, &["rev-parse", "--abbrev-ref", "HEAD"])
+                .trim()
+                .to_string()
         }
 
         fn remotes(&self) -> Vec<String> {
@@ -347,7 +401,7 @@ mod tests {
         // checkout by name has nothing to find.
         assert!(refs::checkout(&sandbox.state, "fix-typo").is_err());
 
-        checkout(&sandbox.state, sandbox.from_fork("fix-typo")).unwrap();
+        checkout(&sandbox.state, sandbox.review_from_fork("fix-typo")).unwrap();
 
         assert_eq!(sandbox.head(), "fix-typo");
         assert!(sandbox.remotes().contains(&"them".to_string()));
@@ -370,13 +424,21 @@ mod tests {
     #[test]
     fn checking_the_same_review_out_twice_reuses_the_remote_and_the_branch() {
         let sandbox = Sandbox::new("twice");
-        checkout(&sandbox.state, sandbox.from_fork("fix-typo")).unwrap();
+        checkout(&sandbox.state, sandbox.review_from_fork("fix-typo")).unwrap();
         git(&sandbox.work, &["checkout", "--quiet", "main"]);
-        checkout(&sandbox.state, sandbox.from_fork("fix-typo")).unwrap();
+        checkout(&sandbox.state, sandbox.review_from_fork("fix-typo")).unwrap();
 
         assert_eq!(sandbox.head(), "fix-typo");
-        let named: Vec<String> = sandbox.remotes().into_iter().filter(|r| r.starts_with("them")).collect();
-        assert_eq!(named, vec!["them".to_string()], "no second remote for the same fork");
+        let named: Vec<String> = sandbox
+            .remotes()
+            .into_iter()
+            .filter(|r| r.starts_with("them"))
+            .collect();
+        assert_eq!(
+            named,
+            vec!["them".to_string()],
+            "no second remote for the same fork"
+        );
     }
 
     #[test]
@@ -389,12 +451,12 @@ mod tests {
         git(&sandbox.work, &["commit", "--quiet", "-m", "our own work"]);
         git(&sandbox.work, &["checkout", "--quiet", "main"]);
 
-        checkout(&sandbox.state, sandbox.from_fork("fix-typo")).unwrap();
+        checkout(&sandbox.state, sandbox.review_from_fork("fix-typo")).unwrap();
 
         assert_eq!(sandbox.head(), "them-fix-typo");
         // Ours is untouched, which is the point of not reusing the name.
         assert!(refs::has_local_branch(&sandbox.state, "fix-typo"));
-        assert!(sandbox.work.join("ours.md").exists() == false);
+        assert!(!sandbox.work.join("ours.md").exists());
     }
 
     #[test]
@@ -402,7 +464,15 @@ mod tests {
         let sandbox = Sandbox::new("same-repo");
         // Pushed to the project itself rather than to a fork.
         let theirs = sandbox.root.join("theirs");
-        git(&theirs, &["remote", "add", "upstream", sandbox.root.join("upstream.git").to_str().unwrap()]);
+        git(
+            &theirs,
+            &[
+                "remote",
+                "add",
+                "upstream",
+                sandbox.root.join("upstream.git").to_str().unwrap(),
+            ],
+        );
         git(&theirs, &["push", "--quiet", "upstream", "fix-typo"]);
 
         let review = ReviewTarget {
@@ -412,7 +482,12 @@ mod tests {
             source: Some(Source {
                 owner: "us".to_string(),
                 ssh_url: String::new(),
-                https_url: sandbox.root.join("upstream.git").to_str().unwrap().to_string(),
+                https_url: sandbox
+                    .root
+                    .join("upstream.git")
+                    .to_str()
+                    .unwrap()
+                    .to_string(),
                 is_fork: false,
             }),
         };
@@ -420,9 +495,12 @@ mod tests {
         checkout(&sandbox.state, review).unwrap();
 
         assert_eq!(sandbox.head(), "fix-typo");
-        assert_eq!(sandbox.remotes(), vec!["origin".to_string()], "no remote added for our own branch");
+        assert_eq!(
+            sandbox.remotes(),
+            vec!["origin".to_string()],
+            "no remote added for our own branch"
+        );
     }
-
 
     #[test]
     fn the_same_repository_written_differently_is_recognised() {

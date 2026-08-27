@@ -41,7 +41,8 @@ pub struct CommitMessage {
 pub fn status(state: &AppState) -> AiStatus {
     let config = state.config();
     AiStatus {
-        configured: config::secret_get(OPENROUTER_KEY).is_some() && config.global.ai.model.is_some(),
+        configured: config::secret_get(OPENROUTER_KEY).is_some()
+            && config.global.ai.model.is_some(),
         model: config.global.ai.model.clone(),
         commit_style: config.global.ai.commit_style.clone(),
     }
@@ -101,16 +102,20 @@ pub async fn models(state: &AppState, refresh: bool) -> Result<Vec<Model>, Strin
                 .get("architecture")
                 .and_then(|a| a.get("input_modalities"))
                 .and_then(|v| v.as_array())
-                .map(|list| {
-                    list.iter()
-                        .filter_map(|v| v.as_str())
-                        .any(|m| m == "image")
-                })
+                .map(|list| list.iter().filter_map(|v| v.as_str()).any(|m| m == "image"))
                 .unwrap_or(false);
 
             Model {
-                id: item.get("id").and_then(|v| v.as_str()).unwrap_or("").to_string(),
-                name: item.get("name").and_then(|v| v.as_str()).unwrap_or("").to_string(),
+                id: item
+                    .get("id")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("")
+                    .to_string(),
+                name: item
+                    .get("name")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("")
+                    .to_string(),
                 context_length: item
                     .get("context_length")
                     .and_then(|v| v.as_u64())
@@ -211,7 +216,13 @@ pub async fn commit_message(state: &AppState) -> Result<CommitMessage, String> {
     // Gather everything before the await; no git handles cross it.
     let diff = git_cmd::run_checked(
         &root,
-        &["diff", "--cached", "--no-color", "--unified=3", "--stat-width=200"],
+        &[
+            "diff",
+            "--cached",
+            "--no-color",
+            "--unified=3",
+            "--stat-width=200",
+        ],
     )?;
     if diff.trim().is_empty() {
         return Err("Nothing is staged, so there is nothing to describe".to_string());
@@ -241,9 +252,8 @@ pub async fn commit_message_for(state: &AppState, oid: &str) -> Result<CommitMes
     }
     let files = git_cmd::run_checked(&root, &["show", "--name-status", "--format=", &oid])?;
     // A root commit has no parent to walk back from; tone is a nicety anyway.
-    let recent =
-        git_cmd::run_checked(&root, &["log", "-8", "--format=%s", &format!("{oid}^")])
-            .unwrap_or_default();
+    let recent = git_cmd::run_checked(&root, &["log", "-8", "--format=%s", &format!("{oid}^")])
+        .unwrap_or_default();
 
     describe_change(state, "Diff", &files, &diff, &recent).await
 }
@@ -296,7 +306,13 @@ pub async fn review_message(
     let range = format!("{target}..{source}");
     let log = git_cmd::run_checked(
         &root,
-        &["log", "--no-color", "--max-count=40", "--format=%s%n%b%n---", &range],
+        &[
+            "log",
+            "--no-color",
+            "--max-count=40",
+            "--format=%s%n%b%n---",
+            &range,
+        ],
     )?;
     if log.trim().is_empty() {
         return Err(format!(
@@ -307,7 +323,12 @@ pub async fn review_message(
     // it was away.
     let stat = git_cmd::run_checked(
         &root,
-        &["diff", "--stat", "--stat-width=200", &format!("{target}...{source}")],
+        &[
+            "diff",
+            "--stat",
+            "--stat-width=200",
+            &format!("{target}...{source}"),
+        ],
     )
     .unwrap_or_default();
 
@@ -348,8 +369,16 @@ fn checked_ref(name: &str) -> Result<String, String> {
 /// that resolves to nothing is tried again against each remote.
 fn resolve_ref(root: &std::path::Path, name: &str) -> Result<String, String> {
     let exists = |candidate: &str| {
-        git_cmd::run_checked(root, &["rev-parse", "--verify", "--quiet", &format!("{candidate}^{{commit}}")])
-            .is_ok()
+        git_cmd::run_checked(
+            root,
+            &[
+                "rev-parse",
+                "--verify",
+                "--quiet",
+                &format!("{candidate}^{{commit}}"),
+            ],
+        )
+        .is_ok()
     };
     if exists(name) {
         return Ok(name.to_string());
@@ -361,7 +390,9 @@ fn resolve_ref(root: &std::path::Path, name: &str) -> Result<String, String> {
             return Ok(candidate);
         }
     }
-    Err(format!("{name} is not a branch this repository knows about"))
+    Err(format!(
+        "{name} is not a branch this repository knows about"
+    ))
 }
 
 /// Resolves one conflict region.
@@ -458,7 +489,9 @@ fn split_message(answer: &str) -> CommitMessage {
 /// Removes a surrounding markdown code fence, if the answer has one.
 fn strip_fences(answer: &str) -> Vec<String> {
     let lines: Vec<&str> = answer.lines().collect();
-    let opens = lines.first().is_some_and(|l| l.trim_start().starts_with("```"));
+    let opens = lines
+        .first()
+        .is_some_and(|l| l.trim_start().starts_with("```"));
     let closes = lines.len() > 1 && lines.last().is_some_and(|l| l.trim() == "```");
     let slice = if opens && closes {
         &lines[1..lines.len() - 1]
@@ -539,7 +572,10 @@ mod tests {
 
     #[test]
     fn a_thinking_level_becomes_an_effort() {
-        assert_eq!(reasoning_field("high"), serde_json::json!({ "effort": "high" }));
+        assert_eq!(
+            reasoning_field("high"),
+            serde_json::json!({ "effort": "high" })
+        );
         assert_eq!(
             reasoning_field("minimal"),
             serde_json::json!({ "effort": "minimal" })
@@ -548,7 +584,10 @@ mod tests {
 
     #[test]
     fn off_switches_thinking_off_rather_than_omitting_it() {
-        assert_eq!(reasoning_field("off"), serde_json::json!({ "enabled": false }));
+        assert_eq!(
+            reasoning_field("off"),
+            serde_json::json!({ "enabled": false })
+        );
         // An unknown value from a hand-edited config must not turn thinking on.
         assert_eq!(
             reasoning_field("whatever"),

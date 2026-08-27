@@ -282,7 +282,12 @@ async fn author_map(
     slug: &forge::RepoSlug,
 ) -> HashMap<String, String> {
     let repo = format!("{}/{}", slug.host, slug.full());
-    if let Some(known) = AUTHORS.lock().unwrap().as_ref().and_then(|by_repo| by_repo.get(&repo)) {
+    if let Some(known) = AUTHORS
+        .lock()
+        .unwrap()
+        .as_ref()
+        .and_then(|by_repo| by_repo.get(&repo))
+    {
         return known.clone();
     }
 
@@ -407,9 +412,9 @@ fn absolute(host: &str, url: &str) -> String {
 fn github_url(email: &str) -> Option<String> {
     let local = email.strip_suffix("@users.noreply.github.com")?;
     match local.split_once('+') {
-        Some((id, _)) if !id.is_empty() && id.chars().all(|c| c.is_ascii_digit()) => {
-            Some(format!("https://avatars.githubusercontent.com/u/{id}?s={SIZE}"))
-        }
+        Some((id, _)) if !id.is_empty() && id.chars().all(|c| c.is_ascii_digit()) => Some(format!(
+            "https://avatars.githubusercontent.com/u/{id}?s={SIZE}"
+        )),
         _ => Some(format!("https://github.com/{local}.png?size={SIZE}")),
     }
 }
@@ -475,8 +480,7 @@ fn base64(bytes: &[u8]) -> String {
             *chunk.get(1).unwrap_or(&0),
             *chunk.get(2).unwrap_or(&0),
         ];
-        let packed =
-            u32::from(padded[0]) << 16 | u32::from(padded[1]) << 8 | u32::from(padded[2]);
+        let packed = u32::from(padded[0]) << 16 | u32::from(padded[1]) << 8 | u32::from(padded[2]);
         for slot in 0..4 {
             if slot <= chunk.len() {
                 out.push(TABLE[(packed >> (18 - 6 * slot)) as usize & 0x3F] as char);
@@ -496,7 +500,9 @@ mod tests {
     fn a_github_noreply_address_names_its_own_picture() {
         assert_eq!(
             github_url("12345+octocat@users.noreply.github.com"),
-            Some(format!("https://avatars.githubusercontent.com/u/12345?s={SIZE}"))
+            Some(format!(
+                "https://avatars.githubusercontent.com/u/12345?s={SIZE}"
+            ))
         );
         assert_eq!(
             github_url("octocat@users.noreply.github.com"),
@@ -509,7 +515,9 @@ mod tests {
     fn a_tool_that_commits_has_a_face_of_its_own() {
         assert_eq!(
             known_url("noreply@anthropic.com"),
-            Some(format!("https://avatars.githubusercontent.com/in/1236702?s={SIZE}"))
+            Some(format!(
+                "https://avatars.githubusercontent.com/in/1236702?s={SIZE}"
+            ))
         );
         assert_eq!(known_url("someone@example.com"), None);
     }
@@ -522,7 +530,8 @@ mod tests {
         assert_eq!(own.base, "https://api.github.com");
         assert!(own.with_token);
 
-        let enterprise = lookup_for(Some((ForgeKind::GitHub, "ghe.example")), "ghe.example").unwrap();
+        let enterprise =
+            lookup_for(Some((ForgeKind::GitHub, "ghe.example")), "ghe.example").unwrap();
         assert_eq!(enterprise.base, "https://ghe.example/api/v3");
         assert!(enterprise.with_token);
 

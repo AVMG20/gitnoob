@@ -212,7 +212,9 @@ pub fn tree(state: &AppState) -> Result<RefTree, String> {
             // and its id is not any commit's id. Anything that then treats it
             // as one — a graph chip, a click that means "show me this" — is
             // hung on an id that does not exist in the history.
-            let Ok(commit) = r.peel_to_commit() else { continue };
+            let Ok(commit) = r.peel_to_commit() else {
+                continue;
+            };
             let annotated = r.target().and_then(|oid| repo.find_tag(oid).ok());
             let when = annotated
                 .as_ref()
@@ -457,7 +459,12 @@ pub fn checkout(state: &AppState, name: &str) -> Result<CheckoutOutcome, String>
         // without a word. With it, a name that is not a ref is an error, which
         // is the truth.
         if repo.find_branch(name, BranchType::Local).is_ok() {
-            Plan::Args(vec!["checkout".into(), END_OF_OPTIONS.into(), name.into(), "--".into()])
+            Plan::Args(vec![
+                "checkout".into(),
+                END_OF_OPTIONS.into(),
+                name.into(),
+                "--".into(),
+            ])
         } else if repo.find_branch(name, BranchType::Remote).is_ok() {
             let local = name.split_once('/').map(|(_, n)| n).unwrap_or(name);
             if repo.find_branch(local, BranchType::Local).is_ok() {
@@ -475,7 +482,12 @@ pub fn checkout(state: &AppState, name: &str) -> Result<CheckoutOutcome, String>
             }
         } else {
             // Could be a tag or a raw revision; let git decide and report.
-            Plan::Args(vec!["checkout".into(), END_OF_OPTIONS.into(), name.into(), "--".into()])
+            Plan::Args(vec![
+                "checkout".into(),
+                END_OF_OPTIONS.into(),
+                name.into(),
+                "--".into(),
+            ])
         }
     };
 
@@ -637,7 +649,12 @@ fn fast_forward_to(
     } else {
         git_cmd::run_checked(
             &path,
-            &["fetch", ".", END_OF_OPTIONS, &format!("{remote_ref}:{local}")],
+            &[
+                "fetch",
+                ".",
+                END_OF_OPTIONS,
+                &format!("{remote_ref}:{local}"),
+            ],
         )?;
         let said = switch_to(state, local).map_err(|error| {
             format!("{local} was brought up to date with {remote_ref}, but switching to it did not work.\n{error}")
@@ -689,7 +706,9 @@ fn reconcile(
         "rebase" => {
             let outcome = remote::rebase(state, remote_ref)?;
             Ok(CheckoutOutcome::said(if outcome.ok {
-                format!("{base} had diverged from {remote_ref} ({stand}), so yours were rebased on top")
+                format!(
+                    "{base} had diverged from {remote_ref} ({stand}), so yours were rebased on top"
+                )
             } else {
                 format!("{base} has diverged from {remote_ref}. {}", outcome.message)
             }))
@@ -817,9 +836,7 @@ fn carry(state: &AppState, name: &str, args: &[&str], refusal: &str) -> Result<S
     let previous = crate::journal::current_branch(state);
     // Where to put HEAD back if this does not work out. A detached HEAD has no
     // branch to name, so the commit itself is the way back.
-    let was = previous
-        .clone()
-        .or_else(|| crate::journal::head_oid(state));
+    let was = previous.clone().or_else(|| crate::journal::head_oid(state));
     let message = match &previous {
         Some(branch) => format!("{} on {branch}: switching to {name}", work::AUTO_STASH),
         None => format!("{}: switching to {name}", work::AUTO_STASH),
@@ -992,7 +1009,12 @@ fn in_the_way(name: &str, error: &str) -> String {
     )
 }
 
-pub fn create_branch(state: &AppState, name: &str, start: Option<&str>, checkout: bool) -> Result<String, String> {
+pub fn create_branch(
+    state: &AppState,
+    name: &str,
+    start: Option<&str>,
+    checkout: bool,
+) -> Result<String, String> {
     let path = state.path()?;
     let mut args: Vec<&str> = if checkout {
         vec!["checkout", "-b", name, END_OF_OPTIONS]
@@ -1062,7 +1084,10 @@ fn ref_exists(repo: &Repository, name: &str) -> bool {
 
 pub fn trunk(state: &AppState) -> Trunk {
     let Ok(repo) = state.repo() else {
-        return Trunk { name: None, chosen: false };
+        return Trunk {
+            name: None,
+            chosen: false,
+        };
     };
 
     // What this repository was told, when it still names something real. A
@@ -1072,7 +1097,10 @@ pub fn trunk(state: &AppState) -> Trunk {
         if let Ok(raw) = git_cmd::run_checked(&path, &["config", "--get", TRUNK_KEY]) {
             let chosen = raw.trim();
             if !chosen.is_empty() && ref_exists(&repo, chosen) {
-                return Trunk { name: Some(chosen.to_string()), chosen: true };
+                return Trunk {
+                    name: Some(chosen.to_string()),
+                    chosen: true,
+                };
             }
         }
     }
@@ -1081,10 +1109,16 @@ pub fn trunk(state: &AppState) -> Trunk {
     // branch out still has `origin/main` to measure against.
     for name in ["main", "master", "origin/main", "origin/master"] {
         if ref_exists(&repo, name) {
-            return Trunk { name: Some(name.to_string()), chosen: false };
+            return Trunk {
+                name: Some(name.to_string()),
+                chosen: false,
+            };
         }
     }
-    Trunk { name: None, chosen: false }
+    Trunk {
+        name: None,
+        chosen: false,
+    }
 }
 
 /// Names the branch this repository is organised around, or forgets the name
@@ -1164,7 +1198,9 @@ pub fn deletion_preview(state: &AppState, name: &str) -> Result<BranchDeletion, 
     // Merged means HEAD can already reach it, which is the question `git
     // branch -d` asks and so decides whether deleting needs forcing.
     let merged = match head_oid {
-        Some(head_oid) => head_oid == oid || repo.graph_descendant_of(head_oid, oid).unwrap_or(false),
+        Some(head_oid) => {
+            head_oid == oid || repo.graph_descendant_of(head_oid, oid).unwrap_or(false)
+        }
         None => false,
     };
 
@@ -1194,7 +1230,12 @@ pub fn deletion_preview(state: &AppState, name: &str) -> Result<BranchDeletion, 
     // several times over, and it is the same question git itself asks.
     let also_on = git_cmd::run_checked(
         &path,
-        &["branch", "--contains", &oid.to_string(), "--format=%(refname:short)"],
+        &[
+            "branch",
+            "--contains",
+            &oid.to_string(),
+            "--format=%(refname:short)",
+        ],
     )
     .map(|raw| {
         raw.lines()
@@ -1358,7 +1399,10 @@ pub fn set_upstream(state: &AppState, branch: &str, upstream: &str) -> Result<St
 
 pub fn unset_upstream(state: &AppState, branch: &str) -> Result<String, String> {
     let root = state.path()?;
-    git_cmd::run_checked(&root, &["branch", "--unset-upstream", END_OF_OPTIONS, branch])?;
+    git_cmd::run_checked(
+        &root,
+        &["branch", "--unset-upstream", END_OF_OPTIONS, branch],
+    )?;
     Ok(format!("{branch} no longer tracks anything"))
 }
 
@@ -1435,7 +1479,10 @@ mod tests {
             run(&work, &["init", "--quiet", "--initial-branch=main"]);
             run(&work, &["config", "user.email", "test@example.com"]);
             run(&work, &["config", "user.name", "Test"]);
-            run(&work, &["remote", "add", "origin", server.to_str().unwrap()]);
+            run(
+                &work,
+                &["remote", "add", "origin", server.to_str().unwrap()],
+            );
 
             let state = AppState::new(root.join("config"));
             state.set_path(work.clone());
@@ -1468,7 +1515,12 @@ mod tests {
             if !other.exists() {
                 run(
                     &self.root,
-                    &["clone", "--quiet", self.root.join("server.git").to_str().unwrap(), "other"],
+                    &[
+                        "clone",
+                        "--quiet",
+                        self.root.join("server.git").to_str().unwrap(),
+                        "other",
+                    ],
                 );
                 run(&other, &["config", "user.email", "them@example.com"]);
                 run(&other, &["config", "user.name", "Them"]);

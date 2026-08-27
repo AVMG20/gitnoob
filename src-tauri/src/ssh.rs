@@ -143,6 +143,8 @@ pub fn test(host: &str, key: Option<&str>) -> Result<SshTest, String> {
     }
 
     let mut command = Command::new("ssh");
+    // No console window for it on Windows; see `git_cmd::quiet`.
+    crate::git_cmd::quiet(&mut command);
     command
         .arg("-T")
         // Never sit waiting for a passphrase or a host-key question: there is

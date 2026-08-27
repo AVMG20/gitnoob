@@ -94,9 +94,32 @@ fn command_line(args: &[&str]) -> String {
     line
 }
 
+/// Keeps Windows from opening a console window for a child process.
+///
+/// A GUI binary on Windows has no console, so starting a console program gives
+/// it one — and every git call is a console program. In a release build that is
+/// a black window appearing and vanishing for each command: hundreds of them
+/// during a refresh, each one costing a window creation, which is most of why
+/// the packaged app felt slow as well as looking broken. A debug build is
+/// started from a terminal and inherits that one, which is why this never shows
+/// while developing.
+///
+/// `CREATE_NO_WINDOW` says: run it, give it no console. Nothing else changes —
+/// stdout and stderr are captured either way.
+pub fn quiet(command: &mut Command) -> &mut Command {
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+        command.creation_flags(CREATE_NO_WINDOW);
+    }
+    command
+}
+
 /// A `git` invocation with the environment every call needs.
 fn git(cwd: &Path, args: &[&str]) -> Command {
     let mut command = Command::new("git");
+    quiet(&mut command);
     command
         .args(args)
         .current_dir(cwd)
@@ -145,78 +168,6 @@ pub fn run(cwd: &Path, args: &[&str]) -> Result<CmdOutput, String> {
         stdout: String::from_utf8_lossy(&output.stdout).into_owned(),
         stderr: explained(&String::from_utf8_lossy(&output.stderr)),
     })
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    /// Held for as long as a test speaks about the pinned key.
-    ///
-    /// The pinned key is one global for the whole process and the tests run on
-    /// several threads, so without this one test's `None` lands in the middle
-    /// of another's `Some` and the failure is a coin toss rather than a bug.
-    static PINNED: Mutex<()> = Mutex::new(());
-
-    /// Takes the lock, ignoring a poisoning left behind by a failed test.
-    fn pinned() -> std::sync::MutexGuard<'static, ()> {
-        PINNED.lock().unwrap_or_else(|held| held.into_inner())
-    }
-
-    #[test]
-    fn a_publickey_refusal_names_the_pinned_key() {
-        let _held = pinned();
-        set_ssh_command(Some(
-            "ssh -i \"C:/Users/a/.ssh/id_work\" -o IdentitiesOnly=yes".to_string(),
-        ));
-        let out = explained("git@gitlab.com: Permission denied (publickey).");
-        assert!(out.contains("C:/Users/a/.ssh/id_work"));
-        set_ssh_command(None);
-    }
-
-    #[test]
-    fn without_a_pinned_key_it_says_to_set_one() {
-        let _held = pinned();
-        set_ssh_command(None);
-        let out = explained("git@github.com: Permission denied (publickey).");
-        assert!(out.contains("No key is pinned"));
-    }
-
-    #[test]
-    fn an_https_remote_with_no_helper_is_told_apart_from_a_key_problem() {
-        let _held = pinned();
-        set_ssh_command(None);
-        let out = explained("fatal: could not read Username for 'https://github.com'");
-        assert!(out.contains("HTTPS"));
-    }
-
-    #[test]
-    fn a_command_line_is_rendered_the_way_it_would_be_typed() {
-        assert_eq!(command_line(&["checkout", "main", "--"]), "git checkout main --");
-        assert_eq!(
-            command_line(&["commit", "-m", "a message with spaces"]),
-            "git commit -m 'a message with spaces'"
-        );
-    }
-
-    #[test]
-    fn questions_are_not_reported_but_changes_are() {
-        assert!(is_query(&["status", "--porcelain"]));
-        assert!(is_query(&["diff", "--cached"]));
-        assert!(is_query(&["branch", "--format=%(refname)"]));
-        assert!(is_query(&["stash", "list"]));
-        assert!(is_query(&["stash", "show", "--name-only", "stash@{0}"]));
-        assert!(!is_query(&["commit", "-m", "x"]));
-        assert!(!is_query(&["branch", "-d", "old"]));
-        assert!(!is_query(&["stash", "push"]));
-        assert!(!is_query(&["push", "origin", "main"]));
-    }
-
-    #[test]
-    fn an_ordinary_failure_is_left_alone() {
-        let message = "error: pathspec 'nope' did not match any file(s) known to git";
-        assert_eq!(explained(message), message);
-    }
 }
 
 /// Adds a line saying what to do about a transport failure, where git's own
@@ -325,4 +276,79 @@ pub fn run_with_input(cwd: &Path, args: &[&str], input: &str) -> Result<CmdOutpu
         stdout: String::from_utf8_lossy(&output.stdout).into_owned(),
         stderr: explained(&String::from_utf8_lossy(&output.stderr)),
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Held for as long as a test speaks about the pinned key.
+    ///
+    /// The pinned key is one global for the whole process and the tests run on
+    /// several threads, so without this one test's `None` lands in the middle
+    /// of another's `Some` and the failure is a coin toss rather than a bug.
+    static PINNED: Mutex<()> = Mutex::new(());
+
+    /// Takes the lock, ignoring a poisoning left behind by a failed test.
+    fn pinned() -> std::sync::MutexGuard<'static, ()> {
+        PINNED.lock().unwrap_or_else(|held| held.into_inner())
+    }
+
+    #[test]
+    fn a_publickey_refusal_names_the_pinned_key() {
+        let _held = pinned();
+        set_ssh_command(Some(
+            "ssh -i \"C:/Users/a/.ssh/id_work\" -o IdentitiesOnly=yes".to_string(),
+        ));
+        let out = explained("git@gitlab.com: Permission denied (publickey).");
+        assert!(out.contains("C:/Users/a/.ssh/id_work"));
+        set_ssh_command(None);
+    }
+
+    #[test]
+    fn without_a_pinned_key_it_says_to_set_one() {
+        let _held = pinned();
+        set_ssh_command(None);
+        let out = explained("git@github.com: Permission denied (publickey).");
+        assert!(out.contains("No key is pinned"));
+    }
+
+    #[test]
+    fn an_https_remote_with_no_helper_is_told_apart_from_a_key_problem() {
+        let _held = pinned();
+        set_ssh_command(None);
+        let out = explained("fatal: could not read Username for 'https://github.com'");
+        assert!(out.contains("HTTPS"));
+    }
+
+    #[test]
+    fn a_command_line_is_rendered_the_way_it_would_be_typed() {
+        assert_eq!(
+            command_line(&["checkout", "main", "--"]),
+            "git checkout main --"
+        );
+        assert_eq!(
+            command_line(&["commit", "-m", "a message with spaces"]),
+            "git commit -m 'a message with spaces'"
+        );
+    }
+
+    #[test]
+    fn questions_are_not_reported_but_changes_are() {
+        assert!(is_query(&["status", "--porcelain"]));
+        assert!(is_query(&["diff", "--cached"]));
+        assert!(is_query(&["branch", "--format=%(refname)"]));
+        assert!(is_query(&["stash", "list"]));
+        assert!(is_query(&["stash", "show", "--name-only", "stash@{0}"]));
+        assert!(!is_query(&["commit", "-m", "x"]));
+        assert!(!is_query(&["branch", "-d", "old"]));
+        assert!(!is_query(&["stash", "push"]));
+        assert!(!is_query(&["push", "origin", "main"]));
+    }
+
+    #[test]
+    fn an_ordinary_failure_is_left_alone() {
+        let message = "error: pathspec 'nope' did not match any file(s) known to git";
+        assert_eq!(explained(message), message);
+    }
 }

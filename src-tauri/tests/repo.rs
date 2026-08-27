@@ -21,7 +21,8 @@ struct Sandbox {
 impl Sandbox {
     fn new(tag: &str) -> Self {
         let id = COUNTER.fetch_add(1, Ordering::SeqCst);
-        let root = std::env::temp_dir().join(format!("gitnoob-test-{tag}-{}-{id}", std::process::id()));
+        let root =
+            std::env::temp_dir().join(format!("gitnoob-test-{tag}-{}-{id}", std::process::id()));
         let _ = std::fs::remove_dir_all(&root);
         std::fs::create_dir_all(&root).unwrap();
 
@@ -167,7 +168,10 @@ fn clones_a_repository_into_a_folder_named_after_it() {
         "one\n",
         "the clone should carry the files"
     );
-    assert_eq!(git_at(dest, &["rev-parse", "--abbrev-ref", "HEAD"]).trim(), "main");
+    assert_eq!(
+        git_at(dest, &["rev-parse", "--abbrev-ref", "HEAD"]).trim(),
+        "main"
+    );
 
     let _ = std::fs::remove_dir_all(&parent);
 }
@@ -177,7 +181,12 @@ fn refuses_to_clone_where_a_folder_already_exists() {
     let origin = Sandbox::new("clone-exists");
     origin.commit("a.txt", "one\n", "First");
     let parent = scratch("clone-exists-into");
-    let name = origin.root.file_name().unwrap().to_string_lossy().into_owned();
+    let name = origin
+        .root
+        .file_name()
+        .unwrap()
+        .to_string_lossy()
+        .into_owned();
     std::fs::create_dir_all(parent.join(&name)).unwrap();
 
     let refused = create::clone(origin.root.to_string_lossy().as_ref(), &parent).unwrap_err();
@@ -189,13 +198,23 @@ fn refuses_to_clone_where_a_folder_already_exists() {
 #[test]
 fn creating_a_repository_makes_a_first_commit_as_the_profile() {
     let parent = scratch("init");
-    let made = create::init(&parent, "fresh", Some(("Test".to_string(), "test@example.com".to_string())))
-        .unwrap();
+    let made = create::init(
+        &parent,
+        "fresh",
+        Some(("Test".to_string(), "test@example.com".to_string())),
+    )
+    .unwrap();
 
     let dest = Path::new(&made.path);
     assert!(dest.join(".git").exists());
-    assert_eq!(git_at(dest, &["rev-parse", "--abbrev-ref", "HEAD"]).trim(), "main");
-    assert_eq!(git_at(dest, &["config", "--local", "user.name"]).trim(), "Test");
+    assert_eq!(
+        git_at(dest, &["rev-parse", "--abbrev-ref", "HEAD"]).trim(),
+        "main"
+    );
+    assert_eq!(
+        git_at(dest, &["config", "--local", "user.name"]).trim(),
+        "Test"
+    );
     // One commit, and it carries the .gitignore.
     assert_eq!(git_at(dest, &["rev-list", "--count", "HEAD"]).trim(), "1");
     assert_eq!(git_at(dest, &["ls-files"]).trim(), ".gitignore");
@@ -255,20 +274,22 @@ fn manages_the_remotes_themselves() {
     assert!(remote::remote_rename(&state, "upstream", "source").is_ok());
     let names: Vec<String> = remote::remotes(&state).unwrap();
     assert!(names.contains(&"source".to_string()) && !names.contains(&"upstream".to_string()));
-    assert!(
-        sandbox
-            .git(&["rev-parse", "--verify", "refs/remotes/source/main"])
-            .trim()
-            .len()
-            > 0
-    );
+    assert!(!sandbox
+        .git(&["rev-parse", "--verify", "refs/remotes/source/main"])
+        .trim()
+        .is_empty());
 
     // Removing takes the tracking branches and nothing else.
     assert!(remote::remote_remove(&state, "source").is_ok());
-    assert!(!remote::remotes(&state).unwrap().contains(&"source".to_string()));
+    assert!(!remote::remotes(&state)
+        .unwrap()
+        .contains(&"source".to_string()));
     assert!(!sandbox.git_may_fail(&["rev-parse", "--verify", "refs/remotes/source/main"]));
     // The local branch and its commit are untouched.
-    assert_eq!(sandbox.git(&["rev-parse", "--abbrev-ref", "HEAD"]).trim(), "main");
+    assert_eq!(
+        sandbox.git(&["rev-parse", "--abbrev-ref", "HEAD"]).trim(),
+        "main"
+    );
 
     let _ = std::fs::remove_dir_all(&origin);
 }
@@ -289,7 +310,13 @@ fn lists_branches_with_ahead_and_behind_counts() {
 
     let tree = refs::tree(&state).unwrap();
     assert_eq!(tree.locals.len(), 2);
-    assert!(tree.locals.iter().find(|b| b.name == "main").unwrap().is_head);
+    assert!(
+        tree.locals
+            .iter()
+            .find(|b| b.name == "main")
+            .unwrap()
+            .is_head
+    );
     assert_eq!(tree.tags.len(), 1);
     assert_eq!(tree.tags[0].name, "v1");
 }
@@ -334,8 +361,16 @@ fn a_repository_with_many_branches_gets_lanes_past_the_first_dozen() {
     for i in 0..20 {
         let branch = format!("topic-{i}");
         sandbox.git(&["checkout", "-q", "-b", &branch, "main"]);
-        sandbox.commit(&format!("{branch}.txt"), "work\n", &format!("Work on {branch}"));
-        sandbox.commit(&format!("{branch}.txt"), "more\n", &format!("More on {branch}"));
+        sandbox.commit(
+            &format!("{branch}.txt"),
+            "work\n",
+            &format!("Work on {branch}"),
+        );
+        sandbox.commit(
+            &format!("{branch}.txt"),
+            "more\n",
+            &format!("More on {branch}"),
+        );
     }
     sandbox.git(&["checkout", "-q", "main"]);
 
@@ -433,7 +468,14 @@ fn a_merge_into_the_checked_out_branch_keeps_its_line() {
     sandbox.commit("m.txt", "m2\n", "More main work");
     // Topic takes main's work, so the merge's second parent is main's tip.
     sandbox.git(&["checkout", "-q", "topic"]);
-    sandbox.git(&["merge", "-q", "--no-ff", "-m", "Merge main into topic", "main"]);
+    sandbox.git(&[
+        "merge",
+        "-q",
+        "--no-ff",
+        "-m",
+        "Merge main into topic",
+        "main",
+    ]);
     sandbox.commit("t.txt", "t2\n", "Newer than HEAD");
     sandbox.git(&["checkout", "-q", "main"]);
 
@@ -459,14 +501,20 @@ fn a_merge_into_the_checked_out_branch_keeps_its_line() {
 
     for row in merge + 1..head {
         assert!(
-            page.rows[row].segments.iter().any(|s| s.x1 == into && s.y1 == 0),
+            page.rows[row]
+                .segments
+                .iter()
+                .any(|s| s.x1 == into && s.y1 == 0),
             "row {row} ({}) drops the line the merge left in lane {into}",
             page.rows[row].summary
         );
     }
     // And it arrives at the commit it was drawn for.
     assert!(
-        page.rows[head].segments.iter().any(|s| s.x1 == into && s.y2 == 1),
+        page.rows[head]
+            .segments
+            .iter()
+            .any(|s| s.x1 == into && s.y2 == 1),
         "the line should end at the commit that was merged"
     );
 }
@@ -568,8 +616,7 @@ fn commit_detail_counts_lines_per_file() {
 
     let file_diff = diff::commit_file_diff(&state, &head, "a.txt").unwrap();
     assert_eq!(file_diff.hunks.len(), 1);
-    assert!(file_diff
-        .hunks[0]
+    assert!(file_diff.hunks[0]
         .lines
         .iter()
         .any(|line| line.origin == '+' && line.content == "three"));
@@ -654,7 +701,10 @@ fn push_preview_reports_divergence_and_what_a_force_would_drop() {
 fn bare_origin(sandbox: &Sandbox, tag: &str) -> PathBuf {
     let bare = scratch(&format!("{tag}-origin")).join("origin.git");
     let arg = bare.to_string_lossy().into_owned();
-    git_at(bare.parent().unwrap(), &["init", "-q", "--bare", "-b", "main", &arg]);
+    git_at(
+        bare.parent().unwrap(),
+        &["init", "-q", "--bare", "-b", "main", &arg],
+    );
     sandbox.git(&["remote", "add", "origin", &arg]);
     bare
 }
@@ -691,7 +741,9 @@ fn a_first_push_sets_the_upstream_and_lands_on_the_remote() {
         "the remote should be at the commit that was pushed"
     );
     assert_eq!(
-        sandbox.git(&["rev-parse", "--abbrev-ref", "main@{upstream}"]).trim(),
+        sandbox
+            .git(&["rev-parse", "--abbrev-ref", "main@{upstream}"])
+            .trim(),
         "origin/main",
         "--set-upstream should have recorded the tracking branch"
     );
@@ -704,7 +756,11 @@ fn a_push_that_would_rewrite_history_is_refused_without_force() {
     sandbox.commit("a.txt", "two\n", "Published");
     let bare = bare_origin(&sandbox, "push-refused");
     let state = sandbox.state();
-    assert!(remote::push(&state, "origin", "main", false, true).unwrap().ok);
+    assert!(
+        remote::push(&state, "origin", "main", false, true)
+            .unwrap()
+            .ok
+    );
     let published = remote_tip(&bare, "main").unwrap();
 
     // Rewrite the tip. The remote still has the commit that just went.
@@ -727,7 +783,11 @@ fn a_force_push_uses_a_lease_and_takes_the_branch_back() {
     sandbox.commit("a.txt", "two\n", "Published");
     let bare = bare_origin(&sandbox, "push-force");
     let state = sandbox.state();
-    assert!(remote::push(&state, "origin", "main", false, true).unwrap().ok);
+    assert!(
+        remote::push(&state, "origin", "main", false, true)
+            .unwrap()
+            .ok
+    );
 
     sandbox.git(&["reset", "-q", "--hard", "HEAD~1"]);
     sandbox.commit("a.txt", "different\n", "Rewritten");
@@ -757,7 +817,11 @@ fn a_force_push_is_refused_when_the_remote_moved_behind_our_back() {
     sandbox.commit("a.txt", "one\n", "Base");
     let bare = bare_origin(&sandbox, "push-lease");
     let state = sandbox.state();
-    assert!(remote::push(&state, "origin", "main", false, true).unwrap().ok);
+    assert!(
+        remote::push(&state, "origin", "main", false, true)
+            .unwrap()
+            .ok
+    );
 
     // Somebody else pushes. We never fetch, so our lease is stale.
     let theirs = scratch("push-lease-other");
@@ -963,7 +1027,11 @@ fn resolving_writes_the_file_and_clears_the_conflict() {
     sandbox.git(&["commit", "-q", "--no-edit"]);
     let head = sandbox.git(&["rev-parse", "HEAD"]).trim().to_string();
     let detail = diff::commit_detail(&state, &head).unwrap();
-    assert_eq!(detail.parents.len(), 2, "the merge commit should have two parents");
+    assert_eq!(
+        detail.parents.len(),
+        2,
+        "the merge commit should have two parents"
+    );
 }
 
 #[test]
@@ -1011,11 +1079,10 @@ fn amend_draft_knows_when_a_commit_is_published() {
     assert_eq!(draft.body, "With a body.");
     assert!(!draft.is_pushed, "nothing has been pushed yet");
 
-    let bare = sandbox
-        .root
-        .parent()
-        .unwrap()
-        .join(format!("gitnoob-test-amend-origin-{}.git", std::process::id()));
+    let bare = sandbox.root.parent().unwrap().join(format!(
+        "gitnoob-test-amend-origin-{}.git",
+        std::process::id()
+    ));
     let _ = std::fs::remove_dir_all(&bare);
     let bare_arg = bare.to_string_lossy().into_owned();
     sandbox.git(&["clone", "-q", "--bare", ".", &bare_arg]);
@@ -1060,11 +1127,10 @@ fn checkout_of_a_remote_branch_creates_a_tracking_branch() {
     sandbox.commit("b.txt", "two\n", "Second");
     sandbox.git(&["checkout", "-q", "main"]);
 
-    let bare = sandbox
-        .root
-        .parent()
-        .unwrap()
-        .join(format!("gitnoob-test-track-origin-{}.git", std::process::id()));
+    let bare = sandbox.root.parent().unwrap().join(format!(
+        "gitnoob-test-track-origin-{}.git",
+        std::process::id()
+    ));
     let _ = std::fs::remove_dir_all(&bare);
     let bare_arg = bare.to_string_lossy().into_owned();
     sandbox.git(&["clone", "-q", "--bare", ".", &bare_arg]);
@@ -1197,14 +1263,23 @@ fn undo_of_an_amend_restores_the_original_commit() {
 fn rewording_changes_the_message_and_nothing_else() {
     let sandbox = Sandbox::new("reword");
     sandbox.commit("a.txt", "one\n", "Frist commit");
-    let tree = sandbox.git(&["rev-parse", "HEAD^{tree}"]).trim().to_string();
-    let author = sandbox.git(&["log", "-1", "--format=%an <%ae> %at"]).trim().to_string();
+    let tree = sandbox
+        .git(&["rev-parse", "HEAD^{tree}"])
+        .trim()
+        .to_string();
+    let author = sandbox
+        .git(&["log", "-1", "--format=%an <%ae> %at"])
+        .trim()
+        .to_string();
 
     let state = sandbox.state();
     let now = work::reword(&state, "HEAD", "First commit\n\nWith a body this time").unwrap();
 
     assert_eq!(sandbox.git(&["rev-parse", "HEAD"]).trim(), now);
-    assert_eq!(sandbox.git(&["log", "-1", "--format=%s"]).trim(), "First commit");
+    assert_eq!(
+        sandbox.git(&["log", "-1", "--format=%s"]).trim(),
+        "First commit"
+    );
     assert_eq!(
         sandbox.git(&["log", "-1", "--format=%b"]).trim(),
         "With a body this time"
@@ -1229,9 +1304,15 @@ fn rewording_leaves_staged_work_out_of_the_commit() {
 
     work::reword(&state, "HEAD", "First, said better").unwrap();
 
-    assert_eq!(sandbox.git(&["log", "-1", "--format=%s"]).trim(), "First, said better");
+    assert_eq!(
+        sandbox.git(&["log", "-1", "--format=%s"]).trim(),
+        "First, said better"
+    );
     let files = sandbox.git(&["show", "--name-only", "--format=", "HEAD"]);
-    assert!(!files.contains("b.txt"), "the staged file was swept in: {files}");
+    assert!(
+        !files.contains("b.txt"),
+        "the staged file was swept in: {files}"
+    );
     let status = refs::status(&state).unwrap();
     assert!(status.staged.iter().any(|entry| entry.path == "b.txt"));
 }
@@ -1625,16 +1706,68 @@ fn deleting_new_files_leaves_the_tracked_ones_alone() {
     );
 }
 
-/// A pathspec after `--` still wildmatches by default: asking to delete a file
-/// literally named `*` must not turn into `git clean -f -d -- '*'`, which would
-/// match — and delete — every untracked file in the repository.
+/// A pathspec after `--` still wildmatches by default, so a file whose name
+/// holds a metacharacter has to be asked for with `:(literal)` or git goes
+/// looking for everything the name happens to match.
+///
+/// Square brackets rather than an asterisk, because `*` cannot be part of a
+/// filename on Windows and this hazard is not a Unix one. `[a]` matches `a`
+/// under wildmatch, so deleting the bracketed file would take the plain one
+/// with it.
 #[test]
 fn deleting_a_file_named_with_glob_characters_does_not_take_everything_with_it() {
     let sandbox = Sandbox::new("globclean");
-    sandbox.commit("a.txt", "one\n", "First");
+    sandbox.commit(
+        "kept.txt", "one
+", "First",
+    );
     let state = sandbox.state();
-    sandbox.write("*", "literally named star\n");
-    sandbox.write("also-untracked.txt", "should survive\n");
+    sandbox.write(
+        "[a].txt",
+        "literally named with brackets
+",
+    );
+    sandbox.write(
+        "a.txt",
+        "should survive
+",
+    );
+    sandbox.write(
+        "also-untracked.txt",
+        "should survive
+",
+    );
+
+    gitnoob_lib::work::delete_untracked(&state, &["[a].txt".to_string()]).unwrap();
+
+    assert!(!sandbox.root.join("[a].txt").exists());
+    assert!(sandbox.root.join("a.txt").exists());
+    assert!(sandbox.root.join("also-untracked.txt").exists());
+}
+
+/// The same hazard at its worst, which only a Unix filesystem can be asked to
+/// hold: a file literally named `*`. Without the literal magic this is
+/// `git clean -f -d -- '*'`, which matches — and deletes — every untracked
+/// file in the repository.
+#[cfg(not(windows))]
+#[test]
+fn deleting_a_file_named_star_does_not_clean_the_whole_work_tree() {
+    let sandbox = Sandbox::new("globstar");
+    sandbox.commit(
+        "a.txt", "one
+", "First",
+    );
+    let state = sandbox.state();
+    sandbox.write(
+        "*",
+        "literally named star
+",
+    );
+    sandbox.write(
+        "also-untracked.txt",
+        "should survive
+",
+    );
 
     gitnoob_lib::work::delete_untracked(&state, &["*".to_string()]).unwrap();
 
@@ -1642,26 +1775,45 @@ fn deleting_a_file_named_with_glob_characters_does_not_take_everything_with_it()
     assert!(sandbox.root.join("also-untracked.txt").exists());
 }
 
-/// Same hazard for discard: `restore --worktree -- 'a*.txt'` would otherwise
-/// also discard `abc.txt`.
+/// Same hazard for discard: `restore --worktree -- 'a[b].txt'` would otherwise
+/// also discard `ab.txt`.
 #[test]
 fn discarding_a_path_with_glob_characters_leaves_similarly_named_files_alone() {
     let sandbox = Sandbox::new("globdiscard");
-    sandbox.commit("a*.txt", "one\n", "First");
-    sandbox.commit("abc.txt", "one\n", "Second");
+    sandbox.commit(
+        "a[b].txt", "one
+", "First",
+    );
+    sandbox.commit(
+        "ab.txt", "one
+", "Second",
+    );
     let state = sandbox.state();
-    sandbox.write("a*.txt", "one\nedited\n");
-    sandbox.write("abc.txt", "one\nedited\n");
+    sandbox.write(
+        "a[b].txt",
+        "one
+edited
+",
+    );
+    sandbox.write(
+        "ab.txt",
+        "one
+edited
+",
+    );
 
-    gitnoob_lib::work::discard(&state, &["a*.txt".to_string()]).unwrap();
+    gitnoob_lib::work::discard(&state, &["a[b].txt".to_string()]).unwrap();
 
     assert_eq!(
-        std::fs::read_to_string(sandbox.root.join("a*.txt")).unwrap(),
-        "one\n"
+        std::fs::read_to_string(sandbox.root.join("a[b].txt")).unwrap(),
+        "one
+"
     );
     assert_eq!(
-        std::fs::read_to_string(sandbox.root.join("abc.txt")).unwrap(),
-        "one\nedited\n"
+        std::fs::read_to_string(sandbox.root.join("ab.txt")).unwrap(),
+        "one
+edited
+"
     );
 }
 
@@ -1842,11 +1994,10 @@ fn pull_stashes_local_work_and_puts_it_back() {
     sandbox.commit("a.txt", "one\n", "First");
 
     // A remote that has moved on.
-    let bare = sandbox
-        .root
-        .parent()
-        .unwrap()
-        .join(format!("gitnoob-test-pull-origin-{}.git", std::process::id()));
+    let bare = sandbox.root.parent().unwrap().join(format!(
+        "gitnoob-test-pull-origin-{}.git",
+        std::process::id()
+    ));
     let _ = std::fs::remove_dir_all(&bare);
     let bare_arg = bare.to_string_lossy().into_owned();
     sandbox.git(&["clone", "-q", "--bare", ".", &bare_arg]);
@@ -1854,10 +2005,11 @@ fn pull_stashes_local_work_and_puts_it_back() {
     sandbox.git(&["fetch", "-q", "origin"]);
     sandbox.git(&["branch", "--set-upstream-to=origin/main", "main"]);
 
-    let clone = sandbox.root.parent().unwrap().join(format!(
-        "gitnoob-test-pull-clone-{}",
-        std::process::id()
-    ));
+    let clone = sandbox
+        .root
+        .parent()
+        .unwrap()
+        .join(format!("gitnoob-test-pull-clone-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&clone);
     Command::new("git")
         .args(["clone", "-q", &bare_arg, clone.to_str().unwrap()])
@@ -1867,7 +2019,11 @@ fn pull_stashes_local_work_and_puts_it_back() {
         vec!["config", "user.name", "Other"],
         vec!["config", "user.email", "other@example.com"],
     ] {
-        Command::new("git").args(&args).current_dir(&clone).output().unwrap();
+        Command::new("git")
+            .args(&args)
+            .current_dir(&clone)
+            .output()
+            .unwrap();
     }
     std::fs::write(clone.join("remote-side.txt"), "from the remote\n").unwrap();
     for args in [
@@ -1875,7 +2031,11 @@ fn pull_stashes_local_work_and_puts_it_back() {
         vec!["commit", "-q", "-m", "Remote side work"],
         vec!["push", "-q", "origin", "main"],
     ] {
-        Command::new("git").args(&args).current_dir(&clone).output().unwrap();
+        Command::new("git")
+            .args(&args)
+            .current_dir(&clone)
+            .output()
+            .unwrap();
     }
 
     // Local edit that would make a plain pull refuse.
@@ -1883,7 +2043,11 @@ fn pull_stashes_local_work_and_puts_it_back() {
     let state = sandbox.state();
     let output = remote::pull(&state, false).unwrap();
 
-    assert!(output.ok, "pull failed: {} {}", output.stdout, output.stderr);
+    assert!(
+        output.ok,
+        "pull failed: {} {}",
+        output.stdout, output.stderr
+    );
     // Both the remote commit and the local edit are present.
     assert!(sandbox.root.join("remote-side.txt").exists());
     assert_eq!(
@@ -1900,7 +2064,12 @@ fn pull_stashes_local_work_and_puts_it_back() {
 fn parses_forge_remotes_and_reports_status() {
     let sandbox = Sandbox::new("forge");
     sandbox.commit("a.txt", "one\n", "First");
-    sandbox.git(&["remote", "add", "origin", "git@gitlab.bigbridge.nl:team/sub/app.git"]);
+    sandbox.git(&[
+        "remote",
+        "add",
+        "origin",
+        "git@gitlab.bigbridge.nl:team/sub/app.git",
+    ]);
 
     let state = sandbox.state();
     let status = gitnoob_lib::forge::status(&state);
@@ -1927,7 +2096,8 @@ fn stages_and_discards_one_hunk_at_a_time() {
     let state = sandbox.state();
 
     // Stage only the first region.
-    gitnoob_lib::work::apply_hunk(&state, "a.txt", 0, gitnoob_lib::work::HunkAction::Stage).unwrap();
+    gitnoob_lib::work::apply_hunk(&state, "a.txt", 0, gitnoob_lib::work::HunkAction::Stage)
+        .unwrap();
 
     let staged = diff::working_file_diff(&state, "a.txt", diff::Side::Staged).unwrap();
     let staged_added: Vec<String> = staged
@@ -1950,13 +2120,15 @@ fn stages_and_discards_one_hunk_at_a_time() {
     assert_eq!(unstaged_added, vec!["second addition".to_string()]);
 
     // Take it back out again.
-    gitnoob_lib::work::apply_hunk(&state, "a.txt", 0, gitnoob_lib::work::HunkAction::Unstage).unwrap();
+    gitnoob_lib::work::apply_hunk(&state, "a.txt", 0, gitnoob_lib::work::HunkAction::Unstage)
+        .unwrap();
     assert!(refs::status(&state).unwrap().staged.is_empty());
 
     // Discarding the remaining region leaves the other edit alone.
     let before = std::fs::read_to_string(sandbox.root.join("a.txt")).unwrap();
     assert!(before.contains("first addition") && before.contains("second addition"));
-    gitnoob_lib::work::apply_hunk(&state, "a.txt", 1, gitnoob_lib::work::HunkAction::Discard).unwrap();
+    gitnoob_lib::work::apply_hunk(&state, "a.txt", 1, gitnoob_lib::work::HunkAction::Discard)
+        .unwrap();
     let after = std::fs::read_to_string(sandbox.root.join("a.txt")).unwrap();
     assert!(after.contains("first addition"));
     assert!(!after.contains("second addition"));
@@ -2047,7 +2219,7 @@ fn recording_the_origin_names_the_commit_it_came_from() {
     let state = sandbox.state();
     gitnoob_lib::work::cherry_pick(
         &state,
-        &[oid.clone()],
+        std::slice::from_ref(&oid),
         gitnoob_lib::work::CherryPickOptions {
             no_commit: false,
             record_origin: true,
@@ -2086,7 +2258,10 @@ fn creating_a_branch_reports_what_it_did() {
     // would be empty here — and a caller testing the result for truth would
     // read that as failure.
     let message = refs::create_branch(&state, "feature", None, true).unwrap();
-    assert!(!message.trim().is_empty(), "expected a message, got {message:?}");
+    assert!(
+        !message.trim().is_empty(),
+        "expected a message, got {message:?}"
+    );
     assert!(message.contains("feature"));
     assert_eq!(refs::describe(&state).unwrap().head, "feature");
 }
@@ -2096,11 +2271,10 @@ fn the_graph_marks_commits_the_upstream_does_not_have() {
     let sandbox = Sandbox::new("unpushed");
     sandbox.commit("a.txt", "one\n", "Shared");
 
-    let bare = sandbox
-        .root
-        .parent()
-        .unwrap()
-        .join(format!("gitnoob-test-unpushed-origin-{}.git", std::process::id()));
+    let bare = sandbox.root.parent().unwrap().join(format!(
+        "gitnoob-test-unpushed-origin-{}.git",
+        std::process::id()
+    ));
     let _ = std::fs::remove_dir_all(&bare);
     let bare_arg = bare.to_string_lossy().into_owned();
     sandbox.git(&["clone", "-q", "--bare", ".", &bare_arg]);
@@ -2196,11 +2370,10 @@ fn a_branch_that_also_lives_on_a_remote_is_reported() {
     sandbox.git(&["checkout", "-q", "-b", "topic"]);
     sandbox.commit("b.txt", "two\n", "Topic work");
 
-    let bare = sandbox
-        .root
-        .parent()
-        .unwrap()
-        .join(format!("gitnoob-test-delremote-origin-{}.git", std::process::id()));
+    let bare = sandbox.root.parent().unwrap().join(format!(
+        "gitnoob-test-delremote-origin-{}.git",
+        std::process::id()
+    ));
     let _ = std::fs::remove_dir_all(&bare);
     let bare_arg = bare.to_string_lossy().into_owned();
     sandbox.git(&["clone", "-q", "--bare", ".", &bare_arg]);
@@ -2231,7 +2404,10 @@ fn the_main_branch_is_guessed_and_can_be_named() {
     let state = sandbox.state();
     let found = refs::trunk(&state);
     assert_eq!(found.name.as_deref(), Some("main"));
-    assert!(!found.chosen, "nobody said so; it was guessed from the name");
+    assert!(
+        !found.chosen,
+        "nobody said so; it was guessed from the name"
+    );
 
     sandbox.git(&["branch", "trunk-by-another-name"]);
     refs::set_trunk(&state, Some("trunk-by-another-name")).unwrap();
@@ -2281,7 +2457,10 @@ fn deletion_is_measured_against_the_main_branch_not_the_one_checked_out() {
 
     // Standing on staging, which holds every commit — the old answer, and the
     // wrong one: main has never seen this work.
-    assert!(preview.merged, "staging can reach it, so git -d would allow it");
+    assert!(
+        preview.merged,
+        "staging can reach it, so git -d would allow it"
+    );
     assert_eq!(preview.against.as_deref(), Some("main"));
     assert!(!preview.trunk_holds, "main does not hold the work");
     assert_eq!(preview.only_here, 1, "one commit main cannot reach");
@@ -2333,7 +2512,10 @@ fn switching_branches_leaves_untouched_edits_alone() {
     // unstaged.
     let status = refs::status(&state).unwrap();
     assert!(status.staged.iter().any(|e| e.path == "free.txt"));
-    assert!(sandbox.git(&["stash", "list"]).trim().is_empty(), "nothing was stashed");
+    assert!(
+        sandbox.git(&["stash", "list"]).trim().is_empty(),
+        "nothing was stashed"
+    );
 }
 
 #[test]
@@ -2521,11 +2703,10 @@ fn a_branch_whose_remote_is_gone_is_reported_as_stale() {
     sandbox.git(&["checkout", "-q", "-b", "topic"]);
     sandbox.commit("b.txt", "two\n", "Topic work");
 
-    let bare = sandbox
-        .root
-        .parent()
-        .unwrap()
-        .join(format!("gitnoob-test-stale-origin-{}.git", std::process::id()));
+    let bare = sandbox.root.parent().unwrap().join(format!(
+        "gitnoob-test-stale-origin-{}.git",
+        std::process::id()
+    ));
     let _ = std::fs::remove_dir_all(&bare);
     let bare_arg = bare.to_string_lossy().into_owned();
     sandbox.git(&["clone", "-q", "--bare", ".", &bare_arg]);
@@ -2544,7 +2725,10 @@ fn a_branch_whose_remote_is_gone_is_reported_as_stale() {
     sandbox.git(&["--git-dir", &bare_arg, "branch", "-D", "topic"]);
     sandbox.git(&["fetch", "-q", "--prune", "origin"]);
 
-    assert_eq!(refs::stale_branches(&state).unwrap(), vec!["topic".to_string()]);
+    assert_eq!(
+        refs::stale_branches(&state).unwrap(),
+        vec!["topic".to_string()]
+    );
     let _ = std::fs::remove_dir_all(&bare);
 }
 
@@ -2570,11 +2754,10 @@ fn an_upstream_can_be_set_and_taken_away() {
     let sandbox = Sandbox::new("upstream");
     sandbox.commit("a.txt", "one\n", "Base");
 
-    let bare = sandbox
-        .root
-        .parent()
-        .unwrap()
-        .join(format!("gitnoob-test-upstream-origin-{}.git", std::process::id()));
+    let bare = sandbox.root.parent().unwrap().join(format!(
+        "gitnoob-test-upstream-origin-{}.git",
+        std::process::id()
+    ));
     let _ = std::fs::remove_dir_all(&bare);
     let bare_arg = bare.to_string_lossy().into_owned();
     sandbox.git(&["clone", "-q", "--bare", ".", &bare_arg]);
@@ -2609,7 +2792,9 @@ fn tags_can_be_made_and_removed() {
     let tree = refs::tree(&state).unwrap();
     let names: Vec<&str> = tree.tags.iter().map(|t| t.name.as_str()).collect();
     assert!(names.contains(&"v1") && names.contains(&"v2"));
-    assert!(sandbox.git(&["tag", "-l", "-n", "v2"]).contains("the second one"));
+    assert!(sandbox
+        .git(&["tag", "-l", "-n", "v2"])
+        .contains("the second one"));
 
     gitnoob_lib::work::delete_tag(&state, "v1").unwrap();
     let after = refs::tree(&state).unwrap();
@@ -2650,18 +2835,20 @@ fn a_commits_patch_can_be_read_back() {
     let oid = sandbox.git(&["rev-parse", "HEAD"]).trim().to_string();
 
     let patch = gitnoob_lib::work::commit_patch(&sandbox.state(), &oid).unwrap();
-    assert!(patch.contains("diff --git a/a.txt b/a.txt"), "unexpected: {patch}");
+    assert!(
+        patch.contains("diff --git a/a.txt b/a.txt"),
+        "unexpected: {patch}"
+    );
     assert!(patch.contains("+two"));
 }
 
 /// Sets up a repository with a bare `origin` it can push to and pull from,
 /// returning the path of the bare one so the test can commit into it.
 fn with_origin(sandbox: &Sandbox, tag: &str) -> String {
-    let bare = sandbox
-        .root
-        .parent()
-        .unwrap()
-        .join(format!("gitnoob-test-{tag}-origin-{}.git", std::process::id()));
+    let bare = sandbox.root.parent().unwrap().join(format!(
+        "gitnoob-test-{tag}-origin-{}.git",
+        std::process::id()
+    ));
     let _ = std::fs::remove_dir_all(&bare);
     let arg = bare.to_string_lossy().into_owned();
     sandbox.git(&["clone", "-q", "--bare", ".", &arg]);
@@ -2689,7 +2876,12 @@ fn commit_on_remote(sandbox: &Sandbox, bare: &str, branch: &str, file: &str, bod
             .current_dir(&work)
             .output()
             .expect("git should be on PATH");
-        assert!(out.status.success(), "git {:?}: {}", args, String::from_utf8_lossy(&out.stderr));
+        assert!(
+            out.status.success(),
+            "git {:?}: {}",
+            args,
+            String::from_utf8_lossy(&out.stderr)
+        );
     };
     std::fs::write(work.join(file), body).unwrap();
     run(&["config", "user.name", "Someone"]);
@@ -2722,10 +2914,21 @@ fn pulling_another_branch_never_touches_the_working_tree() {
     assert!(out.ok, "unexpected: {} {}", out.stdout, out.stderr);
 
     // topic moved, and nothing else did.
-    assert_eq!(refs::describe(&state).unwrap().head, "main", "still on main");
-    assert!(sandbox.git(&["stash", "list"]).trim().is_empty(), "nothing was stashed");
+    assert_eq!(
+        refs::describe(&state).unwrap().head,
+        "main",
+        "still on main"
+    );
     assert!(
-        refs::status(&state).unwrap().staged.iter().any(|e| e.path == "mine.txt"),
+        sandbox.git(&["stash", "list"]).trim().is_empty(),
+        "nothing was stashed"
+    );
+    assert!(
+        refs::status(&state)
+            .unwrap()
+            .staged
+            .iter()
+            .any(|e| e.path == "mine.txt"),
         "the staged file is untouched"
     );
     assert!(
@@ -2733,7 +2936,10 @@ fn pulling_another_branch_never_touches_the_working_tree() {
         "their file belongs to topic, not to the tree we are standing in"
     );
     let log = sandbox.git(&["log", "--format=%s", "topic"]);
-    assert!(log.contains("Someone else"), "topic has their commit: {log}");
+    assert!(
+        log.contains("Someone else"),
+        "topic has their commit: {log}"
+    );
 
     let _ = std::fs::remove_dir_all(&bare);
 }
@@ -2769,11 +2975,17 @@ fn pulling_a_diverged_branch_visits_it_and_comes_back() {
         std::fs::read_to_string(sandbox.root.join("mine.txt")).unwrap(),
         "half-finished\n"
     );
-    assert!(sandbox.git(&["stash", "list"]).trim().is_empty(), "the stash was put back");
+    assert!(
+        sandbox.git(&["stash", "list"]).trim().is_empty(),
+        "the stash was put back"
+    );
 
     // topic has both sides of the history now.
     let log = sandbox.git(&["log", "--format=%s", "topic"]);
-    assert!(log.contains("Someone else") && log.contains("Our own"), "unexpected: {log}");
+    assert!(
+        log.contains("Someone else") && log.contains("Our own"),
+        "unexpected: {log}"
+    );
 
     let _ = std::fs::remove_dir_all(&bare);
 }
@@ -2808,13 +3020,19 @@ fn a_pull_that_cannot_merge_leaves_everything_as_it_was() {
     // The point of the exercise: we are home, nothing is half-merged, and the
     // work in progress is where it was left.
     assert_eq!(refs::describe(&state).unwrap().head, "main");
-    assert!(!remote::in_progress(&state).unwrap().merging, "no merge left dangling");
+    assert!(
+        !remote::in_progress(&state).unwrap().merging,
+        "no merge left dangling"
+    );
     assert!(refs::status(&state).unwrap().conflicted.is_empty());
     assert_eq!(
         std::fs::read_to_string(sandbox.root.join("mine.txt")).unwrap(),
         "half-finished\n"
     );
-    assert!(sandbox.git(&["stash", "list"]).trim().is_empty(), "the stash was put back");
+    assert!(
+        sandbox.git(&["stash", "list"]).trim().is_empty(),
+        "the stash was put back"
+    );
 
     let _ = std::fs::remove_dir_all(&bare);
 }
@@ -2863,12 +3081,18 @@ fn resolving_a_crlf_file_keeps_its_line_endings() {
 
     conflict::resolve(&state, "a.txt", &choices).unwrap();
     let on_disk = std::fs::read(sandbox.root.join("a.txt")).unwrap();
-    assert_eq!(String::from_utf8(on_disk).unwrap(), "top\r\nour middle\r\nbottom\r\n");
+    assert_eq!(
+        String::from_utf8(on_disk).unwrap(),
+        "top\r\nour middle\r\nbottom\r\n"
+    );
 
     // Keeping our side reproduces our commit exactly, so nothing is staged.
     // Rewriting the endings would show up here as all three lines changed.
     let diff = sandbox.git(&["diff", "--cached", "--numstat"]);
-    assert!(diff.trim().is_empty(), "the file should be unchanged from ours: {diff}");
+    assert!(
+        diff.trim().is_empty(),
+        "the file should be unchanged from ours: {diff}"
+    );
 }
 
 #[test]
@@ -2906,7 +3130,11 @@ fn a_setext_heading_in_our_side_does_not_flip_the_parser() {
     sandbox.git(&["checkout", "-q", "main"]);
     // Our change turns the line into a Markdown heading, whose underline is
     // eight `=` — one more than git's own split marker.
-    sandbox.commit("a.txt", "Title\n========\nour intro\nbottom\n", "Our change");
+    sandbox.commit(
+        "a.txt",
+        "Title\n========\nour intro\nbottom\n",
+        "Our change",
+    );
     assert!(!sandbox.git_may_fail(&["merge", "theirs"]));
 
     let state = sandbox.state();
@@ -2980,8 +3208,14 @@ fn resolving_with_fewer_choices_than_conflicts_is_refused() {
 
     // Writing on that same guess would stage a region nobody actually chose.
     let error = conflict::resolve(&state, "a.txt", &one_choice).unwrap_err();
-    assert!(error.contains('2') && error.contains('1'), "unexpected: {error}");
-    assert!(!conflict::list(&state).unwrap().is_empty(), "the conflict must not be cleared");
+    assert!(
+        error.contains('2') && error.contains('1'),
+        "unexpected: {error}"
+    );
+    assert!(
+        !conflict::list(&state).unwrap().is_empty(),
+        "the conflict must not be cleared"
+    );
 
     let empty: Vec<conflict::Resolution> = Vec::new();
     assert!(conflict::resolve(&state, "a.txt", &empty).is_err());
@@ -3044,7 +3278,10 @@ fn checking_out_a_name_that_is_only_a_file_is_refused() {
     // "notes.txt" is no branch, tag or revision — only a path. Without a `--`
     // git reads it as one and restores the file, throwing the edit away.
     let result = refs::checkout(&state, "notes.txt");
-    assert!(result.is_err(), "checking out a path should fail, not succeed silently");
+    assert!(
+        result.is_err(),
+        "checking out a path should fail, not succeed silently"
+    );
     assert_eq!(
         std::fs::read_to_string(sandbox.root.join("notes.txt")).unwrap(),
         "work in progress\n",
@@ -3121,7 +3358,11 @@ fn a_branch_named_like_a_flag_can_be_deleted() {
     // instead of deleting one, and the app reports success for nothing done.
     refs::delete_branch(&state, "-f", true).unwrap();
 
-    assert!(refs::tree(&state).unwrap().locals.iter().all(|b| b.name != "-f"));
+    assert!(refs::tree(&state)
+        .unwrap()
+        .locals
+        .iter()
+        .all(|b| b.name != "-f"));
 }
 
 #[test]
@@ -3311,7 +3552,10 @@ fn merging_into_the_branch_you_are_on_is_an_ordinary_merge() {
 
     assert!(outcome.ok, "{}", outcome.message);
     assert_eq!(current(&state), "main");
-    assert!(sandbox.root.join("theirs.txt").exists(), "side's file should be here now");
+    assert!(
+        sandbox.root.join("theirs.txt").exists(),
+        "side's file should be here now"
+    );
 }
 
 #[test]
@@ -3333,7 +3577,11 @@ fn a_conflicting_merge_leaves_you_on_the_branch_that_needs_resolving() {
         "side",
         "a half-done merge cannot be carried off the branch"
     );
-    assert!(outcome.message.contains("Resolve it here"), "{}", outcome.message);
+    assert!(
+        outcome.message.contains("Resolve it here"),
+        "{}",
+        outcome.message
+    );
 
     // And the way out is the one the resolver offers.
     remote::abort_merge(&state).unwrap();
@@ -3356,7 +3604,10 @@ fn rebasing_a_branch_you_are_not_on_replays_it_and_comes_back() {
     // side is now a straight line on top of main: no merge commit, and main's
     // commit is in its history.
     let log = sandbox.git(&["log", "--format=%s", "side"]);
-    assert_eq!(log.lines().collect::<Vec<_>>(), vec!["On side", "On main", "First"]);
+    assert_eq!(
+        log.lines().collect::<Vec<_>>(),
+        vec!["On side", "On main", "First"]
+    );
 }
 
 #[test]
@@ -3371,13 +3622,19 @@ fn an_annotated_tag_names_its_commit_rather_than_its_own_object() {
     // The whole reason this needs a test: `git tag -a` writes an object of its
     // own, and its id is not the commit's. Reading the ref without peeling
     // yields an id that nothing in the history has.
-    assert_ne!(head, object, "an annotated tag is an object in its own right");
+    assert_ne!(
+        head, object,
+        "an annotated tag is an object in its own right"
+    );
 
     let state = sandbox.state();
     let tree = refs::tree(&state).unwrap();
 
     let annotated = tree.tags.iter().find(|t| t.name == "v1.0.0").unwrap();
-    assert_eq!(annotated.oid, head, "the tag should name the commit it tags");
+    assert_eq!(
+        annotated.oid, head,
+        "the tag should name the commit it tags"
+    );
     assert!(annotated.annotated);
     assert_eq!(annotated.message.as_deref(), Some("The first release"));
     assert!(annotated.when > 0);
@@ -3397,7 +3654,10 @@ fn an_annotated_tag_names_its_commit_rather_than_its_own_object() {
         .filter(|l| l.kind == "tag")
         .map(|l| l.name.as_str())
         .collect();
-    assert!(tags.contains(&"v1.0.0"), "the annotated tag should decorate its commit");
+    assert!(
+        tags.contains(&"v1.0.0"),
+        "the annotated tag should decorate its commit"
+    );
     assert!(tags.contains(&"light"));
 }
 
@@ -3451,7 +3711,11 @@ fn checking_out_a_remote_branch_pulls_its_stale_local_branch_up() {
 
     // This used to be "a branch named 'main' already exists".
     assert_eq!(current(&state), "main");
-    assert_eq!(head_of(&sandbox, "main"), tip, "main should now be origin's main");
+    assert_eq!(
+        head_of(&sandbox, "main"),
+        tip,
+        "main should now be origin's main"
+    );
     assert!(outcome.diverged.is_none());
     assert!(
         outcome.message.contains("pulled 1 commit"),
@@ -3513,7 +3777,11 @@ fn a_local_branch_that_is_only_ahead_is_left_alone() {
     let outcome = refs::checkout(&state, "origin/main").unwrap();
 
     assert_eq!(current(&state), "main");
-    assert_eq!(head_of(&sandbox, "main"), mine, "nothing to pull, nothing moved");
+    assert_eq!(
+        head_of(&sandbox, "main"),
+        mine,
+        "nothing to pull, nothing moved"
+    );
     assert!(outcome.diverged.is_none());
     assert!(
         outcome.message.contains("ahead"),
@@ -3536,7 +3804,11 @@ fn a_diverged_branch_is_checked_out_and_the_question_handed_back() {
     let outcome = refs::checkout(&state, "origin/main").unwrap();
 
     assert_eq!(current(&state), "main");
-    assert_eq!(head_of(&sandbox, "main"), mine, "asking must not move anything");
+    assert_eq!(
+        head_of(&sandbox, "main"),
+        mine,
+        "asking must not move anything"
+    );
     let asked = outcome.diverged.expect("the default is to ask");
     assert_eq!(asked.branch, "main");
     assert_eq!(asked.upstream, "origin/main");
@@ -3561,7 +3833,9 @@ fn a_diverged_branch_is_rebased_when_settings_say_so() {
     // Their commit is now under ours: a straight line, no merge commit.
     assert!(sandbox.git_may_fail(&["merge-base", "--is-ancestor", &tip, "main"]));
     assert_eq!(
-        sandbox.git(&["rev-list", "--count", "origin/main..main"]).trim(),
+        sandbox
+            .git(&["rev-list", "--count", "origin/main..main"])
+            .trim(),
         "1",
         "only our own commit should sit above origin/main"
     );
@@ -3578,7 +3852,14 @@ fn a_branch_tracking_another_remote_is_not_this_ones_to_move() {
     let fork = scratch("sync-fork-fork").join("fork.git");
     git_at(
         fork.parent().unwrap(),
-        &["init", "-q", "--bare", "-b", "main", fork.to_string_lossy().as_ref()],
+        &[
+            "init",
+            "-q",
+            "--bare",
+            "-b",
+            "main",
+            fork.to_string_lossy().as_ref(),
+        ],
     );
     sandbox.git(&["remote", "add", "fork", fork.to_string_lossy().as_ref()]);
     sandbox.git(&["push", "-q", "-u", "fork", "main"]);
@@ -3592,7 +3873,11 @@ fn a_branch_tracking_another_remote_is_not_this_ones_to_move() {
     let outcome = refs::checkout(&state, "origin/main").unwrap();
 
     assert_eq!(current(&state), "main");
-    assert_eq!(head_of(&sandbox, "main"), mine, "a fork's click must not move it");
+    assert_eq!(
+        head_of(&sandbox, "main"),
+        mine,
+        "a fork's click must not move it"
+    );
     assert!(
         outcome.message.contains("tracks fork/main"),
         "unexpected message: {}",
