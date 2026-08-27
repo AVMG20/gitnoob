@@ -72,6 +72,8 @@ export interface InProgress {
   reverting: boolean
   /** Conflicts with nothing running: what a failed `stash pop` leaves. */
   restoring: boolean
+  /** The message git already wrote for it, e.g. "Merge branch 'x' into 'y'". */
+  prepared: string | null
 }
 
 export interface StatusEntry { path: string; kind: string }
@@ -1153,7 +1155,14 @@ export function useGit() {
       run<string>('Resolve', 'conflict_resolve_whole', { path, side }),
     /** Ends a conflict by staging the file exactly as it stands on disk. */
     conflictResolveAsIs: (path: string) =>
-      run<string>('Resolve', 'conflict_resolve_as_is', { path })
+      run<string>('Resolve', 'conflict_resolve_as_is', { path }),
+    /** Takes one side in every conflicted file at once. */
+    conflictResolveAll: (side: 'ours' | 'theirs') =>
+      run<string>('Resolve every file', 'conflict_resolve_all', { side }),
+    /** Stages every conflicted file as it stands, markers permitting. */
+    conflictStageAll: () => run<string>('Stage every file', 'conflict_stage_all'),
+    /** Which conflicted files still have git's markers in them. */
+    conflictMarked: () => guard('Read conflicts', () => invoke<string[]>('conflict_marked'))
   }
 }
 

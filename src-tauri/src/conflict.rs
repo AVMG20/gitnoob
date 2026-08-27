@@ -340,6 +340,94 @@ pub fn resolve_whole(state: &AppState, path: &str, side: &str) -> Result<String,
     Ok(format!("Resolved {path} using {side}"))
 }
 
+/// Takes one side in every conflicted file at once.
+///
+/// The way out of a merge you never wanted to read: a rebase of a branch that
+/// has moved on, a lockfile war, a rename that touched two hundred files. Done
+/// here rather than by the view calling the one-file version in a loop, because
+/// each of those calls re-reads the whole repository afterwards.
+pub fn resolve_all(state: &AppState, side: &str) -> Result<String, String> {
+    let paths = list(state)?;
+    if paths.is_empty() {
+        return Ok("Nothing was conflicted".to_string());
+    }
+    for path in &paths {
+        resolve_whole(state, path, side)?;
+    }
+    Ok(format!(
+        "Resolved {} {} using {side}",
+        paths.len(),
+        if paths.len() == 1 { "file" } else { "files" }
+    ))
+}
+
+/// Stages every conflicted file exactly as it stands, once none of them has
+/// markers left in it.
+///
+/// For the merge that was finished somewhere else — in an editor, by a merge
+/// tool, by hand. It refuses while any file still carries markers rather than
+/// staging them: a committed `<<<<<<< HEAD` is a bad afternoon, and the whole
+/// point of the check is that nobody meant to do that.
+pub fn stage_all(state: &AppState) -> Result<String, String> {
+    let paths = list(state)?;
+    if paths.is_empty() {
+        return Ok("Nothing was conflicted".to_string());
+    }
+    let left = marked(state)?;
+    if !left.is_empty() {
+        return Err(format!(
+            "{} of these files still have conflict markers in them:\n{}",
+            left.len(),
+            left.join("\n")
+        ));
+    }
+    for path in &paths {
+        resolve_as_is(state, path)?;
+    }
+    Ok(format!(
+        "Staged {} {} as they stand",
+        paths.len(),
+        if paths.len() == 1 { "file" } else { "files" }
+    ))
+}
+
+/// The conflicted paths whose copy on disk still has git's markers in it.
+///
+/// What tells "somebody has been through this file" from "nobody has touched
+/// it yet", which is the only thing standing between staging a finished merge
+/// and staging the markers.
+pub fn marked(state: &AppState) -> Result<Vec<String>, String> {
+    let root = state.path()?;
+    let mut out = Vec::new();
+    for path in list(state)? {
+        let full = root.join(&path);
+        // A file that is not there cannot hold a marker, and neither can one
+        // that is not text.
+        let Ok(bytes) = fs::read(&full) else { continue };
+        let Ok(text) = String::from_utf8(bytes) else { continue };
+        if has_markers(&text) {
+            out.push(path);
+        }
+    }
+    Ok(out)
+}
+
+/// Whether a file still reads as one git stopped in the middle of.
+///
+/// Both ends, so a line that merely starts with seven angle brackets — a diff
+/// pasted into a comment, a test fixture — is not mistaken for a live conflict.
+fn has_markers(text: &str) -> bool {
+    let mut opened = false;
+    for line in text.lines() {
+        if line.starts_with(OURS) {
+            opened = true;
+        } else if opened && line.starts_with(THEIRS) {
+            return true;
+        }
+    }
+    false
+}
+
 /// Ends a conflict by keeping exactly what is on disk right now.
 ///
 /// The way out when neither side is the answer: a file with no conflict markers
@@ -359,6 +447,18 @@ pub fn resolve_as_is(state: &AppState, path: &str) -> Result<String, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_file_reads_as_conflicted_only_with_both_ends_of_a_marker() {
+        let live = "a\n<<<<<<< HEAD\nours\n=======\ntheirs\n>>>>>>> other\nb\n";
+        assert!(has_markers(live));
+
+        // The opening line alone is text somebody wrote, not a conflict: a
+        // fixture, a pasted diff, documentation about merges.
+        assert!(!has_markers("<<<<<<< in a code sample\nnothing follows it\n"));
+        assert!(!has_markers(">>>>>>> on its own\n"));
+        assert!(!has_markers("an ordinary file\nwith ordinary lines\n"));
+    }
 
     #[test]
     fn reads_which_stages_a_path_has() {

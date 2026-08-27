@@ -660,6 +660,24 @@ async fn conflict_resolve(
     conflict::resolve(&state, &path, &choices)
 }
 
+/// Takes one side in every conflicted file at once.
+#[tauri::command]
+async fn conflict_resolve_all(side: String, state: State<'_, AppState>) -> Result<String, String> {
+    conflict::resolve_all(&state, &side)
+}
+
+/// Stages every conflicted file as it stands, if none of them has markers left.
+#[tauri::command]
+async fn conflict_stage_all(state: State<'_, AppState>) -> Result<String, String> {
+    conflict::stage_all(&state)
+}
+
+/// Which conflicted files still have git's markers in them.
+#[tauri::command]
+async fn conflict_marked(state: State<'_, AppState>) -> Result<Vec<String>, String> {
+    conflict::marked(&state)
+}
+
 /// Ends a conflict by staging the file exactly as it stands on disk.
 #[tauri::command]
 async fn conflict_resolve_as_is(path: String, state: State<'_, AppState>) -> Result<String, String> {
@@ -1382,6 +1400,9 @@ pub fn run() {
             conflict_resolve,
             conflict_resolve_whole,
             conflict_resolve_as_is,
+            conflict_resolve_all,
+            conflict_stage_all,
+            conflict_marked,
             config_get,
             config_set_global,
             profile_save,

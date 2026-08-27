@@ -6,6 +6,8 @@ import {
   ChevronsDown,
   ChevronsUp,
   FileCheck2,
+  Layers,
+  ListChecks,
   Sparkles,
   Trash2,
   Undo2
@@ -21,6 +23,7 @@ import { highlightWhole, languageFor } from '~/composables/useHighlight'
 import { windowOf, type Mark } from '~/composables/useCode'
 import { usePanes } from '~/composables/usePanes'
 import { useContextMenu, type MenuItem } from '~/composables/useContextMenu'
+import { useToasts } from '~/composables/useToasts'
 import {
   HEAD,
   ROW,
@@ -47,15 +50,49 @@ const store = git.store
 const ai = useAi()
 const { layout } = usePanes()
 const menu = useContextMenu()
+const toasts = useToasts()
 
 type Conflict = Extract<ConflictBlock, { kind: 'conflict' }>
+
+/** What the bar's four buttons ask for, on behalf of the whole file. */
+type Wanted = 'ours' | 'theirs' | 'both' | 'none'
 
 /** Which conflict region the model is currently working on. */
 const thinking = ref<number | null>(null)
 
+/** How far a run of the model over every file has got, while one is running. */
+const sweeping = ref<{ file: string; at: number; of: number } | null>(null)
+
+/** Set while the confirmation for that run is on screen. */
+const askingSweep = ref(false)
+
+/**
+ * The conflicted files that still have markers in them.
+ *
+ * Read rather than guessed at: a file can be finished in an editor while this
+ * page is open, and "stage every file as it stands" is only safe once none of
+ * them reads as a conflict any more.
+ */
+const stillMarked = ref<string[]>([])
+
 const path = ref<string | null>(null)
 const file = ref<ConflictFile | null>(null)
 const picks = ref<Pick[]>([])
+/**
+ * The answer given for the whole file, or `null` when there is none.
+ *
+ * The bar's four buttons say something about the file rather than about a
+ * region, so what lights one is having been pressed — and any change to any
+ * region afterwards puts the bar back to nothing selected, because the claim
+ * stopped being true. `edit` is the one way a region changes, so that is where
+ * it is cleared.
+ *
+ * Read rather than derived from the regions, because the regions cannot always
+ * answer it: "take theirs" where their side deleted those lines leaves a region
+ * with nothing in it, which reads as dropped and is indistinguishable from
+ * having pressed Neither. The file was answered; only the file knows how.
+ */
+const asked = ref<Wanted | null>(null)
 const result = ref('')
 const showBase = ref(false)
 const showResult = ref(true)
@@ -369,6 +406,8 @@ function pickAt(index: number) {
 function edit(index: number, change: (pick: Pick) => void) {
   const pick = picks.value[index]
   if (!pick) return
+  // One region changing is the file no longer being whatever was asked for.
+  asked.value = null
   const next: Pick = {
     ours: [...pick.ours],
     theirs: [...pick.theirs],
@@ -451,7 +490,8 @@ function undoEdit(index: number) {
  * wanting one side of the whole file — so the buttons that sit in a fixed place
  * on screen are the ones that say it once.
  */
-function takeAll(want: 'ours' | 'theirs' | 'both' | 'none') {
+function takeAll(want: Wanted) {
+  asked.value = want
   picks.value = picks.value.map((pick, index) => {
     const block = conflicts.value[index]
     if (!block) return pick
@@ -466,26 +506,14 @@ function takeAll(want: 'ours' | 'theirs' | 'both' | 'none') {
 }
 
 /**
- * The stance the whole file is in, or `null` when the regions disagree.
+ * The ways out for a file that has no regions to pick through.
  *
- * A button is lit only while every region really is that way, so tweaking a
- * single line out of "all theirs" puts the bar back to nothing selected rather
- * than leaving a claim about the file that stopped being true.
- *
- * A region nobody has answered counts as disagreement even though it starts out
- * looking like ours: a lit button says a choice was made, and on a file just
- * opened none has been.
+ * One side deleted it, or a merge driver took a whole side, or it is binary:
+ * there is nothing to lay out side by side, so the answer is which side the
+ * file should come from — or that what is on disk is already it.
  */
-const everyStance = computed<Stance | null>(() => {
-  if (!picks.value.length || picks.value.some((pick) => !pick.touched)) return null
-  const first = stanceOf(picks.value[0]!)
-  if (first === 'mixed' || first === 'edited') return null
-  return picks.value.every((pick) => stanceOf(pick) === first) ? first : null
-})
-
-/** The ways out that skip the regions entirely and answer for the file. */
 function forFile(event: MouseEvent) {
-  const gone = { ours: wholeFile.value && !stages.value?.ours, theirs: wholeFile.value && !stages.value?.theirs }
+  const gone = { ours: !stages.value?.ours, theirs: !stages.value?.theirs }
   const items: MenuItem[] = [
     {
       label: gone.ours ? 'Leave it deleted' : 'Use our whole file',
@@ -502,27 +530,15 @@ function forFile(event: MouseEvent) {
       action: () => takeWholeFile('theirs')
     }
   ]
-  if (wholeFile.value) {
-    items.push(
-      { separator: true, label: '' },
-      {
-        label: 'Keep the file exactly as it is on disk',
-        icon: FileCheck2,
-        disabled: store.busy,
-        action: keepAsIs
-      }
-    )
-  } else if (ai.configured.value) {
-    items.push(
-      { separator: true, label: '' },
-      {
-        label: 'Ask the model to resolve every conflict',
-        icon: Sparkles,
-        disabled: thinking.value !== null,
-        action: aiResolveAll
-      }
-    )
-  }
+  items.push(
+    { separator: true, label: '' },
+    {
+      label: 'Keep the file exactly as it is on disk',
+      icon: FileCheck2,
+      disabled: store.busy,
+      action: keepAsIs
+    }
+  )
   menu.show(event, items, path.value ?? '')
 }
 
@@ -555,6 +571,7 @@ function nextOpen() {
 
 async function keepAsIs() {
   if (!path.value) return
+  kept.delete(path.value)
   await git.conflictResolveAsIs(path.value)
   const next = store.status?.conflicted.find((name) => name !== path.value)
   if (next) await load(next)
@@ -568,15 +585,44 @@ function clear() {
   store.resolving = null
 }
 
+/**
+ * What was chosen in each file, for as long as this page is open.
+ *
+ * Nothing is written until a file is marked resolved, and the view holds one
+ * file's regions at a time — so switching to another file and back used to hand
+ * back a file nobody had ever answered, with the work silently gone. Keyed by
+ * path, dropped as each file is finished.
+ */
+const kept = new Map<string, { picks: Pick[]; asked: Wanted | null }>()
+
+/** Whether remembered choices still describe the file that was just read. */
+function fits(saved: Pick[], blocks: Conflict[]): boolean {
+  if (saved.length !== blocks.length) return false
+  return saved.every((pick, at) => {
+    const block = blocks[at]!
+    return pick.ours.length === block.ours.length && pick.theirs.length === block.theirs.length
+  })
+}
+
 async function load(target: string) {
+  // Hold on to what the file being left had, before its picks are replaced.
+  if (path.value && path.value !== target && picks.value.length) {
+    kept.set(path.value, { picks: picks.value, asked: asked.value })
+  }
   path.value = target
   // The overlay is driven by this, so keep the two in step.
   store.resolving = target
   loading.value = true
   file.value = await git.conflictRead(target)
-  picks.value = (file.value?.blocks ?? [])
-    .filter((block): block is Conflict => block.kind === 'conflict')
-    .map((block) => freshPick(block))
+  const blocks = (file.value?.blocks ?? []).filter(
+    (block): block is Conflict => block.kind === 'conflict'
+  )
+  const saved = kept.get(target)
+  // A file that changed on disk since it was last looked at is a different
+  // file, and answers made about the old one no longer line up with it.
+  const usable = saved && fits(saved.picks, blocks) ? saved : null
+  picks.value = usable ? usable.picks : blocks.map((block) => freshPick(block))
+  asked.value = usable ? usable.asked : null
   active.value = 0
   loading.value = false
   await preview()
@@ -602,6 +648,7 @@ async function markResolved() {
   if (!path.value) return
   const target = path.value
   await git.conflictResolve(target, choicesOf())
+  kept.delete(target)
   // Move on to whatever is still conflicted, or clear the view when done.
   const next = (store.status?.conflicted ?? []).find((name) => name !== target)
   if (next) await load(next)
@@ -610,6 +657,7 @@ async function markResolved() {
 
 async function takeWholeFile(side: 'ours' | 'theirs') {
   if (!path.value) return
+  kept.delete(path.value)
   await git.conflictResolveWhole(path.value, side)
   const next = store.status?.conflicted[0]
   if (next) await load(next)
@@ -642,6 +690,138 @@ async function aiResolveAll() {
   for (const block of conflicts.value) {
     await aiResolve(block.index)
   }
+}
+
+// --- every file at once
+
+/**
+ * What to do once a whole-merge action has finished.
+ *
+ * Whatever is still conflicted becomes the file on screen; when nothing is, the
+ * page has no reason to exist and closes, which is the point of these actions.
+ */
+async function afterAll(said: string | null) {
+  if (said === null) return
+  kept.clear()
+  const next = store.status?.conflicted[0]
+  if (next) await load(next)
+  else clear()
+  toasts.info(said)
+}
+
+/** Takes one side in every conflicted file, not just this one. */
+async function resolveEvery(side: 'ours' | 'theirs') {
+  await afterAll(await git.conflictResolveAll(side))
+}
+
+/** Stages every conflicted file as it stands. Refused while markers remain. */
+async function stageEvery() {
+  await afterAll(await git.conflictStageAll())
+}
+
+/**
+ * Walks every conflicted file, asking the model for each region in turn.
+ *
+ * Each file is read, answered region by region and written once, rather than
+ * written after each answer: a half-answered file staged in the middle of a run
+ * that then fails is worse than one nobody has touched. A file with no regions
+ * — one side deleted it, or it is binary — has nothing to ask about and is left
+ * for a person.
+ */
+async function aiEveryFile() {
+  askingSweep.value = false
+  const targets = [...files.value]
+  let done = 0
+  for (const [at, name] of targets.entries()) {
+    sweeping.value = { file: name, at: at + 1, of: targets.length }
+    const read = await git.conflictRead(name)
+    const blocks = (read?.blocks ?? []).filter(
+      (block): block is Conflict => block.kind === 'conflict'
+    )
+    if (!blocks.length) continue
+    const choices: Resolution[] = []
+    for (const block of blocks) {
+      const lines = await ai.resolveConflict(name, block.index).catch((error) => {
+        git.note(`AI resolve: ${String(error)}`, 'error')
+        return null
+      })
+      // One refusal ends the run: the rest would fail the same way, and the
+      // files answered so far are already written and staged.
+      if (!lines) {
+        sweeping.value = null
+        await afterAll(`The model answered ${done} of ${targets.length} files`)
+        return
+      }
+      choices.push({ take_ours: true, take_theirs: true, ours_first: true, custom: lines })
+    }
+    if ((await git.conflictResolve(name, choices)) === null) break
+    done += 1
+  }
+  sweeping.value = null
+  await afterAll(`The model answered ${done} of ${targets.length} files — read them before committing`)
+}
+
+/** The model, over more than the one region on screen. */
+function aiForFile(event: MouseEvent) {
+  menu.show(
+    event,
+    [
+      {
+        label: `Resolve all ${conflicts.value.length} conflicts in this file`,
+        icon: Sparkles,
+        disabled: thinking.value !== null || sweeping.value !== null,
+        action: aiResolveAll
+      }
+    ],
+    path.value ?? ''
+  )
+}
+
+/** The whole merge, answered from one menu. */
+function everyFile(event: MouseEvent) {
+  const count = files.value.length
+  const many = count === 1 ? 'file' : 'files'
+  const items: MenuItem[] = [
+    {
+      label: `Take ours in all ${count} ${many}`,
+      icon: ListChecks,
+      disabled: store.busy,
+      action: () => resolveEvery('ours')
+    },
+    {
+      label: `Take theirs in all ${count} ${many}`,
+      icon: ListChecks,
+      disabled: store.busy,
+      action: () => resolveEvery('theirs')
+    }
+  ]
+  if (ai.configured.value) {
+    items.push(
+      { separator: true, label: '' },
+      {
+        label: `Ask the model to resolve all ${count} ${many}`,
+        icon: Sparkles,
+        hint: 'one call per conflict',
+        disabled: store.busy || thinking.value !== null || sweeping.value !== null,
+        action: () => {
+          askingSweep.value = true
+        }
+      }
+    )
+  }
+  items.push(
+    { separator: true, label: '' },
+    {
+      label: `Stage all ${count} ${many} as they stand`,
+      icon: FileCheck2,
+      hint: stillMarked.value.length
+        ? `${stillMarked.value.length} still have markers`
+        : 'for a merge finished elsewhere',
+      disabled: store.busy || stillMarked.value.length > 0,
+      action: stageEvery
+    }
+  )
+  menu.show(event, items, `${count} conflicted ${many}`)
 }
 
 // --- keys
@@ -696,13 +876,16 @@ watch(showResult, async (open) => {
 // Open the first conflicted file as soon as there is one.
 watch(
   files,
-  (list) => {
+  async (list) => {
     if (!path.value && list.length) load(list[0]!)
     else if (path.value && !list.includes(path.value)) {
       const next = list[0] ?? null
       if (next) load(next)
       else clear()
     }
+    // Which of them still read as conflicts decides whether staging the lot is
+    // offered at all, and that changes with every write in the work tree.
+    stillMarked.value = list.length ? ((await git.conflictMarked()) ?? list) : []
   },
   { immediate: true }
 )
@@ -786,13 +969,34 @@ onUnmounted(() => window.removeEventListener('keydown', onKey))
               </template>
             </span>
           </template>
+          <span v-if="sweeping" class="chip busy">
+            <Spinner :size="11" />
+            asking the model — file {{ sweeping.at }} of {{ sweeping.of }}
+          </span>
           <span class="spacer" />
+          <!-- Only where the panes cannot answer it. A file with regions is
+               answered by the buttons below, which say the same thing without a
+               menu; one with none — a side deleted it, or it is binary — has
+               nothing to pick through and this is the only way to say what
+               should happen to it. -->
           <button
+            v-if="wholeFile"
             class="btn tiny ghosty"
             title="Answer for the whole file at once"
             @click="forFile"
           >
             Whole file
+            <ChevronDown :size="11" />
+          </button>
+          <!-- The whole merge, for when reading it file by file is not what
+               today is for. -->
+          <button
+            class="btn tiny ghosty"
+            :title="`Answer every conflicted file at once`"
+            @click="everyFile"
+          >
+            <Layers :size="12" />
+            All {{ files.length }} {{ files.length === 1 ? 'file' : 'files' }}
             <ChevronDown :size="11" />
           </button>
           <button
@@ -844,7 +1048,7 @@ onUnmounted(() => window.removeEventListener('keydown', onKey))
           <span class="seg-group" role="group" aria-label="What to keep in every conflict">
             <button
               class="seg ours"
-              :class="{ on: everyStance === 'ours' }"
+              :class="{ on: asked === 'ours' }"
               title="Keep our side of every conflict in this file"
               @click="takeAll('ours')"
             >
@@ -852,7 +1056,7 @@ onUnmounted(() => window.removeEventListener('keydown', onKey))
             </button>
             <button
               class="seg theirs"
-              :class="{ on: everyStance === 'theirs' }"
+              :class="{ on: asked === 'theirs' }"
               title="Keep their side of every conflict in this file"
               @click="takeAll('theirs')"
             >
@@ -860,7 +1064,7 @@ onUnmounted(() => window.removeEventListener('keydown', onKey))
             </button>
             <button
               class="seg both"
-              :class="{ on: everyStance === 'both' }"
+              :class="{ on: asked === 'both' }"
               title="Keep both sides of every conflict, one after the other"
               @click="takeAll('both')"
             >
@@ -868,7 +1072,7 @@ onUnmounted(() => window.removeEventListener('keydown', onKey))
             </button>
             <button
               class="seg none"
-              :class="{ on: everyStance === 'dropped' }"
+              :class="{ on: asked === 'none' }"
               title="Drop every conflicted region from the file"
               @click="takeAll('none')"
             >
@@ -877,17 +1081,28 @@ onUnmounted(() => window.removeEventListener('keydown', onKey))
           </span>
           <span v-if="stance(active) === 'mixed'" class="chip mixed">picked line by line</span>
           <span v-else-if="stance(active) === 'edited'" class="chip edited-chip">AI or hand edit</span>
-          <button
-            v-if="ai.configured.value"
-            class="btn tiny ai"
-            :disabled="thinking !== null"
-            title="Ask the model to merge this one region"
-            @click="aiResolve(active)"
-          >
-            <Spinner v-if="thinking === active" :size="12" />
-            <Sparkles v-else :size="12" />
-            AI here
-          </button>
+          <!-- One region on the click, since that is the one being looked at,
+               and the whole file behind the chevron. -->
+          <span v-if="ai.configured.value" class="ai-split">
+            <button
+              class="btn tiny ai"
+              :disabled="thinking !== null || sweeping !== null"
+              title="Ask the model to merge this one region"
+              @click="aiResolve(active)"
+            >
+              <Spinner v-if="thinking === active" :size="12" />
+              <Sparkles v-else :size="12" />
+              AI here
+            </button>
+            <button
+              class="btn tiny ai more"
+              :disabled="thinking !== null || sweeping !== null"
+              title="Ask the model to resolve every conflict in this file"
+              @click="aiForFile"
+            >
+              <ChevronDown :size="11" />
+            </button>
+          </span>
 
           <span class="spacer" />
 
@@ -1108,6 +1323,28 @@ onUnmounted(() => window.removeEventListener('keydown', onKey))
         </div>
       </div>
     </template>
+
+    <!-- One question before a run that costs money and rewrites every file in
+         the merge, since neither of those is undone by closing the page. -->
+    <AppModal
+      v-if="askingSweep"
+      title="Ask the model to resolve the whole merge?"
+      :width="420"
+      @close="askingSweep = false"
+    >
+      <p class="ask">
+        Every conflict in all {{ files.length }} {{ files.length === 1 ? 'file' : 'files' }} goes to
+        the model, one call each, and each file is written and staged as its answers come back.
+      </p>
+      <p class="ask dim">
+        A merge is exactly where a model is most likely to be confidently wrong. Read what it wrote
+        before you commit it.
+      </p>
+      <template #footer>
+        <button class="btn btn-ghost" @click="askingSweep = false">Cancel</button>
+        <button class="btn btn-primary" @click="aiEveryFile">Ask the model</button>
+      </template>
+    </AppModal>
   </section>
 </template>
 
@@ -1700,6 +1937,38 @@ onUnmounted(() => window.removeEventListener('keydown', onKey))
    of them wrote. Context is left alone — it is the thing being read past. */
 .out-body .row {
   border-left: 3px solid transparent;
+}
+
+.ask {
+  margin: 0 0 10px;
+  font-size: 12.5px;
+  line-height: 1.55;
+}
+
+/* The two halves of one button: the region on the left, the file behind the
+   chevron on the right. */
+.ai-split {
+  display: inline-flex;
+}
+
+.ai-split .btn:first-child {
+  border-top-right-radius: 0;
+  border-bottom-right-radius: 0;
+}
+
+.ai-split .more {
+  padding-left: 4px;
+  padding-right: 4px;
+  border-top-left-radius: 0;
+  border-bottom-left-radius: 0;
+  margin-left: 1px;
+}
+
+.chip.busy {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  color: var(--accent);
 }
 
 .out-body .from-ours {

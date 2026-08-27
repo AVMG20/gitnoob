@@ -165,7 +165,17 @@ function install() {
       git.store.status = { staged: [], unstaged: [], conflicted: left }
       return `Resolved ${args.path}`
     }
+    if (cmd === 'conflict_resolve_all' || cmd === 'conflict_stage_all') {
+      const count = Object.keys(FILES).length
+      for (const name of Object.keys(FILES)) delete FILES[name]
+      git.store.status = { staged: [], unstaged: [], conflicted: [] }
+      return `Resolved ${count} files`
+    }
+    // The fixture files all carry markers, which is what makes "stage them as
+    // they stand" refuse — the state worth seeing in a lab.
+    if (cmd === 'conflict_marked') return Object.keys(FILES)
     if (cmd === 'ai_status') return { configured: true, model: 'fixture', commit_style: 'plain' }
+    if (cmd === 'ai_resolve_conflict') return ['// what the model would have written']
     return null
   }
 }
@@ -178,7 +188,8 @@ onMounted(() => {
     rebasing: false,
     cherry_picking: false,
     reverting: false,
-    restoring: false
+    restoring: false,
+    prepared: "Merge branch 'feature/ports'"
   }
   git.store.resolving = Object.keys(FILES)[0] ?? null
 })

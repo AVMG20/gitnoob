@@ -81,6 +81,10 @@ function preview(chosen: Resolution[]) {
 function answer(cmd: string, args: Record<string, unknown>) {
   if (cmd === 'conflict_read') return FILE
   if (cmd === 'conflict_preview') return preview((args.choices ?? []) as Resolution[])
+  // Both files in the two-file fixture read as conflicts, which is what makes
+  // "stage them as they stand" refuse.
+  if (cmd === 'conflict_marked') return useGit().store.status?.conflicted ?? []
+  if (cmd === 'conflict_resolve_all') return `Resolved every file using ${args.side}`
   return null
 }
 
@@ -100,13 +104,33 @@ const Host = {
   template: '<div><ConflictView /><ContextMenu /></div>'
 }
 
-async function open() {
+async function open(conflicted = ['src/app.ts']) {
   const git = useGit()
-  git.store.status = { staged: [], unstaged: [], conflicted: ['src/app.ts'] }
+  git.store.status = { staged: [], unstaged: [], conflicted }
   const wrapper = mount(Host, { global: { components: { ChangeRuler, Spinner } } })
   await flushPromises()
   await flushPromises()
   return wrapper
+}
+
+/** Which of the bar's four buttons is lit. */
+const lit = (wrapper: Awaited<ReturnType<typeof open>>) =>
+  wrapper
+    .findAll('.seg-group .seg')
+    .filter((one) => one.classes('on'))
+    .map((one) => one.text())
+
+/** Opens one of the toolbar menus and clicks the row whose label matches. */
+async function pickFromMenu(
+  wrapper: Awaited<ReturnType<typeof open>>,
+  opener: string,
+  label: string
+) {
+  await wrapper.findAll('button').find((one) => one.text().includes(opener))!.trigger('click')
+  await flushPromises()
+  const row = wrapper.findAll('.menu .item').find((one) => one.text().includes(label))
+  await row!.trigger('click')
+  await flushPromises()
 }
 
 /** Clicks one of the bar buttons that answer every conflict in the file. */
@@ -294,6 +318,40 @@ describe('the conflict resolver', () => {
     expect(lit()).toEqual(['Neither'])
     await every(wrapper, 'Both')
     expect(lit()).toEqual(['Both'])
+  })
+
+  it('keeps what was chosen in a file when another one is looked at', async () => {
+    const wrapper = await open(['src/app.ts', 'src/other.ts'])
+    await every(wrapper, 'Theirs')
+    expect(lit(wrapper)).toEqual(['Theirs'])
+
+    // Away to the other file, and back. Nothing was written in between — the
+    // choices only exist in the page — so this is where they used to vanish.
+    const rail = wrapper.findAll('.rail-file')
+    await rail[1]!.trigger('click')
+    await flushPromises()
+    expect(lit(wrapper)).toEqual([])
+
+    await rail[0]!.trigger('click')
+    await flushPromises()
+    expect(lit(wrapper)).toEqual(['Theirs'])
+    expect(choices().every((one) => one.take_theirs && !one.take_ours)).toBe(true)
+  })
+
+  it('answers every conflicted file from the one menu', async () => {
+    const wrapper = await open(['src/app.ts', 'src/other.ts'])
+    await pickFromMenu(wrapper, 'All 2 files', 'Take theirs in all 2 files')
+    expect(calls.some((call) => call.cmd === 'conflict_resolve_all')).toBe(true)
+    expect(calls.find((call) => call.cmd === 'conflict_resolve_all')?.args.side).toBe('theirs')
+  })
+
+  it('will not stage files that still have markers in them', async () => {
+    const wrapper = await open(['src/app.ts', 'src/other.ts'])
+    await wrapper.findAll('button').find((one) => one.text().includes('All 2 files'))!.trigger('click')
+    await flushPromises()
+    const row = wrapper.findAll('.menu .item').find((one) => one.text().includes('Stage all'))
+    expect(row!.classes()).toContain('off')
+    expect(row!.text()).toContain('still have markers')
   })
 
   it('writes the file the preview showed, then closes when nothing is left', async () => {
