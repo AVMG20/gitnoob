@@ -144,8 +144,21 @@ pub fn run(cwd: &Path, args: &[&str]) -> Result<CmdOutput, String> {
 mod tests {
     use super::*;
 
+    /// Held for as long as a test speaks about the pinned key.
+    ///
+    /// The pinned key is one global for the whole process and the tests run on
+    /// several threads, so without this one test's `None` lands in the middle
+    /// of another's `Some` and the failure is a coin toss rather than a bug.
+    static PINNED: Mutex<()> = Mutex::new(());
+
+    /// Takes the lock, ignoring a poisoning left behind by a failed test.
+    fn pinned() -> std::sync::MutexGuard<'static, ()> {
+        PINNED.lock().unwrap_or_else(|held| held.into_inner())
+    }
+
     #[test]
     fn a_publickey_refusal_names_the_pinned_key() {
+        let _held = pinned();
         set_ssh_command(Some(
             "ssh -i \"C:/Users/a/.ssh/id_work\" -o IdentitiesOnly=yes".to_string(),
         ));
@@ -156,6 +169,7 @@ mod tests {
 
     #[test]
     fn without_a_pinned_key_it_says_to_set_one() {
+        let _held = pinned();
         set_ssh_command(None);
         let out = explained("git@github.com: Permission denied (publickey).");
         assert!(out.contains("No key is pinned"));
@@ -163,6 +177,7 @@ mod tests {
 
     #[test]
     fn an_https_remote_with_no_helper_is_told_apart_from_a_key_problem() {
+        let _held = pinned();
         set_ssh_command(None);
         let out = explained("fatal: could not read Username for 'https://github.com'");
         assert!(out.contains("HTTPS"));
