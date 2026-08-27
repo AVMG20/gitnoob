@@ -337,23 +337,85 @@ pub fn secret_get(key: &str) -> Option<String> {
     found
 }
 
+/// The one keychain item every secret lives in, as a JSON object.
+///
+/// macOS ties an item's permission to the code signature of the program that
+/// made it, and the app is not signed, so each build is a program the keychain
+/// has never seen and every update is a stranger asking. Nothing in the app can
+/// stop that question; what it can decide is how many times it gets asked. One
+/// item for all the tokens is one dialog per update instead of one per token,
+/// which was three for a single profile with an AI key.
+const ALL: &str = "secrets";
+
+fn entry(account: &str) -> Result<keyring::Entry, String> {
+    keyring::Entry::new(SERVICE, account).map_err(|e| e.to_string())
+}
+
+/// The item as it was last read or written, so the keychain is asked once a run.
+static BLOB: Mutex<Option<HashMap<String, String>>> = Mutex::new(None);
+
+/// Reads the one item. `None` means the keychain would not answer.
+///
+/// A refusal is not remembered as an empty item: the next write would then save
+/// a map missing every token it could not see, and deleting the item is what
+/// that would come to.
+fn blob() -> Option<HashMap<String, String>> {
+    let mut held = BLOB.lock().unwrap();
+    if let Some(known) = held.as_ref() {
+        return Some(known.clone());
+    }
+    let all = match entry(ALL).map(|entry| entry.get_password()) {
+        Ok(Ok(text)) => serde_json::from_str(&text).unwrap_or_default(),
+        // No item yet, which is an answer: there are no secrets.
+        Ok(Err(keyring::Error::NoEntry)) => HashMap::new(),
+        _ => return None,
+    };
+    *held = Some(all.clone());
+    Some(all)
+}
+
+/// Writes the one item, or removes it once nothing is left to keep.
+#[cfg(not(debug_assertions))]
+fn blob_set(all: HashMap<String, String>) -> Result<(), String> {
+    let entry = entry(ALL)?;
+    if all.is_empty() {
+        match entry.delete_credential() {
+            Ok(()) | Err(keyring::Error::NoEntry) => {}
+            Err(e) => return Err(e.to_string()),
+        }
+    } else {
+        let text = serde_json::to_string(&all).map_err(|e| e.to_string())?;
+        entry.set_password(&text).map_err(|e| e.to_string())?;
+    }
+    *BLOB.lock().unwrap() = Some(all);
+    Ok(())
+}
+
 #[cfg(not(debug_assertions))]
 fn store_set(key: &str, value: Option<&str>) -> Result<(), String> {
-    let entry = keyring::Entry::new(SERVICE, key).map_err(|e| e.to_string())?;
+    let mut all = blob().ok_or("The keychain would not open")?;
     match value {
-        Some(value) => entry.set_password(value).map_err(|e| e.to_string()),
-        None => match entry.delete_credential() {
-            Ok(()) | Err(keyring::Error::NoEntry) => Ok(()),
-            Err(e) => Err(e.to_string()),
-        },
-    }
+        Some(value) => all.insert(key.to_string(), value.to_string()),
+        None => all.remove(key),
+    };
+    blob_set(all)
 }
 
 #[cfg(not(debug_assertions))]
 fn store_get(key: &str) -> Option<String> {
-    keyring::Entry::new(SERVICE, key)
-        .ok()
-        .and_then(|entry| entry.get_password().ok())
+    if let Some(found) = blob()?.get(key) {
+        return Some(found.clone());
+    }
+    // Every secret used to have an item of its own. One that is still there is
+    // moved across the first time it is asked for, so an install that predates
+    // the single item keeps its tokens; the old item goes only once the new one
+    // holds the value.
+    let old = entry(key).ok()?;
+    let found = old.get_password().ok()?;
+    if store_set(key, Some(&found)).is_ok() {
+        let _ = old.delete_credential();
+    }
+    Some(found)
 }
 
 /// Where a development build keeps its tokens.
@@ -377,6 +439,21 @@ fn dev_all() -> HashMap<String, String> {
         .unwrap_or_default()
 }
 
+/// What the installed app left in the keychain for a key: `None` when the
+/// keychain would not answer, `Some(None)` when it answered that there is
+/// nothing. Looks in the one item first, then under the key's own old name.
+#[cfg(debug_assertions)]
+fn keychain_get(key: &str) -> Option<Option<String>> {
+    if let Some(found) = blob()?.get(key) {
+        return Some(Some(found.clone()));
+    }
+    match entry(key).ok()?.get_password() {
+        Ok(found) => Some(Some(found)),
+        Err(keyring::Error::NoEntry) => Some(None),
+        Err(_) => None,
+    }
+}
+
 /// Reads the development file, falling back to the keychain the first time.
 ///
 /// A build that has never been asked for a key takes whatever the installed app
@@ -389,14 +466,14 @@ fn store_get(key: &str) -> Option<String> {
     if let Some(known) = dev_all().get(key) {
         return Some(known.clone());
     }
-    let adopted = match keyring::Entry::new(SERVICE, key).map(|entry| entry.get_password()) {
-        Ok(Ok(found)) => found,
+    let adopted = match keychain_get(key) {
+        Some(Some(found)) => found,
         // The keychain has nothing under that name, which is an answer.
-        Ok(Err(keyring::Error::NoEntry)) => String::new(),
+        Some(None) => String::new(),
         // Refused, or no keychain at all. Write nothing down: the user may have
         // dismissed the dialog by reflex, and a token they own should not be
         // out of reach for the rest of the build's life because of it.
-        _ => return None,
+        None => return None,
     };
     let _ = store_set(key, Some(&adopted));
     Some(adopted)
