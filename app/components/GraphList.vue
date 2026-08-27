@@ -1414,6 +1414,11 @@ onUnmounted(() => {
   flex-direction: column;
   min-width: 0;
   min-height: 0;
+  /* The column headings and the rows are laid out from stated widths, so in a
+     narrow window they are wider than the space there is for them. Positioned,
+     as this is, they were painted over the panel beside it rather than being
+     cut off at its own edge. */
+  overflow: hidden;
   background: var(--bg);
   /* Holds the "back to HEAD" pill, which floats over the list rather than
      inside it: a child of the scroller would scroll away with everything else,

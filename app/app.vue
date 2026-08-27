@@ -113,10 +113,17 @@ const settings = computed(() => config.settings.value)
  */
 const reviewOpen = computed(() => !!review.store.current)
 
+/**
+ * The columns of the window, and what gives when there is not enough of it.
+ *
+ * Every fixed track is `minmax(0, …)` so it shrinks rather than pushing the
+ * grid wider than the window: at a stated width they kept it, the middle column
+ * hit zero, and the panel carried on off the right-hand edge.
+ */
 const columns = computed(() => {
-  const panel = `${layout.panel}px`
+  const panel = `minmax(0, ${layout.panel}px)`
   if (store.viewer || reviewOpen.value) return `minmax(0, 1fr) 5px ${panel}`
-  return `${layout.sidebar}px 5px minmax(0, 1fr) 5px ${panel}`
+  return `minmax(0, ${layout.sidebar}px) 5px minmax(0, 1fr) 5px ${panel}`
 })
 
 /** Opens a project and does the on-open housekeeping GitKraken does. */
