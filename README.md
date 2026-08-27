@@ -1,243 +1,108 @@
+<div align="center">
+
+<img src="app-icon.png" alt="" width="88" />
+
 # gitnoob
 
-A desktop Git client for people who would rather not memorise git. Rust and
-Tauri underneath, Nuxt (Vue 3) on top.
+**Everything git does, in one click.**
 
-The idea is that the window teaches as it goes: every git command it runs on
-your behalf is printed in the activity log the way you would have typed it, and
-anything destructive says what it will cost before it does it.
+No commands to memorise, no three-step sequences. Point at the thing, pick what
+happens to it.
 
-## What it does
+[Download](https://github.com/AVMG20/gitnoob/releases/latest) ·
+[Features](#what-you-can-do) ·
+[Build it](docs/development.md)
 
-**Getting around.** Open a repository by folder — a subdirectory finds the work
-tree root — and keep several open as tabs. Clone one by address, ssh or https,
-with the profile's key — or pick it from the list the profile's token can see;
-create one with a first commit and a starter `.gitignore` committing as the
-profile. A sidebar of local branches with
-ahead/behind counts, remote branches, tags — newest first, clickable through to
-the commit they name, annotated or not — and stashes. A commit graph with
-topological lanes, ref chips and virtualized rows, so a long history scrolls
-without stuttering. Search it by message, author or hash.
+<img src="docs/screenshots/main-window.png" alt="The gitnoob window: branches and remotes on the left, the commit graph in the middle, staged and unstaged changes on the right" width="900" />
 
-**Changing things.** Stage and unstage by file or by hunk, discard, commit,
-amend. Fetch, pull, push, merge, rebase, cherry-pick, revert, reset, tag, stash.
-Manage the remotes themselves: add one, change its address, rename it, remove it.
-Drag a branch onto another to fast-forward, merge or rebase it; drag a commit
-onto a branch to cherry-pick; drag a stash onto a branch to apply it there.
-Undo and redo, with a history menu that refuses when the branch has moved on.
+</div>
 
-**Not losing work.** Uncommitted changes are stashed and put back around branch
-switches, pulls and rebases — but only when they are actually in the way.
-Force-pushing lists the commits that would stop being reachable and asks again,
-in red, and always uses `--force-with-lease`. Resetting explains what soft,
-mixed and hard each mean and previews what goes. A rejected push turns the strip
-under the toolbar into the next step rather than an error.
+## Install
 
-**Conflicts.** Three panes — ours, theirs, and the result that will be written —
-with a fourth for the merge base when `merge.conflictStyle` provides one. A
-checkbox per conflict region on each side, a per-region order swap, and
-whole-file "take ours/theirs" shortcuts. Marking a file resolved writes it and
-stages it.
+Grab your file from [the latest release](https://github.com/AVMG20/gitnoob/releases/latest).
 
-**Profiles.** A profile carries an identity, a forge, and an SSH key, so a work
-account and a personal one live side by side without editing `~/.ssh/config`.
-GitHub and GitLab, including Enterprise and self-hosted, can list and open pull
-and merge requests. Tokens go to the OS keychain, never the config file.
+| macOS | Windows | Linux |
+|---|---|---|
+| `.dmg` (Intel + Apple Silicon) | `.exe` or `.msi` | `.AppImage`, `.deb`, `.rpm` |
 
-**AI, optional.** With an OpenRouter key: a commit message from the staged diff,
-and conflict resolution per region or per file.
+Needs `git` on your PATH. Nothing else.
 
-**Keeping itself current.** Every tag builds installers for macOS, Windows and
-Linux on GitHub, and the app installs a newer one over itself from Settings →
-Updates. The download has to carry the project's signature or it is refused.
+Not code-signed yet, so the first launch needs one click past the warning:
+right-click → **Open** on macOS, **More info → Run anyway** on Windows. After
+that it updates itself.
 
-## How it works
+## What you can do
 
-Reads go through **libgit2** (the `git2` crate): the revision walk, diffs,
-status, ahead/behind counts, ref enumeration. They need to be fast and they need
-structured data rather than text to parse.
+**One click, not a command:**
 
-Writes go through the **`git` CLI**: checkout, add, restore, commit, merge,
-fetch, pull, push, stash. That keeps your own environment in force — credential
-helpers, SSH agent and `~/.ssh/config`, hooks, commit signing,
-`merge.conflictStyle` — none of which libgit2 gets for free. It is also what
-makes the activity log honest: it shows the same commands and the same output a
-terminal would.
+| | |
+|---|---|
+| Merge, rebase, fast-forward | drag a branch onto another |
+| Cherry-pick | drag a commit onto a branch |
+| Apply a stash elsewhere | drag the stash onto a branch |
+| Stage / unstage | click the file, or one hunk of it |
+| Everything else | right-click it |
 
-Two consequences worth knowing:
+Also here without typing anything: fetch, pull, push, commit, amend, revert,
+reset, tag, stash, branch, worktrees, remotes.
 
-- Where git needs a decision, the app makes it explicitly rather than leaving it
-  to config. A pull passes `--rebase` or `--no-rebase`, because a bare `git
-  pull` across a divergence stops to ask. Ref arguments are followed by `--`,
-  because `git checkout <name>` on a name that is not a ref quietly restores the
-  *file* of that name over your edits.
-- `git2` is built with `default-features = false`, so there is no `openssl-sys`
-  or `libssh2-sys` in the build: the transport those provide is not used.
+<img src="docs/screenshots/diff.png" alt="A changed file in the diff view, hunk by hunk, with Stage file and Discard on the bar above it" width="900" />
 
-## Running
+**The repository, drawn.** Commit graph with real lanes and branch chips, smooth
+at a hundred thousand commits. Search by message, author or hash. Several repos
+open as tabs.
 
-Requires Rust and Node.
+**Conflicts, by checkbox.** Theirs, yours, and the result — tick what you want
+from each side. No markers to hand-delete.
+
+<img src="docs/screenshots/conflicts.png" alt="The conflict resolver: ours and theirs side by side, with the result that will be written below them" width="900" />
+
+**Pull requests in the app.** GitHub and GitLab: the conversation, the checks,
+line comments, and one merge button that says what it will do.
+
+<img src="docs/screenshots/review.png" alt="A pull request open in gitnoob: its description, the reviewers and labels beside it, and the merge button" width="900" />
+
+<img src="docs/screenshots/review-files.png" alt="The files of a pull request, with a comment thread standing on a line of the diff" width="900" />
+
+**It won't lose your work.** Your changes ride across branch switches. Undo and
+redo. Reset shows what goes. Force-push names the commits it would drop, and
+always uses `--force-with-lease`.
+
+**Two accounts, no config file.** A profile switches your commit identity, forge
+token, SSH key and open tabs together. Tokens live in your OS keychain.
+
+**Optional AI.** With an [OpenRouter](https://openrouter.ai) key: commit messages
+from your staged diff, and conflict resolution. No key, nothing sent.
+
+**It teaches, if you want.** Every action prints the git command it ran. Ignore
+it, or learn from it.
+
+## Shortcuts
+
+`⌘⇧F` fetch · `⌘⇧L` pull · `⌘⇧P` push · `⌘Enter` commit · `⌘B` branch ·
+`⌘⇧S` stash · `⌘F` search · `⌘Z` undo · `⌘,` settings
+
+Full list in Settings → Shortcuts. `Ctrl` on Windows and Linux.
+
+## Good to know
+
+- Your repos stay where they are. No account, no upload, no service.
+- Writes run your own `git`, so hooks, signing, SSH agent and credential helpers
+  all keep working. Close gitnoob and carry on in a terminal any time.
+- Not yet: interactive rebase, line-level staging, blame, submodules, LFS.
+  Windows is tested less than macOS and Linux.
+
+## Build it
 
 ```sh
 npm install
-npm run app          # development: starts Nuxt and the window together
-npm run app:build    # a real bundle in src-tauri/target/release/bundle
-npm run typecheck    # vue-tsc over the frontend
-cargo test --manifest-path src-tauri/Cargo.toml
+npm run app          # dev
+npm run app:build    # a real bundle
 ```
 
-**Use one of the first two to run it.** Launching
-`src-tauri/target/debug/gitnoob` by hand shows a blank window: a debug build
-loads `devUrl` from `tauri.conf.json` — `http://localhost:3000` — rather than
-the bundle compiled into it, and with no dev server there is nothing to show.
-Only a release build serves `frontendDist`.
+Details in [`docs/development.md`](docs/development.md).
 
-`npm run dev` alone serves the frontend in a browser, where every backend call
-fails because `invoke` needs the Tauri host. It is still useful for checking
-layout. `GITUI_DEVTOOLS=1` opens the web inspector; debug builds only.
+## License
 
-Nuxt stamps `crossorigin` on its stylesheet and module script tags, and Tauri
-serves the bundle from the `tauri://` protocol where those CORS requests fail —
-a blank window with no CSS. A `prerender:generate` hook in `nuxt.config.ts`
-strips them. `cssCodeSplit` is off so the page links one stylesheet rather than
-fetching per-route chunks at runtime.
-
-On Linux the Tauri build needs the GTK and WebKit development packages
-(`libgtk-3-dev`, `libwebkit2gtk-4.1-dev`, `libsoup-3.0-dev`,
-`libjavascriptcoregtk-4.1-dev`). On Windows it needs the Visual Studio Build
-Tools — the MSVC x64 compiler and a Windows SDK — plus the WebView2 runtime,
-which Windows 11 already ships.
-
-## Layout
-
-```
-src-tauri/src
-  lib.rs        Tauri command surface
-  state.rs      the open repository
-  git_cmd.rs    git CLI wrapper, and the command log the window shows
-  refs.rs       repo info, branches, tags, stashes, status, checkout
-  create.rs     clone and create: bringing a repository into existence
-  graph.rs      revision walk and commit-graph lane layout
-  diff.rs       commit details, file diffs, working-tree diffs
-  remote.rs     fetch, pull, push preview, push, merge, rebase
-  conflict.rs   conflict marker parsing and resolution
-  work.rs       stage, unstage, discard, commit, amend, stash, hunks
-  journal.rs    undo and redo
-  config.rs     settings, profiles, projects
-  forge.rs      GitHub and GitLab
-  ai.rs         OpenRouter
-  ssh.rs        per-profile keys
-  watch.rs      filesystem watcher
-app
-  app.vue           shell, tabs, repository picker
-  composables/      the single shared store and the invoke wrappers
-  components/       sidebar, graph, panels, dialogs, conflict resolver
-```
-
-## Testing
-
-`cargo test` runs 147: unit tests over the parts with fiddly rules (remote URL
-parsing, one-hunk patch rebuilding, SSH command building, transport-failure
-explanations, AI answer parsing, and the config file's round trip, migrations
-and corrupt-file path) and integration tests against real repositories built
-with the `git` CLI — graph lane invariants, divergence reporting, every
-conflict-resolution combination, undo and redo, auto-stash, cherry-picking out
-of order, empty repositories, detached HEAD, CRLF files, cloning and creating
-repositories, managing remotes against a bare one, and pushing to one, force
-push and its lease included.
-
-The frontend has no tests yet, which is the largest gap in the project.
-`npm run typecheck` runs, and currently reports 79 errors across seven files —
-mostly indexing that Nuxt's strict settings want guarded.
-
-## Releasing
-
-One command:
-
-```sh
-npm run release 0.3.0
-```
-
-It runs both suites and stops if either fails, writes the version into
-`tauri.conf.json`, `Cargo.toml` and `Cargo.lock`, commits that, tags it and
-pushes — and refuses before any of it on a dirty tree, a branch that is not
-main, a tag that already exists here or on the remote, or a version that is not
-above the current one. `--dry-run` runs every check and both suites and changes
-nothing; `--skip-tests`, `--any-branch` and `--force` lift one check each.
-
-The push of the `v*` tag is what starts `.github/workflows/release.yml`, which
-builds the app for all three platforms and publishes a GitHub release with the
-installers attached, so nobody has to install Rust to run it.
-
-What comes out: a universal `.dmg` for macOS covering Intel and Apple Silicon,
-an NSIS `.exe` and an `.msi` for Windows, and an `.AppImage`, a `.deb` and an
-`.rpm` for Linux — the Linux build on Ubuntu 22.04 rather than the newest
-release, because the AppImage carries the glibc it was built against as a floor.
-
-A draft release is created before the three build jobs start, so they have an
-agreed place to upload to rather than three of them each creating "the"
-release, and it is published only once all three have finished. A release is
-never half a release.
-
-The version compiled into the app is taken from the tag before anything is
-built — the workflow runs `scripts/release.mjs --write-only`, the same writing
-the release command does by hand, so the two cannot drift. It matters more than
-it looks: the updater compares that number against the newest release, and an
-app that reports a version older than the one it is would offer to install
-itself, for ever.
-
-### Signing
-
-Bundles are signed with the project's updater key, and both halves of it must
-be dealt with once:
-
-```sh
-npx tauri signer generate -w ~/.tauri/gitnoob.key
-gh secret set TAURI_SIGNING_PRIVATE_KEY < ~/.tauri/gitnoob.key
-gh secret set TAURI_SIGNING_PRIVATE_KEY_PASSWORD --body ""
-```
-
-The public half lives in `tauri.conf.json` under `plugins.updater.pubkey` and is
-already there. **Keep the private key.** It is not in the repository and cannot
-be recovered from anything that is; lose it and every installed copy refuses
-every future update, and everyone reinstalls by hand.
-
-With the secrets missing the build fails rather than publishing unsigned
-bundles, which is the intended failure: an unsigned bundle is one every
-installed copy would refuse anyway.
-
-Nothing is code-signed with an Apple or Windows certificate yet, so a first
-launch needs a nudge — macOS calls the app damaged, Windows SmartScreen calls it
-unrecognised. Each release says how to get past it.
-
-### Updating in place
-
-Settings → Updates: the version installed, a button to check, and the release
-notes of whatever is on offer before you agree to it. Installing downloads the
-bundle, verifies its signature against the public key compiled into the running
-app, writes it and restarts. On Linux this works from the AppImage; installed
-from the `.deb` or `.rpm`, updating belongs to the package manager.
-
-The app also asks once at launch, quietly — a machine that is offline should not
-be told so every time the window opens — and what it finds turns up as a line in
-the profile menu and a dot beside Updates in settings, rather than as a dialog
-over the repository you came to look at. "Look for a new version at launch" in
-that same page turns it off.
-
-## Known gaps
-
-`TODO.md` is the full list, kept current. The ones worth knowing before you
-rely on this:
-
-- **No clone from the forge's own list without a token.** Cloning takes a
-    pasted address when there is none; with one, the clone dialog lists what
-    the token can see.
-- **No content security policy.** `default-src 'self'` blocks Nuxt's inline
-  import map, so it is off until a working one is written and checked in the
-  bundled app rather than in dev.
-- **One repository at a time, underneath.** The window has project tabs, but the
-  backend holds a single open path, so a slow operation and a tab switch can
-  race.
-- No interactive rebase, line-level staging, blame, worktrees, submodules or
-  LFS.
-- Linux and Windows are built and tested far less than macOS.
+[GPL-3.0-only](LICENSE). Use it, fork it, sell it — anything you hand on comes
+with its source. Nobody gets to close it.
