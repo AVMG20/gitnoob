@@ -3033,3 +3033,228 @@ fn an_annotated_tag_names_its_commit_rather_than_its_own_object() {
     assert!(tags.contains(&"v1.0.0"), "the annotated tag should decorate its commit");
     assert!(tags.contains(&"light"));
 }
+
+// --- checking out a remote branch whose local branch already exists ----------
+
+/// A commit somebody else pushes to the bare origin's main — the everyday
+/// reason a shared branch is ahead of its local copy.
+fn someone_pushes(bare: &Path, tag: &str, path: &str, content: &str) -> String {
+    let theirs = scratch(&format!("{tag}-theirs"));
+    let clone = theirs.join("clone");
+    git_at(
+        &theirs,
+        &[
+            "clone",
+            "-q",
+            bare.to_string_lossy().as_ref(),
+            clone.to_string_lossy().as_ref(),
+        ],
+    );
+    git_at(&clone, &["config", "user.name", "Other"]);
+    git_at(&clone, &["config", "user.email", "other@example.com"]);
+    git_at(&clone, &["config", "commit.gpgsign", "false"]);
+    std::fs::write(clone.join(path), content).unwrap();
+    git_at(&clone, &["add", "--all"]);
+    git_at(&clone, &["commit", "-q", "-m", "Their commit"]);
+    git_at(&clone, &["push", "-q", "origin", "main"]);
+    let tip = git_at(&clone, &["rev-parse", "HEAD"]).trim().to_string();
+    let _ = std::fs::remove_dir_all(&theirs);
+    tip
+}
+
+/// Pushes main, has somebody move it on, and fetches: a local main one commit
+/// behind origin/main, which is the state the sync checkout exists for.
+fn behind_origin(sandbox: &Sandbox, tag: &str) -> String {
+    sandbox.commit("shared.txt", "top\nmiddle\nbottom\n", "Base");
+    let bare = bare_origin(sandbox, tag);
+    sandbox.git(&["push", "-q", "-u", "origin", "main"]);
+    let tip = someone_pushes(&bare, tag, "shared.txt", "THEIRS\nmiddle\nbottom\n");
+    sandbox.git(&["fetch", "-q", "origin"]);
+    tip
+}
+
+#[test]
+fn checking_out_a_remote_branch_pulls_its_stale_local_branch_up() {
+    let sandbox = Sandbox::new("sync-behind");
+    let tip = behind_origin(&sandbox, "sync-behind");
+    sandbox.git(&["checkout", "-q", "-b", "feature"]);
+    let state = sandbox.state();
+
+    let outcome = refs::checkout(&state, "origin/main").unwrap();
+
+    // This used to be "a branch named 'main' already exists".
+    assert_eq!(current(&state), "main");
+    assert_eq!(head_of(&sandbox, "main"), tip, "main should now be origin's main");
+    assert!(outcome.diverged.is_none());
+    assert!(
+        outcome.message.contains("pulled 1 commit"),
+        "unexpected message: {}",
+        outcome.message
+    );
+}
+
+#[test]
+fn checking_out_the_remote_copy_of_the_branch_you_are_on_pulls_it() {
+    let sandbox = Sandbox::new("sync-standing");
+    let tip = behind_origin(&sandbox, "sync-standing");
+    let state = sandbox.state();
+
+    let outcome = refs::checkout(&state, "origin/main").unwrap();
+
+    assert_eq!(current(&state), "main");
+    assert_eq!(head_of(&sandbox, "main"), tip);
+    assert!(outcome.diverged.is_none());
+}
+
+#[test]
+fn open_changes_ride_across_the_pull_and_come_back() {
+    let sandbox = Sandbox::new("sync-dirty");
+    let tip = behind_origin(&sandbox, "sync-dirty");
+    // An edit to the very file the remote commit changes, so the fast-forward
+    // is refused until the work is set down.
+    sandbox.write("shared.txt", "top\nmiddle\nMINE\n");
+    let state = sandbox.state();
+
+    refs::checkout(&state, "origin/main").unwrap();
+
+    assert_eq!(head_of(&sandbox, "main"), tip);
+    assert_eq!(
+        std::fs::read_to_string(sandbox.root.join("shared.txt"))
+            .unwrap()
+            .replace("\r\n", "\n"),
+        "THEIRS\nmiddle\nMINE\n",
+        "their commit and the open edit should both be in the file"
+    );
+    assert_eq!(
+        sandbox.git(&["stash", "list"]).trim(),
+        "",
+        "the stash was a means, not a destination"
+    );
+}
+
+#[test]
+fn a_local_branch_that_is_only_ahead_is_left_alone() {
+    let sandbox = Sandbox::new("sync-ahead");
+    sandbox.commit("shared.txt", "top\n", "Base");
+    bare_origin(&sandbox, "sync-ahead");
+    sandbox.git(&["push", "-q", "-u", "origin", "main"]);
+    sandbox.commit("ours.txt", "mine\n", "Unpushed work");
+    let mine = head_of(&sandbox, "main");
+    sandbox.git(&["checkout", "-q", "-b", "feature"]);
+    let state = sandbox.state();
+
+    let outcome = refs::checkout(&state, "origin/main").unwrap();
+
+    assert_eq!(current(&state), "main");
+    assert_eq!(head_of(&sandbox, "main"), mine, "nothing to pull, nothing moved");
+    assert!(outcome.diverged.is_none());
+    assert!(
+        outcome.message.contains("ahead"),
+        "unexpected message: {}",
+        outcome.message
+    );
+}
+
+/// A diverged branch under the default setting: the switch happens, nothing is
+/// decided, and the question rides back for the window to put up.
+#[test]
+fn a_diverged_branch_is_checked_out_and_the_question_handed_back() {
+    let sandbox = Sandbox::new("sync-diverged");
+    behind_origin(&sandbox, "sync-diverged");
+    sandbox.commit("ours.txt", "mine\n", "Our own work");
+    let mine = head_of(&sandbox, "main");
+    sandbox.git(&["checkout", "-q", "-b", "feature"]);
+    let state = sandbox.state();
+
+    let outcome = refs::checkout(&state, "origin/main").unwrap();
+
+    assert_eq!(current(&state), "main");
+    assert_eq!(head_of(&sandbox, "main"), mine, "asking must not move anything");
+    let asked = outcome.diverged.expect("the default is to ask");
+    assert_eq!(asked.branch, "main");
+    assert_eq!(asked.upstream, "origin/main");
+    assert_eq!((asked.ahead, asked.behind), (1, 1));
+}
+
+#[test]
+fn a_diverged_branch_is_rebased_when_settings_say_so() {
+    let sandbox = Sandbox::new("sync-rebase");
+    let tip = behind_origin(&sandbox, "sync-rebase");
+    sandbox.commit("ours.txt", "mine\n", "Our own work");
+    sandbox.git(&["checkout", "-q", "-b", "feature"]);
+    let state = sandbox.state();
+    state
+        .update_config(|config| config.global.diverged_checkout = "rebase".to_string())
+        .unwrap();
+
+    let outcome = refs::checkout(&state, "origin/main").unwrap();
+
+    assert_eq!(current(&state), "main");
+    assert!(outcome.diverged.is_none(), "the setting already answered");
+    // Their commit is now under ours: a straight line, no merge commit.
+    assert!(sandbox.git_may_fail(&["merge-base", "--is-ancestor", &tip, "main"]));
+    assert_eq!(
+        sandbox.git(&["rev-list", "--count", "origin/main..main"]).trim(),
+        "1",
+        "only our own commit should sit above origin/main"
+    );
+}
+
+#[test]
+fn a_branch_tracking_another_remote_is_not_this_ones_to_move() {
+    let sandbox = Sandbox::new("sync-fork");
+    sandbox.commit("shared.txt", "top\n", "Base");
+    let origin = bare_origin(&sandbox, "sync-fork");
+    sandbox.git(&["push", "-q", "origin", "main"]);
+
+    // A second remote, and main tracks that one.
+    let fork = scratch("sync-fork-fork").join("fork.git");
+    git_at(
+        fork.parent().unwrap(),
+        &["init", "-q", "--bare", "-b", "main", fork.to_string_lossy().as_ref()],
+    );
+    sandbox.git(&["remote", "add", "fork", fork.to_string_lossy().as_ref()]);
+    sandbox.git(&["push", "-q", "-u", "fork", "main"]);
+
+    someone_pushes(&origin, "sync-fork", "shared.txt", "THEIRS\n");
+    sandbox.git(&["fetch", "-q", "origin"]);
+    let mine = head_of(&sandbox, "main");
+    sandbox.git(&["checkout", "-q", "-b", "feature"]);
+    let state = sandbox.state();
+
+    let outcome = refs::checkout(&state, "origin/main").unwrap();
+
+    assert_eq!(current(&state), "main");
+    assert_eq!(head_of(&sandbox, "main"), mine, "a fork's click must not move it");
+    assert!(
+        outcome.message.contains("tracks fork/main"),
+        "unexpected message: {}",
+        outcome.message
+    );
+}
+
+#[test]
+fn a_branch_with_no_upstream_starts_tracking_the_remote_it_was_synced_to() {
+    let sandbox = Sandbox::new("sync-link");
+    sandbox.commit("shared.txt", "top\n", "Base");
+    bare_origin(&sandbox, "sync-link");
+    // Push without -u: origin/main exists, main tracks nothing.
+    sandbox.git(&["push", "-q", "origin", "main"]);
+    sandbox.git(&["checkout", "-q", "-b", "feature"]);
+    let state = sandbox.state();
+
+    let outcome = refs::checkout(&state, "origin/main").unwrap();
+
+    assert_eq!(current(&state), "main");
+    assert_eq!(
+        sandbox
+            .git(&["rev-parse", "--abbrev-ref", "main@{upstream}"])
+            .trim(),
+        "origin/main"
+    );
+    assert!(
+        outcome.message.contains("now tracks origin/main"),
+        "unexpected message: {}",
+        outcome.message
+    );
+}

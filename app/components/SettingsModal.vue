@@ -807,6 +807,24 @@ onMounted(async () => {
             </span>
           </label>
 
+          <label class="field">
+            <span class="label">If a remote branch's local branch has diverged when checking it out</span>
+            <select
+              :value="config.settings.value?.diverged_checkout"
+              @change="patchGlobal({ diverged_checkout: ($event.target as HTMLSelectElement).value })"
+            >
+              <option value="ask">Ask what to do</option>
+              <option value="rebase">Rebase my commits onto the remote</option>
+              <option value="merge">Merge the remote into my branch</option>
+              <option value="leave">Just switch, and leave them diverged</option>
+            </select>
+          </label>
+          <p class="hint faint no-top">
+            Double-clicking a remote branch checks out its local branch and pulls it up to date
+            when that is a plain fast-forward. This decides what happens on the rare day both
+            sides have commits of their own.
+          </p>
+
           <label class="check">
             <input
               type="checkbox"

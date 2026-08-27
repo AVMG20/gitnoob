@@ -45,6 +45,10 @@ export interface GlobalSettings {
   auto_fetch_on_open: boolean
   auto_fetch_minutes: number
   auto_stash: boolean
+  /** What checking out a remote branch does when its local branch has commits
+      of its own while the remote also moved on. Merely behind is always a
+      fast-forward, which is not a question. */
+  diverged_checkout: 'ask' | 'rebase' | 'merge' | 'leave'
   show_avatars: boolean
   check_updates: boolean
 }

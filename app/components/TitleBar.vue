@@ -121,6 +121,36 @@ watch(
     orphans.value = []
   }
 )
+
+// --- a diverged checkout
+
+/**
+ * The question a checkout left open, for as long as it is still a question.
+ *
+ * The strip only stands while the user is on that branch and the branch is
+ * still both ahead and behind: a pull, a push or a switch done any other way
+ * answers it without these buttons, and a strip that outlives its question
+ * offers a rebase nobody asked for. The counts come from the live refs rather
+ * than from the moment of the checkout, for the same reason.
+ */
+const diverged = computed(() => {
+  const asked = store.divergedCheckout
+  if (!asked) return null
+  const local = store.refs?.locals.find((b) => b.name === asked.branch)
+  if (!local?.is_head) return null
+  if (!(local.ahead > 0 && local.behind > 0)) return null
+  return { ...asked, ahead: local.ahead, behind: local.behind }
+})
+
+/** Joins the two histories the way the button says, and opens the resolver
+    if that runs into conflicts. */
+async function reconcile(rebase: boolean) {
+  const target = store.divergedCheckout?.upstream
+  git.dismissDiverged()
+  if (!target) return
+  const outcome = rebase ? await git.rebase(target) : await git.merge(target, false)
+  if (outcome?.conflicts.length) store.resolving = outcome.conflicts[0] ?? null
+}
 </script>
 
 <template>
@@ -245,6 +275,38 @@ watch(
         </button>
         <button class="btn tiny ghost close" @click="confirming = false">Cancel</button>
       </template>
+    </div>
+
+    <!-- Checking out a remote branch found the local one had gone its own way
+         while the remote moved on too. The switch already happened; this is
+         the question settings said to ask: what to do about the two
+         histories. Same shape as a refused push — the strip is the next step,
+         not a dialog in the way. -->
+    <div v-if="diverged" class="banner push">
+      <TriangleAlert :size="14" />
+      <span>
+        <span class="mono">{{ diverged.branch }}</span> and
+        <span class="mono">{{ diverged.upstream }}</span> have diverged:
+        {{ diverged.ahead }} {{ diverged.ahead === 1 ? 'commit' : 'commits' }} of yours,
+        {{ diverged.behind }} of theirs.
+      </span>
+      <button
+        class="btn tiny"
+        :disabled="store.busy"
+        title="Replays your commits on top of the remote's — the usual answer"
+        @click="reconcile(true)"
+      >
+        Rebase mine on top
+      </button>
+      <button
+        class="btn tiny ghost"
+        :disabled="store.busy"
+        title="Ties the two histories together with a merge commit"
+        @click="reconcile(false)"
+      >
+        Merge theirs in
+      </button>
+      <button class="btn tiny ghost close" @click="git.dismissDiverged()">Leave it</button>
     </div>
 
     <!-- Detached HEAD is easy to reach and, until now, had no way back from

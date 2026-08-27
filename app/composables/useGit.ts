@@ -64,6 +64,23 @@ export interface RefTree {
   stashes: Stash[]
 }
 
+/** A local branch and its remote copy that have both moved on. */
+export interface Diverged {
+  branch: string
+  /** The remote-tracking ref it was measured against, e.g. `origin/main`. */
+  upstream: string
+  /** Commits only the local branch has. */
+  ahead: number
+  /** Commits only the remote has. */
+  behind: number
+}
+
+export interface CheckoutOutcome {
+  message: string
+  /** Set when settings say to ask what to do about the divergence. */
+  diverged: Diverged | null
+}
+
 /** What git is part-way through, so the way out can be named correctly. */
 export interface InProgress {
   merging: boolean
@@ -439,6 +456,9 @@ const fields = reactive({
   busyLabel: null as string | null,
   /** Set when a push was rejected, so the toolbar can offer a way out. */
   pushBlocked: null as PushBlock | null,
+  /** Set when a checkout found the branch and its remote had both moved on
+      and settings said to ask, so the toolbar can put the question up. */
+  divergedCheckout: null as Diverged | null,
   log: [] as LogLine[]
 })
 
@@ -594,6 +614,7 @@ function forget() {
   store.detail = null
   store.selected = WIP
   store.pushBlocked = null
+  store.divergedCheckout = null
   store.resolving = null
   store.revealing = null
   store.viewer = null
@@ -613,6 +634,7 @@ export function useGit() {
     // otherwise act on this one: a rejected push offering to force a branch
     // that is not here, a file viewer on a path that no longer exists.
     store.pushBlocked = null
+    store.divergedCheckout = null
     store.viewer = null
     store.resolving = null
     store.query = ''
@@ -890,12 +912,22 @@ export function useGit() {
      * A plain switch answers with nothing; one that had to set the uncommitted
      * work down and pick it up on the other side answers with a sentence, and
      * that is worth a notice — the branch changed and the changes came along,
-     * which is not obvious from a list that looks the same afterwards.
+     * which is not obvious from a list that looks the same afterwards. So does
+     * a checkout of a remote branch that pulled the local one up to date,
+     * which is more than the click looks like it did.
+     *
+     * The one question a checkout can leave open — the branch and its remote
+     * have both moved on, and settings say to ask — lands in the store for the
+     * toolbar's strip, the same way a refused push does.
      */
     checkout: async (name: string) => {
-      const said = await run<string>('Checkout', 'checkout', { name })
-      if (said?.trim()) useToasts().info(said.trim())
-      return said
+      const outcome = await run<CheckoutOutcome>('Checkout', 'checkout', { name })
+      if (outcome?.message.trim()) useToasts().info(outcome.message.trim())
+      store.divergedCheckout = outcome?.diverged ?? null
+      return outcome
+    },
+    dismissDiverged: () => {
+      store.divergedCheckout = null
     },
     /**
      * Checks out the branch a review was opened from, whatever it takes.

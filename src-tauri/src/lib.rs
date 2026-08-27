@@ -178,7 +178,7 @@ async fn file_text(
 // --- branches ---------------------------------------------------------------
 
 #[tauri::command]
-async fn checkout(name: String, state: State<'_, AppState>) -> Result<String, String> {
+async fn checkout(name: String, state: State<'_, AppState>) -> Result<refs::CheckoutOutcome, String> {
     refs::checkout(&state, &name)
 }
 

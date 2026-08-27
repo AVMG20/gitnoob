@@ -53,7 +53,10 @@ pub fn checkout(state: &AppState, review: ReviewTarget) -> Result<String, String
             if !known_locally(state, &review.branch) {
                 let _ = remote::fetch(state, remote::primary(state).as_deref());
             }
-            return refs::checkout(state, &review.branch);
+            // The message is the whole answer here: a review checkout of a
+            // diverged branch has no banner to hand the question to, so
+            // whatever the checkout said about the state is what gets shown.
+            return refs::checkout(state, &review.branch).map(|outcome| outcome.message);
         }
     };
 
@@ -71,7 +74,7 @@ pub fn checkout(state: &AppState, review: ReviewTarget) -> Result<String, String
     let tracking = format!("{name}/{branch}");
     let local = local_name(state, &name, branch);
     if refs::has_local_branch(state, &local) {
-        return refs::checkout(state, &local);
+        return refs::checkout(state, &local).map(|outcome| outcome.message);
     }
     refs::checkout_tracking(state, &local, &tracking)
 }

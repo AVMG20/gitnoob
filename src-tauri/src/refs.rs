@@ -4,6 +4,7 @@ use git2::{BranchType, Repository, StatusOptions};
 use serde::Serialize;
 
 use crate::git_cmd;
+use crate::journal::{self, Mode};
 use crate::remote;
 use crate::state::AppState;
 use crate::work;
@@ -388,40 +389,325 @@ fn unstaged_kind(s: git2::Status) -> Option<String> {
     Some(kind.to_string())
 }
 
+/// What a checkout did, and the one question it can leave open.
+///
+/// Most checkouts only need a sentence. The exception is a remote branch whose
+/// local branch has commits of its own while the remote also moved on: joining
+/// the two is a rebase or a merge, and when settings say to ask, the question
+/// rides back on the outcome for the window to put up.
+#[derive(Serialize, Debug)]
+pub struct CheckoutOutcome {
+    pub message: String,
+    /// Set when the branch needs a decision the app was told not to make.
+    pub diverged: Option<Diverged>,
+}
+
+impl CheckoutOutcome {
+    fn said(message: String) -> Self {
+        CheckoutOutcome {
+            message,
+            diverged: None,
+        }
+    }
+}
+
+/// A local branch and its remote copy that have both moved on.
+#[derive(Serialize, Debug)]
+pub struct Diverged {
+    pub branch: String,
+    /// The remote-tracking ref it was measured against, e.g. `origin/main`.
+    pub upstream: String,
+    /// Commits only the local branch has.
+    pub ahead: usize,
+    /// Commits only the remote has.
+    pub behind: usize,
+}
+
 /// Checks out an existing local branch, or a remote branch by creating a local
-/// tracking branch for it.
+/// tracking branch for it — or, when that local branch already exists, by
+/// standing on it and bringing it up to date.
 ///
 /// Where git refuses over uncommitted work, it is set down and picked back up
 /// on the other side, so switching branches mid-change does not need the user
 /// to tidy up by hand first.
-pub fn checkout(state: &AppState, name: &str) -> Result<String, String> {
-    // Decide the argument list before touching the working tree; the repo handle
-    // must not be alive while git runs.
-    let args: Vec<String> = {
+pub fn checkout(state: &AppState, name: &str) -> Result<CheckoutOutcome, String> {
+    /// What kind of name was clicked, decided before touching the working
+    /// tree; the repo handle must not be alive while git runs.
+    enum Plan {
+        Args(Vec<String>),
+        /// A remote branch whose local branch already exists. `checkout -b`
+        /// would be refused over the name — "a branch named 'main' already
+        /// exists" — so the local branch is what gets checked out, and pulled
+        /// up to the remote, which is what the click meant.
+        Update(String),
+    }
+    let plan = {
         let repo = state.repo()?;
-        // Every form ends in `--`. Without it git falls back to reading the
-        // name as a path, and `git checkout notes.txt` on a name that is not a
-        // ref throws away the uncommitted changes in that file without a word.
-        // With it, a name that is not a ref is an error, which is the truth.
+        // Every argument form ends in `--`. Without it git falls back to
+        // reading the name as a path, and `git checkout notes.txt` on a name
+        // that is not a ref throws away the uncommitted changes in that file
+        // without a word. With it, a name that is not a ref is an error, which
+        // is the truth.
         if repo.find_branch(name, BranchType::Local).is_ok() {
-            vec!["checkout".into(), name.into(), "--".into()]
+            Plan::Args(vec!["checkout".into(), name.into(), "--".into()])
         } else if repo.find_branch(name, BranchType::Remote).is_ok() {
             let local = name.split_once('/').map(|(_, n)| n).unwrap_or(name);
-            vec![
-                "checkout".into(),
-                "-b".into(),
-                local.into(),
-                "--track".into(),
-                name.into(),
-                "--".into(),
-            ]
+            if repo.find_branch(local, BranchType::Local).is_ok() {
+                Plan::Update(local.to_string())
+            } else {
+                Plan::Args(vec![
+                    "checkout".into(),
+                    "-b".into(),
+                    local.into(),
+                    "--track".into(),
+                    name.into(),
+                    "--".into(),
+                ])
+            }
         } else {
             // Could be a tag or a raw revision; let git decide and report.
-            vec!["checkout".into(), name.into(), "--".into()]
+            Plan::Args(vec!["checkout".into(), name.into(), "--".into()])
         }
     };
 
-    switch(state, name, &args)
+    match plan {
+        Plan::Args(args) => switch(state, name, &args).map(CheckoutOutcome::said),
+        Plan::Update(local) => checkout_and_update(state, &local, name),
+    }
+}
+
+/// Checks out a branch that also lives on a remote and squares the two up.
+///
+/// The plain reading of "check out origin/main" is: put me on main, as the
+/// remote has it. So the local branch is checked out and, when the remote is
+/// simply ahead, pulled up to it — a fast-forward of a branch with nothing of
+/// its own, which cannot lose anything. A branch that also has commits of its
+/// own is a real fork in the road, and settings decide what happens then:
+/// rebase, merge, ask, or leave it alone.
+fn checkout_and_update(
+    state: &AppState,
+    local: &str,
+    remote_ref: &str,
+) -> Result<CheckoutOutcome, String> {
+    let (ahead, behind, tracks) = {
+        let repo = state.repo()?;
+        let branch = repo.find_branch(local, BranchType::Local).map_err(err)?;
+        let local_oid = branch
+            .get()
+            .target()
+            .ok_or_else(|| format!("{local} has no commit"))?;
+        let remote_oid = repo
+            .find_branch(remote_ref, BranchType::Remote)
+            .map_err(err)?
+            .get()
+            .target()
+            .ok_or_else(|| format!("{remote_ref} has no commit"))?;
+        let tracks = branch
+            .upstream()
+            .ok()
+            .and_then(|up| up.name().ok().flatten().map(String::from));
+        let (ahead, behind) = repo
+            .graph_ahead_behind(local_oid, remote_oid)
+            .map_err(err)?;
+        (ahead, behind, tracks)
+    };
+
+    // A branch that tracks a different remote is not this one's to move:
+    // checking out fork/main must not quietly pull the fork into a main that
+    // belongs to origin.
+    if tracks.as_deref().is_some_and(|up| up != remote_ref) {
+        let said = switch_to(state, local)?;
+        return Ok(CheckoutOutcome::said(format!(
+            "{said} — it tracks {}, so nothing was pulled from {remote_ref}",
+            tracks.unwrap_or_default()
+        )));
+    }
+
+    // A branch that has never been told what it tracks gets told now: it and
+    // the remote branch share a name, the click said they belong together, and
+    // the ahead/behind counts everything else shows need the link.
+    let linked = tracks.is_none();
+    if linked {
+        let path = state.path()?;
+        git_cmd::run_checked(
+            &path,
+            &["branch", &format!("--set-upstream-to={remote_ref}"), local],
+        )?;
+    }
+
+    let standing = journal::current_branch(state).as_deref() == Some(local);
+    let mut outcome = if behind == 0 {
+        let said = if standing {
+            format!("{local} is")
+        } else {
+            format!("{} — it is", switch_to(state, local)?)
+        };
+        CheckoutOutcome::said(match ahead {
+            0 => format!("{said} up to date with {remote_ref}"),
+            n => format!(
+                "{said} {n} {} ahead of {remote_ref} — nothing to pull",
+                commits(n)
+            ),
+        })
+    } else if ahead == 0 {
+        fast_forward_to(state, local, remote_ref, behind, standing)?
+    } else {
+        reconcile(state, local, remote_ref, ahead, behind, standing)?
+    };
+
+    if linked {
+        outcome.message = format!("{} ({local} now tracks {remote_ref})", outcome.message);
+    }
+    Ok(outcome)
+}
+
+/// Switches to a local branch by name, with the usual carrying of open work.
+///
+/// Git's own stdout is dropped rather than passed along: it likes to say how
+/// the branch stands against its upstream, and the caller here is about to
+/// change exactly that.
+fn switch_to(state: &AppState, local: &str) -> Result<String, String> {
+    let args = vec!["checkout".to_string(), local.to_string(), "--".to_string()];
+    let said = switch(state, local, &args)?;
+    Ok(if said.contains(CARRIED) {
+        said.trim().to_string()
+    } else {
+        format!("Switched to {local}")
+    })
+}
+
+/// Moves a local branch that is strictly behind its remote up to it, standing
+/// on it at the end.
+///
+/// From another branch, the ref is moved first — `git fetch . remote:local`
+/// touches nothing but the ref and refuses anything that is not a
+/// fast-forward, so even a wrong ancestry answer above could not cost anything
+/// — and the switch that follows lands straight on the updated branch. Already
+/// standing on it, the update is `merge --ff-only`, with the open work set
+/// down and picked back up when it turns out to be in the way.
+fn fast_forward_to(
+    state: &AppState,
+    local: &str,
+    remote_ref: &str,
+    behind: usize,
+    standing: bool,
+) -> Result<CheckoutOutcome, String> {
+    let path = state.path()?;
+    let before = local_oid(state, local);
+    let mut notes = Vec::new();
+
+    let base = if standing {
+        let args = ["merge", "--ff-only", remote_ref];
+        match git_cmd::run_checked(&path, &args) {
+            Ok(_) => {}
+            Err(error)
+                if refused_over_local_changes(&error) && state.config().global.auto_stash =>
+            {
+                let held = work::stash_before(state, &format!("pulling {remote_ref}"))?;
+                let merged = git_cmd::run_checked(&path, &args);
+                match work::restore_after(state, held) {
+                    Ok(Some(note)) => notes.push(note),
+                    Err(note) => notes.push(note),
+                    Ok(None) => {}
+                }
+                merged?;
+            }
+            Err(error) => return Err(error),
+        }
+        format!("Pulled {behind} {}", commits(behind))
+    } else {
+        git_cmd::run_checked(&path, &["fetch", ".", &format!("{remote_ref}:{local}")])?;
+        let said = switch_to(state, local).map_err(|error| {
+            format!("{local} was brought up to date with {remote_ref}, but switching to it did not work.\n{error}")
+        })?;
+        format!("{said} and pulled {behind} {}", commits(behind))
+    };
+
+    journal::record(
+        state,
+        "pull",
+        format!("Update {local} to {remote_ref}"),
+        Some(local.to_string()),
+        before,
+        local_oid(state, local),
+        Mode::Hard,
+        true,
+    );
+
+    let mut message = format!("{base} from {remote_ref}");
+    for note in notes {
+        message = format!("{message}\n{note}");
+    }
+    Ok(CheckoutOutcome::said(message))
+}
+
+/// The checkout of a branch that has moved on while its remote did too.
+///
+/// Settings own the answer. `rebase` and `merge` do it on the spot, through
+/// the same paths the toolbar uses, so a conflict is reported and resolved the
+/// same way. `ask` hands the question back for the window to put up, and
+/// `leave` only names the state — for whoever wants the old behaviour back,
+/// one word at a time.
+fn reconcile(
+    state: &AppState,
+    local: &str,
+    remote_ref: &str,
+    ahead: usize,
+    behind: usize,
+    standing: bool,
+) -> Result<CheckoutOutcome, String> {
+    let base = if standing {
+        local.to_string()
+    } else {
+        format!("{} — it", switch_to(state, local)?)
+    };
+    let stand = format!("{ahead} {} of yours, {behind} of theirs", commits(ahead));
+
+    match state.config().global.diverged_checkout.as_str() {
+        "rebase" => {
+            let outcome = remote::rebase(state, remote_ref)?;
+            Ok(CheckoutOutcome::said(if outcome.ok {
+                format!("{base} had diverged from {remote_ref} ({stand}), so yours were rebased on top")
+            } else {
+                format!("{base} has diverged from {remote_ref}. {}", outcome.message)
+            }))
+        }
+        "merge" => {
+            let outcome = remote::merge(state, remote_ref, false)?;
+            Ok(CheckoutOutcome::said(if outcome.ok {
+                format!("{base} had diverged from {remote_ref} ({stand}), so {remote_ref} was merged in")
+            } else {
+                format!("{base} has diverged from {remote_ref}. {}", outcome.message)
+            }))
+        }
+        "leave" => Ok(CheckoutOutcome::said(format!(
+            "{base} and {remote_ref} have diverged ({stand}) — left as they are"
+        ))),
+        _ => Ok(CheckoutOutcome {
+            message: format!("{base} and {remote_ref} have diverged ({stand})"),
+            diverged: Some(Diverged {
+                branch: local.to_string(),
+                upstream: remote_ref.to_string(),
+                ahead,
+                behind,
+            }),
+        }),
+    }
+}
+
+/// Where a local branch points, as an owned string; `None` when it is gone.
+fn local_oid(state: &AppState, name: &str) -> Option<String> {
+    let repo = state.repo().ok()?;
+    let found = repo.find_branch(name, BranchType::Local).ok()?;
+    found.get().target().map(|oid| oid.to_string())
+}
+
+fn commits(n: usize) -> &'static str {
+    if n == 1 {
+        "commit"
+    } else {
+        "commits"
+    }
 }
 
 /// Creates a local branch following a remote one and switches to it.
@@ -477,6 +763,11 @@ fn switch(state: &AppState, name: &str, args: &[String]) -> Result<String, Strin
     // filled the list, pushing the steps worth undoing off the end of it.
     Ok(out)
 }
+
+/// What `carry` answers when it worked — recognised by `switch_to`, which
+/// keeps the sentence but replaces everything git says about a branch it is
+/// about to move.
+const CARRIED: &str = "bringing your changes with you";
 
 /// Switches with the uncommitted work set down and picked back up again.
 ///
@@ -541,7 +832,7 @@ fn carry(state: &AppState, name: &str, args: &[&str], refusal: &str) -> Result<S
 
     if landed {
         drop_stash(state, &held);
-        return Ok(format!("Switched to {name}, bringing your changes with you"));
+        return Ok(format!("Switched to {name}, {CARRIED}"));
     }
 
     // It would have conflicted. Put everything back exactly as it was: the

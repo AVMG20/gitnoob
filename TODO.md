@@ -460,6 +460,27 @@ thing happens here.
       somewhere. Compiled out of anything built for release
 
 
+## Round 7 — checking out a shared branch, and worktrees
+
+- [x] **Checking out a remote branch whose local branch exists syncs the two.**
+      Double-clicking `origin/main` with a local `main` used to die with "a
+      branch named 'main' already exists". Now the local branch is checked out
+      and squared up with what was clicked: merely behind is fast-forwarded
+      (from another branch the ref is moved first with `git fetch .
+      origin/main:main`, which refuses anything that is not a fast-forward;
+      standing on it, `merge --ff-only` with the auto-stash dance around it),
+      merely ahead is left alone and said, and up to date is said. Open changes
+      ride across and come back. A branch with no upstream starts tracking the
+      remote it was synced to; one tracking a *different* remote is never moved
+      by another remote's click
+- [x] **A diverged branch is a setting, defaulting to ask.** When the local
+      branch has commits of its own while the remote moved on too, Behaviour →
+      "If a remote branch's local branch has diverged" picks: ask (a strip
+      under the toolbar offers rebase / merge / leave, the same shape as a
+      refused push, standing only while the branch is still diverged), always
+      rebase, always merge, or just switch. The strip's actions run the same
+      rebase/merge paths the toolbar uses, conflicts and resolver included
+
 ## How to run it
 
 See the README, which is now the one place the build notes live.

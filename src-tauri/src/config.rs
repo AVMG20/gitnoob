@@ -94,6 +94,12 @@ pub struct Global {
     /// Stash uncommitted work before a branch switch or pull, then put it back.
     #[serde(default = "yes")]
     pub auto_stash: bool,
+    /// What checking out a remote branch does when its local branch has
+    /// commits of its own while the remote also moved on: `ask`, `rebase`,
+    /// `merge` or `leave`. A branch that is merely behind is always
+    /// fast-forwarded — that can lose nothing, so it is not a question.
+    #[serde(default = "default_diverged_checkout")]
+    pub diverged_checkout: String,
     /// Look up a picture for each commit author. Off, and the window draws
     /// initials instead and asks nobody anything.
     #[serde(default = "yes")]
@@ -156,6 +162,11 @@ fn default_commit_style() -> String {
 fn default_fetch_minutes() -> u32 {
     10
 }
+/// Ask by default: the app is for people learning git, and quietly rebasing a
+/// branch they did not know had diverged teaches nothing.
+fn default_diverged_checkout() -> String {
+    "ask".to_string()
+}
 
 impl Default for Ai {
     fn default() -> Self {
@@ -176,6 +187,7 @@ impl Default for Global {
             auto_fetch_on_open: true,
             auto_fetch_minutes: default_fetch_minutes(),
             auto_stash: true,
+            diverged_checkout: default_diverged_checkout(),
             show_avatars: true,
             check_updates: true,
         }
