@@ -43,8 +43,10 @@ import { useDragDrop } from '~/composables/useDragDrop'
 import { useShortcuts } from '~/composables/useShortcuts'
 import { useColumns, type ColumnId } from '~/composables/useColumns'
 import { useConfig } from '~/composables/useConfig'
+import { useToasts } from '~/composables/useToasts'
 
 const git = useGit()
+const toasts = useToasts()
 const store = git.store
 const menu = useContextMenu()
 const drag = useDragDrop()
@@ -526,9 +528,28 @@ function onKey(event: KeyboardEvent) {
   }
 }
 
-/** Opens the reset dialog with a mode already chosen. */
-function openReset(oid: string, mode: ResetMode) {
-  resetTarget.value = { oid, mode }
+/**
+ * Moves the branch, asking first only where there is something to lose.
+ *
+ * A soft or mixed reset keeps every change that is not in a commit — the files
+ * on disk come out of it untouched, and the commits it takes off the branch are
+ * a keystroke away in undo. A dialog in front of that is a page of reading to
+ * confirm something harmless, and reading it every time is how people learn to
+ * click through the one that matters.
+ *
+ * A hard reset is the one that matters: it writes over the working tree. That
+ * still opens the dialog, which names what would go.
+ */
+async function openReset(oid: string, mode: ResetMode) {
+  if (mode === 'hard') {
+    resetTarget.value = { oid, mode }
+    return
+  }
+  const message = await git.reset(oid, mode)
+  // Null is a failure, which has already said so; anything else went through,
+  // and with no dialog closing behind it there would otherwise be nothing on
+  // screen to say the branch had moved at all.
+  if (message !== null) toasts.info(message || 'Branch moved')
 }
 
 // --- ref chips
