@@ -20,6 +20,9 @@ const language = computed(() => languageFor(props.file.path))
 function lineClass(origin: string) {
   if (origin === '+') return 'add'
   if (origin === '-') return 'del'
+  // Git's "\ No newline at end of file": a remark about the lines around it
+  // rather than a line of either file, and drawn as one.
+  if (origin === '\\') return 'eof'
   return 'ctx'
 }
 
@@ -72,6 +75,17 @@ function edit(line: DiffLine) {
   review.beginDraft(held.path, held.line, held.side)
 }
 
+/** The "\\ No newline at end of file" remark, which is nobody's line to answer. */
+const marker = (line: DiffLine) => line.origin === '\\'
+
+/**
+ * A line's text as HTML. The remark is git talking rather than the file, so it
+ * is escaped and left alone instead of being coloured as whatever language
+ * this is.
+ */
+const body = (line: DiffLine) =>
+  marker(line) ? highlightLine(line.content, null) : perLine.value(line.content)
+
 function draftHere(line: DiffLine) {
   const draft = store.draft
   if (!draft || draft.path !== props.file.path) return false
@@ -114,8 +128,8 @@ function draftKey(line: DiffLine) {
         <div v-for="(hunk, index) in props.file.hunks" :key="index" class="hunk">
           <div class="hunk-head mono truncate">{{ hunk.header }}</div>
           <template
-            v-for="line in hunk.lines"
-            :key="`${line.origin}${line.old_lineno}-${line.new_lineno}`"
+            v-for="(line, at) in hunk.lines"
+            :key="`${at}:${line.origin}${line.old_lineno}-${line.new_lineno}`"
           >
             <div
               class="diff-line"
@@ -126,8 +140,13 @@ function draftKey(line: DiffLine) {
               <span class="no">{{ line.old_lineno ?? '' }}</span>
               <span class="no">{{ line.new_lineno ?? '' }}</span>
               <span class="sign">{{ line.origin === ' ' ? '' : line.origin }}</span>
-              <span class="text" v-html="perLine(line.content)" />
-              <button class="line-add" title="Comment on this line" @click="begin(line)">
+              <span class="text" v-html="body(line)" />
+              <button
+                v-if="!marker(line)"
+                class="line-add"
+                title="Comment on this line"
+                @click="begin(line)"
+              >
                 +
               </button>
             </div>
@@ -266,6 +285,12 @@ function draftKey(line: DiffLine) {
 
 .diff-line.del {
   background: rgba(224, 87, 109, 0.11);
+}
+
+.diff-line.eof,
+.diff-line.eof .sign {
+  color: var(--text-faint);
+  font-style: italic;
 }
 
 .diff-line.del .sign {

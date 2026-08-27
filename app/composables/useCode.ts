@@ -103,6 +103,15 @@ export function diffWindow(rows: DiffRow[], top: number, view: number): Window {
 }
 
 /**
+ * Whether this is a line of a file at all.
+ *
+ * Git's "\\ No newline at end of file" rides in the hunk as though it were
+ * one, with an origin of its own. It is a remark about the line above it, so
+ * everything that counts, marks or measures lines steps over it.
+ */
+const real = (line: DiffLine) => line.origin !== '\\'
+
+/**
  * The line of the new file the first change sits on, or null when nothing in
  * the patch has one.
  *
@@ -112,13 +121,14 @@ export function diffWindow(rows: DiffRow[], top: number, view: number): Window {
  */
 export function firstChangedLine(diff: FileDiff | null): number | null {
   for (const hunk of diff?.hunks ?? []) {
-    for (let at = 0; at < hunk.lines.length; at++) {
-      const line = hunk.lines[at]!
+    const lines = hunk.lines.filter(real)
+    for (let at = 0; at < lines.length; at++) {
+      const line = lines[at]!
       if (line.origin === ' ') continue
       if (line.new_lineno !== null) return line.new_lineno
       // A run of deletions: the seam is the next line that is in the new file.
-      for (let next = at + 1; next < hunk.lines.length; next++) {
-        const after = hunk.lines[next]!
+      for (let next = at + 1; next < lines.length; next++) {
+        const after = lines[next]!
         if (after.new_lineno !== null) return after.new_lineno
       }
       return null
@@ -164,19 +174,20 @@ export function markedLines(text: string | null, hunks: DiffHunk[]): Line[] {
   const gaps = new Map<number, string[]>()
 
   for (const hunk of hunks) {
+    const lines = hunk.lines.filter(real)
     // Walk each run of touched lines together: what a run is made of decides
     // whether it reads as an addition or as a change.
     let index = 0
-    while (index < hunk.lines.length) {
-      if (hunk.lines[index]!.origin === ' ') {
+    while (index < lines.length) {
+      if (lines[index]!.origin === ' ') {
         index++
         continue
       }
       let end = index
       const deleted: string[] = []
       const added: number[] = []
-      while (end < hunk.lines.length && hunk.lines[end]!.origin !== ' ') {
-        const line = hunk.lines[end]!
+      while (end < lines.length && lines[end]!.origin !== ' ') {
+        const line = lines[end]!
         if (line.origin === '-') deleted.push(line.content)
         else if (line.new_lineno) added.push(line.new_lineno)
         end++
@@ -199,7 +210,7 @@ export function markedLines(text: string | null, hunks: DiffHunk[]): Line[] {
       } else if (deletions) {
         // Nothing replaced them, so the mark belongs to the seam: the line the
         // deleted ones used to sit above.
-        const next = hunk.lines[end]?.new_lineno ?? source.length + 1
+        const next = lines[end]?.new_lineno ?? source.length + 1
         gaps.set(next, [...(gaps.get(next) ?? []), ...deleted])
       }
       index = end

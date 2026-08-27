@@ -32,11 +32,37 @@ pub struct CommitDetail {
 
 #[derive(Serialize)]
 pub struct DiffLine {
-    /// ' ' context, '+' addition, '-' deletion.
+    /// ' ' context, '+' addition, '-' deletion, '\\' the no-newline remark.
     pub origin: char,
     pub old_lineno: Option<u32>,
     pub new_lineno: Option<u32>,
+    /// Never contains a newline: the view draws one row per line, at a height
+    /// it decided before it read the text.
     pub content: String,
+}
+
+/// What git says about a file whose last line has no newline after it.
+const NO_NEWLINE: &str = "No newline at end of file";
+
+/// The remark, or `None` for a line that is a line.
+///
+/// libgit2 reports "\ No newline at end of file" as three more origins —
+/// `=`, `>` and `<`, for the two sides and both — and hands the text over with
+/// a newline in front of it and another behind. Passed through as it came, that
+/// is one line drawn as two inside a row one line tall, which is a remark
+/// written across whatever the next line of the diff was.
+fn eofnl(origin: char) -> Option<DiffLine> {
+    match origin {
+        '=' | '>' | '<' => Some(DiffLine {
+            origin: '\\',
+            // It belongs to no line of either file, and numbering it puts a
+            // number beside a row that is not there.
+            old_lineno: None,
+            new_lineno: None,
+            content: NO_NEWLINE.to_string(),
+        }),
+        _ => None,
+    }
 }
 
 #[derive(Serialize)]
@@ -251,14 +277,15 @@ fn collect_hunks(diff: &Diff, path: &str) -> Result<FileDiff, String> {
                 return true;
             }
             if let Some(current) = hunks.borrow_mut().last_mut() {
-                current.lines.push(DiffLine {
+                current.lines.push(eofnl(line.origin()).unwrap_or_else(|| DiffLine {
                     origin: line.origin(),
                     old_lineno: line.old_lineno(),
                     new_lineno: line.new_lineno(),
                     content: String::from_utf8_lossy(line.content())
                         .trim_end_matches('\n')
+                        .trim_end_matches('\r')
                         .to_string(),
-                });
+                }));
                 taken.set(taken.get() + 1);
             }
             true
@@ -346,4 +373,31 @@ fn parse_oid(s: &str) -> Result<Oid, String> {
 
 fn err(e: git2::Error) -> String {
     e.message().to_string()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn the_no_newline_origins_become_one_remark_with_no_line_number() {
+        for origin in ['=', '>', '<'] {
+            let line = eofnl(origin).expect("a remark");
+            assert_eq!(line.origin, '\\');
+            assert_eq!(line.content, NO_NEWLINE);
+            assert!(line.old_lineno.is_none());
+            assert!(line.new_lineno.is_none());
+            // The view draws one row per line at a height it fixed in advance,
+            // so a remark carrying git's own newlines is drawn over whatever
+            // came next.
+            assert!(!line.content.contains('\n'));
+        }
+    }
+
+    #[test]
+    fn an_ordinary_line_is_left_to_be_built_as_one() {
+        for origin in [' ', '+', '-'] {
+            assert!(eofnl(origin).is_none());
+        }
+    }
 }

@@ -30,10 +30,18 @@ describe('parsePatch', () => {
     expect(hunks[1]!.lines[0]!.new_lineno).toBe(20)
   })
 
-  it('drops the no-newline remarks rather than counting them as lines', () => {
+  it('keeps the no-newline remark as a remark, not as a line', () => {
     const { hunks } = parsePatch(['@@ -1,2 +1,2 @@', ' a', '-b', '\\ No newline at end of file', '+B'].join('\n'))
-    expect(hunks[0]!.lines).toHaveLength(3)
-    expect(hunks[0]!.lines.every((line) => !line.content.startsWith('\\'))).toBe(true)
+    const lines = hunks[0]!.lines
+    expect(lines.map((line) => line.origin)).toEqual([' ', '-', '\\', '+'])
+
+    // It belongs to neither file, so it is numbered in neither and takes no
+    // number from the line after it.
+    const remark = lines[2]!
+    expect(remark.old_lineno).toBeNull()
+    expect(remark.new_lineno).toBeNull()
+    expect(remark.content).toBe('No newline at end of file')
+    expect(lines[3]!.new_lineno).toBe(2)
   })
 
   it('drops stray file headers a truncated answer may leave behind', () => {

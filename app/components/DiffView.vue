@@ -24,6 +24,9 @@ const language = computed(() => (props.diff ? languageFor(props.diff.path) : nul
 function lineClass(origin: string) {
   if (origin === '+') return 'add'
   if (origin === '-') return 'del'
+  // Git's "\ No newline at end of file": a remark about the lines around it
+  // rather than a line of either file, and drawn as one.
+  if (origin === '\\') return 'eof'
   return 'ctx'
 }
 
@@ -114,6 +117,9 @@ const longest = computed(() => {
 })
 
 function paint(line: DiffLine) {
+  // The no-newline remark is git talking, not the file: highlighting it as
+  // whatever language this is would colour a sentence as code.
+  if (line.origin === '\\') return highlightLine(line.content, null)
   const file = whole.value
   if (file && line.new_lineno !== null) {
     const at = line.new_lineno - 1
@@ -355,6 +361,12 @@ function paint(line: DiffLine) {
 
 .del .sign {
   color: var(--red-soft);
+}
+
+.eof,
+.eof .sign {
+  color: var(--text-faint);
+  font-style: italic;
 }
 
 /* The row tint carries which side a line is on, so the syntax colours stay

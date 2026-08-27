@@ -33,8 +33,18 @@ export function parsePatch(patch: string): { hunks: DiffHunk[]; truncated: numbe
       continue
     }
     if (!hunk) continue
-    // The "no newline" remark describes the neighbours rather than being one.
-    if (raw.startsWith('\\')) continue
+    // The "no newline" remark describes the neighbours rather than being one:
+    // it is kept, with an origin that says so, and counts towards neither
+    // file's numbering.
+    if (raw.startsWith('\\')) {
+      hunk.lines.push({
+        origin: '\\',
+        old_lineno: null,
+        new_lineno: null,
+        content: 'No newline at end of file'
+      })
+      continue
+    }
     // A well-formed body never carries headers mid-hunk, but a truncated one
     // may end anywhere, and stray context past the last header would sit here
     // with nothing to hang from.

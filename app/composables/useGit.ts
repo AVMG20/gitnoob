@@ -130,6 +130,11 @@ export interface CommitDetail {
 }
 
 export interface DiffLine {
+  /**
+   * `' '` context, `'+'` added, `'-'` deleted, and `'\\'` for git's "no
+   * newline at end of file", which is a remark about its neighbours rather
+   * than a line of either file and carries no line number.
+   */
   origin: string
   old_lineno: number | null
   new_lineno: number | null

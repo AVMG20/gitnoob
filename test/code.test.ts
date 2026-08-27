@@ -31,6 +31,13 @@ const del = (old: number, content = 'old'): DiffLine => ({
   new_lineno: null,
   content
 })
+/** Git's "\\ No newline at end of file": in the hunk, but not a line of anything. */
+const eof = (): DiffLine => ({
+  origin: '\\',
+  old_lineno: null,
+  new_lineno: null,
+  content: 'No newline at end of file'
+})
 const hunk = (...lines: DiffLine[]): DiffHunk => ({ header: '@@', lines })
 
 describe('windowOf', () => {
@@ -91,6 +98,17 @@ describe('diffWindow', () => {
 })
 
 describe('firstChangedLine', () => {
+  it('does not mistake a no-newline remark for the first change', () => {
+    expect(
+      firstChangedLine({
+        path: 'a',
+        binary: false,
+        truncated: 0,
+        hunks: [hunk(ctx(1, 1), eof(), add(2))]
+      })
+    ).toBe(2)
+  })
+
   it('finds an addition', () => {
     expect(firstChangedLine({ path: 'a', binary: false, truncated: 0, hunks: [hunk(ctx(1, 1), add(2))] })).toBe(2)
   })
@@ -113,6 +131,13 @@ describe('firstChangedLine', () => {
 })
 
 describe('markedLines', () => {
+  it('reads a run the same whether or not a no-newline remark sits in it', () => {
+    const without = markedLines('a\nb\nc', [hunk(ctx(1, 1), del(2), add(2), add(3))])
+    const with_ = markedLines('a\nb\nc', [hunk(ctx(1, 1), del(2), eof(), add(2), add(3))])
+    expect(with_.map((line) => line.mark)).toEqual(without.map((line) => line.mark))
+    expect(with_[1]!.was).toEqual(['old'])
+  })
+
   it('calls a line that replaced one changed, and a fresh one added', () => {
     const lines = markedLines('a\nb\nc', [hunk(ctx(1, 1), del(2), add(2), add(3))])
     expect(lines.map((line) => line.mark)).toEqual([null, 'changed', 'added'])
