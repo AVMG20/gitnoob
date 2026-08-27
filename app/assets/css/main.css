@@ -604,3 +604,209 @@ textarea {
 .hljs-strong {
   font-weight: 600;
 }
+
+/* ---------------------------------------------------------------------------
+   A comment body, as markdown.
+   
+   The rules live here rather than in the three components that draw one,
+   because `v-html` content carries no scope attribute: scoped copies had to be
+   written `:deep(...)`, and they drifted the moment one of them was edited.
+   
+   The body is body text. It used to be drawn in the dim colour that labels and
+   timestamps wear, which made the one thing on the page somebody came to read
+   the faintest thing on it. Only what surrounds it — a quote, a caption — is
+   dim now.
+   --------------------------------------------------------------------------- */
+.md-body {
+  color: var(--text);
+  font-size: 12.5px;
+  line-height: 1.55;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.md-body > :first-child {
+  margin-top: 0;
+}
+
+.md-body > :last-child {
+  margin-bottom: 0;
+}
+
+.md-body p {
+  margin: 6px 0;
+}
+
+/* Headings inside a comment are noise at full size: they step down in weight
+   and spacing, and only barely in size, so a body written as a document still
+   reads as one paragraph after another. */
+.md-body h1,
+.md-body h2,
+.md-body h3,
+.md-body h4,
+.md-body h5,
+.md-body h6 {
+  margin: 14px 0 6px;
+  font-weight: 600;
+  line-height: 1.35;
+  color: var(--text);
+}
+
+.md-body h1 {
+  font-size: 15px;
+}
+
+.md-body h2 {
+  font-size: 14px;
+}
+
+.md-body h3 {
+  font-size: 13px;
+}
+
+.md-body h4,
+.md-body h5,
+.md-body h6 {
+  font-size: 12.5px;
+}
+
+.md-body h1,
+.md-body h2 {
+  padding-bottom: 4px;
+  border-bottom: 1px solid var(--line-soft);
+}
+
+.md-body code {
+  font-family: var(--mono);
+  background: var(--bg-raised);
+  padding: 1px 4px;
+  border-radius: 3px;
+  font-size: 11px;
+}
+
+.md-body pre {
+  background: var(--bg-deep);
+  border: 1px solid var(--line-soft);
+  border-radius: 5px;
+  padding: 8px 10px;
+  margin: 8px 0;
+  overflow-x: auto;
+}
+
+.md-body pre code {
+  background: none;
+  padding: 0;
+  font-size: 11.5px;
+  line-height: 1.5;
+  white-space: pre;
+}
+
+.md-body blockquote {
+  border-left: 2px solid var(--line);
+  margin: 8px 0;
+  padding: 2px 10px;
+  color: var(--text-dim);
+}
+
+.md-body ul,
+.md-body ol {
+  margin: 6px 0;
+  padding-left: 20px;
+}
+
+/* A list inside a list is why this is not a flat sequence of items: the nested
+   one sits tighter, so the two levels read as levels. */
+.md-body li > ul,
+.md-body li > ol {
+  margin: 2px 0;
+}
+
+.md-body li {
+  margin: 2px 0;
+}
+
+.md-body li.task {
+  list-style: none;
+  margin-left: -16px;
+}
+
+/* The box a `- [ ]` item is drawn with. Not an input: nothing here can be
+   ticked, because ticking it would have to go back to the forge. */
+.md-body .task-box {
+  display: inline-block;
+  width: 11px;
+  height: 11px;
+  margin-right: 6px;
+  vertical-align: -1px;
+  border: 1px solid var(--line);
+  border-radius: 3px;
+  background: var(--bg-deep);
+}
+
+.md-body .task-box.done {
+  border-color: var(--accent);
+  background: var(--accent);
+  /* The tick, drawn rather than fetched: two edges of a box, turned. */
+  background-image: linear-gradient(
+      to bottom right,
+      transparent 46%,
+      var(--primary-fg) 46%,
+      var(--primary-fg) 60%,
+      transparent 60%
+    ),
+    linear-gradient(
+      to bottom left,
+      transparent 62%,
+      var(--primary-fg) 62%,
+      var(--primary-fg) 76%,
+      transparent 76%
+    );
+}
+
+.md-body table {
+  border-collapse: collapse;
+  margin: 8px 0;
+  font-size: 12px;
+  display: block;
+  width: max-content;
+  max-width: 100%;
+  overflow-x: auto;
+}
+
+.md-body th,
+.md-body td {
+  border: 1px solid var(--line-soft);
+  padding: 4px 9px;
+  text-align: left;
+}
+
+.md-body th {
+  background: var(--bg-raised);
+  font-weight: 600;
+}
+
+.md-body img {
+  max-width: 100%;
+  height: auto;
+  border-radius: 5px;
+  margin: 4px 0;
+  vertical-align: middle;
+}
+
+.md-body hr {
+  border: 0;
+  border-top: 1px solid var(--line-soft);
+  margin: 12px 0;
+}
+
+.md-body a {
+  color: var(--accent);
+}
+
+.md-body .mention,
+.md-body .ref {
+  color: var(--accent-soft);
+  background: color-mix(in srgb, var(--accent) 12%, transparent);
+  border-radius: 3px;
+  padding: 0 3px;
+}

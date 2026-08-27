@@ -371,23 +371,13 @@ function draftKey(line: DiffLine) {
   background: var(--bg-hover);
 }
 
+/* A remark not yet sent, a size down from a comment on the page. */
 .pending .md-body {
   font-size: 12px;
-  color: var(--text-dim);
 }
 
 .pending .md-body :deep(p) {
   margin: 4px 0;
-  white-space: pre-wrap;
-  word-break: break-word;
-}
-
-.pending .md-body :deep(code) {
-  font-family: var(--mono);
-  background: var(--bg-raised);
-  padding: 1px 4px;
-  border-radius: 3px;
-  font-size: 11px;
 }
 
 .line-extra {

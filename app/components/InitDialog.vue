@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed, ref } from 'vue'
-import { invoke } from '@tauri-apps/api/core'
+import { invoke } from '~/composables/useInvoke'
 import { open } from '@tauri-apps/plugin-dialog'
 import { FolderOpen } from 'lucide-vue-next'
 import { useGit, type NewRepo } from '~/composables/useGit'

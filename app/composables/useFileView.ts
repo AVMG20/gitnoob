@@ -152,6 +152,7 @@ export function buildRows(files: FileEntry[], mode: 'tree' | 'path', collapsed: 
       let label = dir.name
       while (joined.dirs.size === 1 && joined.files.length === 0) {
         const only = [...joined.dirs.values()][0]
+        if (!only) break
         label = `${label}/${only.name}`
         joined = only
       }

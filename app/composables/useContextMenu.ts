@@ -4,7 +4,19 @@ export interface MenuItem {
   label: string
   /** A lucide component, passed straight to the renderer. */
   icon?: unknown
-  action?: () => void | Promise<void>
+  /**
+   * What the item does. Whatever it hands back is thrown away — the menu closes
+   * either way — so the return type is `unknown` rather than `void`.
+   *
+   * It was `() => void | Promise<void>`, and that is not the same thing:
+   * TypeScript lets a function returning a value stand in for one returning
+   * `void`, but not for a *union* containing `void`. Since almost every action
+   * here is an existing operation that reports something back — a checkout
+   * returning its outcome, a copy returning what it copied — the old signature
+   * rejected most of the menu, which is where the bulk of this project's type
+   * errors came from.
+   */
+  action?: () => unknown
   /** Renders a divider; label is ignored. */
   separator?: boolean
   /** Renders in red, for anything that destroys work. */

@@ -419,3 +419,16 @@ export function highlightWhole(text: string, language: string | null): string[] 
   // plain text: the marks in the gutter are keyed by line number.
   return lines.length === source.length ? lines : source.map(escapeHtml)
 }
+
+/**
+ * Colours a fenced code block out of a comment body.
+ *
+ * The fence names its own language rather than a path doing it, so the name is
+ * asked of highlight.js directly — that way its aliases (`ts`, `sh`, `yml`)
+ * work, and a fence that names nothing we have is escaped rather than guessed
+ * at.
+ */
+export function highlightBlock(code: string, info: string): string {
+  const language = info && hljs.getLanguage(info) ? info : null
+  return highlightWhole(code, language).join('\n')
+}

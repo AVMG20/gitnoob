@@ -412,6 +412,7 @@ function step(by: number) {
   if (!matches.value.length) return
   hit.value = (hit.value + by + matches.value.length) % matches.value.length
   const row = matches.value[hit.value]
+  if (!row) return
   git.select(row.oid)
   scrollTo(row.oid)
 }
@@ -433,9 +434,10 @@ watch(
   () => store.query,
   async () => {
     hit.value = 0
-    if (matches.value.length) {
+    const first = matches.value[0]
+    if (first) {
       await nextTick()
-      scrollTo(matches.value[0].oid)
+      scrollTo(first.oid)
     }
   }
 )

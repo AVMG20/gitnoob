@@ -57,13 +57,22 @@ export function useDragDrop() {
       if (zone && entering && zone.contains(entering)) return
       if (state.over === id) state.over = null
     },
-    /** Returns the payload if this zone accepts it, and clears the drag. */
-    take(accepts: Payload['kind'][]): Payload | null {
+    /**
+     * Returns the payload if this zone accepts it, and clears the drag.
+     *
+     * Generic over the kinds asked for, so what comes back is narrowed to
+     * those: a zone that takes `['branch', 'commit']` gets a branch or a
+     * commit, and can rule the commit out and read the branch's name. Typed as
+     * the whole union it would hand back a file or a tag the caller has already
+     * excluded by asking, and every field access after that needs a guard for
+     * a case that cannot happen.
+     */
+    take<K extends Payload['kind']>(accepts: K[]): Extract<Payload, { kind: K }> | null {
       const payload = state.payload
       state.payload = null
       state.over = null
-      if (!payload || !accepts.includes(payload.kind)) return null
-      return payload
+      if (!payload || !accepts.includes(payload.kind as K)) return null
+      return payload as Extract<Payload, { kind: K }>
     }
   }
 }

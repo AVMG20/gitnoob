@@ -762,21 +762,6 @@ async function aiEveryFile() {
 }
 
 /** The model, over more than the one region on screen. */
-function aiForFile(event: MouseEvent) {
-  menu.show(
-    event,
-    [
-      {
-        label: `Resolve all ${conflicts.value.length} conflicts in this file`,
-        icon: Sparkles,
-        disabled: thinking.value !== null || sweeping.value !== null,
-        action: aiResolveAll
-      }
-    ],
-    path.value ?? ''
-  )
-}
-
 /** The whole merge, answered from one menu. */
 function everyFile(event: MouseEvent) {
   const count = files.value.length
@@ -1081,28 +1066,22 @@ onUnmounted(() => window.removeEventListener('keydown', onKey))
           </span>
           <span v-if="stance(active) === 'mixed'" class="chip mixed">picked line by line</span>
           <span v-else-if="stance(active) === 'edited'" class="chip edited-chip">AI or hand edit</span>
-          <!-- One region on the click, since that is the one being looked at,
-               and the whole file behind the chevron. -->
-          <span v-if="ai.configured.value" class="ai-split">
-            <button
-              class="btn tiny ai"
-              :disabled="thinking !== null || sweeping !== null"
-              title="Ask the model to merge this one region"
-              @click="aiResolve(active)"
-            >
-              <Spinner v-if="thinking === active" :size="12" />
-              <Sparkles v-else :size="12" />
-              AI here
-            </button>
-            <button
-              class="btn tiny ai more"
-              :disabled="thinking !== null || sweeping !== null"
-              title="Ask the model to resolve every conflict in this file"
-              @click="aiForFile"
-            >
-              <ChevronDown :size="11" />
-            </button>
-          </span>
+          <!-- The whole file, like every button to its left. It used to do the
+               one region on the click and hide the file behind a chevron, which
+               made it the only control on this row that meant something
+               narrower than the others. Per-region is still where the region
+               itself is, on its own AI button. -->
+          <button
+            v-if="ai.configured.value"
+            class="btn tiny ai"
+            :disabled="thinking !== null || sweeping !== null"
+            title="Ask the model to resolve every conflict in this file"
+            @click="aiResolveAll"
+          >
+            <Spinner v-if="thinking !== null || sweeping?.file === path" :size="12" />
+            <Sparkles v-else :size="12" />
+            Resolve with AI
+          </button>
 
           <span class="spacer" />
 
@@ -1943,25 +1922,6 @@ onUnmounted(() => window.removeEventListener('keydown', onKey))
   margin: 0 0 10px;
   font-size: 12.5px;
   line-height: 1.55;
-}
-
-/* The two halves of one button: the region on the left, the file behind the
-   chevron on the right. */
-.ai-split {
-  display: inline-flex;
-}
-
-.ai-split .btn:first-child {
-  border-top-right-radius: 0;
-  border-bottom-right-radius: 0;
-}
-
-.ai-split .more {
-  padding-left: 4px;
-  padding-right: 4px;
-  border-top-left-radius: 0;
-  border-bottom-left-radius: 0;
-  margin-left: 1px;
 }
 
 .chip.busy {

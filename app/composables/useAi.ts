@@ -1,4 +1,4 @@
-import { invoke } from '@tauri-apps/api/core'
+import { invoke } from './useInvoke'
 import { computed, reactive } from 'vue'
 
 export interface Model {

@@ -1,6 +1,7 @@
 {
   "name": "gitnoob",
   "private": true,
+  "license": "GPL-3.0-only",
   "type": "module",
   "scripts": {
     "dev": "nuxt dev",
@@ -19,7 +20,8 @@
     "@tauri-apps/plugin-process": "^2.3.1",
     "@tauri-apps/plugin-updater": "^2.10.1",
     "highlight.js": "^11.12.0",
-    "lucide-vue-next": "^1.0.0"
+    "lucide-vue-next": "^1.0.0",
+    "markdown-it": "^15.0.0"
   },
   "devDependencies": {
     "@tauri-apps/cli": "^2.0.0",

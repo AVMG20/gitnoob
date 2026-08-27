@@ -1,4 +1,4 @@
-import { invoke } from '@tauri-apps/api/core'
+import { aimAt, invoke } from './useInvoke'
 import { markRaw, reactive, ref } from 'vue'
 import { useConfig } from './useConfig'
 import { useToasts } from './useToasts'
@@ -629,6 +629,8 @@ async function guard<T>(label: string, fn: () => Promise<T>): Promise<T | null> 
  * came to disagree about what emptying it means.
  */
 function forget() {
+  // No repository is open, so nothing that follows is about one.
+  aimAt(null)
   store.repo = null
   clearData()
   store.detail = null
@@ -647,6 +649,9 @@ export function useGit() {
       invoke<RepoInfo>('open_repo', { path })
     )
     if (!info) return false
+    // From here every call says it is about this repository, so a switch to
+    // another tab cannot retarget work that is already under way.
+    aimAt(info.path)
     store.repo = info
     store.selected = WIP
     store.detail = null

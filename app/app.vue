@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed, defineAsyncComponent, onMounted, onUnmounted, ref, watch } from 'vue'
-import { invoke } from '@tauri-apps/api/core'
+import { invoke } from '~/composables/useInvoke'
 import { listen, type UnlistenFn } from '@tauri-apps/api/event'
 import { useGit } from '~/composables/useGit'
 import { useConfig } from '~/composables/useConfig'

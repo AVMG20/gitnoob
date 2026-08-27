@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed, reactive, ref, watch } from 'vue'
-import { invoke } from '@tauri-apps/api/core'
+import { invoke } from '~/composables/useInvoke'
 import {
   Archive,
   ArrowDown,
@@ -647,7 +647,7 @@ async function onDropOnBranch(event: MouseEvent, target: string, targetIsRemote:
         hint: fastForward ? 'forces a merge commit' : '',
         action: async () => {
           const outcome = await git.mergeInto(source, target, fastForward)
-          if (outcome?.conflicts.length) store.resolving = outcome.conflicts[0]
+          if (outcome?.conflicts.length) store.resolving = outcome.conflicts[0] ?? null
         }
       },
       // Offered only when it is on the table: the target has nothing of its
@@ -673,7 +673,7 @@ async function onDropOnBranch(event: MouseEvent, target: string, targetIsRemote:
               danger: true,
               action: async () => {
                 const outcome = await git.rebaseBranch(target, source)
-                if (outcome?.conflicts.length) store.resolving = outcome.conflicts[0]
+                if (outcome?.conflicts.length) store.resolving = outcome.conflicts[0] ?? null
               }
             }
           ]
@@ -733,7 +733,7 @@ function localMenu(event: MouseEvent, name: string, upstream: string | null) {
         disabled: isHead,
         action: async () => {
           const outcome = await git.merge(name, false)
-          if (outcome?.conflicts.length) store.resolving = outcome.conflicts[0]
+          if (outcome?.conflicts.length) store.resolving = outcome.conflicts[0] ?? null
         }
       },
       {
@@ -743,7 +743,7 @@ function localMenu(event: MouseEvent, name: string, upstream: string | null) {
         disabled: isHead,
         action: async () => {
           const outcome = await git.mergeInto(head.value, name, false)
-          if (outcome?.conflicts.length) store.resolving = outcome.conflicts[0]
+          if (outcome?.conflicts.length) store.resolving = outcome.conflicts[0] ?? null
         }
       },
       {
@@ -753,7 +753,7 @@ function localMenu(event: MouseEvent, name: string, upstream: string | null) {
         disabled: isHead,
         action: async () => {
           const outcome = await git.rebase(name)
-          if (outcome?.conflicts.length) store.resolving = outcome.conflicts[0]
+          if (outcome?.conflicts.length) store.resolving = outcome.conflicts[0] ?? null
         }
       },
       { separator: true, label: '' },
@@ -835,7 +835,7 @@ function remoteMenu(event: MouseEvent, remote: string, name: string) {
         icon: GitMerge,
         action: async () => {
           const outcome = await git.merge(full, false)
-          if (outcome?.conflicts.length) store.resolving = outcome.conflicts[0]
+          if (outcome?.conflicts.length) store.resolving = outcome.conflicts[0] ?? null
         }
       },
       {

@@ -1,5 +1,5 @@
 import { computed, reactive } from 'vue'
-import { invoke } from '@tauri-apps/api/core'
+import { invoke } from './useInvoke'
 import type { Label, Member, Review, ReviewDetail } from './useForge'
 import { useForge } from './useForge'
 import { parsePatch } from './usePatch'

@@ -1,5 +1,5 @@
 import { execFileSync } from 'node:child_process'
-import { readFileSync } from 'node:fs'
+import { readFileSync, writeFileSync } from 'node:fs'
 import { describe, expect, it } from 'vitest'
 import { contrast } from '../scripts/theme/color.mjs'
 
@@ -17,8 +17,18 @@ describe('the theme files', () => {
     const before = files.map((path) => readFileSync(path, 'utf8'))
     execFileSync('node', ['scripts/theme/generate.mjs'])
     const after = files.map((path) => readFileSync(path, 'utf8'))
+    // Running the generator is how the question is asked, so put back what was
+    // there before answering it: a failing check should not also leave two
+    // rewritten files behind for somebody to notice later.
+    files.forEach((path, at) => writeFileSync(path, before[at]!))
+    // The generator writes bare newlines. A Windows checkout of these files has
+    // CRLF in it, and comparing the two would fail on every machine that is not
+    // the one they were generated on, which says nothing about the palette.
+    const body = (text: string) => text.replace(/\r\n/g, '\n')
     files.forEach((path, at) => {
-      expect(after[at], `${path} is out of date — run \`npm run theme\``).toBe(before[at])
+      expect(body(after[at]!), `${path} is out of date — run \`npm run theme\``).toBe(
+        body(before[at]!)
+      )
     })
   })
 

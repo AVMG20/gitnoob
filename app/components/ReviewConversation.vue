@@ -517,57 +517,10 @@ async function save() {
   font-size: 12px;
 }
 
-/* The same markdown dressing the threads wear, for the description. */
+/* A comment body is dressed in main.css: v-html content carries no scope
+   attribute, and three components draw one. Where the description sits is all
+   this component has to say about it. */
 .md-body {
   margin-top: 9px;
-  font-size: 12.5px;
-  color: var(--text-dim);
-  min-width: 0;
-}
-
-.md-body :deep(p) {
-  margin: 6px 0;
-  white-space: pre-wrap;
-  word-break: break-word;
-}
-
-.md-body :deep(code) {
-  font-family: var(--mono);
-  background: var(--bg-raised);
-  padding: 1px 4px;
-  border-radius: 3px;
-  font-size: 11px;
-}
-
-.md-body :deep(pre) {
-  background: var(--bg-deep);
-  border: 1px solid var(--line-soft);
-  border-radius: 5px;
-  padding: 8px;
-  overflow: auto;
-}
-
-.md-body :deep(pre code) {
-  background: none;
-  padding: 0;
-}
-
-.md-body :deep(blockquote) {
-  border-left: 2px solid var(--line);
-  margin: 6px 0;
-  padding: 2px 10px;
-  color: var(--text-dim);
-}
-
-.md-body :deep(.mention),
-.md-body :deep(.ref) {
-  color: var(--accent-soft);
-  background: color-mix(in srgb, var(--accent) 12%, transparent);
-  border-radius: 3px;
-  padding: 0 3px;
-}
-
-.md-body :deep(a) {
-  color: var(--accent);
 }
 </style>

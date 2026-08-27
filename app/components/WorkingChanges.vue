@@ -268,7 +268,7 @@ function fileMenu(event: MouseEvent, path: string, side: 'staged' | 'unstaged', 
       <span class="grow">
         {{ conflicted.length }} conflicted {{ conflicted.length === 1 ? 'file' : 'files' }}
       </span>
-      <button class="btn tiny warn" @click="store.resolving = conflicted[0]">Resolve</button>
+      <button class="btn tiny warn" @click="store.resolving = conflicted[0] ?? null">Resolve</button>
     </div>
     <div v-if="conflicted.length" class="conflict-files">
       <button
