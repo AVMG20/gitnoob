@@ -214,9 +214,16 @@ export function markedLines(text: string | null, hunks: DiffHunk[]): Line[] {
   }))
 }
 
-/** One bar on the strip beside the scrollbar, in fractions of the whole. */
+/**
+ * One bar on the strip beside the scrollbar, in fractions of the whole.
+ *
+ * The first four say what happened to a line, which is what a diff has to
+ * report. The last three are the conflict resolver's, where the question is not
+ * what changed but what still wants an answer: a region nobody has looked at,
+ * one that has been decided, and one set to be dropped entirely.
+ */
 export interface Mark {
-  kind: 'added' | 'changed' | 'removed' | 'gone'
+  kind: 'added' | 'changed' | 'removed' | 'gone' | 'open' | 'settled' | 'dropped'
   top: number
   height: number
 }

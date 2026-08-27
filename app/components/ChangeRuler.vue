@@ -19,6 +19,15 @@ const props = defineProps<{
   container: HTMLElement | null
   /** Every change in the file, in fractions of its height. */
   marks: Mark[]
+  /**
+   * The one mark being worked on, drawn brighter and wider than the rest.
+   *
+   * The resolver walks from conflict to conflict, and the strip is the only
+   * thing on screen that can say where that is in the file as a whole.
+   */
+  active?: number | null
+  /** What the strip is pointing at, for the tooltip. */
+  hint?: string
 }>()
 
 const view = ref({ top: 0, height: 1 })
@@ -111,7 +120,7 @@ onBeforeUnmount(() => {
     ref="strip"
     class="ruler"
     :class="{ bare: !anything }"
-    title="Where the changes are — click to go there"
+    :title="props.hint ?? 'Where the changes are — click to go there'"
     @click="jump"
   >
     <span class="view" :style="{ top: `${view.top * 100}%`, height: `${view.height * 100}%` }" />
@@ -119,7 +128,7 @@ onBeforeUnmount(() => {
       v-for="(mark, index) in props.marks"
       :key="index"
       class="mark"
-      :class="mark.kind"
+      :class="[mark.kind, { now: index === props.active }]"
       :style="style(mark)"
     />
   </div>
@@ -162,6 +171,28 @@ onBeforeUnmount(() => {
 
 .mark.gone {
   background: var(--text-faint);
+}
+
+/* The resolver's three: still to look at, decided, and set to be dropped. */
+.mark.open {
+  background: var(--amber);
+}
+
+.mark.settled {
+  background: var(--green);
+}
+
+.mark.dropped {
+  background: var(--red);
+}
+
+/* The one being worked on: the full width of the strip, and outlined so it
+   reads as the current place even where it sits among a run of its neighbours. */
+.mark.now {
+  left: 0;
+  right: 0;
+  box-shadow: 0 0 0 1px var(--text);
+  border-radius: 2px;
 }
 
 /* Where you are now, drawn behind the marks so it never hides one. */

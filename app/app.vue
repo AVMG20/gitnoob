@@ -42,13 +42,21 @@ const ready = ref(false)
  * review nobody has to have open — impossible. This is the way in, and
  * `import.meta.dev` keeps it out of anything built for release.
  */
-const lab = import.meta.dev && window.location.search.includes('lab=review')
+const labKind = import.meta.dev
+  ? new URLSearchParams(window.location.search).get('lab')
+  : null
+const lab = labKind === 'review' || labKind === 'conflict'
 
 // Loaded only where it can be reached, so the fixture review is not bundled
 // into anything shipped: with `import.meta.dev` false the import goes with it.
 const DevReviewLab = import.meta.dev
   ? defineAsyncComponent(() => import('~/components/DevReviewLab.vue'))
   : null
+/** The conflict resolver on a fixture merge, at `?lab=conflict`. */
+const DevConflictLab = import.meta.dev
+  ? defineAsyncComponent(() => import('~/components/DevConflictLab.vue'))
+  : null
+const labPage = computed(() => (labKind === 'conflict' ? DevConflictLab : DevReviewLab))
 
 let fetchTimer: number | undefined
 let unlisten: UnlistenFn | undefined
@@ -233,7 +241,7 @@ onUnmounted(() => {
 </script>
 
 <template>
-  <component :is="DevReviewLab" v-if="lab && DevReviewLab" />
+  <component :is="labPage" v-if="lab && labPage" />
   <div v-else class="shell">
     <ProjectTabs @open="openProject" @clone="cloneOpen = true" @init="initOpen = true" />
 
