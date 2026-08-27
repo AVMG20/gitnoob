@@ -5,7 +5,7 @@
   "identifier": "dev.gitnoob.app",
   "build": {
     "beforeDevCommand": "npm run dev",
-    "devUrl": "http://localhost:3000",
+    "devUrl": "http://localhost:4783",
     "beforeBuildCommand": "npm run generate",
     "frontendDist": "../.output/public"
   },

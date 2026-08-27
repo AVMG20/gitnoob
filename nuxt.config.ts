@@ -9,6 +9,13 @@ export default defineNuxtConfig({
       meta: [{ name: 'viewport', content: 'width=device-width, initial-scale=1' }]
     }
   },
+  // A port of gitnoob's own, not 3000. The Tauri window points at a fixed
+  // address, and Nuxt moves to the next port when its own is taken — so with
+  // any other Node app on 3000, the window quietly loads that app instead and
+  // shows its errors as if they were ours. The vite `strictPort` below cannot
+  // prevent it: in dev Nuxt runs vite as middleware, and the port belongs to
+  // Nuxt's own listener. This must match `devUrl` in tauri.conf.json.
+  devServer: { port: 4783 },
   vite: {
     // Let the Tauri CLI own the terminal output.
     clearScreen: false,
