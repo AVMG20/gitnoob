@@ -250,13 +250,20 @@ pub fn stash_push(
         args.push(message);
     }
     let output = git_cmd::run_checked(&root, &args)?;
+    // Which stash this is, not just that there was one: undo pops the entry it
+    // made, and by the time anyone reaches for undo there may be others on top
+    // of it.
+    let made = git_cmd::run_checked(&root, &["rev-parse", "stash@{0}"])
+        .map(|out| out.trim().to_string())
+        .ok()
+        .filter(|oid| !oid.is_empty());
     journal::record(
         state,
         "stash",
         format!("Stash: {}", message.unwrap_or("uncommitted changes")),
         journal::current_branch(state),
         None,
-        None,
+        made,
         Mode::Stash,
         true,
     );

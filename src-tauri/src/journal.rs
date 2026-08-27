@@ -11,8 +11,6 @@ pub enum Mode {
     Soft,
     /// Move the branch pointer and the working tree. For merges.
     Hard,
-    /// `before` and `after` hold branch names rather than object ids.
-    Checkout,
     /// A stash push: undoing pops it back, redoing stashes again.
     Stash,
 }
@@ -143,10 +141,10 @@ pub fn stacks(state: &AppState) -> Stacks {
 }
 
 pub fn undo(state: &AppState) -> Result<String, String> {
-    let Some(entry) = state.journal(|journal| journal.take_undo()) else {
+    let Some(mut entry) = state.journal(|journal| journal.take_undo()) else {
         return Err("Nothing to undo".to_string());
     };
-    match step(state, &entry, Direction::Back) {
+    match step(state, &mut entry, Direction::Back) {
         Ok(message) => {
             state.journal(|journal| journal.put_redo(entry));
             Ok(message)
@@ -160,10 +158,10 @@ pub fn undo(state: &AppState) -> Result<String, String> {
 }
 
 pub fn redo(state: &AppState) -> Result<String, String> {
-    let Some(entry) = state.journal(|journal| journal.take_redo()) else {
+    let Some(mut entry) = state.journal(|journal| journal.take_redo()) else {
         return Err("Nothing to redo".to_string());
     };
-    match step(state, &entry, Direction::Forward) {
+    match step(state, &mut entry, Direction::Forward) {
         Ok(message) => {
             state.journal(|journal| journal.put_undo(entry));
             Ok(message)
@@ -180,7 +178,14 @@ enum Direction {
     Forward,
 }
 
-fn step(state: &AppState, entry: &Entry, direction: Direction) -> Result<String, String> {
+/// The index a stash commit sits at now, or `None` if it is no longer listed.
+fn stash_index(state: &AppState, oid: &str) -> Option<usize> {
+    let root = state.path().ok()?;
+    let listed = git_cmd::run_checked(&root, &["stash", "list", "--format=%H"]).ok()?;
+    listed.lines().position(|line| line.trim() == oid)
+}
+
+fn step(state: &AppState, entry: &mut Entry, direction: Direction) -> Result<String, String> {
     let root = state.path()?;
     let target = match direction {
         Direction::Back => entry.before.as_deref(),
@@ -188,24 +193,51 @@ fn step(state: &AppState, entry: &Entry, direction: Direction) -> Result<String,
     };
 
     match entry.mode {
-        Mode::Checkout => {
-            let branch = target.ok_or_else(|| "Nothing recorded to switch back to".to_string())?;
-            git_cmd::run_checked(&root, &["checkout", branch, "--"])?;
-            Ok(format!("Switched to {branch}"))
-        }
         Mode::Stash => match direction {
-            // Undoing a stash means putting the changes back.
+            // Undoing a stash means putting those changes back — that stash,
+            // not whatever is on top of the list now. Anything stashed since,
+            // here or in a terminal, sits above it.
             Direction::Back => {
-                git_cmd::run_checked(&root, &["stash", "pop"])?;
+                let made = entry
+                    .after
+                    .as_deref()
+                    .ok_or_else(|| "Nothing recorded to put back".to_string())?;
+                let at = stash_index(state, made).ok_or_else(|| {
+                    "That stash is not in the list any more, so there is nothing to put back"
+                        .to_string()
+                })?;
+                git_cmd::run_checked(&root, &["stash", "pop", &format!("stash@{{{at}}}")])?;
                 Ok(format!("Restored: {}", entry.label))
             }
             Direction::Forward => {
                 git_cmd::run_checked(&root, &["stash", "push", "--include-untracked"])?;
+                // It is a different stash now, and undoing again has to find
+                // this one rather than the one that is gone.
+                entry.after = git_cmd::run_checked(&root, &["rev-parse", "stash@{0}"])
+                    .map(|out| out.trim().to_string())
+                    .ok()
+                    .filter(|oid| !oid.is_empty());
                 Ok(format!("Stashed again: {}", entry.label))
             }
         },
         Mode::Soft | Mode::Hard => {
             let oid = target.ok_or_else(|| "Nothing recorded to move back to".to_string())?;
+            // Refuse if the branch has moved since, which means something the
+            // journal never saw — a commit in a terminal, a rebase in another
+            // window — and moving it back from here would take that with it.
+            let standing = match direction {
+                Direction::Back => entry.after.as_deref(),
+                Direction::Forward => entry.before.as_deref(),
+            };
+            if let (Some(expected), Some(actual)) = (standing, head_oid(state)) {
+                if expected != actual {
+                    return Err(format!(
+                        "{} is not where that step left it, so undoing it would move something \
+                         else. Whatever moved it happened outside this history.",
+                        entry.branch.clone().unwrap_or_else(|| "The branch".to_string())
+                    ));
+                }
+            }
             // Refuse if the user has since switched branches; resetting the wrong
             // branch to this commit would be worse than doing nothing.
             if let Some(expected) = &entry.branch {

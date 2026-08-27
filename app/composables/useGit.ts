@@ -293,7 +293,7 @@ export interface HistoryEntry {
   branch: string | null
   before: string | null
   after: string | null
-  mode: 'soft' | 'hard' | 'checkout' | 'stash'
+  mode: 'soft' | 'hard' | 'stash'
   destructive: boolean
   at: number
 }
@@ -884,7 +884,19 @@ export function useGit() {
     run,
     report,
 
-    checkout: (name: string) => run<string>('Checkout', 'checkout', { name }),
+    /**
+     * Switches branch, and says so only when something happened worth saying.
+     *
+     * A plain switch answers with nothing; one that had to set the uncommitted
+     * work down and pick it up on the other side answers with a sentence, and
+     * that is worth a notice — the branch changed and the changes came along,
+     * which is not obvious from a list that looks the same afterwards.
+     */
+    checkout: async (name: string) => {
+      const said = await run<string>('Checkout', 'checkout', { name })
+      if (said?.trim()) useToasts().info(said.trim())
+      return said
+    },
     /**
      * Checks out the branch a review was opened from, whatever it takes.
      *
