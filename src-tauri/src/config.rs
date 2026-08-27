@@ -108,6 +108,56 @@ pub struct Global {
     /// only check is the button in settings.
     #[serde(default = "yes")]
     pub check_updates: bool,
+    /// How big the window was when it was last closed.
+    #[serde(default)]
+    pub window: Option<WindowSize>,
+}
+
+/// The size the window is reopened at.
+///
+/// Kept in the config rather than left to the platform, because the platform
+/// only remembers it on one of the three this app runs on. Read back through
+/// [`WindowSize::sane`], which is what stands between a stored number and a
+/// window nobody can get hold of.
+#[derive(Serialize, Deserialize, Clone, Copy, Debug, PartialEq)]
+pub struct WindowSize {
+    pub width: f64,
+    pub height: f64,
+    /// Full screen is a state rather than a size: restoring the size a window
+    /// had while maximised would give a window exactly covering the screen but
+    /// not maximised, which is not the same thing to drag or to unmaximise.
+    #[serde(default)]
+    pub maximized: bool,
+}
+
+impl WindowSize {
+    /// The floor. Below this there is not enough window to find the corner of.
+    pub const MIN: f64 = 700.0;
+    /// The ceiling, when nothing is known about the screen: past this it is a
+    /// number that came from somewhere other than a person resizing a window.
+    pub const MAX: f64 = 8000.0;
+
+    /// The stored size, made safe to open a window at.
+    ///
+    /// `screen` is what the display can actually show, when that is known: a
+    /// window saved on a 5K monitor and reopened on a laptop is the commonest
+    /// way to end up with a title bar somewhere off the top right of the world.
+    /// Anything that is not a number at all — a hand-edited config, a crash
+    /// mid-write — is refused outright rather than clamped, since there is no
+    /// telling what it was meant to be.
+    pub fn sane(&self, screen: Option<(f64, f64)>) -> Option<WindowSize> {
+        if !self.width.is_finite() || !self.height.is_finite() {
+            return None;
+        }
+        let (max_w, max_h) = screen
+            .map(|(w, h)| (w.min(Self::MAX), h.min(Self::MAX)))
+            .unwrap_or((Self::MAX, Self::MAX));
+        Some(WindowSize {
+            width: self.width.clamp(Self::MIN, max_w.max(Self::MIN)),
+            height: self.height.clamp(Self::MIN, max_h.max(Self::MIN)),
+            maximized: self.maximized,
+        })
+    }
 }
 
 #[derive(Serialize, Deserialize, Clone)]
@@ -190,6 +240,7 @@ impl Default for Global {
             diverged_checkout: default_diverged_checkout(),
             show_avatars: true,
             check_updates: true,
+            window: None,
         }
     }
 }
@@ -552,6 +603,39 @@ pub const OPENROUTER_KEY: &str = "openrouter";
 
 #[cfg(test)]
 mod tests {
+
+    #[test]
+    fn a_saved_window_size_is_clamped_to_something_reachable() {
+        let tiny = WindowSize { width: 40.0, height: 12.0, maximized: false };
+        let fitted = tiny.sane(None).expect("a size");
+        assert_eq!(fitted.width, WindowSize::MIN);
+        assert_eq!(fitted.height, WindowSize::MIN);
+
+        // A window bigger than the screen it is opening on is a title bar out
+        // of reach, which is the way this goes wrong that nobody can undo.
+        let huge = WindowSize { width: 5000.0, height: 3000.0, maximized: false };
+        let fitted = huge.sane(Some((1440.0, 900.0))).expect("a size");
+        assert_eq!(fitted.width, 1440.0);
+        assert_eq!(fitted.height, 900.0);
+
+        // With no screen to measure against, only the absurd is refused.
+        let vast = WindowSize { width: 99_000.0, height: 99_000.0, maximized: false };
+        assert_eq!(vast.sane(None).unwrap().width, WindowSize::MAX);
+    }
+
+    #[test]
+    fn a_size_that_is_not_a_number_is_refused_rather_than_repaired() {
+        let broken = WindowSize { width: f64::NAN, height: 800.0, maximized: false };
+        assert!(broken.sane(None).is_none());
+        let endless = WindowSize { width: 900.0, height: f64::INFINITY, maximized: false };
+        assert!(endless.sane(None).is_none());
+    }
+
+    #[test]
+    fn a_size_that_was_already_sensible_is_left_alone() {
+        let mine = WindowSize { width: 1680.0, height: 1040.0, maximized: false };
+        assert_eq!(mine.sane(Some((3840.0, 2160.0))), Some(mine));
+    }
     use super::*;
     use std::sync::atomic::{AtomicUsize, Ordering};
 

@@ -6,8 +6,8 @@
  */
 
 export type ThemeId =
-  | 'slate'
   | 'fjord'
+  | 'slate'
   | 'pine'
   | 'dusk'
   | 'plum'
@@ -36,55 +36,58 @@ export interface Theme {
   swatch: [string, string, string]
 }
 
+/** The one the app opens with, and the one `:root` carries. */
+export const DEFAULT_THEME: ThemeId = 'fjord'
+
 export const THEMES: Theme[] = [
-  {
-    id: 'slate',
-    name: 'Slate',
-    kind: 'Semi-dark',
-    note: 'The default: a cool grey window with a blue accent.',
-    swatch: ['#14181d', '#4f9cf9', '#d4dde9']
-  },
   {
     id: 'fjord',
     name: 'Fjord',
     kind: 'Semi-dark',
-    note: 'Slate with more blue in the ground.',
+    note: 'The default: a blue-grey window that keeps out of the way.',
     swatch: ['#121b24', '#42addf', '#d5e1ec']
+  },
+  {
+    id: 'slate',
+    name: 'Slate',
+    kind: 'Semi-dark',
+    note: 'Cooler and greyer, with a brighter blue.',
+    swatch: ['#15181b', '#4f9cf9', '#d6dde5']
   },
   {
     id: 'pine',
     name: 'Pine',
     kind: 'Semi-dark',
     note: 'A green-grey window; the accent is a deep teal.',
-    swatch: ['#0a1410', '#3ebca5', '#cadbd4']
+    swatch: ['#0e1311', '#3ebca5', '#cedad5']
   },
   {
     id: 'dusk',
     name: 'Dusk',
     kind: 'Semi-dark',
     note: 'Warm grey, with a violet accent.',
-    swatch: ['#1c1920', '#a787ef', '#e4ddea']
+    swatch: ['#1c1a1d', '#a787ef', '#e2dee7']
   },
   {
     id: 'plum',
     name: 'Plum',
     kind: 'Semi-dark',
     note: 'A purple-tinted window and a pink accent.',
-    swatch: ['#1d141d', '#ea7ab2', '#e4d8e3']
+    swatch: ['#1a1619', '#ea7ab2', '#e2d9e1']
   },
   {
     id: 'moss',
     name: 'Moss',
     kind: 'Semi-dark',
     note: 'An olive window with a lime accent.',
-    swatch: ['#161b11', '#9bcf59', '#dae0d3']
+    swatch: ['#181a15', '#9bcf59', '#dbe0d6']
   },
   {
     id: 'ink',
     name: 'Ink',
     kind: 'Semi-dark',
     note: 'Nearly black, with a colder blue.',
-    swatch: ['#0b0f15', '#459ced', '#ccd6e2']
+    swatch: ['#0c0f13', '#459ced', '#ced6e0']
   },
   {
     id: 'obsidian',

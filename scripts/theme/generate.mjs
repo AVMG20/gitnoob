@@ -263,7 +263,12 @@ function build() {
  */`)
 
   for (const theme of THEMES) {
-    const selector = theme.name === 'slate' ? ':root' : `[data-theme='${theme.name}']`
+    // The default is written twice: on `:root`, which is what the window is
+    // painted with before any script has run, and under its own name, which is
+    // what the attribute selects once one has.
+    const selector = theme.default
+      ? `:root,\n[data-theme='${theme.name}']`
+      : `[data-theme='${theme.name}']`
     out.push(`\n/* ${theme.label} — ${theme.note} */`)
     out.push(block(selector, { ...tokens(theme, 'normal'), ...aliasBlock(theme) }))
 
@@ -272,7 +277,10 @@ function build() {
       const only = Object.fromEntries(
         ['--fg-muted', '--fg-subtle', '--border', '--border-soft'].map((key) => [key, all[key]])
       )
-      out.push(block(`${selector}[data-contrast='${level}']`, only))
+      const at = theme.default
+        ? `:root[data-contrast='${level}'],\n[data-theme='${theme.name}'][data-contrast='${level}']`
+        : `${selector}[data-contrast='${level}']`
+      out.push(block(at, only))
     }
   }
 
@@ -330,6 +338,9 @@ export interface Theme {
   /** Background, accent, text — the three colours a card is painted with. */
   swatch: [string, string, string]
 }
+
+/** The one the app opens with, and the one \`:root\` carries. */
+export const DEFAULT_THEME: ThemeId = '${THEMES.find((one) => one.default)?.name ?? THEMES[0].name}'
 
 export const THEMES: Theme[] = [
 ${rows.join(',\n')}

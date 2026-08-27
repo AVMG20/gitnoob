@@ -109,27 +109,40 @@ const CONTRAST = {
  */
 const LANE_HUES = [254.6, 73, 155.7, 13.7, 300, 205, 350, 130, 40, 275]
 
-/** Themes, in the order the settings list shows them. */
+/**
+ * Themes, in the order the settings list shows them; the default comes first.
+ *
+ * A dark theme's ground is very nearly grey. It keeps a trace of its hue —
+ * enough that Pine is not Plum with a different accent — but a window is
+ * something you sit in front of for eight hours, and a page tinted far enough
+ * to be named a colour is a page that is tiring before it is characterful.
+ * What carries a theme is its accent, what it does to a selected row, and the
+ * colours it draws the graph in.
+ *
+ * Fjord is the ceiling: a blue-grey that still reads as grey. Nothing else
+ * carries more colour in its ground than that, and most carry half.
+ */
 const THEMES = [
   {
-    name: 'slate',
-    label: 'Slate',
+    name: 'fjord',
+    label: 'Fjord',
     family: 'dark',
-    note: 'The default: a cool grey window with a blue accent.',
-    bg: { l: 0.2071, c: 0.0117, h: 254.1 },
-    primary: { l: 0.687, c: 0.1575, h: 254.6 },
+    default: true,
+    note: 'The default: a blue-grey window that keeps out of the way.',
+    bg: { l: 0.2184, c: 0.0223, h: 245.8 },
+    primary: { l: 0.7069, c: 0.1201, h: 232.4 },
     danger: { l: 0.6409, c: 0.171, h: 13.7 },
     success: { l: 0.7323, c: 0.1333, h: 155.7 },
     warning: { l: 0.7831, c: 0.1453, h: 73 },
     info: { l: 0.6782, c: 0.171, h: 300 }
   },
   {
-    name: 'fjord',
-    label: 'Fjord',
+    name: 'slate',
+    label: 'Slate',
     family: 'dark',
-    note: 'Slate with more blue in the ground.',
-    bg: { l: 0.2184, c: 0.0223, h: 245.8 },
-    primary: { l: 0.7069, c: 0.1201, h: 232.4 },
+    note: 'Cooler and greyer, with a brighter blue.',
+    bg: { l: 0.2071, c: 0.008, h: 254.1 },
+    primary: { l: 0.687, c: 0.1575, h: 254.6 },
     danger: { l: 0.6409, c: 0.171, h: 13.7 },
     success: { l: 0.7323, c: 0.1333, h: 155.7 },
     warning: { l: 0.7831, c: 0.1453, h: 73 },
@@ -140,7 +153,7 @@ const THEMES = [
     label: 'Pine',
     family: 'dark',
     note: 'A green-grey window; the accent is a deep teal.',
-    bg: { l: 0.1802, c: 0.0175, h: 168.9 },
+    bg: { l: 0.1802, c: 0.009, h: 168.9 },
     primary: { l: 0.7207, c: 0.1145, h: 178.5 },
     danger: { l: 0.6409, c: 0.171, h: 13.7 },
     success: { l: 0.7323, c: 0.1333, h: 155.7 },
@@ -152,7 +165,7 @@ const THEMES = [
     label: 'Dusk',
     family: 'dark',
     note: 'Warm grey, with a violet accent.',
-    bg: { l: 0.2197, c: 0.0146, h: 308.6 },
+    bg: { l: 0.2197, c: 0.008, h: 308.6 },
     primary: { l: 0.6957, c: 0.1509, h: 296.5 },
     danger: { l: 0.6409, c: 0.171, h: 13.7 },
     success: { l: 0.7323, c: 0.1333, h: 155.7 },
@@ -164,7 +177,7 @@ const THEMES = [
     label: 'Plum',
     family: 'dark',
     note: 'A purple-tinted window and a pink accent.',
-    bg: { l: 0.2054, c: 0.0227, h: 327.3 },
+    bg: { l: 0.2054, c: 0.009, h: 327.3 },
     primary: { l: 0.7223, c: 0.1512, h: 350.1 },
     danger: { l: 0.6409, c: 0.171, h: 13.7 },
     success: { l: 0.7323, c: 0.1333, h: 155.7 },
@@ -176,7 +189,7 @@ const THEMES = [
     label: 'Moss',
     family: 'dark',
     note: 'An olive window with a lime accent.',
-    bg: { l: 0.2127, c: 0.0208, h: 128.4 },
+    bg: { l: 0.2127, c: 0.009, h: 128.4 },
     primary: { l: 0.7935, c: 0.1584, h: 129.4 },
     danger: { l: 0.6409, c: 0.171, h: 13.7 },
     success: { l: 0.7323, c: 0.1333, h: 155.7 },
@@ -188,7 +201,7 @@ const THEMES = [
     label: 'Ink',
     family: 'dark',
     note: 'Nearly black, with a colder blue.',
-    bg: { l: 0.1676, c: 0.0136, h: 254.6 },
+    bg: { l: 0.1676, c: 0.0105, h: 254.6 },
     primary: { l: 0.6759, c: 0.1461, h: 249.6 },
     danger: { l: 0.6409, c: 0.171, h: 13.7 },
     success: { l: 0.7323, c: 0.1333, h: 155.7 },

@@ -1316,6 +1316,91 @@ fn open_external(url: String) -> Result<(), String> {
  * Failing to reach it is not worth a word to the user: the app works, the
  * scrolling is merely the one WebKit chose.
  */
+/// Opens the window at the size it was left at.
+///
+/// Read through `sane`, which clamps it to something a person can still get
+/// hold of and to something the screen can actually show — a size saved on a
+/// large monitor and reopened on a laptop is the everyday way to end up with a
+/// window bigger than the desktop and a title bar out of reach.
+fn restore_size(window: &tauri::WebviewWindow, saved: Option<config::WindowSize>) {
+    let Some(saved) = saved else { return };
+    // What the screen can show, in the same units the window is sized in.
+    let screen = window
+        .current_monitor()
+        .ok()
+        .flatten()
+        .map(|monitor| {
+            let size = monitor.size().to_logical::<f64>(monitor.scale_factor());
+            (size.width, size.height)
+        });
+    let Some(size) = saved.sane(screen) else { return };
+
+    if saved.maximized {
+        let _ = window.maximize();
+        return;
+    }
+    let _ = window.set_size(tauri::LogicalSize::new(size.width, size.height));
+    // Sizing a window leaves it where it was, which for a window that has grown
+    // can be half off the screen.
+    let _ = window.center();
+}
+
+/// Remembers the size the window is left at.
+///
+/// Written when the window is resized rather than when the app closes: a client
+/// that is killed, crashes, or is quit by the machine shutting down would
+/// otherwise never save anything, and this is a setting nobody would think to
+/// check had been saved. Resizing sends an event per frame, so it is written
+/// only once the size has held still for a moment.
+fn remember_size(app: &tauri::AppHandle) {
+    let Some(window) = app.get_webview_window("main") else {
+        return;
+    };
+    let handle = app.clone();
+    let pending: std::sync::Arc<std::sync::atomic::AtomicU64> =
+        std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0));
+
+    window.on_window_event(move |event| {
+        let tauri::WindowEvent::Resized(_) = event else {
+            return;
+        };
+        // Each resize event cancels the last: only the one that is still the
+        // newest a second later writes anything.
+        let ticket = pending.fetch_add(1, std::sync::atomic::Ordering::SeqCst) + 1;
+        let handle = handle.clone();
+        let pending = pending.clone();
+        std::thread::spawn(move || {
+            std::thread::sleep(std::time::Duration::from_millis(700));
+            if pending.load(std::sync::atomic::Ordering::SeqCst) != ticket {
+                return;
+            }
+            let Some(window) = handle.get_webview_window("main") else {
+                return;
+            };
+            // A minimised window reports a size of nothing at all, which is not
+            // a size to come back to.
+            if window.is_minimized().unwrap_or(false) {
+                return;
+            }
+            let maximized = window.is_maximized().unwrap_or(false);
+            let Ok(size) = window.inner_size() else { return };
+            let scale = window.scale_factor().unwrap_or(1.0);
+            let logical = size.to_logical::<f64>(scale);
+            let size = config::WindowSize {
+                width: logical.width,
+                height: logical.height,
+                maximized,
+            };
+            // Saved as given; the guards are on the way back out, where they
+            // can also take the screen it is being opened on into account.
+            if size.sane(None).is_some() {
+                let state = handle.state::<AppState>();
+                let _ = state.update_config(|config| config.global.window = Some(size));
+            }
+        });
+    });
+}
+
 #[cfg(target_os = "linux")]
 fn snap_scrolling(window: &tauri::WebviewWindow) {
     use webkit2gtk::{SettingsExt, WebViewExt};
@@ -1346,7 +1431,12 @@ pub fn run() {
             git_cmd::report_to(move |command| {
                 let _ = reporting.emit("git-command", command);
             });
+            let saved = state.config().global.window;
             app.manage(state);
+            if let Some(window) = app.get_webview_window("main") {
+                restore_size(&window, saved);
+            }
+            remember_size(app.handle());
             // Holds the watch for whichever repository is open; empty until one
             // is.
             app.manage(watch::Slot::default());

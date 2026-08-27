@@ -1,6 +1,6 @@
 import { ref } from 'vue'
 import { refreshLanes } from './useGit'
-import { THEMES, type ThemeId } from './themeList'
+import { DEFAULT_THEME, THEMES, type ThemeId } from './themeList'
 
 /**
  * How much contrast the window is asked for, over and above the theme.
@@ -22,7 +22,7 @@ export const CONTRASTS: { id: Contrast; name: string; note: string }[] = [
 const KEY = 'gitnoob.theme'
 const CONTRAST_KEY = 'gitnoob.contrast'
 
-const theme = ref<ThemeId>('slate')
+const theme = ref<ThemeId>(DEFAULT_THEME)
 const contrast = ref<Contrast>('normal')
 
 /**
