@@ -179,7 +179,11 @@ enum Direction {
 }
 
 /// The index a stash commit sits at now, or `None` if it is no longer listed.
-fn stash_index(state: &AppState, oid: &str) -> Option<usize> {
+///
+/// `stash@{0}` is whatever was stashed last, which is not the same thing as the
+/// stash you mean: anything stashed since — here, or in a terminal — sits above
+/// it. Naming the commit is the only way to be sure.
+pub fn stash_index(state: &AppState, oid: &str) -> Option<usize> {
     let root = state.path().ok()?;
     let listed = git_cmd::run_checked(&root, &["stash", "list", "--format=%H"]).ok()?;
     listed.lines().position(|line| line.trim() == oid)

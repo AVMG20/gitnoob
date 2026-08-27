@@ -539,7 +539,7 @@ fn carry(state: &AppState, name: &str, args: &[&str], refusal: &str) -> Result<S
             && git_cmd::run_checked(&root, &["stash", "apply"]).is_ok());
 
     if landed {
-        drop_stash(&root, &held);
+        drop_stash(state, &held);
         return Ok(format!("Switched to {name}, bringing your changes with you"));
     }
 
@@ -560,21 +560,23 @@ fn carry(state: &AppState, name: &str, args: &[&str], refusal: &str) -> Result<S
     Err(in_the_way(name, refusal))
 }
 
-/// Removes the stash this made, and only if it is still the one on top.
+/// Removes the stash this made, wherever it has ended up in the list.
 ///
-/// Anything could have added a stash in between — the user, in another window,
-/// in a terminal — and dropping the top of the list without looking is how a
-/// tool eats work nobody asked it to touch.
-fn drop_stash(root: &std::path::Path, held: &str) {
+/// It has to go: a switch that carried the work across leaves a stash holding a
+/// copy of changes that are now in the working tree, and a morning of hopping
+/// between branches would leave a list of them. It is found by its commit id
+/// rather than dropped off the top, because anything could have added a stash
+/// in between — the user, another window, a terminal — and dropping the top of
+/// the list without looking is how a tool eats work nobody asked it to touch.
+fn drop_stash(state: &AppState, held: &str) {
     if held.is_empty() {
         return;
     }
-    let top = git_cmd::run_checked(root, &["rev-parse", "stash@{0}"])
-        .map(|out| out.trim().to_string())
-        .unwrap_or_default();
-    if top == held {
-        let _ = git_cmd::run_checked(root, &["stash", "drop"]);
-    }
+    let Ok(root) = state.path() else { return };
+    let Some(at) = crate::journal::stash_index(state, held) else {
+        return;
+    };
+    let _ = git_cmd::run_checked(&root, &["stash", "drop", &format!("stash@{{{at}}}")]);
 }
 
 /// Whether a name is already a branch here.
