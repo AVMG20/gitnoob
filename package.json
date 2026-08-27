@@ -10,7 +10,8 @@
     "tauri": "tauri",
     "release": "node scripts/release.mjs",
     "test": "vitest run",
-    "typecheck": "nuxt prepare && vue-tsc --noEmit"
+    "typecheck": "nuxt prepare && vue-tsc --noEmit",
+    "theme": "node scripts/theme/generate.mjs"
   },
   "dependencies": {
     "@tauri-apps/api": "^2.0.0",

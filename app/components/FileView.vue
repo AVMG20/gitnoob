@@ -299,7 +299,7 @@ const ROW = CODE_ROW
   border-left: 3px solid var(--red-soft);
   border-radius: 4px;
   background: var(--bg-raised);
-  box-shadow: 0 6px 20px rgba(0, 0, 0, 0.35);
+  box-shadow: 0 6px 20px var(--shadow);
   cursor: auto;
 }
 

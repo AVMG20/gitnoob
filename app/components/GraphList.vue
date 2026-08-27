@@ -12,6 +12,7 @@ import {
   GitCommitHorizontal,
   MonitorDot,
   Search,
+  Settings2,
   Tag,
   Undo2,
   X
@@ -40,7 +41,7 @@ import {
 import { avatarFor, initials, tint } from '~/composables/useAvatars'
 import { useContextMenu } from '~/composables/useContextMenu'
 import { useDragDrop } from '~/composables/useDragDrop'
-import { useShortcuts } from '~/composables/useShortcuts'
+import { keyLabel, useShortcuts } from '~/composables/useShortcuts'
 import { useColumns, type ColumnId } from '~/composables/useColumns'
 import { useConfig } from '~/composables/useConfig'
 import { useToasts } from '~/composables/useToasts'
@@ -181,9 +182,22 @@ const matches = computed(() =>
 )
 const matchIds = computed(() => new Set(matches.value.map((row) => row.oid)))
 
-const first = computed(() => Math.max(0, Math.floor(scrollTop.value / ROW) - OVERSCAN))
+/**
+ * How far the commits sit below the top of the scroller.
+ *
+ * The working tree is the first row of the list rather than a strip pinned
+ * above it: it scrolls away like anything else, and being an ordinary row is
+ * what keeps its dot in line with the dots under it. Everything that turns a
+ * scroll position into a row index has to step over it.
+ */
+const ABOVE = ROW
+
+/** Where the list is scrolled to, counted from the first commit. */
+const listTop = computed(() => Math.max(0, scrollTop.value - ABOVE))
+
+const first = computed(() => Math.max(0, Math.floor(listTop.value / ROW) - OVERSCAN))
 const last = computed(() =>
-  Math.min(total.value, Math.ceil((scrollTop.value + height.value) / ROW) + OVERSCAN)
+  Math.min(total.value, Math.ceil((listTop.value + height.value) / ROW) + OVERSCAN)
 )
 /**
  * Everything a row needs in order to draw, worked out once per commit.
@@ -314,10 +328,10 @@ function headTrace(index: number) {
 const headOffScreen = computed(() => {
   if (headIndex.value < 0) return false
   const top = headIndex.value * ROW
-  return top + ROW < scrollTop.value || top > scrollTop.value + height.value
+  return top + ROW < listTop.value || top > listTop.value + height.value
 })
 /** Which way to send the eye — and the scroll — to reach it. */
-const headBelow = computed(() => headIndex.value * ROW > scrollTop.value)
+const headBelow = computed(() => headIndex.value * ROW > listTop.value)
 
 const x = (lane: number) => Math.min(lane, MAX_LANES - 1) * LANE + LANE / 2 + PAD
 
@@ -387,7 +401,7 @@ function measure() {
 function scrollTo(oid: string) {
   const index = store.rows.findIndex((row) => row.oid === oid)
   if (index < 0 || !viewport.value) return
-  const target = Math.max(0, index * ROW - height.value / 2 + ROW)
+  const target = Math.max(0, ABOVE + index * ROW - height.value / 2 + ROW)
   // Gliding is worth it across a screen or two. Across ten thousand rows it is
   // a long blur that ends somewhere the eye did not follow, so that jumps.
   const far = Math.abs(target - viewport.value.scrollTop) > height.value * 8
@@ -1004,59 +1018,86 @@ onUnmounted(() => {
               @dblclick="cols.resetWidth('date')" />
         <span class="col-date" :style="box('date')">Date</span>
       </template>
-    </div>
 
-    <!-- The working tree, always the top row and selected by default. -->
-    <div
-      class="wip"
-      :class="{ on: store.selected === WIP }"
-      @click="git.select(WIP)"
-      @contextmenu="wipMenu($event)"
-    >
-      <span v-if="cols.state.shown.refs" class="col-refs" :style="box('refs')" />
-      <span v-if="cols.state.shown.graph" class="cell-box" :style="box('graph')">
-      <svg class="cell" :width="graphWidth" :height="ROW" :viewBox="`0 0 ${graphWidth} ${ROW}`">
-        <path
-          v-if="store.rows.length"
-          :d="`M${x(headLane)},${ROW / 2} L${x(headLane)},${ROW}`"
-          :stroke="laneColor(headColor)"
-          stroke-width="2"
-          stroke-dasharray="2 3"
-          stroke-linecap="round"
-          fill="none"
-        />
-        <circle
-          :cx="x(headLane)"
-          :cy="ROW / 2"
-          r="4"
-          fill="var(--bg)"
-          :stroke="dirty || conflicts ? 'var(--amber)' : 'var(--text-faint)'"
-          stroke-width="1.8"
-          :stroke-dasharray="dirty || conflicts ? '' : '2 2'"
-        />
-      </svg>
+      <!-- The two things you had to know a keystroke to find. Right-clicking
+           the headings still opens the same column menu; this is the same door
+           with a handle on it. -->
+      <span class="head-tools">
+        <button
+          class="tool"
+          :class="{ on: searchOpen }"
+          :title="`Search commits (${keyLabel('mod+f')})`"
+          @click.stop="searchOpen ? closeSearch() : openSearch()"
+        >
+          <Search :size="13" />
+        </button>
+        <button class="tool" title="Which columns to show" @click.stop="columnMenu($event)">
+          <Settings2 :size="13" />
+        </button>
       </span>
-      <span class="col-msg">
-        <span v-if="conflicts" class="chip chip-conflict">{{ conflicts }} conflicted</span>
-        <span v-else-if="dirty" class="chip chip-wip">uncommitted</span>
-        <span class="summary truncate" :class="{ quiet: !dirty && !conflicts }">
-          <template v-if="conflicts">Resolve conflicts before committing</template>
-          <template v-else-if="dirty">
-            {{ dirty }} {{ dirty === 1 ? 'change' : 'changes' }} in your working tree
-          </template>
-          <template v-else>No local changes</template>
-        </span>
-      </span>
-      <!-- Whoever a commit made here would be authored by, rather than "you":
-           with a profile per context, which identity is in force is the thing
-           worth showing. -->
-      <span v-if="cols.state.shown.author" class="col-author faint truncate" :style="box('author')">
-        {{ store.repo?.author || 'no author set' }}
-      </span>
-      <span v-if="cols.state.shown.date" class="col-date faint" :style="box('date')">now</span>
     </div>
 
     <div ref="viewport" class="viewport" @scroll.passive="onScroll">
+      <!-- The working tree: the first row of the list rather than a strip
+             pinned above it. It scrolls away like anything else, and being an
+             ordinary row is what keeps its dot in line with the dots below. -->
+      <div
+        class="wip"
+        :class="{ on: store.selected === WIP }"
+        @click="git.select(WIP)"
+        @contextmenu="wipMenu($event)"
+      >
+        <span v-if="cols.state.shown.refs" class="col-refs" :style="box('refs')" />
+        <span v-if="cols.state.shown.graph" class="cell-box" :style="box('graph')">
+        <svg class="cell" :width="graphWidth" :height="ROW" :viewBox="`0 0 ${graphWidth} ${ROW}`">
+          <path
+            v-if="store.rows.length"
+            :d="`M${x(headLane)},${ROW / 2} L${x(headLane)},${ROW}`"
+            :stroke="laneColor(headColor)"
+            stroke-width="2"
+            stroke-dasharray="2 3"
+            stroke-linecap="round"
+            fill="none"
+          />
+          <!-- Dotted whether or not anything is changed: it is not a commit, and
+               the ring says so. Amber only says there is something in it. -->
+          <circle
+            :cx="x(headLane)"
+            :cy="ROW / 2"
+            r="4"
+            fill="var(--bg)"
+            :stroke="dirty || conflicts ? 'var(--warning)' : 'var(--fg-subtle)'"
+            stroke-width="1.8"
+            stroke-dasharray="2 2"
+          />
+        </svg>
+        </span>
+        <!-- One line rather than a badge and a line. The row is already the one
+             at the top, already selected, and already the only one with a hollow
+             ring on the graph; a coloured pill on top of that was the fourth way
+             of saying the same thing. -->
+        <span class="col-msg">
+          <span class="summary truncate" :class="{ quiet: !dirty && !conflicts }">
+            <template v-if="conflicts">
+              <strong class="count bad">{{ conflicts }}</strong> conflicted —
+              resolve before committing
+            </template>
+            <template v-else-if="dirty">
+              <strong class="count">{{ dirty }}</strong> uncommitted
+              {{ dirty === 1 ? 'change' : 'changes' }}
+            </template>
+            <template v-else>No local changes</template>
+          </span>
+        </span>
+        <!-- Whoever a commit made here would be authored by, rather than "you":
+             with a profile per context, which identity is in force is the thing
+             worth showing. -->
+        <span v-if="cols.state.shown.author" class="col-author faint truncate" :style="box('author')">
+          {{ store.repo?.author || 'no author set' }}
+        </span>
+        <span v-if="cols.state.shown.date" class="col-date faint" :style="box('date')">now</span>
+      </div>
+
       <div class="spacer" :style="{ height: `${total * ROW}px` }">
         <div
           v-for="item in window_"
@@ -1531,15 +1572,15 @@ onUnmounted(() => {
   background: color-mix(in srgb, var(--accent) 16%, transparent);
 }
 
+/* The same box as `.row`, so the graph runs through both without a step in
+   it. A border here would eat a pixel of the row's height and lift everything
+   drawn in it above the dots underneath. */
 .wip {
   display: flex;
   align-items: center;
   gap: 10px;
-  flex: none;
-  height: 27px;
+  height: var(--row-h);
   padding: 0 12px 0 8px;
-  background: var(--bg-panel);
-  border-bottom: 1px solid var(--line);
   cursor: default;
   user-select: none;
 }
@@ -1600,7 +1641,7 @@ onUnmounted(() => {
 }
 
 .row.hit {
-  background: rgba(240, 168, 60, 0.08);
+  background: var(--warning-bg);
 }
 
 .row.drop {
@@ -1720,7 +1761,7 @@ onUnmounted(() => {
   padding: 6px 8px 6px 0;
   border-radius: 5px;
   background: var(--bg-hover);
-  box-shadow: 0 3px 14px rgba(0, 0, 0, 0.35);
+  box-shadow: 0 3px 14px var(--shadow);
 }
 
 /* The last rows in the window have no room below them, so they grow the other
@@ -1774,6 +1815,7 @@ onUnmounted(() => {
 }
 
 .colhead {
+  position: relative;
   display: flex;
   align-items: center;
   gap: 10px;
@@ -1790,6 +1832,39 @@ onUnmounted(() => {
 .cell-head {
   flex: none;
   overflow: hidden;
+}
+
+/* Over the right-hand end of the headings rather than in the flow of them: a
+   button that took part in the layout would push the date heading out of line
+   with the dates underneath it. */
+.head-tools {
+  position: absolute;
+  right: 6px;
+  top: 0;
+  bottom: 0;
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  padding-left: 10px;
+  background: linear-gradient(to right, transparent, var(--surface) 10px);
+}
+
+.tool {
+  display: grid;
+  place-items: center;
+  width: 22px;
+  height: 20px;
+  border-radius: var(--radius-sm);
+  color: var(--fg-subtle);
+}
+
+.tool:hover {
+  color: var(--fg);
+  background: var(--hover);
+}
+
+.tool.on {
+  color: var(--primary);
 }
 
 /* The strip between two headings. It is wider than it looks: a four-pixel
@@ -1834,6 +1909,11 @@ onUnmounted(() => {
   color: inherit;
 }
 
+/* Room for the two buttons at the end of the row. */
+.colhead .col-date {
+  padding-right: 50px;
+}
+
 .col-msg {
   flex: 1;
   min-width: 0;
@@ -1852,7 +1932,7 @@ onUnmounted(() => {
 }
 
 .mark {
-  background: rgba(240, 168, 60, 0.32);
+  background: var(--warning-line);
   border-radius: 2px;
   color: var(--amber-soft);
 }
@@ -1972,28 +2052,28 @@ onUnmounted(() => {
 }
 
 .chip-remote {
-  background: rgba(169, 123, 240, 0.16);
+  background: var(--info-bg);
   color: var(--purple-soft);
 }
 
 .chip-tag {
-  background: rgba(240, 168, 60, 0.16);
+  background: var(--warning-bg);
   color: var(--amber-soft);
 }
 
 .chip-head {
-  background: rgba(87, 193, 132, 0.18);
+  background: var(--success-bg);
   color: var(--green-soft);
 }
 
-.chip-wip {
-  background: rgba(240, 168, 60, 0.16);
-  color: var(--amber-soft);
+/* The number is the news on that row; the words around it are grammar. */
+.count {
+  color: var(--warning-soft);
+  font-weight: 600;
 }
 
-.chip-conflict {
-  background: rgba(224, 87, 109, 0.2);
-  color: var(--red-soft);
+.count.bad {
+  color: var(--danger-soft);
 }
 
 .more,

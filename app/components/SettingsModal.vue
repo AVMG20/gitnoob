@@ -44,7 +44,10 @@ const forge = useForge()
 const ssh = useSsh()
 const ai = useAi()
 const git = useGit()
-const { theme, themes, setTheme } = useTheme()
+const { theme, themes, setTheme, contrast, contrasts, setContrast } = useTheme()
+
+/** How many themes are in a group, so the sentence above cannot go stale. */
+const themeCount = (kind: string) => themes.filter((one) => one.kind === kind).length
 const cols = useColumns()
 const { zoom, steps: zoomSteps, setZoom } = useZoom()
 const { syntax, schemes, setSyntax } = useSyntax()
@@ -557,7 +560,9 @@ onMounted(async () => {
         <section v-else-if="section === 'appearance'">
           <h2>Appearance</h2>
           <p class="dim intro">
-            Eighteen themes: five light, five semi-dark, eight dark. The choice is shared.
+            {{ themes.length }} themes, counted here rather than claimed: {{ themeCount('Light') }}
+            light, {{ themeCount('Semi-dark') }} semi-dark, {{ themeCount('Dark') }} dark. The
+            choice is shared across every repository.
           </p>
 
           <div class="themes">
@@ -575,6 +580,23 @@ onMounted(async () => {
               <span class="theme-name">{{ one.name }}</span>
               <span class="faint small">{{ one.kind }}</span>
               <Check v-if="one.id === theme" :size="13" class="tick" />
+            </button>
+          </div>
+
+          <h3 class="sub">Contrast</h3>
+          <p class="dim intro">
+            How hard the dimmed text and the lines between panels work, on whichever theme is on.
+          </p>
+          <div class="sizes">
+            <button
+              v-for="one in contrasts"
+              :key="one.id"
+              class="size"
+              :class="{ on: one.id === contrast }"
+              @click="setContrast(one.id)"
+            >
+              {{ one.name }}
+              <span class="faint small block">{{ one.note }}</span>
             </button>
           </div>
 
@@ -868,7 +890,7 @@ onMounted(async () => {
   z-index: 60;
   display: grid;
   place-items: center;
-  background: rgba(6, 9, 12, 0.66);
+  background: var(--overlay);
 }
 
 .panel {
@@ -882,7 +904,7 @@ onMounted(async () => {
   border: 1px solid var(--line);
   border-radius: 11px;
   overflow: hidden;
-  box-shadow: 0 22px 60px rgba(0, 0, 0, 0.55);
+  box-shadow: 0 22px 60px var(--shadow-strong);
 }
 
 .nav {

@@ -326,7 +326,7 @@ function paint(line: DiffLine) {
 .hunk-btn.danger:hover:not(:disabled) {
   color: var(--red-soft);
   border-color: var(--red);
-  background: rgba(224, 87, 109, 0.14);
+  background: var(--danger-bg);
 }
 
 .hunk-btn:disabled {
@@ -368,7 +368,7 @@ function paint(line: DiffLine) {
 }
 
 .add {
-  background: rgba(87, 193, 132, 0.1);
+  background: var(--success-bg);
 }
 
 .add .sign {
@@ -376,7 +376,7 @@ function paint(line: DiffLine) {
 }
 
 .del {
-  background: rgba(224, 87, 109, 0.1);
+  background: var(--danger-bg);
 }
 
 .del .sign {
@@ -392,11 +392,11 @@ function paint(line: DiffLine) {
 /* The row tint carries which side a line is on, so the syntax colours stay
    readable rather than being overridden by green and red. */
 .add {
-  background: rgba(87, 193, 132, 0.11);
+  background: var(--success-bg);
 }
 
 .del {
-  background: rgba(224, 87, 109, 0.11);
+  background: var(--danger-bg);
 }
 
 .gauge {

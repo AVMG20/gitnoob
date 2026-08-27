@@ -72,7 +72,7 @@ const redo = computed(() => store.history.redo)
   background: var(--bg-raised);
   border: 1px solid var(--line);
   border-radius: 9px;
-  box-shadow: 0 16px 40px rgba(0, 0, 0, 0.55);
+  box-shadow: 0 16px 40px var(--shadow-strong);
 }
 
 .item {

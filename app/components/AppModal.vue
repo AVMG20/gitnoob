@@ -36,7 +36,7 @@ onUnmounted(() => window.removeEventListener('keydown', onKey))
   z-index: 50;
   display: grid;
   place-items: center;
-  background: rgba(6, 9, 12, 0.62);
+  background: var(--overlay);
 }
 
 .modal {
@@ -47,11 +47,11 @@ onUnmounted(() => window.removeEventListener('keydown', onKey))
   background: var(--bg-panel);
   border: 1px solid var(--line);
   border-radius: 9px;
-  box-shadow: 0 18px 50px rgba(0, 0, 0, 0.5);
+  box-shadow: 0 18px 50px var(--shadow-strong);
 }
 
 .modal.danger {
-  border-color: rgba(224, 87, 109, 0.5);
+  border-color: var(--danger-line);
 }
 
 .head {

@@ -276,7 +276,7 @@ function draftKey(line: DiffLine) {
 }
 
 .diff-line.add {
-  background: rgba(87, 193, 132, 0.11);
+  background: var(--success-bg);
 }
 
 .diff-line.add .sign {
@@ -284,7 +284,7 @@ function draftKey(line: DiffLine) {
 }
 
 .diff-line.del {
-  background: rgba(224, 87, 109, 0.11);
+  background: var(--danger-bg);
 }
 
 .diff-line.eof,
@@ -315,7 +315,7 @@ function draftKey(line: DiffLine) {
   font-size: 13px;
   font-weight: 500;
   line-height: 1;
-  box-shadow: 0 1px 4px rgba(0, 0, 0, 0.35);
+  box-shadow: 0 1px 4px var(--shadow);
   opacity: 0;
   transform: scale(0.8);
   transition: opacity 0.1s, transform 0.1s;

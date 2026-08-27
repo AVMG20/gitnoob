@@ -243,7 +243,7 @@ watch(query, () => (active.value = 0))
   background: var(--bg-panel);
   border: 1px solid var(--line);
   border-radius: 7px;
-  box-shadow: 0 12px 30px rgba(0, 0, 0, 0.45);
+  box-shadow: 0 12px 30px var(--shadow-strong);
   overflow: hidden;
 }
 

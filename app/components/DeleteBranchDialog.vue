@@ -146,8 +146,8 @@ onMounted(async () => {
 
 .verdict.safe {
   color: var(--green-soft);
-  background: rgba(87, 176, 118, 0.08);
-  border: 1px solid rgba(87, 176, 118, 0.3);
+  background: var(--success-bg);
+  border: 1px solid var(--success-line);
 }
 
 .verdict.careful {
@@ -158,8 +158,8 @@ onMounted(async () => {
 
 .verdict.danger {
   color: var(--red-soft);
-  background: rgba(224, 87, 109, 0.08);
-  border: 1px solid rgba(224, 87, 109, 0.35);
+  background: var(--danger-bg);
+  border: 1px solid var(--danger-line);
 }
 
 .ack {

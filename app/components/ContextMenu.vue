@@ -151,7 +151,7 @@ onUnmounted(() => window.removeEventListener('keydown', onKey))
   background: var(--bg-raised);
   border: 1px solid var(--line);
   border-radius: 8px;
-  box-shadow: 0 12px 34px rgba(0, 0, 0, 0.55);
+  box-shadow: 0 12px 34px var(--shadow-strong);
 }
 
 .title {
@@ -195,7 +195,7 @@ onUnmounted(() => window.removeEventListener('keydown', onKey))
   background: var(--bg-raised);
   border: 1px solid var(--line);
   border-radius: 8px;
-  box-shadow: 0 12px 34px rgba(0, 0, 0, 0.55);
+  box-shadow: 0 12px 34px var(--shadow-strong);
 }
 
 .submenu.flip {

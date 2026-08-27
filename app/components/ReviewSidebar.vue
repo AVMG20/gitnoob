@@ -114,6 +114,24 @@ async function editLabels() {
   loadingLabels.value = false
 }
 
+/**
+ * A label chip in the colour the forge gave it, on whatever theme is on.
+ *
+ * The colour is the forge's, picked for the forge's own page, so it cannot be
+ * used as text: a pale yellow label is invisible on Paper and a navy one is
+ * invisible on Void. It goes behind the text instead, as a wash and an edge,
+ * with the words in the window's own foreground — the label keeps its hue and
+ * stays readable on all eighteen.
+ */
+function chipStyle(color: string | null | undefined) {
+  if (!color) return undefined
+  return {
+    background: `color-mix(in srgb, ${color} 18%, transparent)`,
+    borderColor: `color-mix(in srgb, ${color} 60%, transparent)`,
+    color: 'var(--fg)'
+  }
+}
+
 function toggleLabel(name: string) {
   draftLabels.value = draftLabels.value.includes(name)
     ? draftLabels.value.filter((one) => one !== name)
@@ -288,7 +306,7 @@ watch(
             :key="label.name"
             class="label pick"
             :class="{ on: draftLabels.includes(label.name) }"
-            :style="label.color ? { borderColor: label.color, color: label.color } : undefined"
+            :style="chipStyle(label.color)"
             @click="toggleLabel(label.name)"
           >
             <Check v-if="draftLabels.includes(label.name)" :size="10" />
@@ -316,7 +334,7 @@ watch(
           v-for="label in detail.labels"
           :key="label.name"
           class="label"
-          :style="label.color ? { borderColor: label.color, color: label.color } : undefined"
+          :style="chipStyle(label.color)"
         >
           <Tag :size="9" />
           {{ label.name }}

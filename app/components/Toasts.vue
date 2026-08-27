@@ -129,7 +129,7 @@ async function copy(text: string) {
   border-left: 3px solid var(--text-faint);
   border-radius: 8px;
   background: var(--bg-panel);
-  box-shadow: 0 6px 20px rgba(0, 0, 0, 0.28);
+  box-shadow: 0 6px 20px var(--shadow);
 }
 
 .toast.error {
