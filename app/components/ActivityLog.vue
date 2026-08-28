@@ -2,6 +2,12 @@
 import { computed, nextTick, ref } from 'vue'
 import { SquareTerminal } from 'lucide-vue-next'
 import { useGit } from '~/composables/useGit'
+import {
+  commonPrefix,
+  completionsFor,
+  replaceWord,
+  type CompletionSource
+} from '~/composables/useCompletion'
 
 const git = useGit()
 const store = git.store
@@ -25,16 +31,63 @@ async function focusPrompt() {
   prompt.value?.focus()
 }
 
+// --- what Tab offers
+
+/** The names in this repository worth completing to. */
+const source = computed<CompletionSource>(() => ({
+  branches: (store.refs?.locals ?? []).map((one) => one.name),
+  remotes: (store.refs?.remotes ?? []).map((one) => `${one.remote}/${one.name}`),
+  tags: (store.refs?.tags ?? []).map((one) => one.name),
+  files: [
+    ...(store.status?.staged ?? []),
+    ...(store.status?.unstaged ?? []),
+    ...(store.status?.conflicted ?? []).map((path) => ({ path }))
+  ].map((one) => one.path)
+}))
+
+/** The matches Tab could not choose between, listed above the prompt. */
+const offers = ref<string[]>([])
+
+/**
+ * Fills in as far as the matches agree, and lists them when they disagree —
+ * which is what a shell does, and so the only behaviour nobody has to learn.
+ */
+function complete() {
+  const { word, matches } = completionsFor(line.value, source.value)
+  if (!matches.length) {
+    offers.value = []
+    return
+  }
+  if (matches.length === 1) {
+    line.value = replaceWord(line.value, `${matches[0]} `)
+    offers.value = []
+    return
+  }
+  const shared = commonPrefix(matches)
+  if (shared.length > word.length) line.value = replaceWord(line.value, shared)
+  offers.value = matches
+}
+
+/** Taking one from the list finishes the word and puts the caret back. */
+async function take(match: string) {
+  line.value = replaceWord(line.value, `${match} `)
+  offers.value = []
+  await nextTick()
+  prompt.value?.focus()
+}
+
 async function submit() {
   const text = line.value.trim()
   if (!text || store.busy) return
   if (history.value[history.value.length - 1] !== text) history.value.push(text)
   cursor.value = history.value.length
   line.value = ''
+  offers.value = []
   await git.typed(text)
 }
 
 function recall(step: -1 | 1) {
+  offers.value = []
   const at = Math.min(Math.max(cursor.value + step, 0), history.value.length)
   cursor.value = at
   line.value = history.value[at] ?? ''
@@ -63,6 +116,12 @@ function recall(step: -1 | 1) {
            type lands directly under where you typed it. Anything git can do
            can be typed here, in the repository the window is showing, and the
            window catches up afterwards the same as it does for a button. -->
+      <!-- What Tab could not choose between. Above the prompt, because the
+           log below it is where the answers go. -->
+      <div v-if="offers.length" class="offers">
+        <button v-for="one in offers" :key="one" class="offer" @click="take(one)">{{ one }}</button>
+      </div>
+
       <form class="prompt-row" @submit.prevent="submit">
         <span class="prompt">$</span>
         <span class="git">git</span>
@@ -75,8 +134,10 @@ function recall(step: -1 | 1) {
           autocomplete="off"
           :disabled="!store.repo"
           :placeholder="store.repo ? 'log --oneline -5' : 'Open a repository first'"
+          @keydown.tab.prevent="complete"
           @keydown.up.prevent="recall(-1)"
           @keydown.down.prevent="recall(1)"
+          @keydown.esc="offers = []"
         />
       </form>
       <div v-for="entry in store.log" :key="entry.id" class="entry" :class="entry.level">
@@ -124,6 +185,31 @@ function recall(step: -1 | 1) {
 
 .body {
   grid-column: 1 / -1;
+}
+
+.offers {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  max-height: 84px;
+  overflow-y: auto;
+  padding: 6px 12px;
+  border-bottom: 1px solid var(--line-soft);
+  background: var(--bg-raised);
+}
+
+.offer {
+  padding: 1px 6px;
+  border-radius: 4px;
+  font-family: var(--mono);
+  font-size: 11px;
+  color: var(--text-dim);
+  border: 1px solid var(--line-soft);
+}
+
+.offer:hover {
+  background: var(--bg-hover);
+  color: var(--text);
 }
 
 .prompt-row {
