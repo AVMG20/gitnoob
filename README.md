@@ -81,7 +81,8 @@ repository you are looking at, and the window catches up afterwards.
 ## Shortcuts
 
 `⌘⇧F` fetch · `⌘⇧L` pull · `⌘⇧P` push · `⌘Enter` commit · `⌘B` branch ·
-`⌘⇧S` stash · `⌘F` search · `⌘P` go to a repository · `⌘Z` undo · `⌘,` settings
+`⌘⇧S` stash · `⌘F` search · `⌘P` go to a repository · `⌘Z` undo · `⌘,` settings ·
+`Tab` patch / file / blame
 
 Full list in Settings → Shortcuts. `Ctrl` on Windows and Linux.
 
@@ -90,7 +91,7 @@ Full list in Settings → Shortcuts. `Ctrl` on Windows and Linux.
 - Your repos stay where they are. No account, no upload, no service.
 - Writes run your own `git`, so hooks, signing, SSH agent and credential helpers
   all keep working. Close gitnoob and carry on in a terminal any time.
-- Not yet: interactive rebase, line-level staging, blame, LFS.
+- Not yet: interactive rebase, line-level staging, LFS.
   Windows is tested less than macOS and Linux.
 
 ## Build it
