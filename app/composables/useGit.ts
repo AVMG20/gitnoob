@@ -1,6 +1,7 @@
 import { aimAt, invoke } from './useInvoke'
 import { markRaw, reactive, ref } from 'vue'
 import { useConfig } from './useConfig'
+import { useForge } from './useForge'
 import { parseCommandLine } from './cli'
 import type { LfsStatus } from './useLfs'
 import { useToasts } from './useToasts'
@@ -1442,6 +1443,12 @@ export function useGit() {
       const out = await guard('Fetch', () => invoke<CmdOutput>('fetch', { remote }))
       const ok = report('Fetch', out)
       await refresh()
+      // A fetch asks what moved on the other side, and on a profile signed in
+      // to a forge the reviews are part of that answer: one opened, merged or
+      // retitled elsewhere is exactly the news a fetch is for. Not awaited —
+      // the refs are on screen already, and the forge is a network away.
+      const forge = useForge()
+      if (forge.usable.value) void forge.loadReviews()
       return ok
     },
     pull: async (rebase = false) => {
