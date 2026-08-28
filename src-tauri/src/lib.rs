@@ -8,6 +8,7 @@ pub mod diff;
 pub mod forge;
 pub mod git_cmd;
 pub mod graph;
+pub mod home;
 pub mod journal;
 pub mod lfs;
 pub mod rebase;
@@ -71,6 +72,16 @@ async fn open_repo(
     *watching.lock().unwrap() = watch::start(app, PathBuf::from(&recorded));
 
     refs::describe(&state)
+}
+
+/// Everything the home tab draws: the projects, and a year of your commits.
+///
+/// One command rather than one per repository: it is a handful of `git log`
+/// runs either way, and doing them together keeps the page from drawing itself
+/// forty times as they land.
+#[tauri::command]
+async fn home_summary(state: State<'_, AppState>) -> Result<home::HomeSummary, String> {
+    home::summary(&state)
 }
 
 /// The repository named on the command line, if any: `gitnoob /path/to/repo`.
@@ -1824,6 +1835,7 @@ pub fn run() {
         .invoke_handler(aimed(tauri::generate_handler![
             open_repo,
             startup_repo,
+            home_summary,
             clone_repo,
             init_repo,
             repo_info,

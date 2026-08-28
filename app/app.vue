@@ -40,6 +40,13 @@ useShortcuts({
 })
 
 const ready = ref(false)
+/**
+ * Whether the home tab is the page on screen.
+ *
+ * It sits over whatever repository is open rather than closing it: the tab
+ * strip keeps its tabs, and coming back out of home lands where you left.
+ */
+const home = ref(false)
 
 /**
  * The review page on fixture data, at `?lab=review` on the dev server.
@@ -52,7 +59,8 @@ const ready = ref(false)
 const labKind = import.meta.dev
   ? new URLSearchParams(window.location.search).get('lab')
   : null
-const lab = labKind === 'review' || labKind === 'conflict' || labKind === 'squash'
+const lab =
+  labKind === 'review' || labKind === 'conflict' || labKind === 'squash' || labKind === 'home'
 
 // Loaded only where it can be reached, so the fixture review is not bundled
 // into anything shipped: with `import.meta.dev` false the import goes with it.
@@ -67,9 +75,14 @@ const DevConflictLab = import.meta.dev
 const DevSquashLab = import.meta.dev
   ? defineAsyncComponent(() => import('~/components/DevSquashLab.vue'))
   : null
+/** A sketch of a home tab on made-up data, at `?lab=home`. */
+const DevHomeLab = import.meta.dev
+  ? defineAsyncComponent(() => import('~/components/DevHomeLab.vue'))
+  : null
 const labPage = computed(() => {
   if (labKind === 'conflict') return DevConflictLab
   if (labKind === 'squash') return DevSquashLab
+  if (labKind === 'home') return DevHomeLab
   return DevReviewLab
 })
 
@@ -185,6 +198,18 @@ async function leaveSubmodule(depth = 0) {
   if (!(await git.openRepo(step.from, back.length === 0))) return
   store.inside = back
   await afterOpen()
+}
+
+/**
+ * A project picked on the home tab.
+ *
+ * Home is a page about every repository, so choosing one from it is done with
+ * it: the window goes back to the repository the click asked for.
+ */
+async function fromHome(path: string) {
+  if (!path) return
+  home.value = false
+  await openProject(path)
 }
 
 /** Opens a project and does the on-open housekeeping GitKraken does. */
@@ -333,9 +358,22 @@ onUnmounted(() => {
 <template>
   <component :is="labPage" v-if="lab && labPage" />
   <div v-else class="shell">
-    <ProjectTabs @open="openProject" @clone="cloneOpen = true" @init="initOpen = true" />
+    <ProjectTabs
+      :home="home"
+      @open="openProject"
+      @clone="cloneOpen = true"
+      @init="initOpen = true"
+      @home="home = !home"
+    />
 
-    <template v-if="store.repo">
+    <HomePane
+      v-if="home"
+      @open="fromHome"
+      @clone="cloneOpen = true"
+      @init="initOpen = true"
+    />
+
+    <template v-else-if="store.repo">
       <!-- Fetch, pull, push and stash are about the working tree, and a review
            page is not the working tree: the toolbar stands down while one is
            open, and Back brings it straight back. Hidden rather than unmounted,

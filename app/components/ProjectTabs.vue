@@ -3,13 +3,15 @@ import { onMounted, onUnmounted, ref } from 'vue'
 import { open } from '@tauri-apps/plugin-dialog'
 import { getCurrentWindow } from '@tauri-apps/api/window'
 import type { UnlistenFn } from '@tauri-apps/api/event'
-import { Download, FolderOpen, FolderPlus, GitBranch, Plus, X } from 'lucide-vue-next'
+import { Download, FolderOpen, FolderPlus, GitBranch, House, Plus, X } from 'lucide-vue-next'
 import { useConfig } from '~/composables/useConfig'
 import { useGit } from '~/composables/useGit'
 import { useContextMenu } from '~/composables/useContextMenu'
 import { useShortcuts } from '~/composables/useShortcuts'
 
-const emit = defineEmits<{ open: [string]; clone: []; init: [] }>()
+const emit = defineEmits<{ open: [string]; clone: []; init: []; home: [] }>()
+
+const props = defineProps<{ home?: boolean }>()
 
 const config = useConfig()
 const git = useGit()
@@ -25,9 +27,12 @@ let unlistenResize: UnlistenFn | undefined
 
 onMounted(async () => {
   // Only the Tauri host can say whether the window is full screen, and
-  // `npm run dev` in a browser is not it.
+  // `npm run dev` in a browser is not it. The check is a try as well as a
+  // guard: a fixture page can put the internals object there without the
+  // window API behind it, and this throwing takes the strip down with it.
   if (!isMac || !('__TAURI_INTERNALS__' in window)) return
-  const win = getCurrentWindow()
+  const win = tryWindow()
+  if (!win) return
   const sync = async () => {
     lights.value = !(await win.isFullscreen().catch(() => false))
   }
@@ -37,6 +42,15 @@ onMounted(async () => {
 })
 
 onUnmounted(() => unlistenResize?.())
+
+/** The Tauri window, when there really is one behind the internals object. */
+function tryWindow() {
+  try {
+    return getCurrentWindow()
+  } catch {
+    return null
+  }
+}
 
 async function pick() {
   const path = await open({ directory: true, multiple: false, title: 'Open a repository' })
@@ -111,6 +125,16 @@ function onDrop(target: string) {
 <template>
   <!-- Dragging the strip moves the window; the tabs and buttons keep their clicks. -->
   <nav class="strip" :class="{ lights }" data-tauri-drag-region>
+    <!-- Home stands where a browser puts it: left of the tabs, always there,
+         with no close on it. It is the one page that is about all of them. -->
+    <button
+      class="icon"
+      :class="{ on: props.home }"
+      title="Home — every project, and the year"
+      @click="emit('home')"
+    >
+      <House :size="15" />
+    </button>
     <button class="icon" title="Open a repository" @click="pick">
       <FolderOpen :size="15" />
     </button>
@@ -174,6 +198,12 @@ function onDrop(target: string) {
 .icon:hover {
   color: var(--text);
   background: var(--bg-hover);
+}
+
+/* Marked the way an open tab is, because that is what it is while it is up. */
+.icon.on {
+  color: var(--text);
+  background: var(--bg-active);
 }
 
 .tabs {
