@@ -2,6 +2,7 @@ import { aimAt, invoke } from './useInvoke'
 import { markRaw, reactive, ref } from 'vue'
 import { useConfig } from './useConfig'
 import { parseCommandLine } from './cli'
+import type { LfsStatus } from './useLfs'
 import { useToasts } from './useToasts'
 
 /**
@@ -527,6 +528,8 @@ const fields = reactive({
   signatures: {} as Record<string, SignatureMark>,
   /** Whether a commit made here would be signed, and with what. */
   signing: null as SigningSetup | null,
+  /** Whether this repository uses LFS, and whether the tool for it is here. */
+  lfs: null as LfsStatus | null,
   rows: [] as GraphRow[],
   hasMore: false,
   limit: COMMIT_PAGE,
@@ -612,6 +615,7 @@ interface Snapshot {
   submodules: Submodule[]
   signatures: Record<string, SignatureMark>
   signing: SigningSetup | null
+  lfs: LfsStatus | null
   rows: GraphRow[]
   hasMore: boolean
   limit: number
@@ -648,6 +652,7 @@ function clearData() {
   store.submodules = []
   store.signatures = {}
   store.signing = null
+  store.lfs = null
   store.rows = []
   store.hasMore = false
   store.limit = pageSize()
@@ -665,6 +670,7 @@ function paint(snapshot: Snapshot) {
   store.submodules = snapshot.submodules
   store.signatures = snapshot.signatures
   store.signing = snapshot.signing
+  store.lfs = snapshot.lfs
   store.rows = snapshot.rows
   store.hasMore = snapshot.hasMore
   store.limit = snapshot.limit
@@ -834,6 +840,7 @@ export function useGit() {
       submodules,
       signatures,
       signing,
+      lfs,
       page,
       stashes,
       history,
@@ -854,6 +861,7 @@ export function useGit() {
         {} as Record<string, SignatureMark>
       ),
       part('the signing setup', invoke<SigningSetup>('signing_setup'), null),
+      part('the LFS setup', invoke<LfsStatus>('lfs_status'), null),
       part(
         'the history',
         invoke<{ rows: GraphRow[]; has_more: boolean }>('commit_graph', { limit }),
@@ -888,6 +896,7 @@ export function useGit() {
     store.submodules = settle('submodules', submodules ?? [], store.submodules)
     store.signatures = settle('signatures', signatures ?? {}, store.signatures)
     store.signing = settle('signing', signing, store.signing)
+    store.lfs = settle('lfs', lfs, store.lfs)
     if (page) {
       store.rows = settle('rows', page.rows, store.rows)
       store.hasMore = page.has_more
@@ -905,6 +914,7 @@ export function useGit() {
       submodules: store.submodules,
       signatures: store.signatures,
       signing: store.signing,
+      lfs: store.lfs,
       rows: store.rows,
       hasMore: store.hasMore,
       limit,
@@ -1149,6 +1159,11 @@ export function useGit() {
     commitSignature,
     blameFile,
     fileHistory,
+    /** Fetches the real contents of one LFS file, or of every one of them. */
+    lfsPull: (path?: string) =>
+      run<string>(path ? `Fetch ${path}` : 'Fetch LFS files', 'lfs_pull', {
+        path: path ?? null
+      }),
     submoduleUpdate: (path?: string, recursive = false) =>
       run<string>(
         path ? `Update ${path}` : 'Update submodules',

@@ -9,6 +9,7 @@ pub mod forge;
 pub mod git_cmd;
 pub mod graph;
 pub mod journal;
+pub mod lfs;
 pub mod rebase;
 pub mod refs;
 pub mod remote;
@@ -320,6 +321,20 @@ async fn worktree_remove(
 #[tauri::command]
 fn add_to_gitignore(pattern: String, state: State<'_, AppState>) -> Result<String, String> {
     refs::add_to_gitignore(&state, &pattern)
+}
+
+// --- git lfs -----------------------------------------------------------------
+
+/// Whether this repository uses LFS, and whether the tool for it is here.
+#[tauri::command]
+fn lfs_status(state: State<'_, AppState>) -> Result<lfs::Status, String> {
+    lfs::status(&state)
+}
+
+/// Fetches the real contents of one LFS file, or of every one of them.
+#[tauri::command]
+async fn lfs_pull(path: Option<String>, state: State<'_, AppState>) -> Result<String, String> {
+    lfs::pull(&state, path.as_deref())
 }
 
 // --- interactive rebase -------------------------------------------------------
@@ -1783,6 +1798,8 @@ pub fn run() {
             worktree_remove,
             add_to_gitignore,
             run_git,
+            lfs_status,
+            lfs_pull,
             rebase_plan,
             rebase_start,
             rebase_progress,

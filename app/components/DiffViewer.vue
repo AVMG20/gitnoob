@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed, nextTick, onBeforeUnmount, onMounted, onUnmounted, ref, watch } from 'vue'
-import { Check, Copy, FolderOpen, History, Minus, Undo2, X } from 'lucide-vue-next'
+import { ArrowDownToLine, Check, Copy, FileBox, FolderOpen, History, Minus, Undo2, X } from 'lucide-vue-next'
 import {
   copyText,
   relativeTime,
@@ -12,6 +12,7 @@ import { useContextMenu } from '~/composables/useContextMenu'
 import { labelFor } from '~/composables/useHighlight'
 import { diffMode, type DiffMode } from '~/composables/useDiffMode'
 import type { PickedLines } from '~/components/DiffView.vue'
+import { humanSize, readPointer } from '~/composables/useLfs'
 import { stepFile, useFileView, walkOrder, type FileStep } from '~/composables/useFileView'
 import {
   CODE_ROW,
@@ -202,6 +203,22 @@ async function showHistory(event: MouseEvent) {
 
 /** How many commits the menu will hold before it stops being a menu. */
 const HISTORY_SHOWN = 30
+
+/**
+ * The LFS pointer standing in for this file, when that is what is on disk.
+ *
+ * Three lines of metadata drawn as though they were the file is the whole
+ * problem LFS causes a viewer, so when the text is a pointer the panel says
+ * what the file is instead of showing what it is not.
+ */
+const pointer = computed(() => readPointer(text.value))
+
+async function fetchFromLfs() {
+  const current = target.value
+  if (!current) return
+  await git.lfsPull(current.path)
+  await load(false)
+}
 
 // --- who touched what
 //
@@ -485,8 +502,32 @@ onUnmounted(() => window.removeEventListener('keydown', onKey))
 
     <div class="pane">
       <div ref="body" class="body">
+        <!-- What is on disk is the pointer, not the file. Nothing below can
+             say anything useful about it, so this stands in their place. -->
+        <div v-if="pointer" class="lfs">
+          <FileBox :size="34" class="glyph" />
+          <h3>{{ target?.path.split('/').pop() }}</h3>
+          <p class="dim">
+            Stored with Git LFS — {{ humanSize(pointer.size) }}. What is in the folder is the
+            pointer to it, not the file itself.
+          </p>
+          <p class="faint mono oid">{{ pointer.oid }}</p>
+          <button
+            v-if="store.lfs?.installed !== false"
+            class="btn btn-primary"
+            :disabled="store.busy"
+            @click="fetchFromLfs"
+          >
+            <ArrowDownToLine :size="14" /> Fetch it
+          </button>
+          <p v-else class="faint">
+            <span class="mono">git-lfs</span> is not installed on this machine, so nothing here
+            can fetch it.
+          </p>
+        </div>
+
         <BlameView
-          v-if="diffMode.mode === 'blame'"
+          v-else-if="diffMode.mode === 'blame'"
           :diff="diff"
           :text="text"
           :runs="blame"
@@ -602,5 +643,40 @@ onUnmounted(() => window.removeEventListener('keydown', onKey))
   flex: 1;
   min-width: 0;
   overflow: auto;
+}
+
+/* An LFS file that is not here: said in the middle of the pane, because there
+   is nothing else the pane could be showing. */
+.lfs {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 8px;
+  padding: 64px 24px;
+  text-align: center;
+}
+
+.lfs .glyph {
+  color: var(--text-faint);
+}
+
+.lfs h3 {
+  margin: 4px 0 0;
+  font-size: 14px;
+}
+
+.lfs p {
+  margin: 0;
+  max-width: 460px;
+  font-size: 12px;
+}
+
+.lfs .oid {
+  font-size: 11px;
+  word-break: break-all;
+}
+
+.lfs .btn-primary {
+  margin-top: 8px;
 }
 </style>
