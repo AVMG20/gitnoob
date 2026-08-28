@@ -204,9 +204,15 @@ pub struct Ai {
     /// reason ignores it.
     #[serde(default = "default_reasoning")]
     pub reasoning: String,
-    /// `conventional` or `plain`.
+    /// `conventional` or `plain`. Only read now to migrate a config written
+    /// before the instructions became a box the user types in; see
+    /// [`settle_ai`].
     #[serde(default = "default_commit_style")]
     pub commit_style: String,
+    /// What the model is told before it is shown a diff. `None` means the
+    /// built-in default, which is what a fresh config carries.
+    #[serde(default)]
+    pub commit_prompt: Option<String>,
 }
 
 #[derive(Serialize, Deserialize, Clone)]
@@ -257,6 +263,7 @@ impl Default for Ai {
             max_tokens: default_max_tokens(),
             reasoning: default_reasoning(),
             commit_style: default_commit_style(),
+            commit_prompt: None,
         }
     }
 }
@@ -340,6 +347,7 @@ pub fn load(dir: &Path) -> Config {
     match serde_json::from_str::<Config>(&text) {
         Ok(mut config) => {
             tidy_projects(&mut config);
+            settle_ai(&mut config);
             config
         }
         Err(_) => {
@@ -360,6 +368,23 @@ pub fn remember_recent(profile: &mut Profile, path: &str, name: &str) {
         },
     );
     profile.recents.truncate(RECENTS_KEPT);
+}
+
+/// Carries an older config's commit-message choice into the box that replaced
+/// it.
+///
+/// The style used to be one of two fixed sets of instructions picked from a
+/// dropdown; it is now text the user can write. Somebody who had chosen
+/// Conventional Commits gets those instructions put in the box, rather than
+/// silently getting the other ones. Nothing is written back to disk here — the
+/// box is filled the next time the settings are saved.
+fn settle_ai(config: &mut Config) {
+    if config.global.ai.commit_prompt.is_some() {
+        return;
+    }
+    if config.global.ai.commit_style == "conventional" {
+        config.global.ai.commit_prompt = Some(crate::ai::CONVENTIONAL_COMMIT_PROMPT.to_string());
+    }
 }
 
 /// Settles a project list written by an earlier run, or by hand.
@@ -993,6 +1018,57 @@ mod tests {
         assert!(config.global.show_avatars);
         assert_eq!(config.global.auto_fetch_minutes, default_fetch_minutes());
         assert_eq!(config.global.graph_page_size, default_page_size());
+    }
+
+    #[test]
+    fn a_config_that_chose_conventional_commits_keeps_those_instructions() {
+        let dir = Dir::new("conventional");
+        fs::write(
+            file_path(dir.path()),
+            r#"{"version":1,"global":{"ai":{"commit_style":"conventional"}},"profiles":[]}"#,
+        )
+        .unwrap();
+
+        let config = load(dir.path());
+        let prompt = config.global.ai.commit_prompt.expect("it should be filled");
+        assert!(prompt.contains("Conventional Commits"), "{prompt}");
+    }
+
+    #[test]
+    fn a_config_that_chose_the_plain_style_starts_from_the_default() {
+        let dir = Dir::new("plain-style");
+        fs::write(
+            file_path(dir.path()),
+            r#"{"version":1,"global":{"ai":{"commit_style":"plain"}},"profiles":[]}"#,
+        )
+        .unwrap();
+
+        // Nothing is written into the box: an untouched box means the default,
+        // and storing a copy of it would go stale the moment the default moved.
+        let config = load(dir.path());
+        assert!(config.global.ai.commit_prompt.is_none());
+        assert_eq!(
+            crate::ai::commit_prompt(&config.global.ai),
+            crate::ai::DEFAULT_COMMIT_PROMPT
+        );
+    }
+
+    #[test]
+    fn instructions_already_written_are_left_exactly_as_they_are() {
+        let dir = Dir::new("own-prompt");
+        fs::write(
+            file_path(dir.path()),
+            r#"{"version":1,"global":{"ai":{"commit_style":"conventional",
+                "commit_prompt":"Write it in haiku."}},"profiles":[]}"#,
+        )
+        .unwrap();
+
+        let config = load(dir.path());
+        assert_eq!(
+            config.global.ai.commit_prompt.as_deref(),
+            Some("Write it in haiku.")
+        );
+        assert_eq!(crate::ai::commit_prompt(&config.global.ai), "Write it in haiku.");
     }
 
     #[test]

@@ -174,7 +174,7 @@ function install() {
     // The fixture files all carry markers, which is what makes "stage them as
     // they stand" refuse — the state worth seeing in a lab.
     if (cmd === 'conflict_marked') return Object.keys(FILES)
-    if (cmd === 'ai_status') return { configured: true, model: 'fixture', commit_style: 'plain' }
+    if (cmd === 'ai_status') return { configured: true, model: 'fixture', default_commit_prompt: 'Write a short commit message.' }
     if (cmd === 'ai_resolve_conflict') return ['// what the model would have written']
     return null
   }

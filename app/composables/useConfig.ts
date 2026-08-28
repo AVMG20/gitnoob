@@ -39,6 +39,8 @@ export interface AiSettings {
   max_tokens: number
   reasoning: ReasoningLevel
   commit_style: 'plain' | 'conventional'
+  /** What the model is told before it is shown a diff; null is the default. */
+  commit_prompt: string | null
 }
 
 /** OpenRouter's effort levels, plus switching thinking off entirely. */

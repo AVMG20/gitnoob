@@ -29,7 +29,10 @@ pub struct Model {
 pub struct AiStatus {
     pub configured: bool,
     pub model: Option<String>,
-    pub commit_style: String,
+    /// What the settings box starts from, and what "put the default back"
+    /// puts back. Sent rather than repeated in the window, so the two cannot
+    /// drift apart.
+    pub default_commit_prompt: String,
 }
 
 #[derive(Serialize)]
@@ -44,7 +47,7 @@ pub fn status(state: &AppState) -> AiStatus {
         configured: config::secret_get(OPENROUTER_KEY).is_some()
             && config.global.ai.model.is_some(),
         model: config.global.ai.model.clone(),
-        commit_style: config.global.ai.commit_style.clone(),
+        default_commit_prompt: DEFAULT_COMMIT_PROMPT.to_string(),
     }
 }
 
@@ -268,13 +271,9 @@ async fn describe_change(
 ) -> Result<CommitMessage, String> {
     let truncated = diff.chars().count() > MAX_DIFF_CHARS;
     let diff: String = diff.chars().take(MAX_DIFF_CHARS).collect();
-    let style = state.config().global.ai.commit_style;
-
-    let system = if style == "conventional" {
-        COMMIT_SYSTEM_CONVENTIONAL
-    } else {
-        COMMIT_SYSTEM_PLAIN
-    };
+    // Whatever the user has in the settings box, which is the default until
+    // they change it.
+    let system = commit_prompt(&state.config().global.ai);
 
     let prompt = format!(
         "Files changed:\n{files}\n\nRecent commit subjects in this repository, \
@@ -282,8 +281,19 @@ async fn describe_change(
         if truncated { " (truncated)" } else { "" }
     );
 
-    let answer = complete(state, system, prompt).await?;
+    let answer = complete(state, &system, prompt).await?;
     Ok(split_message(&answer))
+}
+
+/// The instructions a commit message is written under.
+///
+/// An empty box means the default rather than no instructions at all: a model
+/// told nothing writes a paragraph of prose and calls it a commit message.
+pub fn commit_prompt(ai: &config::Ai) -> String {
+    match ai.commit_prompt.as_deref().map(str::trim) {
+        Some(text) if !text.is_empty() => text.to_string(),
+        _ => DEFAULT_COMMIT_PROMPT.to_string(),
+    }
 }
 
 /// Writes the title and description of a review from the commits behind it.
@@ -503,20 +513,29 @@ fn strip_fences(answer: &str) -> Vec<String> {
     slice.iter().map(|l| l.to_string()).collect()
 }
 
-const COMMIT_SYSTEM_PLAIN: &str = "\
+/// What the model is told when the settings box has not been changed.
+///
+/// One line, most of the time. A body is the exception rather than the shape,
+/// because a commit that needs three sentences of explanation is rarer than
+/// the models writing them believe.
+pub const DEFAULT_COMMIT_PROMPT: &str = "\
 You write git commit messages for a working developer. Reply with the message \
 and nothing else: no preamble, no markdown, no code fences, no quotes.
 
-Line 1 is the summary: imperative mood, no trailing period, under 72 \
-characters, specific about what changed. Never start with a type prefix like \
-feat: or fix: unless the repository's own recent subjects use one.
+Line 1 is the message, and usually the whole of it: imperative mood, no \
+trailing period, under 72 characters, specific about what changed. Match the \
+repository's own recent subjects — use a type prefix like feat: or fix: only \
+where they do.
 
-Then a blank line, then a short body of one to three sentences explaining WHY \
-the change was made and anything a reviewer could not see from the diff. Skip \
-the body entirely for a small, self-evident change. Do not list the files; the \
-diff already says that. Do not pad with filler.";
+Add a body only where the summary cannot carry the change on its own. When you \
+do, leave a blank line after the summary and keep it to one or two sentences \
+on WHY. Most commits need no body at all. Never list the files, never restate \
+the diff, never pad.";
 
-const COMMIT_SYSTEM_CONVENTIONAL: &str = "\
+/// Kept for the settings that were written before the box existed: a config
+/// that said `conventional` is migrated into the box with this text, so the
+/// choice survives the change rather than being quietly dropped.
+pub const CONVENTIONAL_COMMIT_PROMPT: &str = "\
 You write git commit messages in Conventional Commits form. Reply with the \
 message and nothing else: no preamble, no markdown, no code fences.
 
@@ -569,6 +588,34 @@ unchanged, output that side verbatim.";
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn an_empty_box_means_the_default_rather_than_no_instructions() {
+        let mut ai = config::Ai::default();
+        assert_eq!(commit_prompt(&ai), DEFAULT_COMMIT_PROMPT);
+
+        ai.commit_prompt = Some(String::new());
+        assert_eq!(commit_prompt(&ai), DEFAULT_COMMIT_PROMPT);
+
+        ai.commit_prompt = Some("   \n  ".to_string());
+        assert_eq!(commit_prompt(&ai), DEFAULT_COMMIT_PROMPT);
+    }
+
+    #[test]
+    fn what_is_in_the_box_is_what_the_model_is_told() {
+        let mut ai = config::Ai::default();
+        ai.commit_prompt = Some("  Only ever write one line.  ".to_string());
+        assert_eq!(commit_prompt(&ai), "Only ever write one line.");
+    }
+
+    #[test]
+    fn the_default_asks_for_one_line_and_a_body_only_where_it_is_needed() {
+        // The wording is the feature: a default that asks for three sentences
+        // of body gets three sentences of body on every commit.
+        assert!(DEFAULT_COMMIT_PROMPT.contains("usually the whole of it"));
+        assert!(DEFAULT_COMMIT_PROMPT.contains("Add a body only where"));
+        assert!(DEFAULT_COMMIT_PROMPT.contains("Most commits need no body at all"));
+    }
 
     #[test]
     fn a_thinking_level_becomes_an_effort() {

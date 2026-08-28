@@ -15,7 +15,8 @@ export interface Model {
 export interface AiStatus {
   configured: boolean
   model: string | null
-  commit_style: string
+  /** What the settings box starts from, sent by the backend that owns it. */
+  default_commit_prompt: string
 }
 
 export interface CommitMessage {
@@ -24,7 +25,7 @@ export interface CommitMessage {
 }
 
 const store = reactive({
-  status: { configured: false, model: null, commit_style: 'plain' } as AiStatus,
+  status: { configured: false, model: null, default_commit_prompt: '' } as AiStatus,
   models: [] as Model[],
   loadingModels: false,
   modelsError: null as string | null,

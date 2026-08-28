@@ -217,6 +217,44 @@ async function patchGlobal(patch: Record<string, unknown>) {
   await config.saveGlobal({ ...settings, ...patch })
 }
 
+/**
+ * The instructions the model writes commit messages under.
+ *
+ * Held here rather than bound straight at the config: it is typed into, and a
+ * save on every keystroke would be a config write per letter. The box is
+ * filled from the config when the settings open and saved when it loses focus.
+ */
+const commitPrompt = ref('')
+const promptChanged = computed(
+  () => commitPrompt.value.trim() !== (ai.store.status.default_commit_prompt ?? '').trim()
+)
+
+watch(
+  () => [config.settings.value?.ai.commit_prompt, ai.store.status.default_commit_prompt] as const,
+  ([stored, fallback]) => {
+    // Only while the box is not being typed in, or a save landing under the
+    // cursor would take the half-written sentence away.
+    if (document.activeElement?.classList.contains('prompt')) return
+    commitPrompt.value = stored ?? fallback ?? ''
+  },
+  { immediate: true }
+)
+
+async function saveCommitPrompt() {
+  const text = commitPrompt.value.trim()
+  const stored = config.settings.value?.ai.commit_prompt ?? null
+  // An empty box means the default, and the default is stored as nothing at
+  // all rather than as a copy that would go stale the moment it changed.
+  const next = !text || text === (ai.store.status.default_commit_prompt ?? '').trim() ? null : text
+  if (next === stored) return
+  await patchAi({ commit_prompt: next })
+}
+
+async function resetCommitPrompt() {
+  commitPrompt.value = ai.store.status.default_commit_prompt ?? ''
+  if ((config.settings.value?.ai.commit_prompt ?? null) !== null) await patchAi({ commit_prompt: null })
+}
+
 async function patchAi(patch: Record<string, unknown>) {
   const settings = config.settings.value
   if (!settings) return
@@ -597,33 +635,43 @@ onMounted(async () => {
             <ModelPicker :selected="config.settings.value?.ai.model ?? null" @pick="pickModel" />
           </div>
 
-          <div class="two">
-            <label class="field">
-              <span class="label">Commit message style</span>
-              <select
-                :value="config.settings.value?.ai.commit_style"
-                @change="patchAi({ commit_style: ($event.target as HTMLSelectElement).value })"
-              >
-                <option value="plain">Plain — imperative summary, short why</option>
-                <option value="conventional">Conventional Commits</option>
-              </select>
-            </label>
-            <label class="field">
-              <span class="label">Thinking</span>
-              <select
-                :value="config.settings.value?.ai.reasoning"
-                @change="patchAi({ reasoning: ($event.target as HTMLSelectElement).value })"
-              >
-                <option v-for="level in REASONING_LEVELS" :key="level.value" :value="level.value">
-                  {{ level.label }}
-                </option>
-              </select>
-            </label>
-          </div>
+          <label class="field">
+            <span class="label">Thinking</span>
+            <select
+              :value="config.settings.value?.ai.reasoning"
+              @change="patchAi({ reasoning: ($event.target as HTMLSelectElement).value })"
+            >
+              <option v-for="level in REASONING_LEVELS" :key="level.value" :value="level.value">
+                {{ level.label }}
+              </option>
+            </select>
+          </label>
           <p class="hint faint no-top">
             OpenRouter's own effort levels, passed on to whichever model you picked. Thinking
             tokens are billed, and a commit message rarely needs them — a model that cannot reason
             ignores this either way.
+          </p>
+
+          <!-- The instructions themselves rather than a choice between two of
+               them: what makes a good commit message here is a house rule, and
+               a dropdown can only ever hold somebody else's. -->
+          <label class="field">
+            <span class="label">Commit message instructions</span>
+            <textarea
+              v-model="commitPrompt"
+              class="prompt"
+              rows="12"
+              spellcheck="false"
+              placeholder="What the model is told before it is shown the diff"
+              @blur="saveCommitPrompt"
+            />
+          </label>
+          <p class="hint faint no-top">
+            What the model is told before it sees the diff. The default asks for one short summary
+            line and a body only where the change needs one. Saved when you click away.
+            <button v-if="promptChanged" class="link" @click="resetCommitPrompt">
+              Put the default back
+            </button>
           </p>
 
           <p class="hint faint">
@@ -1227,8 +1275,26 @@ h3 {
 
 .field input[type='text'],
 .field input[type='password'],
-.field select {
+.field select,
+.field textarea {
   width: 100%;
+}
+
+/* Instructions to a model are prose, but prose with its line breaks meant, so
+   it is read in the same monospace the commit box uses. */
+.prompt {
+  display: block;
+  font-family: var(--mono);
+  font-size: 11.5px;
+  line-height: 1.6;
+}
+
+/* A sentence that does something, inside a sentence that does not. */
+.link {
+  padding: 0;
+  color: var(--accent);
+  text-decoration: underline;
+  text-underline-offset: 2px;
 }
 
 select {
