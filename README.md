@@ -44,7 +44,7 @@ that it updates itself.
 | Everything else | right-click it |
 
 Also here without typing anything: fetch, pull, push, commit, amend, revert,
-reset, tag, stash, branch, worktrees, remotes.
+reset, tag, stash, branch, worktrees, remotes, submodules.
 
 <img src="docs/screenshots/diff.png" alt="A changed file in the diff view, hunk by hunk, with Stage file and Discard on the bar above it" width="900" />
 
@@ -90,7 +90,7 @@ Full list in Settings → Shortcuts. `Ctrl` on Windows and Linux.
 - Your repos stay where they are. No account, no upload, no service.
 - Writes run your own `git`, so hooks, signing, SSH agent and credential helpers
   all keep working. Close gitnoob and carry on in a terminal any time.
-- Not yet: interactive rebase, line-level staging, blame, submodules, LFS.
+- Not yet: interactive rebase, line-level staging, blame, LFS.
   Windows is tested less than macOS and Linux.
 
 ## Build it
