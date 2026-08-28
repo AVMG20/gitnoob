@@ -4,6 +4,8 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { invoke } from '@tauri-apps/api/core'
 import GraphList from '~/components/GraphList.vue'
 import ContextMenu from '~/components/ContextMenu.vue'
+import AppModal from '~/components/AppModal.vue'
+import DropStashDialog from '~/components/DropStashDialog.vue'
 import { useGit, type GraphRow } from '~/composables/useGit'
 
 vi.mock('@tauri-apps/api/core', () => ({ invoke: vi.fn() }))
@@ -74,7 +76,11 @@ afterEach(() => {
 })
 
 const show = () => {
-  open = mount(Host, { global: { stubs: { Teleport: true } } })
+  open = mount(Host, {
+    // The dialogs GraphList opens are auto-imported in the app; here they have
+    // to be handed over, or the confirmation never renders.
+    global: { components: { AppModal, DropStashDialog }, stubs: { Teleport: true } }
+  })
   return open
 }
 
@@ -122,5 +128,23 @@ describe('a stash drawn in the commit list', () => {
     expect(labels.some((one) => one.startsWith('Pop'))).toBe(true)
     expect(labels.some((one) => one.includes('Cherry-pick'))).toBe(false)
     expect(labels.some((one) => one.includes('Branch from here'))).toBe(false)
+  })
+
+  it('asks before dropping one from the menu', async () => {
+    const wrapper = show()
+    await wrapper.findAll('.row')[0]!.trigger('contextmenu')
+    await flushPromises()
+
+    const drop = wrapper.findAll('button').find((b) => b.text().startsWith('Drop this stash'))!
+    await drop.trigger('click')
+    await flushPromises()
+
+    // The menu asked; git has not been told anything yet.
+    expect(wrapper.text()).toContain('Drop this stash?')
+    expect(calls.some((c) => c.cmd === 'stash_drop')).toBe(false)
+
+    await wrapper.find('.btn-danger').trigger('click')
+    await flushPromises()
+    expect(calls.find((c) => c.cmd === 'stash_drop')?.args).toEqual({ index: 0 })
   })
 })

@@ -99,6 +99,8 @@ watch(open, () => {
 const filter = ref('')
 /** The branch whose deletion is being confirmed. */
 const deleting = ref<string | null>(null)
+/** The stash whose drop is being confirmed, by index; null when none is. */
+const dropping = ref<number | null>(null)
 /** Set while the new pull request dialog is open. */
 const creatingReview = ref(false)
 /** The remote form: `'add'`, the name being edited, or closed. */
@@ -1144,10 +1146,12 @@ function stashMenu(event: MouseEvent, index: number, message: string) {
       },
       { separator: true, label: '' },
       {
-        label: 'Drop this stash',
+        label: 'Drop this stash…',
         icon: Trash2,
         danger: true,
-        action: () => git.stashDrop(index)
+        action: () => {
+          dropping.value = index
+        }
       }
     ],
     message
@@ -1849,10 +1853,10 @@ async function removeSubmodule(one: Submodule) {
           :key="stash.index"
           class="row stash"
           :class="{ on: store.selected === stash.oid, ticked: pickedStashes.has(stash.oid) }"
-          :title="`${stash.files} ${stash.files === 1 ? 'file' : 'files'} · ${stash.branch ?? ''}`"
+          :title="`${stash.files} ${stash.files === 1 ? 'file' : 'files'} · ${stash.branch ?? ''} — double-click to apply it and keep it`"
           draggable="true"
           @click="onStashClick($event, stash)"
-          @dblclick="git.stashPop(stash.index)"
+          @dblclick="git.stashApply(stash.index)"
           @contextmenu="stashMenu($event, stash.index, stash.message)"
           @dragstart="
             drag.begin($event, { kind: 'stash', index: stash.index, message: stash.message })
@@ -1880,6 +1884,8 @@ async function removeSubmodule(one: Submodule) {
     </div>
 
     <SubmoduleDialog v-if="addingSubmodule" @close="addingSubmodule = false" />
+
+    <DropStashDialog v-if="dropping !== null" :index="dropping" @close="dropping = null" />
 
     <PromptDialog
       v-if="prompt"
@@ -2184,10 +2190,25 @@ async function removeSubmodule(one: Submodule) {
   color: var(--text-dim);
 }
 
+/* Two lines of text against one mark. The mark lines up with the name, not
+   with the middle of the pair — a long branch name under it would otherwise
+   drag it away from what it marks. */
 .row.stash {
   align-items: flex-start;
   padding-top: 4px;
   padding-bottom: 4px;
+}
+
+.row.stash .glyph {
+  margin-top: 2px;
+}
+
+/* One line, cut off at the edge. Wrapped onto a second it reads as another
+   stash. */
+.row.stash .meta {
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
 }
 
 .indent {

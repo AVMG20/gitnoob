@@ -60,15 +60,13 @@ const stash = computed(
 /** Naming the branch a stash becomes; null when nothing is being named. */
 const naming = ref(false)
 
-async function stashAction(what: 'apply' | 'pop' | 'drop') {
+/** The stash waiting to be confirmed for dropping; null when none is. */
+const dropping = ref<number | null>(null)
+
+async function stashAction(what: 'apply' | 'pop') {
   const one = stash.value
   if (!one) return
-  const said =
-    what === 'apply'
-      ? await git.stashApply(one.index)
-      : what === 'pop'
-        ? await git.stashPop(one.index)
-        : await git.stashDrop(one.index)
+  const said = what === 'apply' ? await git.stashApply(one.index) : await git.stashPop(one.index)
   if (said !== null) git.note(said)
 }
 
@@ -275,7 +273,7 @@ async function reconcile(rebase: boolean) {
         <ArrowDownToLine :size="14" /> Apply
       </button>
       <button
-        class="btn strong"
+        class="btn"
         :disabled="store.busy"
         title="Put these changes back and take the stash off the list"
         @click="stashAction('pop')"
@@ -288,16 +286,16 @@ async function reconcile(rebase: boolean) {
         title="Start a branch from it, for a stash that will not go on here"
         @click="branchFromStash"
       >
-        <GitBranchPlus :size="14" /> Branch from it
+        <GitBranchPlus :size="14" /> Branch
       </button>
 
       <span class="sep" />
 
       <button
-        class="btn danger-text"
+        class="btn"
         :disabled="store.busy"
         title="Throw the stash away"
-        @click="stashAction('drop')"
+        @click="dropping = stash.index"
       >
         <Trash2 :size="14" /> Drop
       </button>
@@ -540,6 +538,7 @@ async function reconcile(rebase: boolean) {
 
     <HistoryMenu v-if="showHistory" @close="showHistory = false" />
     <BranchDialog v-if="showBranch" @close="showBranch = false" />
+    <DropStashDialog v-if="dropping !== null" :index="dropping" @close="dropping = null" />
     <PromptDialog
       v-if="naming"
       title="Branch from stash"
@@ -766,32 +765,5 @@ async function reconcile(rebase: boolean) {
   background: var(--red);
   color: #fff;
   font-weight: 600;
-}
-
-/* --- the bar while a stash is picked */
-
-/* The colour is the whole of it. Which stash was picked is not said here: you
-   have just clicked the row, and the row is still marked. */
-.stash-actions .btn {
-  color: var(--amber-soft);
-}
-
-.stash-actions .btn:hover:not(:disabled) {
-  background: color-mix(in srgb, var(--amber) 18%, transparent);
-  color: var(--amber-soft);
-}
-
-.stash-actions .strong {
-  font-weight: 600;
-  color: var(--text);
-}
-
-.stash-actions .danger-text {
-  color: var(--red-soft);
-}
-
-.stash-actions .danger-text:hover:not(:disabled) {
-  background: var(--danger-bg);
-  color: var(--red-soft);
 }
 </style>

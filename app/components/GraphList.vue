@@ -98,6 +98,8 @@ const hit = ref(0)
 const resetTarget = ref<{ oid: string; mode: ResetMode } | null>(null)
 const tagTarget = ref<GraphRow | null>(null)
 const branchTarget = ref<GraphRow | null>(null)
+/** The stash whose drop is being confirmed, by index; null when none is. */
+const dropping = ref<number | null>(null)
 
 /**
  * Commits picked out with shift or ctrl, for the operations that take more than
@@ -761,10 +763,12 @@ function commitMenu(event: MouseEvent, row: GraphRow) {
         },
         { separator: true, label: '' },
         {
-          label: 'Drop this stash',
+          label: 'Drop this stash…',
           icon: Trash2,
           danger: true,
-          action: () => git.stashDrop(at)
+          action: () => {
+            dropping.value = at
+          }
         }
       ],
       row.summary
@@ -1529,6 +1533,7 @@ onUnmounted(() => {
       @close="resetTarget = null"
     />
     <TagDialog v-if="tagTarget" :row="tagTarget" @close="tagTarget = null" />
+    <DropStashDialog v-if="dropping !== null" :index="dropping" @close="dropping = null" />
     <BranchDialog
       v-if="branchTarget"
       :start="branchTarget.oid"

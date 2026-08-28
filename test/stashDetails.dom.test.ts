@@ -63,6 +63,11 @@ describe('a stash selected like any other commit', () => {
     expect(wrapper.find('.stash-note').text()).toContain('A stash, made on main')
   })
 
+  it('marks the title with the same glyph the stash list uses', async () => {
+    const wrapper = await show()
+    expect(wrapper.find('h3 .stash-mark').exists()).toBe(true)
+  })
+
   it('points at the bar rather than offering the same buttons twice', async () => {
     const wrapper = await show()
     expect(wrapper.find('.stash-note').text()).toContain('from the bar above')

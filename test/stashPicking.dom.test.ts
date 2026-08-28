@@ -5,6 +5,8 @@ import { invoke } from '@tauri-apps/api/core'
 import SideBar from '~/components/SideBar.vue'
 import ContextMenu from '~/components/ContextMenu.vue'
 import MidTruncate from '~/components/MidTruncate.vue'
+import AppModal from '~/components/AppModal.vue'
+import DropStashDialog from '~/components/DropStashDialog.vue'
 import { useGit, type StashEntry, type StashRun } from '~/composables/useGit'
 
 vi.mock('@tauri-apps/api/core', () => ({ invoke: vi.fn() }))
@@ -53,7 +55,9 @@ afterEach(() => {
 })
 
 const show = () => {
-  open = mount(Host, { global: { components: { MidTruncate }, stubs: { Teleport: true } } })
+  open = mount(Host, {
+    global: { components: { MidTruncate, AppModal, DropStashDialog }, stubs: { Teleport: true } }
+  })
   return open
 }
 
@@ -136,5 +140,21 @@ describe('picking several stashes', () => {
     git.store.stashes = [stash(0, 'middle')]
     await flushPromises()
     expect(wrapper.find('.picked-bar').exists()).toBe(false)
+  })
+
+  it('asks before dropping one from the menu', async () => {
+    const wrapper = show()
+    await rows(wrapper)[0]!.trigger('contextmenu')
+    await flushPromises()
+
+    const drop = wrapper.findAll('button').find((b) => b.text().startsWith('Drop this stash'))!
+    await drop.trigger('click')
+    await flushPromises()
+    expect(wrapper.text()).toContain('Drop this stash?')
+    expect(calls.some((c) => c.cmd === 'stash_drop')).toBe(false)
+
+    await wrapper.find('.btn-danger').trigger('click')
+    await flushPromises()
+    expect(calls.find((c) => c.cmd === 'stash_drop')?.args).toEqual({ index: 0 })
   })
 })

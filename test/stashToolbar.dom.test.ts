@@ -4,6 +4,8 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { invoke } from '@tauri-apps/api/core'
 import TitleBar from '~/components/TitleBar.vue'
 import PromptDialog from '~/components/PromptDialog.vue'
+import AppModal from '~/components/AppModal.vue'
+import DropStashDialog from '~/components/DropStashDialog.vue'
 import { useGit } from '~/composables/useGit'
 
 vi.mock('@tauri-apps/api/core', () => ({ invoke: vi.fn() }))
@@ -61,7 +63,7 @@ afterEach(() => {
 const show = () => {
   open = mount(TitleBar, {
     global: {
-      components: { PromptDialog },
+      components: { PromptDialog, AppModal, DropStashDialog },
       stubs: { ProfileMenu: true, HistoryMenu: true, BranchDialog: true, Teleport: true }
     }
   })
@@ -74,7 +76,7 @@ const labels = (wrapper: ReturnType<typeof show>) =>
 describe('the toolbar while a stash is picked', () => {
   it('offers the stash instead of the repository', () => {
     const wrapper = show()
-    expect(labels(wrapper)).toEqual(['Apply', 'Pop', 'Branch from it', 'Drop'])
+    expect(labels(wrapper)).toEqual(['Apply', 'Pop', 'Branch', 'Drop'])
   })
 
   it('does not name the stash back at you — you just picked it', () => {
@@ -116,7 +118,29 @@ describe('the toolbar while a stash is picked', () => {
     expect(calls.find((c) => c.cmd === 'stash_pop')?.args).toEqual({ index: 0 })
 
     await press(3)
+    // Dropping asks first — nothing has gone yet.
+    expect(calls.some((c) => c.cmd === 'stash_drop')).toBe(false)
+    await wrapper.find('.btn-danger').trigger('click')
+    await flushPromises()
     expect(calls.find((c) => c.cmd === 'stash_drop')?.args).toEqual({ index: 0 })
+  })
+
+  it('lets the drop be called off', async () => {
+    const wrapper = show()
+    await wrapper.findAll('.actions .btn')[3]!.trigger('click')
+    await flushPromises()
+    expect(wrapper.text()).toContain('Drop this stash?')
+
+    await wrapper.find('.btn-ghost').trigger('click')
+    await flushPromises()
+    expect(wrapper.text()).not.toContain('Drop this stash?')
+    expect(calls.some((c) => c.cmd === 'stash_drop')).toBe(false)
+  })
+
+  it('is the same plain bar a commit gets — no colour of its own', () => {
+    const wrapper = show()
+    const classes = wrapper.findAll('.actions .btn').map((b) => b.classes().join(' '))
+    expect(classes).toEqual(['btn', 'btn', 'btn', 'btn'])
   })
 
   it('goes back to the repository once the stash is gone', async () => {

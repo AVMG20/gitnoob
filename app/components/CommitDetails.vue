@@ -347,7 +347,12 @@ function fileMenu(event: MouseEvent, path: string) {
         </template>
 
         <template v-else>
-          <h3>{{ detail.summary }}</h3>
+          <h3>
+            <!-- The same mark the sidebar puts on a stash, so the two lists
+                 agree about what this row is. -->
+            <Archive v-if="stash" :size="14" class="stash-mark" />
+            {{ detail.summary }}
+          </h3>
           <pre v-if="detail.body" class="body">{{ detail.body }}</pre>
         </template>
 
@@ -355,7 +360,6 @@ function fileMenu(event: MouseEvent, path: string) {
              lives up there, where the repository's own actions are, rather
              than being offered twice in two places. -->
         <p v-if="stash" class="stash-note">
-          <Archive :size="12" />
           A stash{{ stash.branch ? `, made on ${stash.branch}` : '' }} — apply, pop or drop it
           from the bar above.
         </p>
@@ -1030,16 +1034,18 @@ h3 {
 
 /* --- a stash, which arrives here as the commit it is */
 
+/* The mark carries it; the line underneath only says where it came from, so
+   it reads as a caption rather than a warning. */
+.stash-mark {
+  flex: none;
+  vertical-align: -2px;
+  margin-right: 4px;
+  color: var(--text-faint);
+}
+
 .stash-note {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  margin: 10px 0 0;
-  padding: 5px 9px;
-  border-radius: var(--radius-sm);
-  background: var(--warning-bg);
-  border: 1px solid var(--warning-line);
+  margin: 6px 0 0;
   font-size: 11px;
-  color: var(--amber-soft);
+  color: var(--text-faint);
 }
 </style>
