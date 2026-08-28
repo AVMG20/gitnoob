@@ -71,6 +71,14 @@ enum Side {
 /// A move is two entries — a deletion and an arrival — drawn as one row, so a
 /// command given the row's path is only ever given half of it.
 fn moves(state: &AppState, paths: &[String], side: Side) -> Vec<(String, String)> {
+    // The full status pays for rename detection across the whole tree; a path
+    // that is plainly an edit — the common case by far — is answered by one
+    // cheap lookup instead. Only a path that reads as new to its side can be
+    // the arriving half of a move, because that is what the half looks like
+    // until the scan pairs it with its departure.
+    if !could_be_moved(state, paths, side) {
+        return Vec::new();
+    }
     let Ok(status) = crate::refs::status(state) else {
         return Vec::new();
     };
@@ -83,6 +91,25 @@ fn moves(state: &AppState, paths: &[String], side: Side) -> Vec<(String, String)
         .filter(|entry| paths.contains(&entry.path))
         .filter_map(|entry| entry.from.map(|from| (entry.path, from)))
         .collect()
+}
+
+/// Whether any of `paths` could be half of a move, without a tree-wide scan.
+fn could_be_moved(state: &AppState, paths: &[String], side: Side) -> bool {
+    let Ok(repo) = state.repo() else {
+        // Not knowing is not a reason to skip the careful path.
+        return true;
+    };
+    paths
+        .iter()
+        .any(|path| match repo.status_file(std::path::Path::new(path)) {
+            Ok(flags) => match side {
+                Side::Staged => {
+                    flags.intersects(git2::Status::INDEX_NEW | git2::Status::INDEX_RENAMED)
+                }
+                Side::Unstaged => flags.intersects(git2::Status::WT_NEW | git2::Status::WT_RENAMED),
+            },
+            Err(_) => true,
+        })
 }
 
 /// `paths` with the other half of every move among them added.

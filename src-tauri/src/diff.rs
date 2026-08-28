@@ -75,6 +75,9 @@ pub struct DiffHunk {
 #[derive(Serialize)]
 pub struct FileDiff {
     pub path: String,
+    /// The name the file had before it was moved, when this diff is one half
+    /// of a move. What lets an empty pane say "moved" instead of "no changes".
+    pub from: Option<String>,
     pub binary: bool,
     pub hunks: Vec<DiffHunk>,
     /// Lines beyond [`MAX_DIFF_LINES`] that were not collected. Zero for the
@@ -187,6 +190,22 @@ pub fn working_file_diff(state: &AppState, path: &str, side: Side) -> Result<Fil
 /// the file lists are drawn from, so the viewer and the list never disagree
 /// about which two paths are one file.
 fn rename_origin(state: &AppState, path: &str, side: Side) -> Option<String> {
+    // One cheap lookup spares the tree-wide rename scan for the common case:
+    // only a path that reads as new to its side can be the arriving half of a
+    // move, since that is what the half looks like until it is paired.
+    let repo = state.repo().ok()?;
+    let looks_new = match repo.status_file(std::path::Path::new(path)) {
+        Ok(flags) => match side {
+            Side::Staged => flags.intersects(git2::Status::INDEX_NEW | git2::Status::INDEX_RENAMED),
+            Side::Unstaged => flags.intersects(git2::Status::WT_NEW | git2::Status::WT_RENAMED),
+        },
+        // Not knowing is not a reason to skip the careful path.
+        Err(_) => true,
+    };
+    drop(repo);
+    if !looks_new {
+        return None;
+    }
     let status = crate::refs::status(state).ok()?;
     let list = match side {
         Side::Staged => status.staged,
@@ -295,6 +314,7 @@ fn concerns(delta: &git2::DiffDelta<'_>, path: &str) -> bool {
 
 fn collect_hunks(diff: &Diff, path: &str) -> Result<FileDiff, String> {
     let binary = Cell::new(false);
+    let from: RefCell<Option<String>> = RefCell::new(None);
     let hunks: RefCell<Vec<DiffHunk>> = RefCell::new(Vec::new());
     let taken = Cell::new(0usize);
     let dropped = Cell::new(0usize);
@@ -306,6 +326,12 @@ fn collect_hunks(diff: &Diff, path: &str) -> Result<FileDiff, String> {
             }
             if delta.new_file().is_binary() || delta.old_file().is_binary() {
                 binary.set(true);
+            }
+            // A paired move carries both names; the old one is worth saying.
+            if let (Some(old), Some(new)) = (delta.old_file().path(), delta.new_file().path()) {
+                if old != new {
+                    *from.borrow_mut() = Some(old.to_string_lossy().into_owned());
+                }
             }
             true
         },
@@ -357,6 +383,7 @@ fn collect_hunks(diff: &Diff, path: &str) -> Result<FileDiff, String> {
 
     Ok(FileDiff {
         path: path.to_string(),
+        from: from.into_inner(),
         binary: binary.get(),
         hunks: hunks.into_inner(),
         truncated: dropped.get(),

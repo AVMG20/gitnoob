@@ -30,6 +30,29 @@ const head = (wrapper: ReturnType<typeof mount>) =>
   wrapper.find('.hunk-head').attributes('style') ?? ''
 
 describe('the diff view', () => {
+  it('says a pure move is a move, not "no changes"', () => {
+    const moved: FileDiff = {
+      path: 'b/f.txt',
+      from: 'a/f.txt',
+      binary: false,
+      truncated: 0,
+      hunks: []
+    }
+    const wrapper = mount(DiffView, {
+      props: { diff: moved, side: 'staged', top: 0, view: 600, left: 0, width: 500 }
+    })
+    expect(wrapper.text()).toContain('Moved from a/f.txt')
+    expect(wrapper.text()).not.toContain('No changes in this file')
+  })
+
+  it('still says "no changes" for an empty diff that moved nowhere', () => {
+    const still: FileDiff = { path: 'a.ts', binary: false, truncated: 0, hunks: [] }
+    const wrapper = mount(DiffView, {
+      props: { diff: still, side: 'unstaged', top: 0, view: 600, left: 0, width: 500 }
+    })
+    expect(wrapper.text()).toContain('No changes in this file')
+  })
+
   it('draws a hunk heading the width of the box, not of the file', () => {
     const wrapper = mount(DiffView, {
       props: { diff, side: 'unstaged', top: 0, view: 600, left: 0, width: 500 }

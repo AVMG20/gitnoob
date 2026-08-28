@@ -297,6 +297,11 @@ function paint(line: DiffLine) {
     <p v-if="props.loading" class="note dim">Loading diff…</p>
     <p v-else-if="!props.diff" class="note dim">Select a file.</p>
     <p v-else-if="props.diff.binary" class="note dim">Binary file — no text diff to show.</p>
+    <!-- A move with nothing changed inside is a real answer, not an absence:
+         "no changes" on a file the list calls renamed reads as a bug. -->
+    <p v-else-if="empty && props.diff.from" class="note dim">
+      Moved from <span class="mono">{{ props.diff.from }}</span> — the contents are unchanged.
+    </p>
     <p v-else-if="empty" class="note dim">No changes in this file.</p>
 
     <template v-else>

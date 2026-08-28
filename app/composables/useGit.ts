@@ -271,6 +271,8 @@ export interface DiffLine {
 export interface DiffHunk { header: string; lines: DiffLine[] }
 export interface FileDiff {
   path: string
+  /** The name the file had before it was moved, when the diff is a move. */
+  from?: string | null
   binary: boolean
   hunks: DiffHunk[]
   /** Lines the backend stopped collecting; 0 for any diff worth reading. */

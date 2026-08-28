@@ -647,6 +647,30 @@ fn the_change_a_moved_file_carries_can_still_be_read() {
 }
 
 #[test]
+fn a_pure_move_names_where_it_came_from_instead_of_showing_nothing() {
+    let sandbox = Sandbox::new("moved-pure");
+    std::fs::create_dir_all(sandbox.root.join("a")).unwrap();
+    sandbox.commit("a/f.txt", "one\ntwo\n", "First");
+    std::fs::create_dir_all(sandbox.root.join("b")).unwrap();
+    sandbox.git(&["mv", "a/f.txt", "b/f.txt"]);
+
+    let found = diff::working_file_diff(&sandbox.state(), "b/f.txt", diff::Side::Staged).unwrap();
+    assert!(found.hunks.is_empty(), "nothing changed inside the file");
+    // The empty pane has one true thing to say, and this is what lets it.
+    assert_eq!(found.from.as_deref(), Some("a/f.txt"));
+}
+
+#[test]
+fn an_ordinary_edit_claims_no_move() {
+    let sandbox = Sandbox::new("moved-none");
+    sandbox.commit("a.txt", "one\n", "First");
+    sandbox.write("a.txt", "one\ntwo\n");
+    let found = diff::working_file_diff(&sandbox.state(), "a.txt", diff::Side::Unstaged).unwrap();
+    assert!(found.from.is_none());
+    assert!(!found.hunks.is_empty());
+}
+
+#[test]
 fn a_staged_move_reads_as_a_move_rather_than_the_whole_file_deleted() {
     let sandbox = moved_and_edited("moved-staged-diff");
     let state = sandbox.state();
