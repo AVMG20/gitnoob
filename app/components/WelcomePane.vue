@@ -1,12 +1,31 @@
 <script setup lang="ts">
+import { computed } from 'vue'
 import { open } from '@tauri-apps/plugin-dialog'
 import { Download, FolderOpen, FolderPlus, GitBranch, Settings } from 'lucide-vue-next'
 import { useConfig } from '~/composables/useConfig'
+import { useUpdates } from '~/composables/useUpdates'
 
 defineProps<{ ready: boolean }>()
 const emit = defineEmits<{ open: [string]; clone: []; init: [] }>()
 
 const config = useConfig()
+const updates = useUpdates()
+
+/**
+ * The toolbar that normally carries the Update button is not on screen here,
+ * so this pane says it instead — otherwise the one place you land with no
+ * repository open is the one place a waiting release is invisible.
+ */
+const updateOffered = computed(() =>
+  ['available', 'downloading', 'ready'].includes(updates.store.stage)
+)
+
+/** The tabs open now, then everything opened before them. */
+const recents = computed(() => {
+  const open = config.projects.value
+  const seen = new Set(open.map((one) => one.path))
+  return [...open, ...config.recents.value.filter((one) => !seen.has(one.path))].slice(0, 12)
+})
 
 async function pick() {
   const path = await open({ directory: true, multiple: false, title: 'Open a repository' })
@@ -37,10 +56,10 @@ async function pick() {
         </button>
       </div>
 
-      <div v-if="config.projects.value.length" class="recents">
+      <div v-if="recents.length" class="recents">
         <div class="section-title">In this profile</div>
         <button
-          v-for="project in config.projects.value"
+          v-for="project in recents"
           :key="project.path"
           class="recent"
           @click="emit('open', project.path)"
@@ -52,6 +71,19 @@ async function pick() {
           </span>
         </button>
       </div>
+
+      <button
+        v-if="updateOffered"
+        class="btn update"
+        @click="config.openSettings('updates')"
+      >
+        <Download :size="14" />
+        {{
+          updates.store.stage === 'available'
+            ? `Version ${updates.store.version} is ready to install`
+            : 'Installing the update…'
+        }}
+      </button>
 
       <button class="btn settings" @click="config.openSettings('profiles')">
         <Settings :size="14" /> Profiles and settings
@@ -137,5 +169,21 @@ h1 {
 .settings {
   margin-top: 18px;
   padding-left: 0;
+}
+
+/* Same tint as the toolbar's Update button, so it reads as the same thing in
+   the one place that toolbar is missing. */
+.update {
+  width: 100%;
+  justify-content: center;
+  margin-top: 16px;
+  background: color-mix(in srgb, var(--accent) 16%, transparent);
+  color: var(--accent);
+  font-weight: 600;
+}
+
+.update:hover {
+  background: color-mix(in srgb, var(--accent) 26%, transparent);
+  color: var(--accent);
 }
 </style>

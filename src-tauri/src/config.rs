@@ -55,11 +55,33 @@ pub struct Profile {
     /// lets a work account and a personal account share one machine.
     #[serde(default)]
     pub ssh_key: Option<String>,
+    /// The key commits and tags made under this profile are signed with —
+    /// `user.signingkey`. Unset leaves whatever the machine already says.
+    #[serde(default)]
+    pub signing_key: Option<String>,
+    /// `gpg.format`: `openpgp`, `ssh` or `x509`.
+    #[serde(default)]
+    pub signing_format: Option<String>,
+    /// `commit.gpgsign`. `None` means the profile has no opinion and the
+    /// repository's own configuration is left exactly as it is.
+    #[serde(default)]
+    pub sign_commits: Option<bool>,
+    /// `tag.gpgsign`.
+    #[serde(default)]
+    pub sign_tags: Option<bool>,
     #[serde(default)]
     pub projects: Vec<Project>,
+    /// Every repository opened under this profile, newest first — including
+    /// the ones whose tabs have since been closed. This is what the switcher
+    /// searches, so closing a tab does not mean hunting for the folder again.
+    #[serde(default)]
+    pub recents: Vec<Project>,
     #[serde(default)]
     pub active_project: Option<String>,
 }
+
+/// How many repositories a profile remembers having opened.
+pub const RECENTS_KEPT: usize = 40;
 
 impl Profile {
     pub fn new(name: &str, forge: ForgeKind) -> Self {
@@ -71,7 +93,12 @@ impl Profile {
             git_name: None,
             git_email: None,
             ssh_key: None,
+            signing_key: None,
+            signing_format: None,
+            sign_commits: None,
+            sign_tags: None,
             projects: Vec::new(),
+            recents: Vec::new(),
             active_project: None,
         }
     }
@@ -108,6 +135,11 @@ pub struct Global {
     /// only check is the button in settings.
     #[serde(default = "yes")]
     pub check_updates: bool,
+    /// Check the signature on every commit the graph draws. Off by default:
+    /// it is a `git log` that runs gpg or ssh-keygen once per commit, and on a
+    /// large page that is the slowest thing on the screen.
+    #[serde(default)]
+    pub verify_signatures: bool,
     /// How big the window was when it was last closed.
     #[serde(default)]
     pub window: Option<WindowSize>,
@@ -240,6 +272,7 @@ impl Default for Global {
             diverged_checkout: default_diverged_checkout(),
             show_avatars: true,
             check_updates: true,
+            verify_signatures: false,
             window: None,
         }
     }
@@ -316,6 +349,19 @@ pub fn load(dir: &Path) -> Config {
     }
 }
 
+/// Puts a repository at the top of a profile's recents, one entry per path.
+pub fn remember_recent(profile: &mut Profile, path: &str, name: &str) {
+    profile.recents.retain(|one| one.path != path);
+    profile.recents.insert(
+        0,
+        Project {
+            path: path.to_string(),
+            name: name.to_string(),
+        },
+    );
+    profile.recents.truncate(RECENTS_KEPT);
+}
+
 /// Settles a project list written by an earlier run, or by hand.
 ///
 /// A work tree used to be recorded exactly as libgit2 handed it over, which is
@@ -345,6 +391,18 @@ fn tidy_projects(config: &mut Config) {
                 profile.active_project = None;
             }
         }
+
+        let mut seen_recent: Vec<String> = Vec::new();
+        profile.recents.retain_mut(|project| {
+            project.path = trim_separator(&project.path);
+            if seen_recent.contains(&project.path) {
+                false
+            } else {
+                seen_recent.push(project.path.clone());
+                true
+            }
+        });
+        profile.recents.truncate(RECENTS_KEPT);
     }
 }
 
@@ -648,6 +706,31 @@ pub const OPENROUTER_KEY: &str = "openrouter";
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn recents_keep_one_entry_per_repository_newest_first() {
+        let mut profile = super::Profile::new("Personal", super::ForgeKind::None);
+        super::remember_recent(&mut profile, "/a", "a");
+        super::remember_recent(&mut profile, "/b", "b");
+        super::remember_recent(&mut profile, "/a", "a");
+
+        let paths: Vec<&str> = profile.recents.iter().map(|p| p.path.as_str()).collect();
+        assert_eq!(paths, vec!["/a", "/b"]);
+    }
+
+    #[test]
+    fn recents_stop_growing_at_the_cap() {
+        let mut profile = super::Profile::new("Personal", super::ForgeKind::None);
+        for n in 0..super::RECENTS_KEPT + 10 {
+            super::remember_recent(&mut profile, &format!("/r{n}"), "r");
+        }
+        assert_eq!(profile.recents.len(), super::RECENTS_KEPT);
+        // The newest is the one just added, not the first one ever opened.
+        assert_eq!(
+            profile.recents[0].path,
+            format!("/r{}", super::RECENTS_KEPT + 9)
+        );
+    }
+
     use super::{Config, ForgeKind, Profile, Project};
 
     /// One repository, spelled two ways, is one tab.

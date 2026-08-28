@@ -2,12 +2,13 @@
 import { computed, defineAsyncComponent, onMounted, onUnmounted, ref, watch } from 'vue'
 import { invoke } from '~/composables/useInvoke'
 import { listen, type UnlistenFn } from '@tauri-apps/api/event'
-import { useGit } from '~/composables/useGit'
+import { useGit, type Submodule } from '~/composables/useGit'
 import { useConfig } from '~/composables/useConfig'
 import { useForge } from '~/composables/useForge'
 import { useAi } from '~/composables/useAi'
 import { usePanes } from '~/composables/usePanes'
 import { useReview } from '~/composables/useReview'
+import { useRebase } from '~/composables/useRebase'
 import { useTheme } from '~/composables/useTheme'
 import { useUpdates } from '~/composables/useUpdates'
 import { useShortcuts } from '~/composables/useShortcuts'
@@ -26,10 +27,16 @@ const updates = useUpdates()
 useTheme()
 const zoom = useZoom()
 
+/** The repository switcher, which is reachable with no repository open. */
+const switching = ref(false)
+
 useShortcuts({
   'zoom.in': zoom.zoomIn,
   'zoom.out': zoom.zoomOut,
-  'zoom.reset': zoom.reset
+  'zoom.reset': zoom.reset,
+  'project.switch': () => {
+    switching.value = !switching.value
+  }
 })
 
 const ready = ref(false)
@@ -113,6 +120,9 @@ const settings = computed(() => config.settings.value)
  */
 const reviewOpen = computed(() => !!review.store.current)
 
+/** The rebase plan takes the centre the same way a review does. */
+const rebase = useRebase()
+
 /**
  * The columns of the window, and what gives when there is not enough of it.
  *
@@ -122,9 +132,52 @@ const reviewOpen = computed(() => !!review.store.current)
  */
 const columns = computed(() => {
   const panel = `minmax(0, ${layout.panel}px)`
+  // The viewer and a review page take the whole middle; the rebase plan and a
+  // stash keep the sidebar, because the sidebar is where the next branch or
+  // the next stash is picked from.
   if (store.viewer || reviewOpen.value) return `minmax(0, 1fr) 5px ${panel}`
   return `minmax(0, ${layout.sidebar}px) 5px minmax(0, 1fr) 5px ${panel}`
 })
+
+/** What every open has to do once the repository itself is in place. */
+async function afterOpen() {
+  // A review page belongs to the repository it was opened on.
+  review.close()
+  rebase.close()
+  await Promise.all([forge.refreshStatus(), ai.refreshStatus()])
+  forge.loadReviews()
+}
+
+/**
+ * Steps into a submodule, in the tab it was reached from.
+ *
+ * A submodule is part of the project on screen rather than another project, so
+ * it gets no tab of its own; the trail in the toolbar says where you are and
+ * is the way back out.
+ */
+async function enterSubmodule(one: Submodule) {
+  const from = store.repo?.path
+  if (!from) return
+  const trail = [
+    ...store.inside,
+    { path: one.abs, name: one.path, from, fromName: store.repo?.name ?? from }
+  ]
+  if (!(await git.openRepo(one.abs, false))) return
+  store.inside = trail
+  await afterOpen()
+}
+
+/** Back out of the trail to the step before `depth`. */
+async function leaveSubmodule(depth = 0) {
+  const step = store.inside[depth]
+  if (!step) return
+  const back = store.inside.slice(0, depth)
+  // Only the outermost step returns to something that is a project of its
+  // own; the rest go back to another submodule, which is still not a tab.
+  if (!(await git.openRepo(step.from, back.length === 0))) return
+  store.inside = back
+  await afterOpen()
+}
 
 /** Opens a project and does the on-open housekeeping GitKraken does. */
 async function openProject(path: string) {
@@ -138,10 +191,7 @@ async function openProject(path: string) {
   } finally {
     config.endOpen()
   }
-  // A review page belongs to the repository it was opened on.
-  review.close()
-  await Promise.all([forge.refreshStatus(), ai.refreshStatus()])
-  forge.loadReviews()
+  await afterOpen()
   // Fetch straight away so the ahead/behind counts on screen are true rather
   // than whatever they were when the app last ran.
   if (settings.value?.auto_fetch_on_open) git.fetch()
@@ -172,6 +222,29 @@ watch(
 )
 
 watch(() => settings.value?.auto_fetch_minutes, scheduleFetch)
+
+/** Follows the setting: switching it off stops the schedule, not only the
+    next launch. */
+function watchUpdates() {
+  if (settings.value?.check_updates !== false) updates.watchForUpdates()
+  else updates.stopWatching()
+}
+
+watch(() => settings.value?.check_updates, watchUpdates)
+
+/**
+ * Whether a rebase is running is part of every refresh already; how far along
+ * it is costs another read, so it is only asked for while there is one. The
+ * false edge matters as much as the true one — a rebase that finished has a
+ * strip to take down.
+ */
+watch(
+  () => store.progress?.rebasing,
+  (rebasing, before) => {
+    if (rebasing) void rebase.readProgress()
+    else if (before) rebase.store.progress = null
+  }
+)
 
 onMounted(async () => {
   // A failure here must not take the whole window down with it; without the
@@ -208,13 +281,11 @@ onMounted(async () => {
     ({ payload }) => git.note(payload.line, payload.ok ? 'command' : 'failed')
   ).catch(() => undefined)
 
-  // Whether a newer release exists, asked once and quietly: a machine that is
-  // offline should not be told so every time the window opens. What it finds
-  // shows up as a dot next to Updates in settings, not as a dialog over the
-  // repository you came here to look at.
-  if (config.settings.value?.check_updates !== false) {
-    updates.checkForUpdate(true)
-  }
+  // Whether a newer release exists, asked quietly and kept asking: a machine
+  // that is offline should not be told so every time the window opens. What
+  // it finds shows up as a button in the toolbar and a dot next to Updates in
+  // settings, not as a dialog over the repository you came here to look at.
+  watchUpdates()
 
   // Belt and braces for anything the watcher cannot see — a network share, a
   // platform without file notifications — and for the commonest case of all:
@@ -243,6 +314,7 @@ onUnmounted(() => {
   if (fetchTimer) window.clearInterval(fetchTimer)
   unlisten?.()
   unlistenCommand?.()
+  updates.stopWatching()
   window.removeEventListener('focus', onFocus)
 })
 </script>
@@ -258,7 +330,7 @@ onUnmounted(() => {
            open, and Back brings it straight back. Hidden rather than unmounted,
            because the repository's keyboard shortcuts live in it and those still
            work from a review page. -->
-      <TitleBar v-show="!review.store.current" />
+      <TitleBar v-show="!review.store.current" @leave="leaveSubmodule" />
       <BusyBar />
       <div class="body" :style="{ gridTemplateColumns: columns }">
         <!-- Opening a file takes over the graph area, as GitKraken does; so
@@ -271,9 +343,12 @@ onUnmounted(() => {
           <ReviewPane />
         </template>
         <template v-else>
-          <SideBar @open="openProject" />
+          <SideBar @open="openProject" @enter="enterSubmodule" />
           <ResizeHandle side="sidebar" />
-          <GraphList />
+          <!-- The rebase plan stands where the commit list would, with the
+               branches still in reach beside it. -->
+          <RebasePane v-if="rebase.store.open" />
+          <GraphList v-else />
         </template>
         <ResizeHandle side="panel" />
         <!-- While a review is being read, the panel holds its files: the
@@ -294,6 +369,12 @@ onUnmounted(() => {
 
     <ActivityLog />
     <Toasts />
+
+    <ProjectSwitcher
+      v-if="switching"
+      @open="openProject"
+      @close="switching = false"
+    />
 
     <SettingsModal v-if="config.store.settingsOpen" />
     <CloneDialog v-if="cloneOpen" @close="cloneOpen = false" @done="made" />

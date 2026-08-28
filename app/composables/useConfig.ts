@@ -17,7 +17,18 @@ export interface Profile {
   git_email: string | null
   /** Path to the private key this profile pushes and pulls with. */
   ssh_key: string | null
+  /** `user.signingkey` — a path for ssh, a key id for gpg. */
+  signing_key: string | null
+  /** `gpg.format`: `openpgp`, `ssh` or `x509`. */
+  signing_format: string | null
+  /** `commit.gpgsign`. Null means the profile has no opinion and the
+      repository's own configuration is left alone. */
+  sign_commits: boolean | null
+  /** `tag.gpgsign`. */
+  sign_tags: boolean | null
   projects: Project[]
+  /** Everything opened under this profile, newest first, tabs included. */
+  recents: Project[]
   active_project: string | null
 }
 
@@ -51,6 +62,8 @@ export interface GlobalSettings {
   diverged_checkout: 'ask' | 'rebase' | 'merge' | 'leave'
   show_avatars: boolean
   check_updates: boolean
+  /** Check the signature on every commit the graph draws. */
+  verify_signatures: boolean
 }
 
 export interface Config {
@@ -91,6 +104,8 @@ export function useConfig() {
     () => profiles.value.find((p) => p.id === store.config?.active_profile) ?? null
   )
   const projects = computed(() => profile.value?.projects ?? [])
+  /** Everything opened under this profile, newest first. */
+  const recents = computed(() => profile.value?.recents ?? [])
   const activeProject = computed(() => profile.value?.active_project ?? null)
   /**
    * Which tab to draw as the current one.
@@ -135,6 +150,7 @@ export function useConfig() {
     profiles,
     profile,
     projects,
+    recents,
     activeProject,
     selectedProject,
     settings,
@@ -179,6 +195,10 @@ export function useConfig() {
     async closeProject(path: string) {
       apply(await invoke<Config>('project_close', { path }))
     },
+    /** Takes one out of the recents. The folder on disk is not touched. */
+    async forgetProject(path: string) {
+      apply(await invoke<Config>('project_forget', { path }))
+    },
     async reorderProjects(paths: string[]) {
       apply(await invoke<Config>('project_reorder', { paths }))
     },
@@ -201,7 +221,12 @@ export function emptyProfile(): Profile {
     git_name: null,
     git_email: null,
     ssh_key: null,
+    signing_key: null,
+    signing_format: null,
+    sign_commits: null,
+    sign_tags: null,
     projects: [],
+    recents: [],
     active_project: null
   }
 }

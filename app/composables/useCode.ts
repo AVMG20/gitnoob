@@ -54,6 +54,9 @@ export interface DiffRow {
   /** Which hunk it belongs to, which is what the stage and discard buttons act on. */
   hunk: number
   line: DiffLine | null
+  /** Where in that hunk's lines it sits, for picking a run of them. `-1` on a
+      heading, which is not one of them. */
+  at: number
   top: number
   height: number
 }
@@ -69,12 +72,12 @@ export function diffRows(hunks: DiffHunk[]): { rows: DiffRow[]; height: number }
   const rows: DiffRow[] = []
   let top = 0
   hunks.forEach((hunk, at) => {
-    rows.push({ kind: 'head', hunk: at, line: null, top, height: HUNK_HEAD })
+    rows.push({ kind: 'head', hunk: at, line: null, at: -1, top, height: HUNK_HEAD })
     top += HUNK_HEAD
-    for (const line of hunk.lines) {
-      rows.push({ kind: 'line', hunk: at, line, top, height: CODE_ROW })
+    hunk.lines.forEach((line, within) => {
+      rows.push({ kind: 'line', hunk: at, line, at: within, top, height: CODE_ROW })
       top += CODE_ROW
-    }
+    })
   })
   return { rows, height: top }
 }

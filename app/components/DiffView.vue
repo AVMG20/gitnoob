@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed } from 'vue'
+import { computed, ref, watch } from 'vue'
 import type { DiffLine, FileDiff } from '~/composables/useGit'
 import { highlightLine, highlightWhole, languageFor } from '~/composables/useHighlight'
 import { diffRows, diffWindow } from '~/composables/useCode'
@@ -19,7 +19,150 @@ const props = defineProps<{
   left?: number
   width?: number
 }>()
-const emit = defineEmits<{ hunk: [number, 'stage' | 'unstage' | 'discard'] }>()
+export interface PickedLines {
+  /** New-side line numbers of the `+` lines chosen. */
+  added: number[]
+  /** Old-side line numbers of the `-` lines chosen. */
+  removed: number[]
+}
+
+const emit = defineEmits<{
+  hunk: [number, 'stage' | 'unstage' | 'discard', PickedLines | undefined]
+}>()
+
+// --- picking lines out of a hunk
+//
+// A line is named by its number rather than by where it sits in the list: the
+// backend rebuilds the patch from git's own diff text, and a line number is
+// the one thing that model and this one are guaranteed to agree on.
+
+/** `hunk:origin:lineno` for every line picked, across every hunk. */
+const picked = ref(new Set<string>())
+
+function keyFor(hunk: number, line: DiffLine): string | null {
+  if (line.origin === '+') return line.new_lineno === null ? null : `${hunk}:+:${line.new_lineno}`
+  if (line.origin === '-') return line.old_lineno === null ? null : `${hunk}:-:${line.old_lineno}`
+  // Context, and the "no newline" remark, are not changes to pick.
+  return null
+}
+
+const isPicked = (hunk: number, line: DiffLine) => {
+  const key = keyFor(hunk, line)
+  return key !== null && picked.value.has(key)
+}
+
+/** What has been picked out of one hunk, in the shape the backend takes. */
+function pickedIn(hunk: number): PickedLines | undefined {
+  const added: number[] = []
+  const removed: number[] = []
+  for (const key of picked.value) {
+    const [at, origin, number] = key.split(':')
+    if (Number(at) !== hunk) continue
+    if (origin === '+') added.push(Number(number))
+    else removed.push(Number(number))
+  }
+  return added.length || removed.length ? { added, removed } : undefined
+}
+
+const countIn = (hunk: number) => {
+  const found = pickedIn(hunk)
+  return found ? found.added.length + found.removed.length : 0
+}
+
+/**
+ * Dragging down a run of lines picks them.
+ *
+ * The mode is taken from the line the drag started on, so pulling across a
+ * selection clears it rather than leaving a checkerboard behind — which is
+ * what every list with checkboxes in it does.
+ */
+const dragging = ref<{ hunk: number; adding: boolean } | null>(null)
+/** The last line clicked, for shift to reach back to. */
+const anchor = ref<{ hunk: number; at: number } | null>(null)
+
+function setPicked(hunk: number, line: DiffLine, on: boolean) {
+  const key = keyFor(hunk, line)
+  if (key === null) return
+  const next = new Set(picked.value)
+  if (on) next.add(key)
+  else next.delete(key)
+  picked.value = next
+}
+
+/** Only the gutter starts a selection: the code itself stays selectable text. */
+function onDown(event: MouseEvent, hunk: number, line: DiffLine, at: number) {
+  if (!(event.target as HTMLElement | null)?.closest('.no, .sign')) return
+  if (keyFor(hunk, line) === null) return
+  event.preventDefault()
+
+  if (event.shiftKey && anchor.value?.hunk === hunk) {
+    pickRange(hunk, anchor.value.at, at)
+    return
+  }
+  const adding = !isPicked(hunk, line)
+  setPicked(hunk, line, adding)
+  dragging.value = { hunk, adding }
+  anchor.value = { hunk, at }
+  window.addEventListener('mouseup', stopDragging, { once: true })
+}
+
+function onEnter(hunk: number, line: DiffLine) {
+  if (!dragging.value || dragging.value.hunk !== hunk) return
+  setPicked(hunk, line, dragging.value.adding)
+}
+
+function stopDragging() {
+  dragging.value = null
+}
+
+/** Everything between two lines of a hunk, the changed ones anyway. */
+function pickRange(hunk: number, from: number, to: number) {
+  const lines = props.diff?.hunks[hunk]?.lines ?? []
+  const [first, last] = from <= to ? [from, to] : [to, from]
+  const next = new Set(picked.value)
+  for (let at = first; at <= last; at++) {
+    const line = lines[at]
+    const key = line ? keyFor(hunk, line) : null
+    if (key !== null) next.add(key)
+  }
+  picked.value = next
+}
+
+/** Clears one hunk's picks — after acting on them, or on asking. */
+function clearHunk(hunk: number) {
+  const next = new Set([...picked.value].filter((key) => Number(key.split(':')[0]) !== hunk))
+  picked.value = next
+  anchor.value = null
+}
+
+/** What the staging button says, which depends on what is picked. */
+function label(hunk: number) {
+  const count = countIn(hunk)
+  const verb = props.side === 'staged' ? 'Unstage' : 'Stage'
+  if (!count) return `${verb} hunk`
+  return `${verb} ${count} ${count === 1 ? 'line' : 'lines'}`
+}
+
+/**
+ * Acts on a hunk, with whatever is picked out of it.
+ *
+ * Nothing picked means the whole hunk, which is what the button says and what
+ * it has always done.
+ */
+function act(hunk: number, action: 'stage' | 'unstage' | 'discard') {
+  emit('hunk', hunk, action, pickedIn(hunk))
+  clearHunk(hunk)
+}
+
+// A reloaded file is a different set of lines; picks made against the old one
+// would name rows that have moved.
+watch(
+  () => props.diff,
+  () => {
+    picked.value = new Set()
+    anchor.value = null
+  }
+)
 
 const empty = computed(() => !!props.diff && props.diff.hunks.length === 0)
 const language = computed(() => (props.diff ? languageFor(props.diff.path) : null))
@@ -176,30 +319,50 @@ function paint(line: DiffLine) {
             <span class="truncate">{{ props.diff.hunks[row.hunk]?.header }}</span>
             <!-- Discard sits away from the staging button, so the destructive
                  one is never where the hand already is. -->
-            <span v-if="props.side" class="hunk-actions">
+            <span v-if="props.side" class="hunk-actions" :class="{ picking: countIn(row.hunk) }">
+              <button
+                v-if="countIn(row.hunk)"
+                class="hunk-btn quiet"
+                title="Leave the picked lines alone"
+                @click="clearHunk(row.hunk)"
+              >
+                Clear
+              </button>
               <button
                 v-if="props.side === 'unstaged'"
                 class="hunk-btn danger"
                 :disabled="props.busy"
-                title="Throw away just this hunk"
-                @click="emit('hunk', row.hunk, 'discard')"
+                :title="
+                  countIn(row.hunk)
+                    ? 'Throw away just the picked lines'
+                    : 'Throw away just this hunk'
+                "
+                @click="act(row.hunk, 'discard')"
               >
-                Discard hunk
+                {{ countIn(row.hunk) ? 'Discard lines' : 'Discard hunk' }}
               </button>
               <button
                 class="hunk-btn"
                 :disabled="props.busy"
-                @click="emit('hunk', row.hunk, props.side === 'staged' ? 'unstage' : 'stage')"
+                @click="act(row.hunk, props.side === 'staged' ? 'unstage' : 'stage')"
               >
-                {{ props.side === 'staged' ? 'Unstage hunk' : 'Stage hunk' }}
+                {{ label(row.hunk) }}
               </button>
             </span>
           </div>
           <div
             v-else-if="row.line"
             class="line"
-            :class="lineClass(row.line.origin)"
+            :class="[
+              lineClass(row.line.origin),
+              {
+                pickable: !!props.side && keyFor(row.hunk, row.line) !== null,
+                picked: isPicked(row.hunk, row.line)
+              }
+            ]"
             :style="{ top: `${row.top}px` }"
+            @mousedown="onDown($event, row.hunk, row.line, row.at)"
+            @mouseenter="onEnter(row.hunk, row.line)"
           >
             <span class="no">{{ row.line.old_lineno ?? '' }}</span>
             <span class="no">{{ row.line.new_lineno ?? '' }}</span>
@@ -215,22 +378,32 @@ function paint(line: DiffLine) {
           :style="headStyle(props.top ?? 0)"
         >
           <span class="truncate">{{ props.diff.hunks[pinned]?.header }}</span>
-          <span v-if="props.side" class="hunk-actions">
+          <span v-if="props.side" class="hunk-actions" :class="{ picking: countIn(pinned) }">
+            <button
+              v-if="countIn(pinned)"
+              class="hunk-btn quiet"
+              title="Leave the picked lines alone"
+              @click="clearHunk(pinned)"
+            >
+              Clear
+            </button>
             <button
               v-if="props.side === 'unstaged'"
               class="hunk-btn danger"
               :disabled="props.busy"
-              title="Throw away just this hunk"
-              @click="emit('hunk', pinned, 'discard')"
+              :title="
+                countIn(pinned) ? 'Throw away just the picked lines' : 'Throw away just this hunk'
+              "
+              @click="act(pinned, 'discard')"
             >
-              Discard hunk
+              {{ countIn(pinned) ? 'Discard lines' : 'Discard hunk' }}
             </button>
             <button
               class="hunk-btn"
               :disabled="props.busy"
-              @click="emit('hunk', pinned, props.side === 'staged' ? 'unstage' : 'stage')"
+              @click="act(pinned, props.side === 'staged' ? 'unstage' : 'stage')"
             >
-              {{ props.side === 'staged' ? 'Unstage hunk' : 'Stage hunk' }}
+              {{ label(pinned) }}
             </button>
           </span>
         </div>
@@ -406,5 +579,42 @@ function paint(line: DiffLine) {
   overflow: hidden;
   visibility: hidden;
   pointer-events: none;
+}
+
+/* --- picking lines out of a hunk */
+
+/* Only the gutter takes the press, so selecting the code as text still works.
+   The cursor over it is what says so. */
+.line.pickable .no,
+.line.pickable .sign {
+  cursor: pointer;
+}
+
+.line.pickable:hover .no,
+.line.pickable:hover .sign {
+  color: var(--text);
+  background: var(--bg-hover);
+}
+
+/* A picked line keeps its own green or red — what is being staged is still an
+   addition or a removal — and gains a bar in the gutter saying it is chosen. */
+.line.picked .no,
+.line.picked .sign {
+  color: var(--on-accent);
+  background: var(--accent);
+}
+
+.line.picked .text {
+  box-shadow: inset 2px 0 0 var(--accent);
+}
+
+/* While lines are picked the buttons stop being a hover affordance: they are
+   the answer to what was just chosen, so they stay on screen. */
+.hunk-actions.picking {
+  opacity: 1;
+}
+
+.hunk-btn.quiet {
+  color: var(--text-faint);
 }
 </style>

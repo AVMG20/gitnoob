@@ -9,7 +9,7 @@ use std::process::Command;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
 use gitnoob_lib::state::AppState;
-use gitnoob_lib::{conflict, create, diff, graph, journal, refs, remote, work, worktree};
+use gitnoob_lib::{conflict, create, diff, graph, journal, rebase, refs, remote, work, worktree};
 
 static COUNTER: AtomicUsize = AtomicUsize::new(0);
 
@@ -2096,8 +2096,14 @@ fn stages_and_discards_one_hunk_at_a_time() {
     let state = sandbox.state();
 
     // Stage only the first region.
-    gitnoob_lib::work::apply_hunk(&state, "a.txt", 0, gitnoob_lib::work::HunkAction::Stage)
-        .unwrap();
+    gitnoob_lib::work::apply_hunk(
+        &state,
+        "a.txt",
+        0,
+        gitnoob_lib::work::HunkAction::Stage,
+        None,
+    )
+    .unwrap();
 
     let staged = diff::working_file_diff(&state, "a.txt", diff::Side::Staged).unwrap();
     let staged_added: Vec<String> = staged
@@ -2120,15 +2126,27 @@ fn stages_and_discards_one_hunk_at_a_time() {
     assert_eq!(unstaged_added, vec!["second addition".to_string()]);
 
     // Take it back out again.
-    gitnoob_lib::work::apply_hunk(&state, "a.txt", 0, gitnoob_lib::work::HunkAction::Unstage)
-        .unwrap();
+    gitnoob_lib::work::apply_hunk(
+        &state,
+        "a.txt",
+        0,
+        gitnoob_lib::work::HunkAction::Unstage,
+        None,
+    )
+    .unwrap();
     assert!(refs::status(&state).unwrap().staged.is_empty());
 
     // Discarding the remaining region leaves the other edit alone.
     let before = std::fs::read_to_string(sandbox.root.join("a.txt")).unwrap();
     assert!(before.contains("first addition") && before.contains("second addition"));
-    gitnoob_lib::work::apply_hunk(&state, "a.txt", 1, gitnoob_lib::work::HunkAction::Discard)
-        .unwrap();
+    gitnoob_lib::work::apply_hunk(
+        &state,
+        "a.txt",
+        1,
+        gitnoob_lib::work::HunkAction::Discard,
+        None,
+    )
+    .unwrap();
     let after = std::fs::read_to_string(sandbox.root.join("a.txt")).unwrap();
     assert!(after.contains("first addition"));
     assert!(!after.contains("second addition"));
@@ -2139,9 +2157,14 @@ fn hunk_staging_refuses_when_there_is_nothing_to_stage() {
     let sandbox = Sandbox::new("hunksempty");
     sandbox.commit("a.txt", "one\n", "Base");
     let state = sandbox.state();
-    let error =
-        gitnoob_lib::work::apply_hunk(&state, "a.txt", 0, gitnoob_lib::work::HunkAction::Stage)
-            .unwrap_err();
+    let error = gitnoob_lib::work::apply_hunk(
+        &state,
+        "a.txt",
+        0,
+        gitnoob_lib::work::HunkAction::Stage,
+        None,
+    )
+    .unwrap_err();
     assert!(error.contains("No unstaged changes"), "unexpected: {error}");
 }
 
@@ -4008,4 +4031,490 @@ fn a_remote_only_branch_gets_a_tracking_branch_in_its_worktree() {
     );
 
     let _ = std::fs::remove_dir_all(&parent);
+}
+
+// --- interactive rebase ------------------------------------------------------
+
+/// Puts a rebase into the state `rebase::start` would, without going through
+/// the sequence editor: the editor is this app's own binary, and the test
+/// binary is not it. Everything after the todo list is written is the code
+/// under test.
+fn begin_rebase(sandbox: &Sandbox, onto: &str, todo: &str, rewords: &[&str]) -> bool {
+    let list = sandbox.root.join("todo-under-test");
+    std::fs::write(&list, todo).unwrap();
+    let git_dir = sandbox.root.join(".git");
+    std::fs::write(git_dir.join("gitnoob-rebase-rewords"), rewords.join("\n")).unwrap();
+
+    Command::new("git")
+        .args(["rebase", "-i", onto])
+        .current_dir(&sandbox.root)
+        .env("GIT_SEQUENCE_EDITOR", format!("cp '{}'", list.display()))
+        .env("GIT_EDITOR", "true")
+        .output()
+        .expect("git should be on PATH")
+        .status
+        .success()
+}
+
+fn oids(sandbox: &Sandbox) -> Vec<String> {
+    sandbox
+        .git(&["log", "--format=%H", "--reverse"])
+        .lines()
+        .map(str::to_string)
+        .collect()
+}
+
+fn subjects(sandbox: &Sandbox) -> Vec<String> {
+    sandbox
+        .git(&["log", "--format=%s", "--reverse"])
+        .lines()
+        .map(str::to_string)
+        .collect()
+}
+
+#[test]
+fn a_plan_lists_the_commits_above_a_chosen_one_oldest_first() {
+    let sandbox = Sandbox::new("rebase-plan");
+    sandbox.commit("a.txt", "one\n", "First");
+    sandbox.commit("b.txt", "two\n", "Second");
+    sandbox.commit("c.txt", "three\n", "Third");
+    let base = oids(&sandbox)[0].clone();
+
+    let plan = rebase::plan(&sandbox.state(), &base).unwrap();
+    let summaries: Vec<&str> = plan.iter().map(|c| c.summary.as_str()).collect();
+    assert_eq!(summaries, vec!["Second", "Third"]);
+    // Nothing has a remote here, so nothing is published.
+    assert!(plan.iter().all(|c| !c.pushed));
+}
+
+#[test]
+fn a_plan_from_head_itself_is_refused_rather_than_empty() {
+    let sandbox = Sandbox::new("rebase-empty");
+    sandbox.commit("a.txt", "one\n", "First");
+    let head = oids(&sandbox)[0].clone();
+
+    let refused = rebase::plan(&sandbox.state(), &head);
+    assert!(refused.unwrap_err().contains("Nothing to rebase"));
+}
+
+#[test]
+fn a_plan_says_which_commits_a_remote_already_has() {
+    let sandbox = Sandbox::new("rebase-pushed");
+    sandbox.commit("a.txt", "one\n", "First");
+    sandbox.commit("b.txt", "two\n", "Second");
+    // A remote-tracking ref standing where the second commit is.
+    let second = oids(&sandbox)[1].clone();
+    sandbox.git(&["update-ref", "refs/remotes/origin/main", &second]);
+    sandbox.commit("c.txt", "three\n", "Third");
+    let base = oids(&sandbox)[0].clone();
+
+    let plan = rebase::plan(&sandbox.state(), &base).unwrap();
+    assert_eq!(plan[0].summary, "Second");
+    assert!(plan[0].pushed, "the remote has this one");
+    assert!(!plan[1].pushed, "the remote has never seen this one");
+}
+
+#[test]
+fn a_fixup_folds_a_commit_into_the_one_before_it() {
+    let sandbox = Sandbox::new("rebase-fixup");
+    sandbox.commit("a.txt", "one\n", "First");
+    sandbox.commit("b.txt", "two\n", "Second");
+    sandbox.commit("b.txt", "two fixed\n", "typo");
+    let ids = oids(&sandbox);
+    let todo = format!("pick {}\nfixup {}\n", ids[1], ids[2]);
+
+    assert!(begin_rebase(&sandbox, &ids[0], &todo, &[]));
+    assert_eq!(subjects(&sandbox), vec!["First", "Second"]);
+    // The folded change is still there; only its commit is gone.
+    assert_eq!(
+        std::fs::read_to_string(sandbox.root.join("b.txt")).unwrap(),
+        "two fixed\n"
+    );
+    assert!(rebase::progress(&sandbox.state()).unwrap().is_none());
+}
+
+#[test]
+fn a_reword_stops_and_reports_itself_as_one() {
+    let sandbox = Sandbox::new("rebase-reword");
+    sandbox.commit("a.txt", "one\n", "First");
+    sandbox.commit("b.txt", "two\n", "wip");
+    let ids = oids(&sandbox);
+    // A reword is written into the todo as an edit; the sidecar is what says
+    // it was meant as a reword.
+    let todo = format!("edit {}\n", ids[1]);
+    begin_rebase(&sandbox, &ids[0], &todo, &[ids[1].clone().as_str()]);
+
+    let state = sandbox.state();
+    let stopped = rebase::progress(&state)
+        .unwrap()
+        .expect("it should have stopped");
+    assert!(stopped.rewording, "the sidecar names this one a reword");
+    assert_eq!(stopped.stopped.as_deref(), Some(ids[1].as_str()));
+    assert_eq!(stopped.summary.as_deref(), Some("wip"));
+    assert_eq!(stopped.message.as_deref(), Some("wip"));
+    assert_eq!(stopped.at, 1);
+    assert_eq!(stopped.total, 1);
+
+    let said = rebase::reword(&state, "feat: a proper message").unwrap();
+    assert_eq!(said, "Rebase finished");
+    assert_eq!(subjects(&sandbox), vec!["First", "feat: a proper message"]);
+    assert!(rebase::progress(&state).unwrap().is_none());
+    // The sidecar goes with the rebase it belonged to.
+    assert!(!sandbox.root.join(".git/gitnoob-rebase-rewords").exists());
+}
+
+#[test]
+fn an_edit_that_was_not_a_reword_is_not_reported_as_one() {
+    let sandbox = Sandbox::new("rebase-edit");
+    sandbox.commit("a.txt", "one\n", "First");
+    sandbox.commit("b.txt", "two\n", "Second");
+    let ids = oids(&sandbox);
+    let todo = format!("edit {}\n", ids[1]);
+    begin_rebase(&sandbox, &ids[0], &todo, &[]);
+
+    let state = sandbox.state();
+    let stopped = rebase::progress(&state).unwrap().unwrap();
+    assert!(!stopped.rewording);
+    assert!(stopped.message.is_none(), "nothing to prefill a box with");
+
+    assert_eq!(rebase::resume(&state).unwrap(), "Rebase finished");
+    assert_eq!(subjects(&sandbox), vec!["First", "Second"]);
+}
+
+#[test]
+fn a_conflict_stops_the_rebase_and_abort_puts_the_branch_back() {
+    let sandbox = Sandbox::new("rebase-conflict");
+    sandbox.commit("a.txt", "one\n", "First");
+    sandbox.git(&["checkout", "-q", "-b", "side"]);
+    sandbox.commit("a.txt", "from the side\n", "Side change");
+    sandbox.git(&["checkout", "-q", "main"]);
+    sandbox.commit("a.txt", "from main\n", "Main change");
+    let before = sandbox.git(&["rev-parse", "HEAD"]).trim().to_string();
+
+    // Replaying main's commit on top of side's conflicts in a.txt.
+    let side = sandbox.git(&["rev-parse", "side"]).trim().to_string();
+    let head = sandbox.git(&["rev-parse", "HEAD"]).trim().to_string();
+    let todo = format!("pick {head}\n");
+    assert!(
+        !begin_rebase(&sandbox, &side, &todo, &[]),
+        "it should conflict"
+    );
+
+    let state = sandbox.state();
+    assert!(rebase::progress(&state).unwrap().is_some());
+    assert!(remote::in_progress(&state).unwrap().rebasing);
+
+    let said = rebase::abort(&state).unwrap();
+    assert!(said.contains("as it was"));
+    assert_eq!(sandbox.git(&["rev-parse", "HEAD"]).trim(), before);
+    assert!(rebase::progress(&state).unwrap().is_none());
+    assert!(!sandbox.root.join(".git/gitnoob-rebase-todo").exists());
+}
+
+#[test]
+fn skipping_leaves_the_commit_it_stopped_at_out() {
+    let sandbox = Sandbox::new("rebase-skip");
+    sandbox.commit("a.txt", "one\n", "First");
+    sandbox.git(&["checkout", "-q", "-b", "side"]);
+    sandbox.commit("a.txt", "from the side\n", "Side change");
+    sandbox.git(&["checkout", "-q", "main"]);
+    sandbox.commit("a.txt", "from main\n", "Main change");
+
+    let side = sandbox.git(&["rev-parse", "side"]).trim().to_string();
+    let head = sandbox.git(&["rev-parse", "HEAD"]).trim().to_string();
+    begin_rebase(&sandbox, &side, &format!("pick {head}\n"), &[]);
+
+    let state = sandbox.state();
+    assert_eq!(rebase::skip(&state).unwrap(), "Rebase finished");
+    assert_eq!(subjects(&sandbox), vec!["First", "Side change"]);
+}
+
+#[test]
+fn rebase_progress_says_nothing_when_no_rebase_is_running() {
+    let sandbox = Sandbox::new("rebase-idle");
+    sandbox.commit("a.txt", "one\n", "First");
+    assert!(rebase::progress(&sandbox.state()).unwrap().is_none());
+}
+
+// --- line-level staging ------------------------------------------------------
+
+#[test]
+fn staging_one_line_of_a_hunk_leaves_the_others_unstaged() {
+    let sandbox = Sandbox::new("stage-lines");
+    sandbox.commit("a.txt", "one\ntwo\nthree\nfour\n", "First");
+    // Two separate changes close enough together to land in one hunk.
+    sandbox.write("a.txt", "one\nTWO\nthree\nFOUR\n");
+
+    let state = sandbox.state();
+    let picked = gitnoob_lib::work::Lines {
+        added: vec![2],
+        removed: vec![2],
+    };
+    gitnoob_lib::work::apply_hunk(
+        &state,
+        "a.txt",
+        0,
+        gitnoob_lib::work::HunkAction::Stage,
+        Some(picked),
+    )
+    .unwrap();
+
+    let staged = sandbox.git(&["diff", "--cached"]);
+    assert!(
+        staged.contains("+TWO"),
+        "the picked line is staged: {staged}"
+    );
+    assert!(!staged.contains("+FOUR"), "the other one is not: {staged}");
+
+    // And the working tree still holds both changes.
+    let unstaged = sandbox.git(&["diff"]);
+    assert!(unstaged.contains("+FOUR"));
+    assert!(!unstaged.contains("+TWO"));
+}
+
+#[test]
+fn unstaging_one_line_leaves_the_rest_of_the_hunk_staged() {
+    let sandbox = Sandbox::new("unstage-lines");
+    sandbox.commit("a.txt", "one\ntwo\nthree\nfour\n", "First");
+    sandbox.write("a.txt", "one\nTWO\nthree\nFOUR\n");
+    sandbox.git(&["add", "a.txt"]);
+
+    let state = sandbox.state();
+    // Take just the second change back out of the index.
+    let picked = gitnoob_lib::work::Lines {
+        added: vec![4],
+        removed: vec![4],
+    };
+    gitnoob_lib::work::apply_hunk(
+        &state,
+        "a.txt",
+        0,
+        gitnoob_lib::work::HunkAction::Unstage,
+        Some(picked),
+    )
+    .unwrap();
+
+    let staged = sandbox.git(&["diff", "--cached"]);
+    assert!(
+        staged.contains("+TWO"),
+        "the first change stays staged: {staged}"
+    );
+    assert!(
+        !staged.contains("+FOUR"),
+        "the second one came back out: {staged}"
+    );
+    // Nothing was lost from the file itself.
+    assert_eq!(
+        std::fs::read_to_string(sandbox.root.join("a.txt")).unwrap(),
+        "one\nTWO\nthree\nFOUR\n"
+    );
+}
+
+#[test]
+fn discarding_one_line_puts_only_that_line_back() {
+    let sandbox = Sandbox::new("discard-lines");
+    sandbox.commit("a.txt", "one\ntwo\nthree\nfour\n", "First");
+    sandbox.write("a.txt", "one\nTWO\nthree\nFOUR\n");
+
+    let state = sandbox.state();
+    let picked = gitnoob_lib::work::Lines {
+        added: vec![2],
+        removed: vec![2],
+    };
+    gitnoob_lib::work::apply_hunk(
+        &state,
+        "a.txt",
+        0,
+        gitnoob_lib::work::HunkAction::Discard,
+        Some(picked),
+    )
+    .unwrap();
+
+    assert_eq!(
+        std::fs::read_to_string(sandbox.root.join("a.txt")).unwrap(),
+        "one\ntwo\nthree\nFOUR\n",
+        "the picked line went back, the other change stayed"
+    );
+}
+
+#[test]
+fn staging_only_an_addition_keeps_the_removal_in_the_working_tree() {
+    let sandbox = Sandbox::new("stage-added-only");
+    sandbox.commit("a.txt", "one\ntwo\nthree\n", "First");
+    // One line replaced: a removal and an addition in the same place.
+    sandbox.write("a.txt", "one\nTWO\nthree\n");
+
+    let state = sandbox.state();
+    // Take the addition without the removal, which is the awkward half.
+    let picked = gitnoob_lib::work::Lines {
+        added: vec![2],
+        removed: vec![],
+    };
+    gitnoob_lib::work::apply_hunk(
+        &state,
+        "a.txt",
+        0,
+        gitnoob_lib::work::HunkAction::Stage,
+        Some(picked),
+    )
+    .unwrap();
+
+    // The index now has both lines; the working tree still has only the new
+    // one, so what is left unstaged is the removal.
+    let staged = sandbox.git(&["diff", "--cached"]);
+    assert!(staged.contains("+TWO"));
+    assert!(!staged.contains("-two"));
+    let unstaged = sandbox.git(&["diff"]);
+    assert!(unstaged.contains("-two"));
+}
+
+#[test]
+fn no_lines_at_all_still_stages_the_whole_hunk() {
+    let sandbox = Sandbox::new("stage-whole");
+    sandbox.commit("a.txt", "one\ntwo\n", "First");
+    sandbox.write("a.txt", "one\nTWO\n");
+
+    let state = sandbox.state();
+    // An empty selection is the same request as no selection: the whole hunk.
+    gitnoob_lib::work::apply_hunk(
+        &state,
+        "a.txt",
+        0,
+        gitnoob_lib::work::HunkAction::Stage,
+        Some(gitnoob_lib::work::Lines::default()),
+    )
+    .unwrap();
+    assert!(sandbox.git(&["diff", "--cached"]).contains("+TWO"));
+    assert!(sandbox.git(&["diff"]).trim().is_empty());
+}
+
+// --- applying several stashes at once ----------------------------------------
+
+/// Three stashes, each touching a file of its own, so they can all go on
+/// together. Made newest-last, so `stash@{0}` is the third.
+fn three_stashes(sandbox: &Sandbox) {
+    sandbox.commit("base.txt", "base\n", "First");
+    for name in ["one", "two", "three"] {
+        sandbox.write(&format!("{name}.txt"), &format!("{name}\n"));
+        sandbox.git(&["add", "-A"]);
+        sandbox.git(&["stash", "push", "-q", "-m", name]);
+    }
+}
+
+#[test]
+fn several_stashes_go_on_oldest_first_and_stay_in_the_list() {
+    let sandbox = Sandbox::new("stash-many");
+    three_stashes(&sandbox);
+
+    let state = sandbox.state();
+    let run = gitnoob_lib::work::stash_apply_many(&state, vec![0, 1, 2], false).unwrap();
+
+    assert_eq!(run.applied, vec!["one", "two", "three"], "oldest first");
+    assert!(run.stopped.is_none());
+    for name in ["one", "two", "three"] {
+        assert!(
+            sandbox.root.join(format!("{name}.txt")).exists(),
+            "{name} went on"
+        );
+    }
+    // Applying keeps them.
+    assert_eq!(sandbox.git(&["stash", "list"]).lines().count(), 3);
+}
+
+#[test]
+fn popping_several_takes_each_one_off_the_list() {
+    let sandbox = Sandbox::new("stash-pop-many");
+    three_stashes(&sandbox);
+
+    let state = sandbox.state();
+    let run = gitnoob_lib::work::stash_apply_many(&state, vec![0, 1, 2], true).unwrap();
+
+    assert_eq!(run.applied.len(), 3);
+    assert!(run.stopped.is_none());
+    assert_eq!(
+        sandbox.git(&["stash", "list"]).trim(),
+        "",
+        "every one of them was dropped"
+    );
+}
+
+#[test]
+fn popping_some_of_them_drops_those_and_leaves_the_rest() {
+    let sandbox = Sandbox::new("stash-pop-some");
+    three_stashes(&sandbox);
+
+    // The oldest and the newest; `two` is left alone. Positions renumber as
+    // the first drop lands, which is the trap this is here for.
+    let state = sandbox.state();
+    let run = gitnoob_lib::work::stash_apply_many(&state, vec![0, 2], true).unwrap();
+
+    assert_eq!(run.applied, vec!["one", "three"]);
+    let left = sandbox.git(&["stash", "list"]);
+    assert_eq!(left.lines().count(), 1);
+    assert!(
+        left.contains("two"),
+        "the one not picked is still there: {left}"
+    );
+    assert!(sandbox.root.join("one.txt").exists());
+    assert!(sandbox.root.join("three.txt").exists());
+    assert!(!sandbox.root.join("two.txt").exists());
+}
+
+#[test]
+fn uncommitted_work_is_not_in_the_way_of_a_stash_going_on() {
+    let sandbox = Sandbox::new("stash-over-dirty");
+    three_stashes(&sandbox);
+    // Something already changed in the working tree, on a file no stash touches.
+    sandbox.write("base.txt", "base, and edited\n");
+
+    let state = sandbox.state();
+    let run = gitnoob_lib::work::stash_apply_many(&state, vec![0, 1], false).unwrap();
+
+    assert_eq!(run.applied.len(), 2);
+    assert!(run.stopped.is_none());
+    assert_eq!(
+        std::fs::read_to_string(sandbox.root.join("base.txt")).unwrap(),
+        "base, and edited\n",
+        "the edit is still there"
+    );
+}
+
+#[test]
+fn a_stash_that_collides_stops_the_run_and_says_which_one() {
+    let sandbox = Sandbox::new("stash-collide");
+    sandbox.commit("a.txt", "one\n", "First");
+
+    // Two stashes that both rewrite the same line: the second cannot go on
+    // over the first.
+    sandbox.write("a.txt", "from the first stash\n");
+    sandbox.git(&["stash", "push", "-q", "-m", "first"]);
+    sandbox.write("a.txt", "from the second stash\n");
+    sandbox.git(&["stash", "push", "-q", "-m", "second"]);
+
+    let state = sandbox.state();
+    let run = gitnoob_lib::work::stash_apply_many(&state, vec![0, 1], true).unwrap();
+
+    assert_eq!(run.applied, vec!["first"], "the older one went on");
+    let stopped = run.stopped.expect("the second should have stopped it");
+    assert_eq!(stopped.message, "second");
+    assert!(!stopped.reason.is_empty(), "git said why");
+
+    // The one that stopped it is still in the list: nothing is dropped that
+    // did not go on.
+    let left = sandbox.git(&["stash", "list"]);
+    assert!(left.contains("second"), "{left}");
+    assert!(!left.contains("first"), "{left}");
+}
+
+#[test]
+fn picking_a_stash_that_is_not_there_is_refused_before_anything_happens() {
+    let sandbox = Sandbox::new("stash-missing");
+    three_stashes(&sandbox);
+
+    let state = sandbox.state();
+    let refused = gitnoob_lib::work::stash_apply_many(&state, vec![0, 9], true);
+    assert!(refused.unwrap_err().contains("no stash at position 9"));
+    // Nothing was applied, and nothing dropped.
+    assert_eq!(sandbox.git(&["stash", "list"]).lines().count(), 3);
+    assert!(!sandbox.root.join("three.txt").exists());
 }

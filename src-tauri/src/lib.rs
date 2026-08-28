@@ -1,5 +1,6 @@
 pub mod ai;
 pub mod avatar;
+pub mod blame;
 pub mod config;
 pub mod conflict;
 pub mod create;
@@ -8,11 +9,15 @@ pub mod forge;
 pub mod git_cmd;
 pub mod graph;
 pub mod journal;
+pub mod lfs;
+pub mod rebase;
 pub mod refs;
 pub mod remote;
 pub mod review;
+pub mod sign;
 pub mod ssh;
 pub mod state;
+pub mod submodule;
 pub mod watch;
 pub mod work;
 pub mod worktree;
@@ -24,10 +29,16 @@ use tauri::{Emitter, Manager, State};
 
 // --- repository -------------------------------------------------------------
 
-/// Opens a repository and records it in the active profile's tab strip.
+/// Opens a repository and, unless told otherwise, records it in the active
+/// profile's tab strip.
+///
+/// `record: false` is for stepping into a submodule: it is a repository of its
+/// own and everything below has to point at it, but it is not a project the
+/// user opened and it should not turn into a tab of its own or into a recent.
 #[tauri::command]
 async fn open_repo(
     path: String,
+    record: Option<bool>,
     app: tauri::AppHandle,
     watching: State<'_, watch::Slot>,
     state: State<'_, AppState>,
@@ -40,17 +51,20 @@ async fn open_repo(
         .unwrap_or_else(|| recorded.clone());
 
     state.set_path(root);
-    state.update_config(|config| {
-        if let Some(profile) = config.active_mut() {
-            if !profile.projects.iter().any(|p| p.path == recorded) {
-                profile.projects.push(config::Project {
-                    path: recorded.clone(),
-                    name,
-                });
+    if record.unwrap_or(true) {
+        state.update_config(|config| {
+            if let Some(profile) = config.active_mut() {
+                if !profile.projects.iter().any(|p| p.path == recorded) {
+                    profile.projects.push(config::Project {
+                        path: recorded.clone(),
+                        name: name.clone(),
+                    });
+                }
+                config::remember_recent(profile, &recorded, &name);
+                profile.active_project = Some(recorded.clone());
             }
-            profile.active_project = Some(recorded.clone());
-        }
-    })?;
+        })?;
+    }
 
     // Watch this one instead of whichever was open before. Assigning replaces
     // the old watch, and dropping it stops its thread.
@@ -317,6 +331,192 @@ fn add_to_gitignore(pattern: String, state: State<'_, AppState>) -> Result<Strin
     refs::add_to_gitignore(&state, &pattern)
 }
 
+// --- git lfs -----------------------------------------------------------------
+
+/// Whether this repository uses LFS, and whether the tool for it is here.
+#[tauri::command]
+fn lfs_status(state: State<'_, AppState>) -> Result<lfs::Status, String> {
+    lfs::status(&state)
+}
+
+/// Fetches the real contents of one LFS file, or of every one of them.
+#[tauri::command]
+async fn lfs_pull(path: Option<String>, state: State<'_, AppState>) -> Result<String, String> {
+    lfs::pull(&state, path.as_deref())
+}
+
+// --- interactive rebase -------------------------------------------------------
+
+/// The commits between a chosen one and HEAD, oldest first, for the plan.
+#[tauri::command]
+async fn rebase_plan(
+    onto: String,
+    state: State<'_, AppState>,
+) -> Result<Vec<rebase::Candidate>, String> {
+    rebase::plan(&state, &onto)
+}
+
+/// Runs the plan the window built.
+#[tauri::command]
+async fn rebase_start(
+    onto: String,
+    steps: Vec<rebase::Step>,
+    state: State<'_, AppState>,
+) -> Result<String, String> {
+    rebase::start(&state, &onto, steps)
+}
+
+/// Where a rebase has got to, or nothing when none is running.
+#[tauri::command]
+async fn rebase_progress(state: State<'_, AppState>) -> Result<Option<rebase::Progress>, String> {
+    rebase::progress(&state)
+}
+
+#[tauri::command]
+async fn rebase_continue(state: State<'_, AppState>) -> Result<String, String> {
+    rebase::resume(&state)
+}
+
+#[tauri::command]
+async fn rebase_skip(state: State<'_, AppState>) -> Result<String, String> {
+    rebase::skip(&state)
+}
+
+#[tauri::command]
+async fn rebase_abort(state: State<'_, AppState>) -> Result<String, String> {
+    rebase::abort(&state)
+}
+
+/// Gives the commit a stopped rebase is sitting on a new message, and goes on.
+#[tauri::command]
+async fn rebase_reword(message: String, state: State<'_, AppState>) -> Result<String, String> {
+    rebase::reword(&state, &message)
+}
+
+// --- blame and file history --------------------------------------------------
+
+/// Who last touched each line of a file, as runs of consecutive lines.
+#[tauri::command]
+async fn blame_file(
+    path: String,
+    commit: Option<String>,
+    state: State<'_, AppState>,
+) -> Result<Vec<blame::BlameRun>, String> {
+    blame::of(&state, &path, commit.as_deref())
+}
+
+/// Every commit that touched a file, newest first, across renames.
+#[tauri::command]
+async fn file_history(
+    path: String,
+    limit: Option<usize>,
+    state: State<'_, AppState>,
+) -> Result<Vec<blame::FileCommit>, String> {
+    blame::history(&state, &path, limit.unwrap_or(200))
+}
+
+// --- signatures --------------------------------------------------------------
+
+/// What git makes of the signature on every commit of the current page.
+///
+/// Asked for only while the setting is on: it runs the machine's gpg or
+/// ssh-keygen once per commit, which is not a thing to do on every refresh
+/// without being told to.
+#[tauri::command]
+async fn signature_marks(
+    limit: usize,
+    state: State<'_, AppState>,
+) -> Result<std::collections::HashMap<String, sign::Mark>, String> {
+    if !state.config().global.verify_signatures {
+        return Ok(std::collections::HashMap::new());
+    }
+    sign::marks(&state, limit)
+}
+
+/// Everything git will say about one commit's signature.
+#[tauri::command]
+async fn commit_signature(
+    oid: String,
+    state: State<'_, AppState>,
+) -> Result<sign::Signature, String> {
+    sign::of(&state, &oid)
+}
+
+/// Whether a commit made in this repository right now would be signed.
+#[tauri::command]
+fn signing_setup(state: State<'_, AppState>) -> Result<sign::Setup, String> {
+    sign::setup(&state)
+}
+
+// --- submodules --------------------------------------------------------------
+
+/// Every repository kept inside this one.
+#[tauri::command]
+async fn submodule_list(state: State<'_, AppState>) -> Result<Vec<submodule::Submodule>, String> {
+    submodule::list(&state)
+}
+
+/// Clones what is missing and moves each one onto the commit this repository
+/// records. Without a path, all of them.
+#[tauri::command]
+async fn submodule_update(
+    path: Option<String>,
+    recursive: Option<bool>,
+    state: State<'_, AppState>,
+) -> Result<String, String> {
+    submodule::update(&state, path.as_deref(), recursive.unwrap_or(false))
+}
+
+/// Copies the URLs in `.gitmodules` over the ones each was cloned with.
+#[tauri::command]
+async fn submodule_sync(
+    path: Option<String>,
+    state: State<'_, AppState>,
+) -> Result<String, String> {
+    submodule::sync(&state, path.as_deref())
+}
+
+/// Adds a repository as a submodule, cloning it into `path`.
+#[tauri::command]
+async fn submodule_add(
+    url: String,
+    path: String,
+    state: State<'_, AppState>,
+) -> Result<String, String> {
+    submodule::add(&state, &url, &path)
+}
+
+/// Empties a submodule's folder while leaving it declared.
+#[tauri::command]
+async fn submodule_deinit(
+    path: String,
+    force: Option<bool>,
+    state: State<'_, AppState>,
+) -> Result<String, String> {
+    submodule::deinit(&state, &path, force.unwrap_or(false))
+}
+
+/// Takes a submodule out of the working tree, the index and `.gitmodules`.
+#[tauri::command]
+async fn submodule_remove(path: String, state: State<'_, AppState>) -> Result<String, String> {
+    submodule::remove(&state, &path)
+}
+
+/// A git command typed into the log's prompt, run in the open repository.
+#[tauri::command]
+async fn run_git(
+    args: Vec<String>,
+    state: State<'_, AppState>,
+) -> Result<git_cmd::CmdOutput, String> {
+    let cwd = state.path()?;
+    tauri::async_runtime::spawn_blocking(move || {
+        let args: Vec<&str> = args.iter().map(String::as_str).collect();
+        git_cmd::run_typed(&cwd, &args)
+    })
+    .await
+    .map_err(|e| format!("git did not finish: {e}"))?
+}
+
 #[tauri::command]
 fn remotes(state: State<'_, AppState>) -> Result<Vec<String>, String> {
     remote::remotes(&state)
@@ -447,9 +647,10 @@ async fn apply_hunk(
     path: String,
     hunk_index: usize,
     action: work::HunkAction,
+    lines: Option<work::Lines>,
     state: State<'_, AppState>,
 ) -> Result<String, String> {
-    work::apply_hunk(&state, &path, hunk_index, action)
+    work::apply_hunk(&state, &path, hunk_index, action, lines)
 }
 
 #[tauri::command]
@@ -506,6 +707,17 @@ async fn stash_list(state: State<'_, AppState>) -> Result<Vec<work::StashEntry>,
 #[tauri::command]
 async fn stash_apply(index: usize, state: State<'_, AppState>) -> Result<String, String> {
     work::stash_apply(&state, index)
+}
+
+/// Applies several stashes in one go, oldest first, dropping each that goes on
+/// cleanly when `drop_after` says to.
+#[tauri::command]
+async fn stash_apply_many(
+    indexes: Vec<usize>,
+    drop_after: Option<bool>,
+    state: State<'_, AppState>,
+) -> Result<work::StashRun, String> {
+    work::stash_apply_many(&state, indexes, drop_after.unwrap_or(false))
 }
 
 #[tauri::command]
@@ -920,6 +1132,17 @@ fn project_reorder(
     Ok(state.config())
 }
 
+/// Takes a repository out of the profile's recents. The folder is untouched.
+#[tauri::command]
+fn project_forget(path: String, state: State<'_, AppState>) -> Result<config::Config, String> {
+    state.update_config(|config| {
+        if let Some(profile) = config.active_mut() {
+            profile.recents.retain(|one| one.path != path);
+        }
+    })?;
+    Ok(state.config())
+}
+
 /// Writes the active profile's identity into this repository's local config.
 ///
 /// A profile is a person, and choosing one is the whole statement, so this runs
@@ -933,22 +1156,59 @@ fn apply_identity(state: State<'_, AppState>) -> Result<Option<String>, String> 
     let Some(profile) = config.active() else {
         return Ok(None);
     };
-    let (Some(name), Some(email)) = (
+    let mut said: Vec<String> = Vec::new();
+
+    if let (Some(name), Some(email)) = (
         profile.git_name.clone().filter(|s| !s.trim().is_empty()),
         profile.git_email.clone().filter(|s| !s.trim().is_empty()),
-    ) else {
-        return Ok(None);
-    };
-
-    if configured(&root, "user.name").as_deref() == Some(name.as_str())
-        && configured(&root, "user.email").as_deref() == Some(email.as_str())
-    {
-        return Ok(None);
+    ) {
+        if configured(&root, "user.name").as_deref() != Some(name.as_str())
+            || configured(&root, "user.email").as_deref() != Some(email.as_str())
+        {
+            git_cmd::run_checked(&root, &["config", "--local", "user.name", &name])?;
+            git_cmd::run_checked(&root, &["config", "--local", "user.email", &email])?;
+            said.push(format!("Committing here as {name} <{email}>"));
+        }
     }
 
-    git_cmd::run_checked(&root, &["config", "--local", "user.name", &name])?;
-    git_cmd::run_checked(&root, &["config", "--local", "user.email", &email])?;
-    Ok(Some(format!("Committing here as {name} <{email}>")))
+    // Signing is applied separately from the identity, because a profile may
+    // well set one and not the other. Each setting the profile has no opinion
+    // about is left exactly as the machine had it: a `None` here means "say
+    // nothing", which is not the same as "off".
+    let mut signing = Vec::new();
+    if let Some(key) = profile.signing_key.clone().filter(|s| !s.trim().is_empty()) {
+        signing.push(("user.signingkey", key));
+    }
+    if let Some(format) = profile
+        .signing_format
+        .clone()
+        .filter(|s| !s.trim().is_empty())
+    {
+        signing.push(("gpg.format", format));
+    }
+    if let Some(on) = profile.sign_commits {
+        signing.push(("commit.gpgsign", on.to_string()));
+    }
+    if let Some(on) = profile.sign_tags {
+        signing.push(("tag.gpgsign", on.to_string()));
+    }
+
+    let mut signing_changed = false;
+    for (key, value) in signing {
+        if configured(&root, key).as_deref() == Some(value.as_str()) {
+            continue;
+        }
+        git_cmd::run_checked(&root, &["config", "--local", key, &value])?;
+        signing_changed = true;
+    }
+    if signing_changed {
+        said.push(match profile.sign_commits {
+            Some(false) => "Commits here are not signed".to_string(),
+            _ => "Signing set up for this repository".to_string(),
+        });
+    }
+
+    Ok((!said.is_empty()).then(|| said.join(". ")))
 }
 
 /// What git would use for a setting in this repository, local or inherited.
@@ -1553,6 +1813,27 @@ pub fn run() {
             worktree_add,
             worktree_remove,
             add_to_gitignore,
+            run_git,
+            lfs_status,
+            lfs_pull,
+            rebase_plan,
+            rebase_start,
+            rebase_progress,
+            rebase_continue,
+            rebase_skip,
+            rebase_abort,
+            rebase_reword,
+            blame_file,
+            file_history,
+            signature_marks,
+            commit_signature,
+            signing_setup,
+            submodule_list,
+            submodule_update,
+            submodule_sync,
+            submodule_add,
+            submodule_deinit,
+            submodule_remove,
             remotes,
             remote_url,
             remote_add,
@@ -1579,6 +1860,7 @@ pub fn run() {
             stash_pop,
             stash_list,
             stash_apply,
+            stash_apply_many,
             stash_drop,
             stash_rename,
             delete_untracked,
@@ -1624,6 +1906,7 @@ pub fn run() {
             profile_activate,
             project_close,
             project_reorder,
+            project_forget,
             apply_identity,
             ssh_keys,
             ssh_test,

@@ -1,29 +1,88 @@
 <script setup lang="ts">
 import { computed, ref, watch } from 'vue'
 import {
+  Archive,
   ArrowDown,
   ArrowDownToLine,
   ArrowUp,
   ArrowUpFromLine,
-  Archive,
+  ChevronRight,
+  Download,
   GitBranchPlus,
   History,
-  RefreshCw,
+  Package,
   Redo2,
+  RefreshCw,
   Settings,
+  Trash2,
   TriangleAlert,
-  Undo2
+  Undo2,
+  X
 } from 'lucide-vue-next'
 import { useGit, type CommitSummary } from '~/composables/useGit'
 import { useConfig } from '~/composables/useConfig'
 import { useShortcuts } from '~/composables/useShortcuts'
+import { useUpdates } from '~/composables/useUpdates'
+import { useRebase } from '~/composables/useRebase'
+
+const emit = defineEmits<{ leave: [depth: number] }>()
 
 const git = useGit()
 const store = git.store
+
+/** The project the trail started from — the tab you are still in. */
+const rootName = computed(() => store.inside[0]?.fromName ?? '')
 const config = useConfig()
+const updates = useUpdates()
+const rebase = useRebase()
+
+/**
+ * A release on offer, or on its way in. The button stays through the download
+ * so the progress in settings is one click away, and goes with "not now".
+ */
+const updateOffered = computed(() =>
+  ['available', 'downloading', 'ready'].includes(updates.store.stage)
+)
 
 const showBranch = ref(false)
 const showHistory = ref(false)
+
+/**
+ * The stash the selected row is, when it is one.
+ *
+ * Read off the selection rather than the loaded detail, so the bar changes in
+ * the same frame as the click rather than a round trip later.
+ */
+const stash = computed(
+  () => store.stashes.find((one) => one.oid === store.selected) ?? null
+)
+
+/** Naming the branch a stash becomes; null when nothing is being named. */
+const naming = ref(false)
+
+async function stashAction(what: 'apply' | 'pop' | 'drop') {
+  const one = stash.value
+  if (!one) return
+  const said =
+    what === 'apply'
+      ? await git.stashApply(one.index)
+      : what === 'pop'
+        ? await git.stashPop(one.index)
+        : await git.stashDrop(one.index)
+  if (said !== null) git.note(said)
+}
+
+function branchFromStash() {
+  naming.value = true
+}
+
+async function makeStashBranch(name: string) {
+  const one = stash.value
+  naming.value = false
+  if (!one || !name.trim()) return
+  const said = await git.stashBranch(one.index, name.trim())
+  if (said !== null) git.note(said)
+}
 
 const head = computed(() => store.refs?.locals.find((b) => b.is_head) ?? null)
 
@@ -156,7 +215,37 @@ async function reconcile(rebase: boolean) {
 <template>
   <header class="bar">
     <div class="repo">
-      <strong class="name">{{ store.repo?.name }}</strong>
+      <!-- The trail into a submodule. The project it belongs to is still what
+           the tab says, so this is where being somewhere else has to be
+           visible — and each step is its own way back out. -->
+      <template v-if="store.inside.length">
+        <button
+          class="crumb root"
+          :title="`Back to ${rootName}`"
+          @click="emit('leave', 0)"
+        >
+          {{ rootName }}
+        </button>
+        <template v-for="(step, at) in store.inside" :key="step.path">
+          <ChevronRight :size="12" class="faint sep" />
+          <button
+            v-if="at < store.inside.length - 1"
+            class="crumb"
+            :title="`Back to ${step.name}`"
+            @click="emit('leave', at + 1)"
+          >
+            {{ step.name }}
+          </button>
+          <span v-else class="crumb here" :title="step.path">
+            <Package :size="12" />
+            {{ step.name }}
+            <button class="out" title="Leave the submodule" @click="emit('leave', 0)">
+              <X :size="12" />
+            </button>
+          </span>
+        </template>
+      </template>
+      <strong v-else class="name">{{ store.repo?.name }}</strong>
       <span class="faint">/</span>
       <span class="branch mono">
         {{ store.repo?.head }}
@@ -172,7 +261,49 @@ async function reconcile(rebase: boolean) {
       </span>
     </div>
 
-    <div class="actions">
+    <!-- What the bar offers follows what is selected. A stash is the one kind
+         of row whose actions are nothing like a commit's, so while one is
+         picked the bar is about the stash. Fetch, pull and push keep their
+         keys — this component is still mounted, only its buttons change. -->
+    <div v-if="stash" class="actions stash-actions">
+      <button
+        class="btn"
+        :disabled="store.busy"
+        title="Put these changes back and keep the stash"
+        @click="stashAction('apply')"
+      >
+        <ArrowDownToLine :size="14" /> Apply
+      </button>
+      <button
+        class="btn strong"
+        :disabled="store.busy"
+        title="Put these changes back and take the stash off the list"
+        @click="stashAction('pop')"
+      >
+        <ArrowDownToLine :size="14" /> Pop
+      </button>
+      <button
+        class="btn"
+        :disabled="store.busy"
+        title="Start a branch from it, for a stash that will not go on here"
+        @click="branchFromStash"
+      >
+        <GitBranchPlus :size="14" /> Branch from it
+      </button>
+
+      <span class="sep" />
+
+      <button
+        class="btn danger-text"
+        :disabled="store.busy"
+        title="Throw the stash away"
+        @click="stashAction('drop')"
+      >
+        <Trash2 :size="14" /> Drop
+      </button>
+    </div>
+
+    <div v-else class="actions">
       <button class="btn" :disabled="store.busy" title="Fetch all remotes" @click="git.fetch()">
         <RefreshCw :size="14" /> Fetch
       </button>
@@ -221,10 +352,19 @@ async function reconcile(rebase: boolean) {
 
       <span class="sep" />
 
+      <button
+        v-if="updateOffered"
+        class="btn update"
+        :title="`Version ${updates.store.version} is available`"
+        @click="config.openSettings('updates')"
+      >
+        <Download :size="14" />
+        {{ updates.store.stage === 'available' ? 'Update' : 'Updating…' }}
+      </button>
       <button class="btn icon-only" title="Settings" @click="config.openSettings('profiles')">
         <Settings :size="15" />
       </button>
-      <ProfileMenu />
+      <ProfileMenu class="profile" />
     </div>
 
     <!-- Strips below the toolbar, stacked so a conflict and a refused push can
@@ -332,6 +472,30 @@ async function reconcile(rebase: boolean) {
       </button>
     </div>
 
+    <!-- A rebase that is part-way through, whether or not the plan is still
+         on screen: closing the pane must not be a way to lose the thread. The
+         conflict strip below covers what to do about the files themselves. -->
+    <div v-if="store.progress?.rebasing && !rebase.store.open" class="banner">
+      <TriangleAlert :size="14" />
+      <span v-if="rebase.store.progress">
+        Rebasing — {{ rebase.store.progress.at }} of {{ rebase.store.progress.total }}, stopped at
+        <span class="mono">{{ rebase.store.progress.summary }}</span>
+      </span>
+      <span v-else>A rebase is part-way through.</span>
+      <button class="btn tiny" @click="rebase.store.open = true">Show the plan</button>
+      <button
+        v-if="!conflicts"
+        class="btn tiny ghost"
+        :disabled="store.busy"
+        @click="rebase.resume()"
+      >
+        Carry on
+      </button>
+      <button class="btn tiny ghost close" :disabled="store.busy" @click="rebase.abort()">
+        Abort the rebase
+      </button>
+    </div>
+
     <div v-if="conflicts" class="banner">
       <TriangleAlert :size="14" />
       <span v-if="store.progress?.restoring">
@@ -376,6 +540,15 @@ async function reconcile(rebase: boolean) {
 
     <HistoryMenu v-if="showHistory" @close="showHistory = false" />
     <BranchDialog v-if="showBranch" @close="showBranch = false" />
+    <PromptDialog
+      v-if="naming"
+      title="Branch from stash"
+      label="Branch name"
+      confirm="Create branch"
+      hint="Applies the stash onto a new branch and takes it off the list."
+      @close="naming = false"
+      @submit="makeStashBranch"
+    />
   </header>
 </template>
 
@@ -404,6 +577,53 @@ async function reconcile(rebase: boolean) {
   white-space: nowrap;
 }
 
+/* The trail. The last step is where you are and carries the way out; the ones
+   before it are buttons back to themselves. */
+.crumb {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 2px 6px;
+  border-radius: 5px;
+  font-size: 12px;
+  color: var(--text-dim);
+  white-space: nowrap;
+}
+
+.crumb.root,
+.crumb:not(.here) {
+  font-weight: 600;
+}
+
+.crumb:not(.here):hover {
+  background: var(--bg-hover);
+  color: var(--text);
+}
+
+.crumb.here {
+  color: var(--text);
+  background: color-mix(in srgb, var(--accent) 14%, transparent);
+  font-family: var(--mono);
+  font-size: 11px;
+}
+
+.sep {
+  flex: none;
+}
+
+.out {
+  display: flex;
+  margin: 0 -3px 0 1px;
+  padding: 1px;
+  border-radius: 3px;
+  color: var(--text-faint);
+}
+
+.out:hover {
+  background: var(--bg-active);
+  color: var(--text);
+}
+
 .branch {
   display: flex;
   align-items: center;
@@ -427,6 +647,26 @@ async function reconcile(rebase: boolean) {
 
 .icon-only {
   padding: 5px 7px;
+}
+
+/* Tinted rather than filled: news, not an alarm, and the pull and push
+   buttons beside it should still be the ones the eye lands on. */
+.update {
+  margin-right: 3px;
+  background: color-mix(in srgb, var(--accent) 16%, transparent);
+  color: var(--accent);
+  font-weight: 600;
+}
+
+.update:hover:not(:disabled) {
+  background: color-mix(in srgb, var(--accent) 26%, transparent);
+  color: var(--accent);
+}
+
+/* The profile pill is bordered where the icons around it are not, so the 1px
+   gap the group uses reads as the settings icon touching it. */
+.profile {
+  margin-left: 6px;
 }
 
 .sep {
@@ -526,5 +766,32 @@ async function reconcile(rebase: boolean) {
   background: var(--red);
   color: #fff;
   font-weight: 600;
+}
+
+/* --- the bar while a stash is picked */
+
+/* The colour is the whole of it. Which stash was picked is not said here: you
+   have just clicked the row, and the row is still marked. */
+.stash-actions .btn {
+  color: var(--amber-soft);
+}
+
+.stash-actions .btn:hover:not(:disabled) {
+  background: color-mix(in srgb, var(--amber) 18%, transparent);
+  color: var(--amber-soft);
+}
+
+.stash-actions .strong {
+  font-weight: 600;
+  color: var(--text);
+}
+
+.stash-actions .danger-text {
+  color: var(--red-soft);
+}
+
+.stash-actions .danger-text:hover:not(:disabled) {
+  background: var(--danger-bg);
+  color: var(--red-soft);
 }
 </style>

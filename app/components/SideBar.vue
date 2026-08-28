@@ -9,9 +9,9 @@ import {
   Cloud,
   Copy,
   Download,
+  ExternalLink,
   Eye,
   EyeOff,
-  ExternalLink,
   Folder,
   FolderGit2,
   FolderOpen,
@@ -21,18 +21,23 @@ import {
   HardDrive,
   Hash,
   Milestone,
+  Package,
   Pencil,
   Plus,
+  RefreshCw,
   Search,
   Tag,
   Trash2,
-  Upload
+  Upload,
+  X
 } from 'lucide-vue-next'
 import {
   copyText,
   fullTime,
   relativeTime,
   useGit,
+  type StashEntry,
+  type Submodule,
   type Tag as TagRef,
   type Worktree
 } from '~/composables/useGit'
@@ -43,7 +48,7 @@ import { useReview } from '~/composables/useReview'
 import { useConfig } from '~/composables/useConfig'
 
 /** A worktree row opens its folder as a project tab, which is the shell's job. */
-const emit = defineEmits<{ open: [path: string] }>()
+const emit = defineEmits<{ open: [path: string]; enter: [one: Submodule] }>()
 
 const git = useGit()
 const store = git.store
@@ -66,11 +71,20 @@ function readSections() {
       remotes: saved.remotes !== false,
       tags: saved.tags === true,
       worktrees: saved.worktrees !== false,
+      submodules: saved.submodules !== false,
       stashes: saved.stashes !== false,
       reviews: saved.reviews !== false
     }
   } catch {
-    return { locals: true, remotes: true, tags: false, worktrees: true, stashes: true, reviews: true }
+    return {
+      locals: true,
+      remotes: true,
+      tags: false,
+      worktrees: true,
+      submodules: true,
+      stashes: true,
+      reviews: true
+    }
   }
 }
 
@@ -213,7 +227,7 @@ function shelve<T extends { name: string }>(
 
 /** The sections that can be dragged. Stashes is not one: it is last, and takes
     whatever the others leave. */
-type Section = 'locals' | 'remotes' | 'reviews' | 'tags' | 'worktrees'
+type Section = 'locals' | 'remotes' | 'reviews' | 'tags' | 'worktrees' | 'submodules'
 
 const SIZES_KEY = 'gitnoob:sidebar-sizes'
 
@@ -830,14 +844,46 @@ function remoteMenu(event: MouseEvent, remote: string, name: string) {
           promptWorktree(name, local ? undefined : full)
         }
       },
+      { separator: true, label: '' },
+      // Both directions, each naming which branch ends up changed. "Merge"
+      // alone does not say which way, and on a remote branch the second
+      // direction is not what it sounds like: a remote-tracking ref is not
+      // somewhere commits can be written, so it acts on the local branch of
+      // the same name and leaves the push to you.
       {
-        label: `Merge into ${head.value}`,
+        label: `Merge ${full} into ${head.value}`,
         icon: GitMerge,
+        disabled: !head.value,
         action: async () => {
           const outcome = await git.merge(full, false)
           if (outcome?.conflicts.length) store.resolving = outcome.conflicts[0] ?? null
         }
       },
+      {
+        label: `Merge ${head.value} into ${name}`,
+        icon: GitMerge,
+        disabled: !hasLocal(name) || name === head.value,
+        hint: !hasLocal(name)
+          ? 'check it out here first'
+          : name === head.value
+            ? 'you are on it'
+            : 'the local branch; push afterwards',
+        action: async () => {
+          const outcome = await git.mergeInto(head.value, name, false)
+          if (outcome?.conflicts.length) store.resolving = outcome.conflicts[0] ?? null
+        }
+      },
+      {
+        label: `Rebase ${head.value} onto ${full}`,
+        icon: GitBranch,
+        hint: 'rewrites history',
+        disabled: !head.value,
+        action: async () => {
+          const outcome = await git.rebase(full)
+          if (outcome?.conflicts.length) store.resolving = outcome.conflicts[0] ?? null
+        }
+      },
+      { separator: true, label: '' },
       {
         label: 'Set as upstream of current branch',
         icon: Cloud,
@@ -947,7 +993,121 @@ function tagMenu(event: MouseEvent, name: string, oid: string) {
   )
 }
 
+/**
+ * Stashes picked out for acting on together, by commit id.
+ *
+ * By id because acting on one renumbers the rest: a set of positions would
+ * name different stashes the moment the first one is dropped.
+ */
+const pickedStashes = ref(new Set<string>())
+
+/** The picked ones that are still in the list, newest first. */
+const picked = computed(() =>
+  store.stashes.filter((one) => pickedStashes.value.has(one.oid))
+)
+
+// Anything that changes the list leaves the picks naming stashes that may be
+// gone; what survives is kept, the rest goes.
+watch(
+  () => store.stashes.map((one) => one.oid).join(),
+  () => {
+    const alive = new Set(store.stashes.map((one) => one.oid))
+    pickedStashes.value = new Set([...pickedStashes.value].filter((oid) => alive.has(oid)))
+  }
+)
+
+/** The last one clicked, for shift to reach back to. */
+const stashAnchor = ref<string | null>(null)
+
+/**
+ * Clicking one opens it. Ctrl or ⌘ adds it to a set, shift takes the run
+ * between it and the last one — the same three gestures every list uses.
+ */
+function onStashClick(event: MouseEvent, stash: StashEntry) {
+  if (event.shiftKey && stashAnchor.value) {
+    const list = store.stashes
+    const from = list.findIndex((one) => one.oid === stashAnchor.value)
+    const to = list.findIndex((one) => one.oid === stash.oid)
+    if (from >= 0 && to >= 0) {
+      const [first, last] = from <= to ? [from, to] : [to, from]
+      const next = new Set(pickedStashes.value)
+      for (const one of list.slice(first, last + 1)) next.add(one.oid)
+      pickedStashes.value = next
+      return
+    }
+  }
+  if (event.ctrlKey || event.metaKey) {
+    const next = new Set(pickedStashes.value)
+    if (next.has(stash.oid)) next.delete(stash.oid)
+    else next.add(stash.oid)
+    pickedStashes.value = next
+    stashAnchor.value = stash.oid
+    return
+  }
+  pickedStashes.value = new Set()
+  stashAnchor.value = stash.oid
+  void git.selectStash(stash.index)
+}
+
+/**
+ * Puts several on, oldest first, and says what happened to each.
+ *
+ * The report is the point: a run that stopped half way is the case worth
+ * being told about, and "3 stashes applied" over a run that put two on is a
+ * lie the log would carry.
+ */
+async function applyPicked(drop: boolean) {
+  const indexes = picked.value.map((one) => one.index)
+  if (!indexes.length) return
+  const run = await git.stashApplyMany(indexes, drop)
+  if (!run) return
+  const verb = drop ? 'Popped' : 'Applied'
+  if (run.applied.length) git.note(`${verb} ${run.applied.join(', ')}`)
+  if (run.stopped) {
+    const files = run.conflicted.length
+      ? ` ${run.conflicted.length} ${run.conflicted.length === 1 ? 'file' : 'files'} conflicted.`
+      : ''
+    git.note(
+      `Stopped at "${run.stopped.message}" — it does not go on over what is already here.${files} ${run.stopped.reason}`,
+      'error'
+    )
+  }
+  if (!run.stopped) pickedStashes.value = new Set()
+}
+
 function stashMenu(event: MouseEvent, index: number, message: string) {
+  // Right-clicking one that is not in the picked set is about that one.
+  const many = picked.value.length > 1 && picked.value.some((one) => one.index === index)
+  if (many) {
+    const count = picked.value.length
+    menu.show(
+      event,
+      [
+        {
+          label: `Apply ${count} stashes and keep them`,
+          icon: Archive,
+          hint: 'oldest first',
+          action: () => void applyPicked(false)
+        },
+        {
+          label: `Pop ${count} stashes`,
+          icon: Archive,
+          hint: 'applies each, then removes it',
+          action: () => void applyPicked(true)
+        },
+        { separator: true, label: '' },
+        {
+          label: 'Clear the selection',
+          icon: X,
+          action: () => {
+            pickedStashes.value = new Set()
+          }
+        }
+      ],
+      `${count} stashes`
+    )
+    return
+  }
   menu.show(
     event,
     [
@@ -1005,6 +1165,11 @@ function stashMenu(event: MouseEvent, index: number, message: string) {
 const worktrees = computed(() =>
   store.worktrees.filter((tree) => match(`${tree.name} ${tree.branch ?? ''}`))
 )
+
+/** Whether a remote branch has a local branch of the same name here. */
+function hasLocal(name: string) {
+  return (store.refs?.locals ?? []).some((one) => one.name === name)
+}
 
 /** The worktree holding a branch, which is what blocks checking it out twice. */
 function inWorktree(branch: string) {
@@ -1119,6 +1284,173 @@ function worktreeMenu(event: MouseEvent, tree: Worktree) {
 async function removeWorktree(tree: Worktree, force: boolean) {
   const said = await git.worktreeRemove(tree.path, force)
   if (said !== null) await config.closeProject(tree.path)
+}
+
+// --- submodules
+
+/** Set while the add-a-submodule dialog is open. */
+const addingSubmodule = ref(false)
+
+const submodules = computed(() =>
+  store.submodules.filter((one) => match(`${one.path} ${one.name} ${one.url ?? ''}`))
+)
+
+/** How many are not sitting where this repository says they should. */
+const submodulesAdrift = computed(
+  () => store.submodules.filter((one) => one.state !== 'ready').length
+)
+
+/** The second line of the row: where it stands, in as few words as it takes. */
+function submoduleMeta(one: Submodule) {
+  if (one.state === 'absent') return 'not cloned'
+  if (one.state === 'conflicted') return 'conflicted'
+  const at = one.described ?? one.short
+  return one.state === 'moved' ? `${at} · moved` : at
+}
+
+function describeSubmodule(one: Submodule) {
+  const lines = [one.url ?? 'No address in .gitmodules']
+  if (one.branch) lines.push(`Follows ${one.branch}`)
+  if (one.state === 'absent') {
+    lines.push('Not cloned yet. Click to fetch it.')
+  } else {
+    if (one.state === 'moved') {
+      lines.push(`Checked out somewhere other than ${one.short}, which is what this repository records.`)
+    }
+    if (one.state === 'conflicted') {
+      lines.push('A merge left two answers for which commit this should be at.')
+    }
+    lines.push('Click to step into it.')
+  }
+  return lines.join('\n')
+}
+
+/**
+ * Clicking one steps into it, in the tab you are already in — a submodule is
+ * part of the project you are looking at, not another project. One that is not
+ * cloned yet is fetched instead, because there is nothing to step into.
+ */
+function openSubmodule(one: Submodule) {
+  if (one.state === 'absent') return void git.submoduleUpdate(one.path)
+  emit('enter', one)
+}
+
+function submoduleMenu(event: MouseEvent, one: Submodule) {
+  menu.show(
+    event,
+    [
+      {
+        label: 'Open it here',
+        icon: FolderOpen,
+        disabled: one.state === 'absent',
+        hint: one.state === 'absent' ? 'not cloned yet' : 'in this tab',
+        action: () => emit('enter', one)
+      },
+      {
+        label: 'Open as its own tab',
+        icon: FolderOpen,
+        disabled: one.state === 'absent',
+        hint: one.state === 'absent' ? 'not cloned yet' : '',
+        action: () => emit('open', one.abs)
+      },
+      {
+        label: one.state === 'absent' ? 'Clone it' : 'Move to the recorded commit',
+        icon: Download,
+        action: () => void git.submoduleUpdate(one.path)
+      },
+      {
+        label: 'Move it, and its own submodules',
+        icon: Download,
+        action: () => void git.submoduleUpdate(one.path, true)
+      },
+      {
+        label: 'Take the address from .gitmodules',
+        icon: RefreshCw,
+        hint: 'after the remote moved',
+        action: () => void git.submoduleSync(one.path)
+      },
+      { separator: true, label: '' },
+      {
+        label: git.revealLabel,
+        icon: Folder,
+        disabled: one.state === 'absent',
+        action: () => {
+          void git.reveal(one.abs)
+        }
+      },
+      {
+        label: 'Copy path',
+        icon: Copy,
+        action: () => {
+          void copyText(one.abs, 'Path')
+        }
+      },
+      {
+        label: 'Copy address',
+        icon: Copy,
+        disabled: !one.url,
+        action: () => {
+          if (one.url) void copyText(one.url, 'Address')
+        }
+      },
+      { separator: true, label: '' },
+      {
+        // Plain first: git refuses to empty one holding work, which is the
+        // safety this row leans on. The forced one is for when that refusal
+        // has been read and meant nothing.
+        label: 'Empty its folder',
+        icon: Trash2,
+        danger: true,
+        disabled: one.state === 'absent',
+        hint: one.state === 'absent' ? 'already empty' : 'it stays in .gitmodules',
+        action: () => void git.submoduleDeinit(one.path)
+      },
+      {
+        label: 'Empty it even with changes…',
+        icon: Trash2,
+        danger: true,
+        disabled: one.state === 'absent',
+        action: () => {
+          prompt.value = {
+            title: `Empty ${one.path} and its changes?`,
+            label: 'Type the path to confirm',
+            confirm: 'Empty it',
+            danger: true,
+            hint: 'Uncommitted work inside it is deleted. Anything committed and pushed is safe.',
+            run: (value) => {
+              if (value === one.path) void git.submoduleDeinit(one.path, true)
+              else git.note('Path did not match; nothing was emptied', 'error')
+            }
+          }
+        }
+      },
+      {
+        label: 'Remove it altogether…',
+        icon: Trash2,
+        danger: true,
+        action: () => {
+          prompt.value = {
+            title: `Remove ${one.path}?`,
+            label: 'Type the path to confirm',
+            confirm: 'Remove it',
+            danger: true,
+            hint: 'Out of the folder, out of the index and out of .gitmodules. Commit afterwards to record it.',
+            run: (value) => {
+              if (value === one.path) void removeSubmodule(one)
+              else git.note('Path did not match; nothing was removed', 'error')
+            }
+          }
+        }
+      }
+    ],
+    one.path
+  )
+}
+
+/** Removes it, and closes the tab that was showing it. */
+async function removeSubmodule(one: Submodule) {
+  const said = await git.submoduleRemove(one.path)
+  if (said !== null) await config.closeProject(one.abs)
 }
 </script>
 
@@ -1449,6 +1781,58 @@ async function removeWorktree(tree: Worktree, force: boolean) {
         />
       </template>
 
+      <!-- Submodules: the repositories kept inside this one. Shut by default
+           and only here at all once the repository declares some, because
+           nearly none do. -->
+      <template v-if="store.submodules.length">
+        <div class="head-row">
+          <button class="section-title toggle" @click="open.submodules = !open.submodules">
+            <ChevronRight :size="12" class="chev" :class="{ down: open.submodules }" />
+            <Package :size="12" class="mark" />
+            Submodules
+            <span class="count" :class="{ adrift: submodulesAdrift }">
+              {{ submodules.length }}
+            </span>
+          </button>
+          <button
+            class="head-action"
+            title="Fetch every submodule and move it to the commit this repository records"
+            :disabled="store.busy"
+            @click="git.submoduleUpdate()"
+          >
+            <Download :size="13" />
+          </button>
+          <button class="head-action" title="Add a submodule" @click="addingSubmodule = true">
+            <Plus :size="13" />
+          </button>
+        </div>
+        <div v-if="open.submodules" class="group" :style="sizeOf('submodules')">
+          <div
+            v-for="one in submodules"
+            :key="one.path"
+            class="row stash"
+            :class="{ dim: one.state === 'absent' }"
+            :title="describeSubmodule(one)"
+            @click="openSubmodule(one)"
+            @contextmenu="submoduleMenu($event, one)"
+          >
+            <Package :size="13" class="glyph" :class="one.state" />
+            <span class="names">
+              <MidTruncate class="name" :text="one.path" />
+              <span class="faint meta" :class="one.state">{{ submoduleMeta(one) }}</span>
+            </span>
+          </div>
+          <p v-if="!submodules.length" class="none faint">Nothing matches.</p>
+        </div>
+        <div
+          v-if="open.submodules"
+          class="grip"
+          title="Drag to resize · double-click to reset"
+          @pointerdown="grab($event, 'submodules')"
+          @dblclick="resetSize('submodules')"
+        />
+      </template>
+
       <!-- Stashes -->
       <button class="section-title toggle" @click="open.stashes = !open.stashes">
         <ChevronRight :size="12" class="chev" :class="{ down: open.stashes }" />
@@ -1464,9 +1848,10 @@ async function removeWorktree(tree: Worktree, force: boolean) {
           v-for="stash in stashes"
           :key="stash.index"
           class="row stash"
+          :class="{ on: store.selected === stash.oid, ticked: pickedStashes.has(stash.oid) }"
           :title="`${stash.files} ${stash.files === 1 ? 'file' : 'files'} · ${stash.branch ?? ''}`"
           draggable="true"
-          @click="git.selectStash(stash.index)"
+          @click="onStashClick($event, stash)"
           @dblclick="git.stashPop(stash.index)"
           @contextmenu="stashMenu($event, stash.index, stash.message)"
           @dragstart="
@@ -1484,8 +1869,17 @@ async function removeWorktree(tree: Worktree, force: boolean) {
           </span>
         </div>
         <p v-if="!stashes.length" class="none faint">Nothing stashed.</p>
+        <!-- What ⌘-clicking has gathered, and the two things to do with it. -->
+        <div v-if="picked.length > 1" class="picked-bar">
+          <span class="faint">{{ picked.length }} picked</span>
+          <button class="pick-btn" :disabled="store.busy" @click="applyPicked(false)">Apply</button>
+          <button class="pick-btn" :disabled="store.busy" @click="applyPicked(true)">Pop</button>
+          <button class="pick-btn ghost" @click="pickedStashes = new Set()">Clear</button>
+        </div>
       </div>
     </div>
+
+    <SubmoduleDialog v-if="addingSubmodule" @close="addingSubmodule = false" />
 
     <PromptDialog
       v-if="prompt"
@@ -1819,6 +2213,67 @@ async function removeWorktree(tree: Worktree, force: boolean) {
 
 .glyph.pr {
   color: var(--green);
+}
+
+/* A stash gathered up with the others, as opposed to the one being read. */
+.row.ticked {
+  background: color-mix(in srgb, var(--accent) 12%, transparent);
+  box-shadow: inset 2px 0 0 var(--accent);
+}
+
+.picked-bar {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin: 4px 8px 0;
+  padding: 5px 8px;
+  border-radius: var(--radius-sm);
+  background: var(--bg-raised);
+  border: 1px solid var(--line-soft);
+  font-size: 11px;
+}
+
+.pick-btn {
+  padding: 1px 7px;
+  border-radius: 4px;
+  font-size: 11px;
+  font-weight: 600;
+  background: var(--accent);
+  color: var(--on-accent);
+}
+
+.pick-btn:disabled {
+  opacity: 0.4;
+  cursor: default;
+}
+
+.pick-btn.ghost {
+  background: none;
+  color: var(--text-dim);
+  border: 1px solid var(--line);
+  font-weight: 400;
+}
+
+/* A submodule says where it stands in its own colour: nothing when it is
+   where the repository put it, and the warning colours when it is not. */
+.glyph.moved,
+.meta.moved {
+  color: var(--amber);
+}
+
+.glyph.conflicted,
+.meta.conflicted {
+  color: var(--red);
+}
+
+.glyph.absent {
+  opacity: 0.55;
+}
+
+/* The heading's count turns amber while any of them is adrift, so a collapsed
+   section still says there is something to do. */
+.count.adrift {
+  color: var(--amber);
 }
 
 .name {

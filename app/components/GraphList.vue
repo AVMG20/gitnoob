@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { computed, nextTick, onMounted, onUnmounted, ref, watch } from 'vue'
 import {
+  Archive,
   ArrowDownToLine,
   Check,
   ChevronDown,
@@ -8,12 +9,14 @@ import {
   Cloud,
   Copy,
   FileText,
+  GitBranch,
   GitBranchPlus,
   GitCommitHorizontal,
   MonitorDot,
   Search,
   Settings2,
   Tag,
+  Trash2,
   Undo2,
   X
 } from 'lucide-vue-next'
@@ -39,6 +42,8 @@ import {
   type RefChip
 } from '~/composables/useRefChips'
 import { avatarFor, initials, tint } from '~/composables/useAvatars'
+import { signatureLook, signatureTitle } from '~/composables/useSigning'
+import { useRebase } from '~/composables/useRebase'
 import { useContextMenu } from '~/composables/useContextMenu'
 import { useDragDrop } from '~/composables/useDragDrop'
 import { keyLabel, useShortcuts } from '~/composables/useShortcuts'
@@ -47,6 +52,7 @@ import { useConfig } from '~/composables/useConfig'
 
 const git = useGit()
 const store = git.store
+const rebase = useRebase()
 const menu = useContextMenu()
 const drag = useDragDrop()
 const config = useConfig()
@@ -736,6 +742,36 @@ watch(() => store.repo?.path, clearMarks)
 // --- context menus
 
 function commitMenu(event: MouseEvent, row: GraphRow) {
+  // A stash row is not a commit of the history: cherry-picking it, resetting
+  // to it or branching from it are all questions about the wrong thing.
+  if (row.stash !== null) {
+    const at = row.stash
+    menu.show(
+      event,
+      [
+        {
+          label: 'Apply and keep',
+          icon: Archive,
+          action: () => git.stashApply(at)
+        },
+        {
+          label: 'Pop (apply and remove)',
+          icon: Archive,
+          action: () => git.stashPop(at)
+        },
+        { separator: true, label: '' },
+        {
+          label: 'Drop this stash',
+          icon: Trash2,
+          danger: true,
+          action: () => git.stashDrop(at)
+        }
+      ],
+      row.summary
+    )
+    return
+  }
+
   const isHead = row.labels.some((label) => label.kind === 'local' && label.name === store.repo?.head)
   const picked = subjects(row)
   // A commit carrying refs can be reached by name, and switching to the branch
@@ -776,6 +812,20 @@ function commitMenu(event: MouseEvent, row: GraphRow) {
         action: () => git.checkout(row.oid)
       },
       { label: 'Tag this commit…', icon: Tag, action: () => (tagTarget.value = row) },
+      { separator: true, label: '' },
+      {
+        // The commits above this one are the ones a plan can act on: this one
+        // is the ground they are replayed onto, so it is not in the list.
+        label: 'Rebase the commits above this…',
+        icon: GitBranch,
+        disabled: isHead || store.repo?.detached,
+        hint: isHead
+          ? 'nothing above it'
+          : store.repo?.detached
+            ? 'not on a branch'
+            : 'reorder, squash, drop',
+        action: () => rebase.planFrom(row.oid, row.short)
+      },
       { separator: true, label: '' },
       {
         label:
@@ -1279,6 +1329,8 @@ onUnmounted(() => {
               fill="none"
               stroke-width="2"
               stroke-linecap="round"
+              :stroke-dasharray="segment.dashed ? '3 3' : undefined"
+              :opacity="segment.dashed ? 0.75 : undefined"
             />
             <!-- A commit the upstream does not have yet wears a ring. Colour
                  alone will not do it: the first lane is already the accent
@@ -1311,6 +1363,30 @@ onUnmounted(() => {
                   item.row.unpushed ? ' · not pushed yet' : ''
                 }}
               </title>
+            </g>
+            <!-- A stash is not part of the history, so it is not drawn as one:
+                 the box it is kept in, on the broken line back to the commit
+                 it was made on. -->
+            <g v-else-if="item.row.stash !== null">
+              <circle
+                :cx="x(item.row.lane)"
+                :cy="ROW / 2"
+                :r="NODE"
+                fill="var(--bg)"
+              />
+              <g
+                :transform="`translate(${x(item.row.lane) - 6.5}, ${ROW / 2 - 6.5})`"
+                fill="none"
+                :stroke="laneColor(item.row.color)"
+                stroke-width="1.6"
+                stroke-linecap="round"
+                stroke-linejoin="round"
+              >
+                <rect x="1" y="4.5" width="11" height="7.5" rx="1" />
+                <path d="M0.5 1.5h12v3h-12z" />
+                <path d="M5.5 8h2" />
+              </g>
+              <title>{{ item.row.summary }} · a stash, not a commit</title>
             </g>
             <!-- The node is the author's face. Who wrote a run of commits is
                  then read down the column at a glance, rather than one line of
@@ -1373,6 +1449,24 @@ onUnmounted(() => {
           </span>
 
           <span class="col-msg">
+            <!-- Signed, and what that was worth. Nothing at all for the
+                 commits nobody signed, which in most repositories is all of
+                 them: a column of grey marks would be noise standing in for
+                 information. Off unless the setting asks for it. -->
+            <component
+              :is="signatureLook(store.signatures[item.row.oid]?.verdict)?.icon"
+              v-if="store.signatures[item.row.oid]"
+              :size="13"
+              :stroke-width="2.2"
+              class="sig"
+              :class="signatureLook(store.signatures[item.row.oid]?.verdict)?.tone"
+              :title="
+                signatureTitle(
+                  store.signatures[item.row.oid]?.verdict,
+                  store.signatures[item.row.oid]?.signer
+                )
+              "
+            />
             <!-- The message in full on hover. A narrowed message column cuts
                  most summaries off, and the alternative to reading it here is
                  selecting the commit to see it in the panel — which throws away
@@ -1925,6 +2019,24 @@ onUnmounted(() => {
 
 .summary {
   min-width: 0;
+}
+
+/* Quiet when it is fine, loud only when it is wrong: a bad signature is the
+   one case here that needs a decision. */
+.sig {
+  flex: none;
+}
+
+.sig.good {
+  color: var(--green);
+}
+
+.sig.warn {
+  color: var(--amber);
+}
+
+.sig.bad {
+  color: var(--red);
 }
 
 .summary.quiet {

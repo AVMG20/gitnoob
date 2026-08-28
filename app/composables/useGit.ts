@@ -1,6 +1,8 @@
 import { aimAt, invoke } from './useInvoke'
 import { markRaw, reactive, ref } from 'vue'
 import { useConfig } from './useConfig'
+import { parseCommandLine } from './cli'
+import type { LfsStatus } from './useLfs'
 import { useToasts } from './useToasts'
 
 /**
@@ -81,6 +83,78 @@ export interface CheckoutOutcome {
   diverged: Diverged | null
 }
 
+/** One run of consecutive lines that came in with the same commit. */
+export interface BlameRun {
+  oid: string
+  short: string
+  summary: string
+  author: string
+  email: string
+  time: number
+  /** The first line of the run, counting from one. */
+  start: number
+  lines: number
+  /** Work that is not committed yet, which blame cannot answer for. */
+  uncommitted: boolean
+}
+
+/** One commit in a file's own history. */
+export interface FileCommit {
+  oid: string
+  short: string
+  author: string
+  email: string
+  time: number
+  summary: string
+}
+
+/** What git made of a commit's signature. */
+export type SignatureVerdict = 'good' | 'untrusted' | 'bad' | 'unchecked' | 'none'
+
+/** The mark one row of the graph carries. Rows with no signature carry none. */
+export interface SignatureMark {
+  verdict: SignatureVerdict
+  signer: string | null
+}
+
+/** Everything git will say about one commit's signature. */
+export interface CommitSignature {
+  verdict: SignatureVerdict | null
+  signer: string | null
+  key: string | null
+  fingerprint: string | null
+  /** gpg's or ssh-keygen's own words, for the fold-out under the line. */
+  raw: string | null
+}
+
+/** What this repository would do if you committed right now. */
+export interface SigningSetup {
+  signs: boolean
+  signs_tags: boolean
+  /** `openpgp`, `ssh` or `x509`. */
+  format: string
+  key: string | null
+}
+
+/** Where a submodule stands, from the mark `git submodule status` prints. */
+export type SubmoduleState = 'ready' | 'absent' | 'moved' | 'conflicted'
+
+/** One repository kept inside this one. */
+export interface Submodule {
+  /** The name in `.gitmodules`, which is not always the path. */
+  name: string
+  path: string
+  /** The same place, absolute, so it can be opened as a repository of its own. */
+  abs: string
+  url: string | null
+  branch: string | null
+  oid: string
+  short: string
+  /** What `git describe` made of the pinned commit, when it made anything. */
+  described: string | null
+  state: SubmoduleState
+}
+
 /** One folder this repository is checked out into. */
 export interface Worktree {
   path: string
@@ -115,7 +189,15 @@ export interface WorkingStatus {
   conflicted: string[]
 }
 
-export interface Segment { x1: number; y1: number; x2: number; y2: number; color: number }
+export interface Segment {
+  x1: number
+  y1: number
+  x2: number
+  y2: number
+  color: number
+  /** A stash's line, drawn broken: it hangs off the history, it is not in it. */
+  dashed: boolean
+}
 export interface RefLabel {
   kind: string
   name: string
@@ -138,6 +220,8 @@ export interface GraphRow {
   labels: RefLabel[]
   /** On a local branch but not yet on its upstream. */
   unpushed: boolean
+  /** Which stash this row is, when it is one rather than a commit. */
+  stash: number | null
 }
 
 export interface FileChange {
@@ -318,6 +402,16 @@ export interface StashEntry {
   files: number
 }
 
+/** What a run over several stashes did. */
+export interface StashRun {
+  /** The ones that went on, oldest first. */
+  applied: string[]
+  /** The one that stopped the run, when one did. */
+  stopped: { message: string; reason: string } | null
+  /** Files the stash that stopped it left with both sides in them. */
+  conflicted: string[]
+}
+
 export interface HistoryEntry {
   id: number
   label: string
@@ -401,7 +495,8 @@ export interface Resolution {
  * sequence where six commands fail on the way to one reported failure would
  * raise seven, and the one worth reading would be the one underneath.
  */
-export type LogLevel = 'info' | 'error' | 'command' | 'failed'
+/** `output` is what a typed command printed: shown as it came, never a notice. */
+export type LogLevel = 'info' | 'error' | 'command' | 'failed' | 'output'
 
 export interface LogLine {
   id: number
@@ -447,6 +542,25 @@ const fields = reactive({
   status: null as WorkingStatus | null,
   /** Every folder the repository is checked out into; one entry is this one. */
   worktrees: [] as Worktree[],
+  /** Every repository kept inside this one. Empty for almost every project. */
+  submodules: [] as Submodule[],
+  /** Signature verdicts by commit, empty while the setting is off. */
+  signatures: {} as Record<string, SignatureMark>,
+  /** Whether a commit made here would be signed, and with what. */
+  signing: null as SigningSetup | null,
+  /** Whether this repository uses LFS, and whether the tool for it is here. */
+  lfs: null as LfsStatus | null,
+  /**
+   * The submodules stepped into to reach what is on screen, outermost first.
+   *
+   * Empty for an ordinary repository. Each entry is where to go back to and
+   * what to call both ends of the step, so the toolbar can draw the trail and
+   * the way out of it. A chain rather than one entry, because a submodule can
+   * have submodules of its own. The name it came from is carried rather than
+   * read off the path, because a project is called whatever the profile calls
+   * it.
+   */
+  inside: [] as { path: string; name: string; from: string; fromName: string }[],
   rows: [] as GraphRow[],
   hasMore: false,
   limit: COMMIT_PAGE,
@@ -529,6 +643,10 @@ interface Snapshot {
   trunk: Trunk
   status: WorkingStatus | null
   worktrees: Worktree[]
+  submodules: Submodule[]
+  signatures: Record<string, SignatureMark>
+  signing: SigningSetup | null
+  lfs: LfsStatus | null
   rows: GraphRow[]
   hasMore: boolean
   limit: number
@@ -562,6 +680,10 @@ function clearData() {
   store.trunk = { name: null, chosen: false }
   store.status = null
   store.worktrees = []
+  store.submodules = []
+  store.signatures = {}
+  store.signing = null
+  store.lfs = null
   store.rows = []
   store.hasMore = false
   store.limit = pageSize()
@@ -576,6 +698,10 @@ function paint(snapshot: Snapshot) {
   store.trunk = snapshot.trunk
   store.status = snapshot.status
   store.worktrees = snapshot.worktrees
+  store.submodules = snapshot.submodules
+  store.signatures = snapshot.signatures
+  store.signing = snapshot.signing
+  store.lfs = snapshot.lfs
   store.rows = snapshot.rows
   store.hasMore = snapshot.hasMore
   store.limit = snapshot.limit
@@ -598,6 +724,11 @@ function note(text: string, level: LogLevel = 'info') {
   store.log.unshift({ id: ++logSeq.value, at: Date.now(), level, text: text.trim() })
   if (store.log.length > 200) store.log.length = 200
   if (level === 'error') useToasts().fail(text)
+}
+
+/** An argument as it would have to be typed: quoted only when it needs it. */
+function quoteArg(arg: string) {
+  return arg === '' || /[\s'"\\]/.test(arg) ? `'${arg.replace(/'/g, "'\\''")}'` : arg
 }
 
 /** Runs a backend call, surfacing failures in the log instead of throwing. */
@@ -640,13 +771,22 @@ function forget() {
   store.resolving = null
   store.revealing = null
   store.viewer = null
+  store.inside = []
   store.query = ''
 }
 
 export function useGit() {
-  async function openRepo(path: string) {
+  /**
+   * Opens a repository and points every later call at it.
+   *
+   * `record` false steps into one without it becoming a tab: a submodule is a
+   * repository, but it is not a project the user opened, and a tab strip that
+   * grows a new entry every time you look inside one is a tab strip nobody
+   * asked for.
+   */
+  async function openRepo(path: string, record = true) {
     const info = await guard('Open repository', () =>
-      invoke<RepoInfo>('open_repo', { path })
+      invoke<RepoInfo>('open_repo', { path, record })
     )
     if (!info) return false
     // From here every call says it is about this repository, so a switch to
@@ -663,6 +803,10 @@ export function useGit() {
     store.viewer = null
     store.resolving = null
     store.query = ''
+    // Opening a project is leaving whatever submodule was being looked at.
+    // Stepping into one passes `record` false and keeps the trail, which the
+    // caller then adds to.
+    if (record) store.inside = []
 
     // Whatever this tab was showing last time, back on screen before the reads
     // below are even sent. A tab that has not been opened this session starts
@@ -731,12 +875,37 @@ export function useGit() {
     if (!store.repo) return
     const path = store.repo.path
     const limit = store.limit
-    const [info, refs, trunk, status, worktrees, page, stashes, history, progress] = await Promise.all([
+    const [
+      info,
+      refs,
+      trunk,
+      status,
+      worktrees,
+      submodules,
+      signatures,
+      signing,
+      lfs,
+      page,
+      stashes,
+      history,
+      progress
+    ] = await Promise.all([
       part('the repository', invoke<RepoInfo>('repo_info'), store.repo),
       part('the branches', invoke<RefTree>('ref_tree'), null),
       part('the main branch', invoke<Trunk>('trunk_branch'), store.trunk),
       part('the working tree', invoke<WorkingStatus>('working_status'), null),
       part('the worktrees', invoke<Worktree[]>('worktree_list'), [] as Worktree[]),
+      part('the submodules', invoke<Submodule[]>('submodule_list'), [] as Submodule[]),
+      // Answered with an empty map, without running anything, while the
+      // setting is off — so this costs one round trip rather than a gpg run
+      // per commit for the repositories that never asked for it.
+      part(
+        'the signatures',
+        invoke<Record<string, SignatureMark>>('signature_marks', { limit }),
+        {} as Record<string, SignatureMark>
+      ),
+      part('the signing setup', invoke<SigningSetup>('signing_setup'), null),
+      part('the LFS setup', invoke<LfsStatus>('lfs_status'), null),
       part(
         'the history',
         invoke<{ rows: GraphRow[]; has_more: boolean }>('commit_graph', { limit }),
@@ -768,6 +937,10 @@ export function useGit() {
     if (trunk) store.trunk = settle('trunk', trunk, store.trunk)
     if (status) store.status = settle('status', status, store.status)
     store.worktrees = settle('worktrees', worktrees ?? [], store.worktrees)
+    store.submodules = settle('submodules', submodules ?? [], store.submodules)
+    store.signatures = settle('signatures', signatures ?? {}, store.signatures)
+    store.signing = settle('signing', signing, store.signing)
+    store.lfs = settle('lfs', lfs, store.lfs)
     if (page) {
       store.rows = settle('rows', page.rows, store.rows)
       store.hasMore = page.has_more
@@ -782,6 +955,10 @@ export function useGit() {
       trunk: store.trunk,
       status: store.status,
       worktrees: store.worktrees,
+      submodules: store.submodules,
+      signatures: store.signatures,
+      signing: store.signing,
+      lfs: store.lfs,
       rows: store.rows,
       hasMore: store.hasMore,
       limit,
@@ -877,11 +1054,18 @@ export function useGit() {
     return true
   }
 
-  /** Opens a stash's diff in the detail panel, reusing the commit view. */
+  /**
+   * Opens a stash, which is opening the commit it is: the graph draws it as a
+   * row and the panel beside it lists what it holds, exactly as for any other.
+   */
   async function selectStash(index: number) {
     const oid = await guard('Read stash', () => invoke<string>('stash_oid', { index }))
     if (oid) await select(oid)
   }
+
+  /** One commit's files and message, for a pane that owns its own reading. */
+  const commitDetail = (oid: string) =>
+    guard('Read commit', () => invoke<CommitDetail>('commit_detail', { oid }))
 
   const commitFileDiff = (oid: string, path: string) =>
     guard('Load diff', () => invoke<FileDiff>('commit_file_diff', { oid, path }))
@@ -896,6 +1080,27 @@ export function useGit() {
    * size of a lockfile — is an ordinary answer here, and the viewer says so
    * where the file would have been rather than in a passing notice.
    */
+  /**
+   * One commit's signature, asked for as it is selected.
+   *
+   * Unguarded and unrefreshed: this is a read whose commonest answer is "it
+   * was not signed", and a repository where nothing is signed should not put
+   * a line in the log every time a row is clicked.
+   */
+  /**
+   * Who last touched each line. Unguarded: a file with no history yet is an
+   * ordinary answer, said where the file would have been.
+   */
+  const blameFile = (path: string, commit?: string | null) =>
+    invoke<BlameRun[]>('blame_file', { path, commit: commit ?? null })
+
+  /** Every commit that touched a file, newest first, across renames. */
+  const fileHistory = (path: string, limit = 200) =>
+    guard('File history', () => invoke<FileCommit[]>('file_history', { path, limit }))
+
+  const commitSignature = (oid: string) =>
+    invoke<CommitSignature>('commit_signature', { oid }).catch(() => null)
+
   const fileText = (path: string, commit?: string | null, side?: 'staged' | 'unstaged' | null) =>
     invoke<string>('file_text', { path, commit: commit ?? null, side: side ?? null })
 
@@ -907,6 +1112,30 @@ export function useGit() {
     // showing the state from before is worse than an extra read.
     await refresh()
     return result
+  }
+
+  /**
+   * Runs what was typed at the log's prompt, and writes back what git said.
+   *
+   * The command goes in first and its output under it, which is the order the
+   * console reads them in. The output is not a notice — you typed the command
+   * with the console open, and that is where the answer is. The refresh is the
+   * same one every button gets, since `git commit` typed here changes the
+   * window exactly as much as clicking it would.
+   */
+  async function typed(line: string) {
+    const parsed = parseCommandLine(line)
+    if ('error' in parsed) {
+      note(parsed.error, 'error')
+      return false
+    }
+    const shown = ['git', ...parsed.args.map(quoteArg)].join(' ')
+    const out = await run<CmdOutput>(shown, 'run_git', { args: parsed.args })
+    if (!out) return false
+    note(shown, out.ok ? 'command' : 'failed')
+    const text = [out.stdout, out.stderr].filter((s) => s.trim()).join('\n')
+    note(text || (out.ok ? '' : `exit ${out.code}`), 'output')
+    return out.ok
   }
 
   /** Reports a `git` CLI run in the log, whichever way it went. */
@@ -921,6 +1150,7 @@ export function useGit() {
     forget,
     store,
     note,
+    typed,
     refresh,
     refreshStatus,
     loadMore,
@@ -928,6 +1158,7 @@ export function useGit() {
     select,
     revealCommit,
     selectStash,
+    commitDetail,
     commitFileDiff,
     workingFileDiff,
     fileText,
@@ -972,6 +1203,33 @@ export function useGit() {
     worktreeRemove: (path: string, force = false) =>
       run<string>('Remove worktree', 'worktree_remove', { path, force }),
     /**
+     * Submodule work. Every one of these ends in a refresh, because a
+     * submodule that has just been cloned or emptied changes the parent's
+     * working tree as surely as a checkout does.
+     */
+    commitSignature,
+    blameFile,
+    fileHistory,
+    /** Fetches the real contents of one LFS file, or of every one of them. */
+    lfsPull: (path?: string) =>
+      run<string>(path ? `Fetch ${path}` : 'Fetch LFS files', 'lfs_pull', {
+        path: path ?? null
+      }),
+    submoduleUpdate: (path?: string, recursive = false) =>
+      run<string>(
+        path ? `Update ${path}` : 'Update submodules',
+        'submodule_update',
+        { path: path ?? null, recursive }
+      ),
+    submoduleSync: (path?: string) =>
+      run<string>('Sync submodule URLs', 'submodule_sync', { path: path ?? null }),
+    submoduleAdd: (url: string, path: string) =>
+      run<string>('Add submodule', 'submodule_add', { url, path }),
+    submoduleDeinit: (path: string, force = false) =>
+      run<string>('Empty submodule', 'submodule_deinit', { path, force }),
+    submoduleRemove: (path: string) =>
+      run<string>('Remove submodule', 'submodule_remove', { path }),
+    /**
      * Checks out the branch a review was opened from, whatever it takes.
      *
      * A review from a fork has no branch in any remote this clone knows, so
@@ -1012,12 +1270,29 @@ export function useGit() {
     addToGitignore: (pattern: string) =>
       run<string>('Ignore', 'add_to_gitignore', { pattern }),
     commitPatch: (oid: string) => guard('Read patch', () => invoke<string>('commit_patch', { oid })),
-    applyHunk: (path: string, hunkIndex: number, action: 'stage' | 'unstage' | 'discard') =>
-      run<string>(
-        action === 'stage' ? 'Stage hunk' : action === 'unstage' ? 'Unstage hunk' : 'Discard hunk',
-        'apply_hunk',
-        { path, hunkIndex, action }
-      ),
+    /**
+     * Applies one hunk, or only the lines picked out of it.
+     *
+     * `lines` left out means the whole hunk, which is what the buttons did
+     * before there was any picking and what they still say when nothing is
+     * picked.
+     */
+    applyHunk: (
+      path: string,
+      hunkIndex: number,
+      action: 'stage' | 'unstage' | 'discard',
+      lines?: { added: number[]; removed: number[] }
+    ) => {
+      const some = lines ? `${lines.added.length + lines.removed.length} lines` : 'hunk'
+      const verb =
+        action === 'stage' ? 'Stage' : action === 'unstage' ? 'Unstage' : 'Discard'
+      return run<string>(`${verb} ${some}`, 'apply_hunk', {
+        path,
+        hunkIndex,
+        action,
+        lines: lines ?? null
+      })
+    },
     reveal: (path: string) => guard('Reveal', () => invoke('reveal', { path })),
     revealLabel: `Reveal in ${fileManagerName()}`,
 
@@ -1049,6 +1324,19 @@ export function useGit() {
     stashPush: (message?: string) => run<string>('Stash', 'stash_push', { message }),
     stashPop: (index: number) => run<string>('Stash pop', 'stash_pop', { index }),
     stashApply: (index: number) => run<string>('Stash apply', 'stash_apply', { index }),
+    /**
+     * Several at once, oldest first. `dropAfter` makes it a pop.
+     *
+     * Unlike the single ones this hands the outcome back rather than only a
+     * sentence: the caller has to be able to say which went on and which one
+     * stopped the run.
+     */
+    stashApplyMany: (indexes: number[], dropAfter = false) =>
+      run<StashRun>(
+        `${dropAfter ? 'Pop' : 'Apply'} ${indexes.length} stashes`,
+        'stash_apply_many',
+        { indexes, dropAfter }
+      ),
     stashDrop: (index: number) => run<string>('Stash drop', 'stash_drop', { index }),
     /** Gives a stash a new description, leaving it where it is in the list. */
     stashRename: (index: number, message: string) =>

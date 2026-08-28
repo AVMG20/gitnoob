@@ -60,7 +60,7 @@ export const SHORTCUTS: Shortcut[] = [
   { id: 'graph.clearsearch', keys: 'Escape', label: 'Close the search box', where: 'The commit list', group: 'The commit list' },
 
   // Changes and diffs
-  { id: 'diff.mode', keys: 'Tab', label: 'Switch between the patch and the whole file', where: 'An open file', group: 'Changes and diffs' },
+  { id: 'diff.mode', keys: 'Tab', label: 'Walk the patch, the whole file and blame', where: 'An open file', group: 'Changes and diffs', note: 'Shift walks them the other way.' },
   { id: 'viewer.move', keys: 'ArrowUp/ArrowDown', label: 'Move to the file before or after this one', where: 'An open file', group: 'Changes and diffs', note: 'Walks the panel beside it, in the order it lists them.' },
   { id: 'viewer.close', keys: 'Escape', label: 'Close the file', where: 'An open file', group: 'Changes and diffs' },
   { id: 'conflict.move', keys: 'ArrowUp/ArrowDown', label: 'Move to the conflict before or after this one', where: 'The conflict resolver', group: 'Changes and diffs' },
@@ -69,6 +69,7 @@ export const SHORTCUTS: Shortcut[] = [
 
   // Projects and windows
   { id: 'project.open', keys: 'mod+o', label: 'Open a repository', where: ANYWHERE, group: 'Projects and windows' },
+  { id: 'project.switch', keys: 'mod+p', label: 'Go to a repository', where: ANYWHERE, group: 'Projects and windows', note: 'Searches the open tabs and everything opened before them.' },
   { id: 'project.close', keys: 'mod+w', label: 'Close the current project tab', where: ANYWHERE, group: 'Projects and windows' },
   { id: 'project.next', keys: 'mod+alt+ArrowRight', label: 'Next project tab', where: ANYWHERE, group: 'Projects and windows' },
   { id: 'project.previous', keys: 'mod+alt+ArrowLeft', label: 'Previous project tab', where: ANYWHERE, group: 'Projects and windows' },

@@ -40,11 +40,15 @@ that it updates itself.
 | Merge, rebase, fast-forward | drag a branch onto another |
 | Cherry-pick | drag a commit onto a branch |
 | Apply a stash elsewhere | drag the stash onto a branch |
-| Stage / unstage | click the file, or one hunk of it |
+| Stage / unstage | click the file, one hunk of it, or the lines you pick |
 | Everything else | right-click it |
 
 Also here without typing anything: fetch, pull, push, commit, amend, revert,
-reset, tag, stash, branch, worktrees, remotes.
+reset, tag, stash, branch, worktrees, remotes, submodules.
+
+**Rewrite history without the text editor.** Right-click a commit → rebase
+everything above it: drag the rows into the order you want, pick what each one
+becomes, and read what you will end up with before it runs.
 
 <img src="docs/screenshots/diff.png" alt="A changed file in the diff view, hunk by hunk, with Stage file and Discard on the bar above it" width="900" />
 
@@ -75,12 +79,14 @@ token, SSH key and open tabs together. Tokens live in your OS keychain.
 from your staged diff, and conflict resolution. No key, nothing sent.
 
 **It teaches, if you want.** Every action prints the git command it ran. Ignore
-it, or learn from it.
+it, or learn from it. The same bar takes a command typed by hand, run in the
+repository you are looking at, and the window catches up afterwards.
 
 ## Shortcuts
 
 `⌘⇧F` fetch · `⌘⇧L` pull · `⌘⇧P` push · `⌘Enter` commit · `⌘B` branch ·
-`⌘⇧S` stash · `⌘F` search · `⌘Z` undo · `⌘,` settings
+`⌘⇧S` stash · `⌘F` search · `⌘P` go to a repository · `⌘Z` undo · `⌘,` settings ·
+`Tab` patch / file / blame
 
 Full list in Settings → Shortcuts. `Ctrl` on Windows and Linux.
 
@@ -89,8 +95,7 @@ Full list in Settings → Shortcuts. `Ctrl` on Windows and Linux.
 - Your repos stay where they are. No account, no upload, no service.
 - Writes run your own `git`, so hooks, signing, SSH agent and credential helpers
   all keep working. Close gitnoob and carry on in a terminal any time.
-- Not yet: interactive rebase, line-level staging, blame, submodules, LFS.
-  Windows is tested less than macOS and Linux.
+- Windows is tested less than macOS and Linux.
 
 ## Build it
 
