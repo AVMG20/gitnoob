@@ -95,8 +95,7 @@ Full list in Settings → Shortcuts. `Ctrl` on Windows and Linux.
 - Your repos stay where they are. No account, no upload, no service.
 - Writes run your own `git`, so hooks, signing, SSH agent and credential helpers
   all keep working. Close gitnoob and carry on in a terminal any time.
-- Not yet: LFS.
-  Windows is tested less than macOS and Linux.
+- Windows is tested less than macOS and Linux.
 
 ## Build it
 
