@@ -603,8 +603,10 @@ mod tests {
 
     #[test]
     fn what_is_in_the_box_is_what_the_model_is_told() {
-        let mut ai = config::Ai::default();
-        ai.commit_prompt = Some("  Only ever write one line.  ".to_string());
+        let ai = config::Ai {
+            commit_prompt: Some("  Only ever write one line.  ".to_string()),
+            ..Default::default()
+        };
         assert_eq!(commit_prompt(&ai), "Only ever write one line.");
     }
 
