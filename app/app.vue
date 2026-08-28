@@ -8,6 +8,7 @@ import { useForge } from '~/composables/useForge'
 import { useAi } from '~/composables/useAi'
 import { usePanes } from '~/composables/usePanes'
 import { useReview } from '~/composables/useReview'
+import { useRebase } from '~/composables/useRebase'
 import { useTheme } from '~/composables/useTheme'
 import { useUpdates } from '~/composables/useUpdates'
 import { useShortcuts } from '~/composables/useShortcuts'
@@ -119,6 +120,9 @@ const settings = computed(() => config.settings.value)
  */
 const reviewOpen = computed(() => !!review.store.current)
 
+/** The rebase plan takes the centre the same way a review does. */
+const rebase = useRebase()
+
 /**
  * The columns of the window, and what gives when there is not enough of it.
  *
@@ -128,7 +132,7 @@ const reviewOpen = computed(() => !!review.store.current)
  */
 const columns = computed(() => {
   const panel = `minmax(0, ${layout.panel}px)`
-  if (store.viewer || reviewOpen.value) return `minmax(0, 1fr) 5px ${panel}`
+  if (store.viewer || reviewOpen.value || rebase.store.open) return `minmax(0, 1fr) 5px ${panel}`
   return `minmax(0, ${layout.sidebar}px) 5px minmax(0, 1fr) 5px ${panel}`
 })
 
@@ -187,6 +191,20 @@ function watchUpdates() {
 }
 
 watch(() => settings.value?.check_updates, watchUpdates)
+
+/**
+ * Whether a rebase is running is part of every refresh already; how far along
+ * it is costs another read, so it is only asked for while there is one. The
+ * false edge matters as much as the true one — a rebase that finished has a
+ * strip to take down.
+ */
+watch(
+  () => store.progress?.rebasing,
+  (rebasing, before) => {
+    if (rebasing) void rebase.readProgress()
+    else if (before) rebase.store.progress = null
+  }
+)
 
 onMounted(async () => {
   // A failure here must not take the whole window down with it; without the
@@ -283,6 +301,9 @@ onUnmounted(() => {
         </template>
         <template v-else-if="review.store.current">
           <ReviewPane />
+        </template>
+        <template v-else-if="rebase.store.open">
+          <RebasePane />
         </template>
         <template v-else>
           <SideBar @open="openProject" />

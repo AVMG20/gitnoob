@@ -748,21 +748,35 @@ pub struct InProgress {
     pub prepared: Option<String>,
 }
 
+/// Where git keeps its own state for this working tree.
+///
+/// A worktree and a submodule have a `.git` file naming the real directory
+/// rather than a directory of their own, and everything that reads git's
+/// in-progress state has to follow it.
+pub fn git_dir(root: &std::path::Path) -> Result<std::path::PathBuf, String> {
+    let found = root.join(".git");
+    if !found.is_file() {
+        return Ok(found);
+    }
+    let text = std::fs::read_to_string(&found)
+        .map_err(|e| format!("Could not read {}: {e}", found.display()))?;
+    Ok(text
+        .strip_prefix("gitdir:")
+        .map(|path| {
+            let path = std::path::PathBuf::from(path.trim());
+            // It is allowed to be relative to the working tree.
+            if path.is_absolute() {
+                path
+            } else {
+                root.join(path)
+            }
+        })
+        .unwrap_or(found))
+}
+
 pub fn in_progress(state: &AppState) -> Result<InProgress, String> {
     let root = state.path()?;
-    let git_dir = root.join(".git");
-    // Worktrees and submodules keep a file here instead of a directory.
-    let git_dir = if git_dir.is_file() {
-        std::fs::read_to_string(&git_dir)
-            .ok()
-            .and_then(|text| {
-                text.strip_prefix("gitdir:")
-                    .map(|p| std::path::PathBuf::from(p.trim()))
-            })
-            .unwrap_or(git_dir)
-    } else {
-        git_dir
-    };
+    let git_dir = git_dir(&root)?;
 
     let merging = git_dir.join("MERGE_HEAD").exists();
     let rebasing = git_dir.join("rebase-merge").exists() || git_dir.join("rebase-apply").exists();

@@ -9,6 +9,7 @@ pub mod forge;
 pub mod git_cmd;
 pub mod graph;
 pub mod journal;
+pub mod rebase;
 pub mod refs;
 pub mod remote;
 pub mod review;
@@ -319,6 +320,54 @@ async fn worktree_remove(
 #[tauri::command]
 fn add_to_gitignore(pattern: String, state: State<'_, AppState>) -> Result<String, String> {
     refs::add_to_gitignore(&state, &pattern)
+}
+
+// --- interactive rebase -------------------------------------------------------
+
+/// The commits between a chosen one and HEAD, oldest first, for the plan.
+#[tauri::command]
+async fn rebase_plan(
+    onto: String,
+    state: State<'_, AppState>,
+) -> Result<Vec<rebase::Candidate>, String> {
+    rebase::plan(&state, &onto)
+}
+
+/// Runs the plan the window built.
+#[tauri::command]
+async fn rebase_start(
+    onto: String,
+    steps: Vec<rebase::Step>,
+    state: State<'_, AppState>,
+) -> Result<String, String> {
+    rebase::start(&state, &onto, steps)
+}
+
+/// Where a rebase has got to, or nothing when none is running.
+#[tauri::command]
+async fn rebase_progress(state: State<'_, AppState>) -> Result<Option<rebase::Progress>, String> {
+    rebase::progress(&state)
+}
+
+#[tauri::command]
+async fn rebase_continue(state: State<'_, AppState>) -> Result<String, String> {
+    rebase::resume(&state)
+}
+
+#[tauri::command]
+async fn rebase_skip(state: State<'_, AppState>) -> Result<String, String> {
+    rebase::skip(&state)
+}
+
+#[tauri::command]
+async fn rebase_abort(state: State<'_, AppState>) -> Result<String, String> {
+    rebase::abort(&state)
+}
+
+/// Gives the commit a stopped rebase is sitting on a new message, and goes on.
+#[tauri::command]
+async fn rebase_reword(message: String, state: State<'_, AppState>) -> Result<String, String> {
+    rebase::reword(&state, &message)
 }
 
 // --- blame and file history --------------------------------------------------
@@ -1733,6 +1782,13 @@ pub fn run() {
             worktree_remove,
             add_to_gitignore,
             run_git,
+            rebase_plan,
+            rebase_start,
+            rebase_progress,
+            rebase_continue,
+            rebase_skip,
+            rebase_abort,
+            rebase_reword,
             blame_file,
             file_history,
             signature_marks,

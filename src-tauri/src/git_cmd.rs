@@ -156,17 +156,7 @@ pub fn run(cwd: &Path, args: &[&str]) -> Result<CmdOutput, String> {
         .map_err(|e| format!("Could not run git: {e}"))?;
 
     let ok = output.status.success();
-    if !is_query(args) {
-        // Taken out of the lock before it is called: git runs on several
-        // threads, and reporting one command should not hold up the next.
-        let reporter = REPORTER.lock().unwrap().clone();
-        if let Some(reporter) = reporter {
-            reporter(GitCommand {
-                line: command_line(args),
-                ok,
-            });
-        }
-    }
+    report(args, ok);
 
     Ok(CmdOutput {
         argv: args.iter().map(|s| s.to_string()).collect(),
@@ -197,6 +187,48 @@ pub fn run_typed(cwd: &Path, args: &[&str]) -> Result<CmdOutput, String> {
         stdout: String::from_utf8_lossy(&output.stdout).into_owned(),
         stderr: explained(&String::from_utf8_lossy(&output.stderr)),
     })
+}
+
+/// Like [`run`], with extra environment for this one call.
+///
+/// For the commands that would otherwise open an editor and wait: there is no
+/// terminal for one to open in, so `GIT_EDITOR` and `GIT_SEQUENCE_EDITOR` are
+/// pointed somewhere that answers immediately.
+pub fn run_with_env(cwd: &Path, args: &[&str], env: &[(&str, &str)]) -> Result<CmdOutput, String> {
+    let mut command = git(cwd, args);
+    for (key, value) in env {
+        command.env(key, value);
+    }
+    let output = command
+        .output()
+        .map_err(|e| format!("Could not run git: {e}"))?;
+
+    let ok = output.status.success();
+    report(args, ok);
+
+    Ok(CmdOutput {
+        argv: args.iter().map(|s| s.to_string()).collect(),
+        ok,
+        code: output.status.code().unwrap_or(-1),
+        stdout: String::from_utf8_lossy(&output.stdout).into_owned(),
+        stderr: explained(&String::from_utf8_lossy(&output.stderr)),
+    })
+}
+
+/// Puts a command in the activity log, unless it only asked a question.
+fn report(args: &[&str], ok: bool) {
+    if is_query(args) {
+        return;
+    }
+    // Taken out of the lock before it is called: git runs on several threads,
+    // and reporting one command should not hold up the next.
+    let reporter = REPORTER.lock().unwrap().clone();
+    if let Some(reporter) = reporter {
+        reporter(GitCommand {
+            line: command_line(args),
+            ok,
+        });
+    }
 }
 
 /// Adds a line saying what to do about a transport failure, where git's own
@@ -286,17 +318,7 @@ pub fn run_with_input(cwd: &Path, args: &[&str], input: &str) -> Result<CmdOutpu
         .map_err(|e| format!("git did not finish: {e}"))?;
 
     let ok = output.status.success();
-    if !is_query(args) {
-        // Taken out of the lock before it is called: git runs on several
-        // threads, and reporting one command should not hold up the next.
-        let reporter = REPORTER.lock().unwrap().clone();
-        if let Some(reporter) = reporter {
-            reporter(GitCommand {
-                line: command_line(args),
-                ok,
-            });
-        }
-    }
+    report(args, ok);
 
     Ok(CmdOutput {
         argv: args.iter().map(|s| s.to_string()).collect(),

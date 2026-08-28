@@ -19,11 +19,13 @@ import { useGit, type CommitSummary } from '~/composables/useGit'
 import { useConfig } from '~/composables/useConfig'
 import { useShortcuts } from '~/composables/useShortcuts'
 import { useUpdates } from '~/composables/useUpdates'
+import { useRebase } from '~/composables/useRebase'
 
 const git = useGit()
 const store = git.store
 const config = useConfig()
 const updates = useUpdates()
+const rebase = useRebase()
 
 /**
  * A release on offer, or on its way in. The button stays through the download
@@ -349,6 +351,30 @@ async function reconcile(rebase: boolean) {
       </button>
       <button class="btn tiny ghost" :disabled="store.busy" @click="showBranch = true">
         Branch from here
+      </button>
+    </div>
+
+    <!-- A rebase that is part-way through, whether or not the plan is still
+         on screen: closing the pane must not be a way to lose the thread. The
+         conflict strip below covers what to do about the files themselves. -->
+    <div v-if="store.progress?.rebasing && !rebase.store.open" class="banner">
+      <TriangleAlert :size="14" />
+      <span v-if="rebase.store.progress">
+        Rebasing — {{ rebase.store.progress.at }} of {{ rebase.store.progress.total }}, stopped at
+        <span class="mono">{{ rebase.store.progress.summary }}</span>
+      </span>
+      <span v-else>A rebase is part-way through.</span>
+      <button class="btn tiny" @click="rebase.store.open = true">Show the plan</button>
+      <button
+        v-if="!conflicts"
+        class="btn tiny ghost"
+        :disabled="store.busy"
+        @click="rebase.resume()"
+      >
+        Carry on
+      </button>
+      <button class="btn tiny ghost close" :disabled="store.busy" @click="rebase.abort()">
+        Abort the rebase
       </button>
     </div>
 

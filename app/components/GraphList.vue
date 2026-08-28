@@ -8,6 +8,7 @@ import {
   Cloud,
   Copy,
   FileText,
+  GitBranch,
   GitBranchPlus,
   GitCommitHorizontal,
   MonitorDot,
@@ -40,6 +41,7 @@ import {
 } from '~/composables/useRefChips'
 import { avatarFor, initials, tint } from '~/composables/useAvatars'
 import { signatureLook, signatureTitle } from '~/composables/useSigning'
+import { useRebase } from '~/composables/useRebase'
 import { useContextMenu } from '~/composables/useContextMenu'
 import { useDragDrop } from '~/composables/useDragDrop'
 import { keyLabel, useShortcuts } from '~/composables/useShortcuts'
@@ -48,6 +50,7 @@ import { useConfig } from '~/composables/useConfig'
 
 const git = useGit()
 const store = git.store
+const rebase = useRebase()
 const menu = useContextMenu()
 const drag = useDragDrop()
 const config = useConfig()
@@ -777,6 +780,20 @@ function commitMenu(event: MouseEvent, row: GraphRow) {
         action: () => git.checkout(row.oid)
       },
       { label: 'Tag this commit…', icon: Tag, action: () => (tagTarget.value = row) },
+      { separator: true, label: '' },
+      {
+        // The commits above this one are the ones a plan can act on: this one
+        // is the ground they are replayed onto, so it is not in the list.
+        label: 'Rebase the commits above this…',
+        icon: GitBranch,
+        disabled: isHead || store.repo?.detached,
+        hint: isHead
+          ? 'nothing above it'
+          : store.repo?.detached
+            ? 'not on a branch'
+            : 'reorder, squash, drop',
+        action: () => rebase.planFrom(row.oid, row.short)
+      },
       { separator: true, label: '' },
       {
         label:

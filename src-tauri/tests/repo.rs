@@ -9,7 +9,7 @@ use std::process::Command;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
 use gitnoob_lib::state::AppState;
-use gitnoob_lib::{conflict, create, diff, graph, journal, refs, remote, work, worktree};
+use gitnoob_lib::{conflict, create, diff, graph, journal, rebase, refs, remote, work, worktree};
 
 static COUNTER: AtomicUsize = AtomicUsize::new(0);
 
@@ -4008,4 +4008,202 @@ fn a_remote_only_branch_gets_a_tracking_branch_in_its_worktree() {
     );
 
     let _ = std::fs::remove_dir_all(&parent);
+}
+
+// --- interactive rebase ------------------------------------------------------
+
+/// Puts a rebase into the state `rebase::start` would, without going through
+/// the sequence editor: the editor is this app's own binary, and the test
+/// binary is not it. Everything after the todo list is written is the code
+/// under test.
+fn begin_rebase(sandbox: &Sandbox, onto: &str, todo: &str, rewords: &[&str]) -> bool {
+    let list = sandbox.root.join("todo-under-test");
+    std::fs::write(&list, todo).unwrap();
+    let git_dir = sandbox.root.join(".git");
+    std::fs::write(git_dir.join("gitnoob-rebase-rewords"), rewords.join("\n")).unwrap();
+
+    Command::new("git")
+        .args(["rebase", "-i", onto])
+        .current_dir(&sandbox.root)
+        .env("GIT_SEQUENCE_EDITOR", format!("cp '{}'", list.display()))
+        .env("GIT_EDITOR", "true")
+        .output()
+        .expect("git should be on PATH")
+        .status
+        .success()
+}
+
+fn oids(sandbox: &Sandbox) -> Vec<String> {
+    sandbox
+        .git(&["log", "--format=%H", "--reverse"])
+        .lines()
+        .map(str::to_string)
+        .collect()
+}
+
+fn subjects(sandbox: &Sandbox) -> Vec<String> {
+    sandbox
+        .git(&["log", "--format=%s", "--reverse"])
+        .lines()
+        .map(str::to_string)
+        .collect()
+}
+
+#[test]
+fn a_plan_lists_the_commits_above_a_chosen_one_oldest_first() {
+    let sandbox = Sandbox::new("rebase-plan");
+    sandbox.commit("a.txt", "one\n", "First");
+    sandbox.commit("b.txt", "two\n", "Second");
+    sandbox.commit("c.txt", "three\n", "Third");
+    let base = oids(&sandbox)[0].clone();
+
+    let plan = rebase::plan(&sandbox.state(), &base).unwrap();
+    let summaries: Vec<&str> = plan.iter().map(|c| c.summary.as_str()).collect();
+    assert_eq!(summaries, vec!["Second", "Third"]);
+    // Nothing has a remote here, so nothing is published.
+    assert!(plan.iter().all(|c| !c.pushed));
+}
+
+#[test]
+fn a_plan_from_head_itself_is_refused_rather_than_empty() {
+    let sandbox = Sandbox::new("rebase-empty");
+    sandbox.commit("a.txt", "one\n", "First");
+    let head = oids(&sandbox)[0].clone();
+
+    let refused = rebase::plan(&sandbox.state(), &head);
+    assert!(refused.unwrap_err().contains("Nothing to rebase"));
+}
+
+#[test]
+fn a_plan_says_which_commits_a_remote_already_has() {
+    let sandbox = Sandbox::new("rebase-pushed");
+    sandbox.commit("a.txt", "one\n", "First");
+    sandbox.commit("b.txt", "two\n", "Second");
+    // A remote-tracking ref standing where the second commit is.
+    let second = oids(&sandbox)[1].clone();
+    sandbox.git(&["update-ref", "refs/remotes/origin/main", &second]);
+    sandbox.commit("c.txt", "three\n", "Third");
+    let base = oids(&sandbox)[0].clone();
+
+    let plan = rebase::plan(&sandbox.state(), &base).unwrap();
+    assert_eq!(plan[0].summary, "Second");
+    assert!(plan[0].pushed, "the remote has this one");
+    assert!(!plan[1].pushed, "the remote has never seen this one");
+}
+
+#[test]
+fn a_fixup_folds_a_commit_into_the_one_before_it() {
+    let sandbox = Sandbox::new("rebase-fixup");
+    sandbox.commit("a.txt", "one\n", "First");
+    sandbox.commit("b.txt", "two\n", "Second");
+    sandbox.commit("b.txt", "two fixed\n", "typo");
+    let ids = oids(&sandbox);
+    let todo = format!("pick {}\nfixup {}\n", ids[1], ids[2]);
+
+    assert!(begin_rebase(&sandbox, &ids[0], &todo, &[]));
+    assert_eq!(subjects(&sandbox), vec!["First", "Second"]);
+    // The folded change is still there; only its commit is gone.
+    assert_eq!(
+        std::fs::read_to_string(sandbox.root.join("b.txt")).unwrap(),
+        "two fixed\n"
+    );
+    assert!(rebase::progress(&sandbox.state()).unwrap().is_none());
+}
+
+#[test]
+fn a_reword_stops_and_reports_itself_as_one() {
+    let sandbox = Sandbox::new("rebase-reword");
+    sandbox.commit("a.txt", "one\n", "First");
+    sandbox.commit("b.txt", "two\n", "wip");
+    let ids = oids(&sandbox);
+    // A reword is written into the todo as an edit; the sidecar is what says
+    // it was meant as a reword.
+    let todo = format!("edit {}\n", ids[1]);
+    begin_rebase(&sandbox, &ids[0], &todo, &[ids[1].clone().as_str()]);
+
+    let state = sandbox.state();
+    let stopped = rebase::progress(&state).unwrap().expect("it should have stopped");
+    assert!(stopped.rewording, "the sidecar names this one a reword");
+    assert_eq!(stopped.stopped.as_deref(), Some(ids[1].as_str()));
+    assert_eq!(stopped.summary.as_deref(), Some("wip"));
+    assert_eq!(stopped.message.as_deref(), Some("wip"));
+    assert_eq!(stopped.at, 1);
+    assert_eq!(stopped.total, 1);
+
+    let said = rebase::reword(&state, "feat: a proper message").unwrap();
+    assert_eq!(said, "Rebase finished");
+    assert_eq!(subjects(&sandbox), vec!["First", "feat: a proper message"]);
+    assert!(rebase::progress(&state).unwrap().is_none());
+    // The sidecar goes with the rebase it belonged to.
+    assert!(!sandbox.root.join(".git/gitnoob-rebase-rewords").exists());
+}
+
+#[test]
+fn an_edit_that_was_not_a_reword_is_not_reported_as_one() {
+    let sandbox = Sandbox::new("rebase-edit");
+    sandbox.commit("a.txt", "one\n", "First");
+    sandbox.commit("b.txt", "two\n", "Second");
+    let ids = oids(&sandbox);
+    let todo = format!("edit {}\n", ids[1]);
+    begin_rebase(&sandbox, &ids[0], &todo, &[]);
+
+    let state = sandbox.state();
+    let stopped = rebase::progress(&state).unwrap().unwrap();
+    assert!(!stopped.rewording);
+    assert!(stopped.message.is_none(), "nothing to prefill a box with");
+
+    assert_eq!(rebase::resume(&state).unwrap(), "Rebase finished");
+    assert_eq!(subjects(&sandbox), vec!["First", "Second"]);
+}
+
+#[test]
+fn a_conflict_stops_the_rebase_and_abort_puts_the_branch_back() {
+    let sandbox = Sandbox::new("rebase-conflict");
+    sandbox.commit("a.txt", "one\n", "First");
+    sandbox.git(&["checkout", "-q", "-b", "side"]);
+    sandbox.commit("a.txt", "from the side\n", "Side change");
+    sandbox.git(&["checkout", "-q", "main"]);
+    sandbox.commit("a.txt", "from main\n", "Main change");
+    let before = sandbox.git(&["rev-parse", "HEAD"]).trim().to_string();
+
+    // Replaying main's commit on top of side's conflicts in a.txt.
+    let side = sandbox.git(&["rev-parse", "side"]).trim().to_string();
+    let head = sandbox.git(&["rev-parse", "HEAD"]).trim().to_string();
+    let todo = format!("pick {head}\n");
+    assert!(!begin_rebase(&sandbox, &side, &todo, &[]), "it should conflict");
+
+    let state = sandbox.state();
+    assert!(rebase::progress(&state).unwrap().is_some());
+    assert!(remote::in_progress(&state).unwrap().rebasing);
+
+    let said = rebase::abort(&state).unwrap();
+    assert!(said.contains("as it was"));
+    assert_eq!(sandbox.git(&["rev-parse", "HEAD"]).trim(), before);
+    assert!(rebase::progress(&state).unwrap().is_none());
+    assert!(!sandbox.root.join(".git/gitnoob-rebase-todo").exists());
+}
+
+#[test]
+fn skipping_leaves_the_commit_it_stopped_at_out() {
+    let sandbox = Sandbox::new("rebase-skip");
+    sandbox.commit("a.txt", "one\n", "First");
+    sandbox.git(&["checkout", "-q", "-b", "side"]);
+    sandbox.commit("a.txt", "from the side\n", "Side change");
+    sandbox.git(&["checkout", "-q", "main"]);
+    sandbox.commit("a.txt", "from main\n", "Main change");
+
+    let side = sandbox.git(&["rev-parse", "side"]).trim().to_string();
+    let head = sandbox.git(&["rev-parse", "HEAD"]).trim().to_string();
+    begin_rebase(&sandbox, &side, &format!("pick {head}\n"), &[]);
+
+    let state = sandbox.state();
+    assert_eq!(rebase::skip(&state).unwrap(), "Rebase finished");
+    assert_eq!(subjects(&sandbox), vec!["First", "Side change"]);
+}
+
+#[test]
+fn rebase_progress_says_nothing_when_no_rebase_is_running() {
+    let sandbox = Sandbox::new("rebase-idle");
+    sandbox.commit("a.txt", "one\n", "First");
+    assert!(rebase::progress(&sandbox.state()).unwrap().is_none());
 }
