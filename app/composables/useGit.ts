@@ -1120,12 +1120,11 @@ export function useGit() {
   /**
    * Runs what was typed at the log's prompt, and writes back what git said.
    *
-   * The line goes in as the command it was, in the colour of how it went, with
-   * git's own output under it: the log is newest-first, so the output is
-   * written before the line that produced it. The output is not a notice —
-   * you typed the command with the log open, and that is where the answer is.
-   * The refresh is the same one every button gets, since `git commit` typed
-   * here changes the window exactly as much as clicking it would.
+   * The command goes in first and its output under it, which is the order the
+   * console reads them in. The output is not a notice — you typed the command
+   * with the console open, and that is where the answer is. The refresh is the
+   * same one every button gets, since `git commit` typed here changes the
+   * window exactly as much as clicking it would.
    */
   async function typed(line: string) {
     const parsed = parseCommandLine(line)
@@ -1136,9 +1135,9 @@ export function useGit() {
     const shown = ['git', ...parsed.args.map(quoteArg)].join(' ')
     const out = await run<CmdOutput>(shown, 'run_git', { args: parsed.args })
     if (!out) return false
+    note(shown, out.ok ? 'command' : 'failed')
     const text = [out.stdout, out.stderr].filter((s) => s.trim()).join('\n')
     note(text || (out.ok ? '' : `exit ${out.code}`), 'output')
-    note(shown, out.ok ? 'command' : 'failed')
     return out.ok
   }
 

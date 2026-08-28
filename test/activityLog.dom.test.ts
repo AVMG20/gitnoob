@@ -34,7 +34,26 @@ beforeEach(() => {
   git.store.repo = { path: '/tmp/repo', name: 'repo', head: 'main', detached: false } as never
 })
 
-describe('the prompt in the log', () => {
+describe('the console', () => {
+  it('reads oldest first, with the prompt beneath the transcript', async () => {
+    answer({ stdout: 'abc1234 first\n' })
+    const wrapper = mount(ActivityLog)
+    await wrapper.find('.term').trigger('click')
+    await type(wrapper, 'log --oneline -1')
+
+    const rows = wrapper.findAll('.entry .text').map((one) => one.text())
+    const command = rows.findIndex((text) => text === 'git log --oneline -1')
+    const output = rows.findIndex((text) => text === 'abc1234 first')
+    expect(command).toBeGreaterThanOrEqual(0)
+    expect(output).toBe(command + 1)
+
+    // The input is the last thing in the console, under everything else.
+    const order = [...wrapper.element.querySelectorAll('.body, .prompt-row')]
+    expect(order[0]!.className).toContain('body')
+    expect(order[1]!.className).toContain('prompt-row')
+  })
+
+
   it('opens with the terminal button, caret in the prompt', async () => {
     const wrapper = mount(ActivityLog, { attachTo: document.body })
     expect(wrapper.find('input').exists()).toBe(false)
@@ -63,8 +82,10 @@ describe('the prompt in the log', () => {
     await wrapper.find('.term').trigger('click')
     await type(wrapper, 'show nope')
 
-    expect(git.store.log[0]).toMatchObject({ level: 'failed', text: 'git show nope' })
-    expect(git.store.log[1]).toMatchObject({ level: 'output' })
+    // The store is newest-first; the console turns it round for reading, so
+    // what the user sees is the command with its output beneath it.
+    expect(git.store.log[0]).toMatchObject({ level: 'output' })
+    expect(git.store.log[1]).toMatchObject({ level: 'failed', text: 'git show nope' })
     expect(wrapper.find('.entry.failed').exists()).toBe(true)
   })
 

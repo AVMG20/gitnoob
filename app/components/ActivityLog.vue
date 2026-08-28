@@ -1,6 +1,6 @@
 <script setup lang="ts">
-import { computed, nextTick, ref } from 'vue'
-import { SquareTerminal } from 'lucide-vue-next'
+import { computed, nextTick, ref, watch } from 'vue'
+import { ChevronUp, SquareTerminal } from 'lucide-vue-next'
 import { useGit } from '~/composables/useGit'
 import {
   commonPrefix,
@@ -9,26 +9,73 @@ import {
   type CompletionSource
 } from '~/composables/useCompletion'
 
+/**
+ * The console: what git has run, and a prompt to run more.
+ *
+ * Read the way a terminal is read — oldest at the top, newest at the bottom,
+ * and the prompt under all of it. The store keeps the log newest-first because
+ * the collapsed strip wants the latest line without walking the list; the
+ * reading order is put back here, where the reading happens.
+ */
 const git = useGit()
 const store = git.store
 
 const open = ref(false)
+
 const latest = computed(() => store.log[0] ?? null)
+/** The log the way a terminal shows it. */
+const lines = computed(() => [...store.log].reverse())
+
+const scroller = ref<HTMLElement | null>(null)
+const prompt = ref<HTMLInputElement | null>(null)
+
+/** The newest line is the one worth seeing, so the view follows it down. */
+async function toBottom() {
+  await nextTick()
+  const box = scroller.value
+  if (box) box.scrollTop = box.scrollHeight
+}
+
+watch(() => store.log.length, toBottom)
+watch(open, (showing) => showing && toBottom())
+
+async function toggle() {
+  open.value = !open.value
+  if (open.value) await toBottom()
+}
+
+/** The terminal button: opens it with the caret already in the prompt. */
+async function focusPrompt() {
+  open.value = true
+  await nextTick()
+  prompt.value?.focus()
+  await toBottom()
+}
 
 // --- the prompt
 
-const prompt = ref<HTMLInputElement | null>(null)
 const line = ref('')
 /** What was typed before, newest last, walked with the arrow keys. */
 const history = ref<string[]>([])
 /** Where in the history the arrows are; `history.length` is the empty line. */
 const cursor = ref(0)
 
-/** The terminal button: opens the panel with the caret already in the prompt. */
-async function focusPrompt() {
-  open.value = true
-  await nextTick()
-  prompt.value?.focus()
+async function submit() {
+  const text = line.value.trim()
+  if (!text || store.busy) return
+  if (history.value[history.value.length - 1] !== text) history.value.push(text)
+  cursor.value = history.value.length
+  line.value = ''
+  offers.value = []
+  await git.typed(text)
+  await toBottom()
+}
+
+function recall(step: -1 | 1) {
+  offers.value = []
+  const at = Math.min(Math.max(cursor.value + step, 0), history.value.length)
+  cursor.value = at
+  line.value = history.value[at] ?? ''
 }
 
 // --- what Tab offers
@@ -45,7 +92,7 @@ const source = computed<CompletionSource>(() => ({
   ].map((one) => one.path)
 }))
 
-/** The matches Tab could not choose between, listed above the prompt. */
+/** The matches Tab could not choose between. */
 const offers = ref<string[]>([])
 
 /**
@@ -75,49 +122,41 @@ async function take(match: string) {
   await nextTick()
   prompt.value?.focus()
 }
-
-async function submit() {
-  const text = line.value.trim()
-  if (!text || store.busy) return
-  if (history.value[history.value.length - 1] !== text) history.value.push(text)
-  cursor.value = history.value.length
-  line.value = ''
-  offers.value = []
-  await git.typed(text)
-}
-
-function recall(step: -1 | 1) {
-  offers.value = []
-  const at = Math.min(Math.max(cursor.value + step, 0), history.value.length)
-  cursor.value = at
-  line.value = history.value[at] ?? ''
-}
 </script>
 
 <template>
-  <footer class="log" :class="{ open }">
-    <button class="strip" @click="open = !open">
-      <span class="chev" :class="{ up: open }">▴</span>
-      <span v-if="store.busy" class="busy">working…</span>
-      <span v-else-if="latest" class="line truncate" :class="latest.level">
-        <span v-if="latest.level === 'command' || latest.level === 'failed'" class="prompt">$</span>{{ latest.text }}
-      </span>
-      <span v-else class="faint">Ready</span>
-      <span class="faint count">{{ store.log.length }}</span>
-    </button>
-    <!-- Beside the strip rather than in it: a button inside a button is not a
-         thing, and this one has its own job. -->
-    <button class="term" title="Type a git command" @click="focusPrompt">
-      <SquareTerminal :size="14" />
-    </button>
+  <footer class="console" :class="{ open }">
+    <div class="strip-row">
+      <button class="strip" :title="open ? 'Collapse' : 'Expand'" @click="toggle">
+        <ChevronUp :size="12" class="chev" :class="{ down: open }" />
+        <span v-if="store.busy" class="busy">working…</span>
+        <span v-else-if="latest" class="line truncate" :class="latest.level">
+          <span v-if="latest.level === 'command' || latest.level === 'failed'" class="prompt">$</span>{{ latest.text }}
+        </span>
+        <span v-else class="faint">Ready</span>
+        <span class="faint count">{{ store.log.length }}</span>
+      </button>
+      <!-- Beside the strip rather than in it: a button inside a button is not
+           a thing, and this one has its own job. -->
+      <button class="term" title="Type a git command" @click="focusPrompt">
+        <SquareTerminal :size="14" />
+      </button>
+    </div>
 
-    <div v-if="open" class="body">
-      <!-- A prompt above the log, since the log reads newest-first: what you
-           type lands directly under where you typed it. Anything git can do
-           can be typed here, in the repository the window is showing, and the
-           window catches up afterwards the same as it does for a button. -->
-      <!-- What Tab could not choose between. Above the prompt, because the
-           log below it is where the answers go. -->
+    <template v-if="open">
+      <div ref="scroller" class="body">
+        <div v-for="entry in lines" :key="entry.id" class="entry" :class="entry.level">
+          <span class="faint time">{{ new Date(entry.at).toLocaleTimeString() }}</span>
+          <!-- A command is shown as it would be typed, so the log reads as the
+               terminal session the clicks stood in for. -->
+          <span v-if="entry.level === 'command' || entry.level === 'failed'" class="prompt">$</span>
+          <pre class="text">{{ entry.text }}</pre>
+        </div>
+        <p v-if="!lines.length" class="faint pad">Nothing yet.</p>
+      </div>
+
+      <!-- What Tab could not choose between, directly above the line being
+           typed, which is where a shell puts it. -->
       <div v-if="offers.length" class="offers">
         <button v-for="one in offers" :key="one" class="offer" @click="take(one)">{{ one }}</button>
       </div>
@@ -140,34 +179,48 @@ function recall(step: -1 | 1) {
           @keydown.esc="offers = []"
         />
       </form>
-      <div v-for="entry in store.log" :key="entry.id" class="entry" :class="entry.level">
-        <span class="faint time">{{ new Date(entry.at).toLocaleTimeString() }}</span>
-        <!-- A command is shown as it would be typed, so the log reads as the
-             terminal session the clicks stood in for. -->
-        <span v-if="entry.level === 'command' || entry.level === 'failed'" class="prompt">$</span>
-        <pre class="text">{{ entry.text }}</pre>
-      </div>
-      <p v-if="!store.log.length" class="faint pad">Nothing yet.</p>
-    </div>
+    </template>
   </footer>
 </template>
 
 <style scoped>
-.log {
-  display: grid;
-  grid-template-columns: minmax(0, 1fr) auto;
+.console {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
   border-top: 1px solid var(--line);
   background: var(--bg-panel);
+}
+
+.strip-row {
+  display: flex;
+  align-items: stretch;
+  flex: none;
 }
 
 .strip {
   display: flex;
   align-items: center;
   gap: 8px;
+  flex: 1;
   min-width: 0;
   padding: 4px 12px;
   font-size: 12px;
   text-align: left;
+}
+
+.strip:hover {
+  background: var(--bg-hover);
+}
+
+.chev {
+  flex: none;
+  color: var(--text-faint);
+  transition: transform 0.12s;
+}
+
+.chev.down {
+  transform: rotate(180deg);
 }
 
 .term {
@@ -183,18 +236,107 @@ function recall(step: -1 | 1) {
   background: var(--bg-hover);
 }
 
+.line {
+  flex: 1;
+  min-width: 0;
+  color: var(--text-dim);
+}
+
+.line.error {
+  color: var(--red);
+}
+
+.line.command,
+.entry.command .text {
+  color: var(--accent);
+}
+
+/* A command that came back non-zero: still the command line, in the colour of
+   what happened to it. What went wrong is said in a notice, not here. */
+.line.failed,
+.entry.failed .text {
+  color: var(--red-soft);
+}
+
+.line.output {
+  color: var(--text-faint);
+}
+
+.prompt {
+  flex: none;
+  margin-right: 4px;
+  font-family: var(--mono);
+  font-size: 11px;
+  color: var(--text-faint);
+}
+
+.busy {
+  flex: 1;
+  color: var(--accent);
+}
+
+.count {
+  font-size: 11px;
+}
+
+/* The transcript. Oldest at the top, so it is read downwards and the newest
+   line is the one nearest the prompt. */
 .body {
-  grid-column: 1 / -1;
+  flex: 1;
+  min-height: 0;
+  height: 220px;
+  overflow-y: auto;
+  border-top: 1px solid var(--line-soft);
+}
+
+.entry {
+  display: flex;
+  gap: 10px;
+  padding: 3px 12px;
+  border-bottom: 1px solid var(--line-soft);
+}
+
+.entry.error .text {
+  color: var(--red);
+}
+
+/* What a typed command printed, as it printed it: a shade quieter than the
+   command line above it, so the eye finds the command first. */
+.entry.output .text {
+  color: var(--text-faint);
+}
+
+.time {
+  flex: none;
+  font-family: var(--mono);
+  font-size: 11px;
+}
+
+.text {
+  margin: 0;
+  flex: 1;
+  min-width: 0;
+  font-family: var(--mono);
+  font-size: 11px;
+  white-space: pre-wrap;
+  word-break: break-word;
+  color: var(--text-dim);
+}
+
+.pad {
+  padding: 8px 12px;
+  font-size: 12px;
 }
 
 .offers {
   display: flex;
   flex-wrap: wrap;
   gap: 4px;
+  flex: none;
   max-height: 84px;
   overflow-y: auto;
   padding: 6px 12px;
-  border-bottom: 1px solid var(--line-soft);
+  border-top: 1px solid var(--line-soft);
   background: var(--bg-raised);
 }
 
@@ -212,13 +354,16 @@ function recall(step: -1 | 1) {
   color: var(--text);
 }
 
+/* The line you type on, at the very bottom and darker than the transcript
+   above it — the one part of the window that is a terminal. */
 .prompt-row {
   display: flex;
   align-items: center;
   gap: 4px;
-  padding: 4px 12px;
-  border-bottom: 1px solid var(--line-soft);
-  background: var(--bg-raised);
+  flex: none;
+  padding: 6px 12px;
+  border-top: 1px solid var(--line);
+  background: var(--bg-deep);
 }
 
 .git {
@@ -245,103 +390,5 @@ function recall(step: -1 | 1) {
 
 .input:disabled {
   color: var(--text-faint);
-}
-
-.chev {
-  font-size: 9px;
-  color: var(--text-faint);
-  transition: transform 0.12s;
-}
-
-.chev.up {
-  transform: rotate(180deg);
-}
-
-.line {
-  flex: 1;
-  min-width: 0;
-  color: var(--text-dim);
-}
-
-.line.error {
-  color: var(--red);
-}
-
-.line.command,
-.entry.command .text {
-  color: var(--accent);
-}
-
-/* A command that came back non-zero: still the command line, in the colour of
-   what happened to it. What went wrong is said in a notice, not here. */
-.line.failed,
-.entry.failed .text {
-  color: var(--red-soft);
-}
-
-.prompt {
-  flex: none;
-  margin-right: 4px;
-  font-family: var(--mono);
-  font-size: 11px;
-  color: var(--text-faint);
-}
-
-.busy {
-  flex: 1;
-  color: var(--accent);
-}
-
-.count {
-  font-size: 11px;
-}
-
-.body {
-  max-height: 200px;
-  overflow-y: auto;
-  border-top: 1px solid var(--line-soft);
-}
-
-.entry {
-  display: flex;
-  gap: 10px;
-  padding: 3px 12px;
-  border-bottom: 1px solid var(--line-soft);
-}
-
-.entry.error .text {
-  color: var(--red);
-}
-
-/* What a typed command printed, as it printed it: a shade quieter than the
-   command line above it, so the eye finds the command first. */
-.entry.output .text {
-  color: var(--text-faint);
-}
-
-.line.output {
-  color: var(--text-faint);
-}
-
-.time {
-  flex: none;
-  font-family: var(--mono);
-  font-size: 11px;
-}
-
-.text {
-  margin: 0;
-  flex: 1;
-  min-width: 0;
-  font-family: var(--mono);
-  font-size: 11px;
-  white-space: pre-wrap;
-  word-break: break-word;
-  color: var(--text-dim);
-}
-
-.pad {
-  padding: 8px 12px;
-  font-size: 12px;
 }
 </style>
