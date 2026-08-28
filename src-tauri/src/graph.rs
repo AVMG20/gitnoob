@@ -26,6 +26,9 @@ pub struct Segment {
     pub x2: usize,
     pub y2: u8,
     pub color: usize,
+    /// A line belonging to a stash, drawn broken: a stash hangs off the commit
+    /// it was made on rather than being part of the history.
+    pub dashed: bool,
 }
 
 #[derive(Serialize)]
@@ -46,6 +49,10 @@ pub struct GraphRow {
     /// boundary between what the remote has and what it does not is visible in
     /// the graph rather than only in an ahead count.
     pub unpushed: bool,
+    /// Which stash this row is, when it is one. A stash is a commit, so it
+    /// draws like one — with its own mark, on a broken line to the commit it
+    /// was made on.
+    pub stash: Option<usize>,
 }
 
 #[derive(Serialize)]
@@ -135,9 +142,11 @@ pub fn build(state: &AppState, limit: usize) -> Result<GraphPage, String> {
             author: author.name().unwrap_or("").to_string(),
             email: author.email().unwrap_or("").to_string(),
             time: commit.time().seconds(),
+            stash: None,
         });
     }
 
+    let commits = with_stashes(state, &repo, commits);
     let plotted = plot(&commits, trunk_tip(&repo));
 
     let rows = commits
@@ -168,10 +177,67 @@ pub fn build(state: &AppState, limit: usize) -> Result<GraphPage, String> {
                 })
                 .unwrap_or_default(),
             unpushed: unpushed.contains(&commit.oid.to_string()),
+            stash: commit.stash,
         })
         .collect();
 
     Ok(GraphPage { rows, has_more })
+}
+
+/// Puts each stash into the list directly above the commit it was made on.
+///
+/// A stash is a commit whose first parent is where HEAD stood at the time, so
+/// it belongs in the picture hanging off that row — which is what makes it
+/// findable at all. Its other parents (the index, and the untracked files) are
+/// bookkeeping rather than history, so only the first is kept: nothing should
+/// draw a line to them.
+///
+/// A stash whose parent is older than this page is left out. A line to a row
+/// that is not there is a line to nowhere.
+fn with_stashes(state: &AppState, repo: &git2::Repository, commits: Vec<Commit>) -> Vec<Commit> {
+    let Ok(entries) = crate::work::stash_list(state) else {
+        return commits;
+    };
+    if entries.is_empty() {
+        return commits;
+    }
+
+    // Keyed by the commit each one hangs off, newest first within a parent so
+    // `stash@{0}` sits closest to the top.
+    let mut hanging: std::collections::HashMap<Oid, Vec<Commit>> =
+        std::collections::HashMap::new();
+    for entry in entries {
+        let Ok(oid) = Oid::from_str(&entry.oid) else {
+            continue;
+        };
+        let Ok(commit) = repo.find_commit(oid) else {
+            continue;
+        };
+        let Some(parent) = commit.parent_ids().next() else {
+            continue;
+        };
+        let author = commit.author();
+        hanging.entry(parent).or_default().push(Commit {
+            oid,
+            parents: vec![parent],
+            // The tidied message from the list, not git's own "WIP on main:
+            // 0e8a1f2 …", which says nothing the row does not already say.
+            summary: entry.message,
+            author: author.name().unwrap_or("").to_string(),
+            email: author.email().unwrap_or("").to_string(),
+            time: entry.time,
+            stash: Some(entry.index),
+        });
+    }
+
+    let mut out = Vec::with_capacity(commits.len() + hanging.len());
+    for commit in commits {
+        if let Some(stashes) = hanging.remove(&commit.oid) {
+            out.extend(stashes);
+        }
+        out.push(commit);
+    }
+    out
 }
 
 /// A commit as the plotter needs it: an id, its parents, and the details that
@@ -183,6 +249,8 @@ pub struct Commit {
     pub author: String,
     pub email: String,
     pub time: i64,
+    /// Set when this row is a stash rather than a commit of the history.
+    pub stash: Option<usize>,
 }
 
 /// Where one row's node sits and what lines cross it.
@@ -199,6 +267,11 @@ pub struct Place {
 fn plot(commits: &[Commit], anchor: Option<Oid>) -> Vec<Place> {
     let mut lanes: Vec<Option<Oid>> = Vec::new();
     let mut colors: Vec<usize> = Vec::new();
+    // Which lanes are carrying a stash's line rather than a line of the
+    // history. Kept in step with `lanes`, because the line has to stay broken
+    // all the way down to the commit the stash hangs off — which is one row
+    // when nothing else is stashed there, and several when more is.
+    let mut dashed: Vec<bool> = Vec::new();
     let mut next_color = 0usize;
     let mut places: Vec<Place> = Vec::with_capacity(commits.len());
 
@@ -221,6 +294,7 @@ fn plot(commits: &[Commit], anchor: Option<Oid>) -> Vec<Place> {
     if let Some(anchor) = anchor {
         lanes.push(Some(anchor));
         colors.push(TRUNK_COLOR);
+        dashed.push(false);
         reserved = Some(0);
     }
 
@@ -229,6 +303,7 @@ fn plot(commits: &[Commit], anchor: Option<Oid>) -> Vec<Place> {
 
         let lanes_before = lanes.clone();
         let colors_before = colors.clone();
+        let dashed_before = dashed.clone();
         let reserved_before = reserved;
 
         // 1. Claim a lane. Scanning from the left means a commit that both the
@@ -237,7 +312,7 @@ fn plot(commits: &[Commit], anchor: Option<Oid>) -> Vec<Place> {
         let lane = match lanes.iter().position(|l| *l == Some(oid)) {
             Some(i) => i,
             None => {
-                let i = alloc(&mut lanes, &mut colors);
+                let i = alloc(&mut lanes, &mut colors, &mut dashed);
                 // Coloured before it is filled: an empty lane still carries
                 // whatever colour last ran through it, and a lane counted as
                 // live would rule that colour out for the line about to take
@@ -248,6 +323,9 @@ fn plot(commits: &[Commit], anchor: Option<Oid>) -> Vec<Place> {
             }
         };
         let color = colors[lane];
+        // The line leaving this row is broken if a stash is what is leaving.
+        // An ordinary commit taking the lane over makes it solid again.
+        dashed[lane] = commit.stash.is_some();
         if reserved == Some(lane) {
             reserved = None;
         }
@@ -257,6 +335,7 @@ fn plot(commits: &[Commit], anchor: Option<Oid>) -> Vec<Place> {
         for (i, slot) in lanes.iter_mut().enumerate() {
             if i != lane && *slot == Some(oid) {
                 *slot = None;
+                dashed[i] = false;
             }
         }
 
@@ -264,7 +343,10 @@ fn plot(commits: &[Commit], anchor: Option<Oid>) -> Vec<Place> {
         //    lane of its own unless it is already tracked.
         let parents = &commit.parents;
         match parents.split_first() {
-            None => lanes[lane] = None,
+            None => {
+                lanes[lane] = None;
+                dashed[lane] = false;
+            }
             Some((first, rest)) => {
                 // The lane carries on to the first parent even when another
                 // lane is already waiting for that same commit. Both hold it
@@ -278,14 +360,14 @@ fn plot(commits: &[Commit], anchor: Option<Oid>) -> Vec<Place> {
                     if lanes.contains(&Some(*parent)) {
                         continue;
                     }
-                    let i = alloc(&mut lanes, &mut colors);
+                    let i = alloc(&mut lanes, &mut colors, &mut dashed);
                     colors[i] = pick_color(&lanes, &colors, &mut next_color);
                     lanes[i] = Some(*parent);
                 }
             }
         }
 
-        trim(&mut lanes, &mut colors);
+        trim(&mut lanes, &mut colors, &mut dashed);
         let lanes_after = lanes.clone();
 
         // 4. Turn the before/after tables into segments.
@@ -318,6 +400,7 @@ fn plot(commits: &[Commit], anchor: Option<Oid>) -> Vec<Place> {
                     x2: lane,
                     y2: 1,
                     color: colors_before[x],
+                    dashed: dashed_before[x],
                 });
             } else if let Some(to) = find(waiting, x) {
                 // A line that just passes this row by.
@@ -327,6 +410,7 @@ fn plot(commits: &[Commit], anchor: Option<Oid>) -> Vec<Place> {
                     x2: to,
                     y2: 2,
                     color: colors_before[x],
+                    dashed: dashed_before[x],
                 });
             }
         }
@@ -342,6 +426,7 @@ fn plot(commits: &[Commit], anchor: Option<Oid>) -> Vec<Place> {
                 // The first parent continues this commit's line, so it keeps its
                 // colour; a merge's other parents belong to the line they join.
                 color: if i == 0 { color } else { colors[to] },
+                dashed: commit.stash.is_some(),
             });
         }
 
@@ -496,12 +581,13 @@ fn pick_color(lanes: &[Option<Oid>], colors: &[usize], next: &mut usize) -> usiz
 /// The trunk's column is never among them: it holds the trunk's tip from before
 /// the first row and the trunk's own history from then on, so it is never empty
 /// for anything else to move into.
-fn alloc(lanes: &mut Vec<Option<Oid>>, colors: &mut Vec<usize>) -> usize {
+fn alloc(lanes: &mut Vec<Option<Oid>>, colors: &mut Vec<usize>, dashed: &mut Vec<bool>) -> usize {
     match lanes.iter().position(|l| l.is_none()) {
         Some(i) => i,
         None => {
             lanes.push(None);
             colors.push(0);
+            dashed.push(false);
             lanes.len() - 1
         }
     }
@@ -509,10 +595,11 @@ fn alloc(lanes: &mut Vec<Option<Oid>>, colors: &mut Vec<usize>) -> usize {
 
 /// Drops trailing empty lanes so the graph column stays as narrow as the history
 /// actually needs.
-fn trim(lanes: &mut Vec<Option<Oid>>, colors: &mut Vec<usize>) {
+fn trim(lanes: &mut Vec<Option<Oid>>, colors: &mut Vec<usize>, dashed: &mut Vec<bool>) {
     while lanes.last() == Some(&None) {
         lanes.pop();
         colors.pop();
+        dashed.pop();
     }
 }
 
@@ -599,7 +686,123 @@ mod tests {
             author: "Tester".into(),
             email: "tester@example.com".into(),
             time: 0,
+            stash: None,
         }
+    }
+
+    /// A stash hanging off `parent`, as `with_stashes` builds one.
+    fn stash(n: u32, parent: u32, index: usize) -> Commit {
+        Commit {
+            stash: Some(index),
+            ..commit(n, &[parent])
+        }
+    }
+
+    #[test]
+    fn a_stash_hangs_off_its_commit_on_a_broken_line() {
+        // 1 ← 2 ← 3, with a stash made while standing on 2.
+        let commits = vec![commit(1, &[2]), stash(9, 2, 0), commit(2, &[3]), commit(3, &[])];
+        assert!(faults(&commits, None).is_empty());
+
+        let places = plot(&commits, None);
+        // Its own lane, beside the line it hangs off.
+        assert_ne!(places[1].lane, places[2].lane);
+        // Everything leaving the stash is drawn broken.
+        let leaving: Vec<&Segment> = places[1]
+            .segments
+            .iter()
+            .filter(|seg| seg.x1 == places[1].lane && seg.y1 == 1)
+            .collect();
+        assert!(!leaving.is_empty());
+        assert!(leaving.iter().all(|seg| seg.dashed));
+
+        // And the line arriving at the commit it was made on is broken too, so
+        // it does not turn solid half way down.
+        let arriving: Vec<&Segment> = places[2]
+            .segments
+            .iter()
+            .filter(|seg| seg.x1 == places[1].lane)
+            .collect();
+        assert!(!arriving.is_empty(), "the stash's line has to land somewhere");
+        assert!(arriving.iter().all(|seg| seg.dashed));
+    }
+
+    #[test]
+    fn the_history_itself_is_never_drawn_broken() {
+        let commits = vec![commit(1, &[2]), stash(9, 2, 0), commit(2, &[3]), commit(3, &[])];
+        let places = plot(&commits, None);
+        // Row 0 and row 3 have nothing to do with the stash.
+        for at in [0usize, 3] {
+            assert!(
+                places[at].segments.iter().all(|seg| !seg.dashed),
+                "row {at} should be solid"
+            );
+        }
+        // The commit the stash hangs off carries on downwards solidly: only
+        // the line coming in from the stash's lane is broken.
+        let onward: Vec<&Segment> = places[2]
+            .segments
+            .iter()
+            .filter(|seg| seg.y1 == 1)
+            .collect();
+        assert!(onward.iter().all(|seg| !seg.dashed));
+    }
+
+    #[test]
+    fn two_stashes_on_one_commit_both_stay_broken_all_the_way_down() {
+        // Both made while standing on 2, newest first.
+        let commits = vec![
+            commit(1, &[2]),
+            stash(9, 2, 0),
+            stash(8, 2, 1),
+            commit(2, &[3]),
+            commit(3, &[]),
+        ];
+        assert!(faults(&commits, None).is_empty());
+
+        let places = plot(&commits, None);
+        let first = places[1].lane;
+        // The older stash's row has the newer one's line passing through it,
+        // and a line passing a row by must not come out solid.
+        let passing: Vec<&Segment> = places[2]
+            .segments
+            .iter()
+            .filter(|seg| seg.x1 == first)
+            .collect();
+        assert!(!passing.is_empty(), "the first stash's line passes this row");
+        assert!(
+            passing.iter().all(|seg| seg.dashed),
+            "a stash line stays broken where it merely passes by"
+        );
+
+        // Every segment reaching the commit both were made on is broken.
+        let lanes = [places[1].lane, places[2].lane];
+        let arriving: Vec<&Segment> = places[3]
+            .segments
+            .iter()
+            .filter(|seg| lanes.contains(&seg.x1))
+            .collect();
+        assert_eq!(arriving.len(), 2);
+        assert!(arriving.iter().all(|seg| seg.dashed));
+    }
+
+    #[test]
+    fn a_lane_a_stash_gave_up_is_solid_again_for_whatever_takes_it() {
+        // The stash's lane is freed at 2 and reused by an unrelated branch.
+        let commits = vec![
+            commit(1, &[2]),
+            stash(9, 2, 0),
+            commit(2, &[3]),
+            commit(7, &[3]),
+            commit(3, &[]),
+        ];
+        assert!(faults(&commits, None).is_empty());
+        let places = plot(&commits, None);
+        assert!(
+            places[3].segments.iter().all(|seg| !seg.dashed),
+            "an ordinary commit taking a freed lane draws a solid line"
+        );
+        assert!(places[4].segments.iter().all(|seg| !seg.dashed));
     }
 
     /// Every complaint the picture could make about itself.

@@ -189,7 +189,15 @@ export interface WorkingStatus {
   conflicted: string[]
 }
 
-export interface Segment { x1: number; y1: number; x2: number; y2: number; color: number }
+export interface Segment {
+  x1: number
+  y1: number
+  x2: number
+  y2: number
+  color: number
+  /** A stash's line, drawn broken: it hangs off the history, it is not in it. */
+  dashed: boolean
+}
 export interface RefLabel {
   kind: string
   name: string
@@ -212,6 +220,8 @@ export interface GraphRow {
   labels: RefLabel[]
   /** On a local branch but not yet on its upstream. */
   unpushed: boolean
+  /** Which stash this row is, when it is one rather than a commit. */
+  stash: number | null
 }
 
 export interface FileChange {
@@ -988,6 +998,12 @@ export function useGit() {
 
   async function select(oid: string) {
     store.selected = oid
+    // A stash is a commit, and the graph draws it as a row of its own, so
+    // choosing one has to open the stash rather than the commit view of it.
+    // Decided here rather than at each call site: every way of selecting —
+    // the graph, the sidebar, revealing one — goes through this.
+    store.stashView = store.stashes.some((one) => one.oid === oid) ? oid : null
+    if (store.stashView) store.viewer = null
     if (oid === WIP) {
       store.detail = null
       return
@@ -1056,14 +1072,12 @@ export function useGit() {
 
   /**
    * Opens a stash: its diff in the detail panel, and the stash itself in the
-   * content view, the way a commit gets both.
+   * content view, the way a commit gets both. `select` recognises it as a
+   * stash and does the rest.
    */
   async function selectStash(index: number) {
     const oid = await guard('Read stash', () => invoke<string>('stash_oid', { index }))
-    if (!oid) return
-    store.stashView = oid
-    store.viewer = null
-    await select(oid)
+    if (oid) await select(oid)
   }
 
   /** One commit's files and message, for a pane that owns its own reading. */
