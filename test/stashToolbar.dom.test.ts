@@ -75,7 +75,11 @@ describe('the toolbar while a stash is picked', () => {
   it('offers the stash instead of the repository', () => {
     const wrapper = show()
     expect(labels(wrapper)).toEqual(['Apply', 'Pop', 'Branch from it', 'Drop'])
-    expect(wrapper.find('.stash-actions .what').text()).toContain('the half-finished idea')
+  })
+
+  it('does not name the stash back at you — you just picked it', () => {
+    const wrapper = show()
+    expect(wrapper.find('.stash-actions').text()).not.toContain('the half-finished idea')
   })
 
   it('goes back to fetch and push the moment something else is picked', async () => {

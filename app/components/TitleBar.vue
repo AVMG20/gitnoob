@@ -266,13 +266,6 @@ async function reconcile(rebase: boolean) {
          picked the bar is about the stash. Fetch, pull and push keep their
          keys — this component is still mounted, only its buttons change. -->
     <div v-if="stash" class="actions stash-actions">
-      <span class="what">
-        <Archive :size="13" />
-        <span class="truncate">{{ stash.message }}</span>
-      </span>
-
-      <span class="sep" />
-
       <button
         class="btn"
         :disabled="store.busy"
@@ -777,26 +770,8 @@ async function reconcile(rebase: boolean) {
 
 /* --- the bar while a stash is picked */
 
-/* Tinted as a whole, so it is plain at a glance that the bar is about
-   something other than the repository. */
-.stash-actions {
-  padding: 2px 8px;
-  border-radius: 999px;
-  background: var(--warning-bg);
-  border: 1px solid var(--warning-line);
-}
-
-.stash-actions .what {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  max-width: 240px;
-  min-width: 0;
-  padding-left: 4px;
-  font-size: 12px;
-  color: var(--amber-soft);
-}
-
+/* The colour is the whole of it. Which stash was picked is not said here: you
+   have just clicked the row, and the row is still marked. */
 .stash-actions .btn {
   color: var(--amber-soft);
 }
