@@ -2,6 +2,7 @@
 import { computed, nextTick, ref, watch } from 'vue'
 import {
   ArrowRight,
+  Archive,
   Check,
   ChevronDown,
   Copy,
@@ -35,6 +36,51 @@ const openFile = computed(() =>
 )
 
 const detail = computed(() => store.detail)
+
+/**
+ * The stash this commit is, when it is one.
+ *
+ * A stash is a commit and the graph draws it as a row like any other, so it
+ * arrives here like any other. What it needs beyond a commit is the four
+ * things you can do with it, which is the strip below — rather than a pane of
+ * its own that would hide the very list it was picked from.
+ */
+const stash = computed(
+  () => store.stashes.find((one) => one.oid === store.detail?.oid) ?? null
+)
+
+const branching = ref(false)
+const branchName = ref('')
+
+// A stash that is popped or dropped leaves the list; so does the strip.
+watch(stash, () => {
+  branching.value = false
+  branchName.value = ''
+})
+
+async function stashAction(what: 'apply' | 'pop' | 'drop') {
+  const one = stash.value
+  if (!one) return
+  const said =
+    what === 'apply'
+      ? await git.stashApply(one.index)
+      : what === 'pop'
+        ? await git.stashPop(one.index)
+        : await git.stashDrop(one.index)
+  if (said !== null) git.note(said)
+}
+
+async function stashToBranch() {
+  const one = stash.value
+  const name = branchName.value.trim()
+  if (!one || !name) return
+  const said = await git.stashBranch(one.index, name)
+  if (said !== null) {
+    git.note(said)
+    branching.value = false
+    branchName.value = ''
+  }
+}
 
 // --- the signature
 
@@ -335,6 +381,69 @@ function fileMenu(event: MouseEvent, path: string) {
           <h3>{{ detail.summary }}</h3>
           <pre v-if="detail.body" class="body">{{ detail.body }}</pre>
         </template>
+
+        <!-- What a stash can have done to it, where a commit's own actions
+             are. The list it was picked from stays on screen behind this. -->
+        <div v-if="stash" class="stash-strip">
+          <template v-if="branching">
+            <input
+              v-model="branchName"
+              type="text"
+              placeholder="Name for the branch"
+              spellcheck="false"
+              autofocus
+              @keyup.enter="stashToBranch"
+              @keyup.esc="branching = false"
+            />
+            <button
+              class="btn tiny primary"
+              :disabled="store.busy || !branchName.trim()"
+              @click="stashToBranch"
+            >
+              Create
+            </button>
+            <button class="btn tiny" @click="branching = false">Cancel</button>
+          </template>
+          <template v-else>
+            <Archive :size="12" class="faint" />
+            <span class="faint">
+              A stash{{ stash.branch ? `, made on ${stash.branch}` : '' }}
+            </span>
+            <span class="grow" />
+            <button
+              class="btn tiny"
+              :disabled="store.busy"
+              title="Put these changes back and keep the stash"
+              @click="stashAction('apply')"
+            >
+              Apply
+            </button>
+            <button
+              class="btn tiny primary"
+              :disabled="store.busy"
+              title="Put these changes back and take the stash off the list"
+              @click="stashAction('pop')"
+            >
+              Pop
+            </button>
+            <button
+              class="btn tiny"
+              :disabled="store.busy"
+              title="Start a branch from it, for a stash that will not go on here"
+              @click="branching = true"
+            >
+              Branch
+            </button>
+            <button
+              class="btn tiny bad"
+              :disabled="store.busy"
+              title="Throw the stash away"
+              @click="stashAction('drop')"
+            >
+              Drop
+            </button>
+          </template>
+        </div>
 
         <div class="who">
           <Avatar :name="detail.author" :email="detail.email" :size="28" />
@@ -1002,5 +1111,55 @@ h3 {
   white-space: pre-wrap;
   word-break: break-word;
   color: var(--text-faint);
+}
+
+/* --- a stash, which arrives here as the commit it is */
+
+.stash-strip {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin: 10px 0 0;
+  padding: 6px 9px;
+  border-radius: var(--radius-sm);
+  background: var(--warning-bg);
+  border: 1px solid var(--warning-line);
+  font-size: 11px;
+}
+
+.stash-strip .grow {
+  margin-left: auto;
+}
+
+.stash-strip input {
+  flex: 1;
+  min-width: 0;
+  padding: 2px 6px;
+  font-size: 11px;
+}
+
+.tiny {
+  padding: 2px 8px;
+  border-radius: 4px;
+  font-size: 11px;
+  color: var(--amber-soft);
+  border: 1px solid var(--warning-line);
+}
+
+.tiny:hover:not(:disabled) {
+  background: var(--bg-hover);
+  color: var(--text);
+}
+
+.tiny.primary {
+  background: var(--amber);
+  color: var(--warning-bg);
+  font-weight: 600;
+  border-color: transparent;
+}
+
+.tiny.bad {
+  color: var(--red-soft);
+  border-color: var(--danger-line);
 }
 </style>

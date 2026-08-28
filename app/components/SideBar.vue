@@ -1848,7 +1848,7 @@ async function removeSubmodule(one: Submodule) {
           v-for="stash in stashes"
           :key="stash.index"
           class="row stash"
-          :class="{ on: store.stashView === stash.oid, ticked: pickedStashes.has(stash.oid) }"
+          :class="{ on: store.selected === stash.oid, ticked: pickedStashes.has(stash.oid) }"
           :title="`${stash.files} ${stash.files === 1 ? 'file' : 'files'} · ${stash.branch ?? ''}`"
           draggable="true"
           @click="onStashClick($event, stash)"

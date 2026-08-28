@@ -551,14 +551,6 @@ const fields = reactive({
   /** Whether this repository uses LFS, and whether the tool for it is here. */
   lfs: null as LfsStatus | null,
   /**
-   * The stash being read in the content view, by commit id.
-   *
-   * By id rather than by position: applying or dropping one renumbers every
-   * entry below it, and a pane holding a number would quietly start showing
-   * somebody else's stash.
-   */
-  stashView: null as string | null,
-  /**
    * The submodules stepped into to reach what is on screen, outermost first.
    *
    * Empty for an ordinary repository. Each entry is where to go back to and
@@ -780,7 +772,6 @@ function forget() {
   store.revealing = null
   store.viewer = null
   store.inside = []
-  store.stashView = null
   store.query = ''
 }
 
@@ -811,7 +802,6 @@ export function useGit() {
     store.divergedCheckout = null
     store.viewer = null
     store.resolving = null
-    store.stashView = null
     store.query = ''
     // Opening a project is leaving whatever submodule was being looked at.
     // Stepping into one passes `record` false and keeps the trail, which the
@@ -998,12 +988,6 @@ export function useGit() {
 
   async function select(oid: string) {
     store.selected = oid
-    // A stash is a commit, and the graph draws it as a row of its own, so
-    // choosing one has to open the stash rather than the commit view of it.
-    // Decided here rather than at each call site: every way of selecting —
-    // the graph, the sidebar, revealing one — goes through this.
-    store.stashView = store.stashes.some((one) => one.oid === oid) ? oid : null
-    if (store.stashView) store.viewer = null
     if (oid === WIP) {
       store.detail = null
       return
@@ -1071,9 +1055,8 @@ export function useGit() {
   }
 
   /**
-   * Opens a stash: its diff in the detail panel, and the stash itself in the
-   * content view, the way a commit gets both. `select` recognises it as a
-   * stash and does the rest.
+   * Opens a stash, which is opening the commit it is: the graph draws it as a
+   * row and the panel beside it lists what it holds, exactly as for any other.
    */
   async function selectStash(index: number) {
     const oid = await guard('Read stash', () => invoke<string>('stash_oid', { index }))

@@ -345,10 +345,9 @@ onUnmounted(() => {
         <template v-else>
           <SideBar @open="openProject" @enter="enterSubmodule" />
           <ResizeHandle side="sidebar" />
-          <!-- What stands where the commit list would. Both are worked on with
-               the branches and stashes still in reach beside them. -->
+          <!-- The rebase plan stands where the commit list would, with the
+               branches still in reach beside it. -->
           <RebasePane v-if="rebase.store.open" />
-          <StashPane v-else-if="store.stashView" />
           <GraphList v-else />
         </template>
         <ResizeHandle side="panel" />

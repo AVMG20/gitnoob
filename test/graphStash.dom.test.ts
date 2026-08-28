@@ -49,7 +49,6 @@ beforeEach(() => {
   localStorage.clear()
   git.store.repo = { path: '/repo', name: 'repo', head: 'main', detached: false } as never
   git.store.status = { staged: [], unstaged: [], conflicted: [] } as never
-  git.store.stashView = null
   git.store.stashes = [
     { index: 0, oid: 's1', message: 'the half-finished idea', branch: 'main', time: 1756000100, files: 2 }
   ]
@@ -94,24 +93,25 @@ describe('a stash drawn in the commit list', () => {
     expect(wrapper.html()).toContain('a stash, not a commit')
   })
 
-  it('opens the stash when its row is clicked', async () => {
+  it('selects the stash when its row is clicked, like any other row', async () => {
     const wrapper = show()
-    const rows = wrapper.findAll('.row')
-    await rows[0]!.trigger('click')
+    await wrapper.findAll('.row')[0]!.trigger('click')
     await flushPromises()
-    expect(git.store.stashView).toBe('s1')
+    expect(git.store.selected).toBe('s1')
+    // Its contents are read the way a commit's are, so the list stays put.
+    expect(calls.find((c) => c.cmd === 'commit_detail')?.args).toEqual({ oid: 's1' })
   })
 
-  it('leaves the stash pane when an ordinary commit is clicked', async () => {
+  it('leaves the commit list where it is either way', async () => {
     const wrapper = show()
-    const rows = wrapper.findAll('.row')
-    await rows[0]!.trigger('click')
+    await wrapper.findAll('.row')[0]!.trigger('click')
     await flushPromises()
-    expect(git.store.stashView).toBe('s1')
+    expect(wrapper.findAll('.row').length).toBeGreaterThan(1)
 
-    await rows[1]!.trigger('click')
+    await wrapper.findAll('.row')[1]!.trigger('click')
     await flushPromises()
-    expect(git.store.stashView).toBeNull()
+    expect(git.store.selected).toBe('c1')
+    expect(wrapper.findAll('.row').length).toBeGreaterThan(1)
   })
 
   it('offers stash actions on right-click, not commit ones', async () => {
