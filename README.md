@@ -81,7 +81,7 @@ repository you are looking at, and the window catches up afterwards.
 ## Shortcuts
 
 `⌘⇧F` fetch · `⌘⇧L` pull · `⌘⇧P` push · `⌘Enter` commit · `⌘B` branch ·
-`⌘⇧S` stash · `⌘F` search · `⌘Z` undo · `⌘,` settings
+`⌘⇧S` stash · `⌘F` search · `⌘P` go to a repository · `⌘Z` undo · `⌘,` settings
 
 Full list in Settings → Shortcuts. `Ctrl` on Windows and Linux.
 
