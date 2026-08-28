@@ -131,6 +131,20 @@ describe('the commit message instructions', () => {
     expect(calls.some((call) => call.cmd === 'config_set_global')).toBe(false)
   })
 
+  it('are not lost when the window closes before the box loses focus', async () => {
+    const wrapper = await open()
+    await box(wrapper).setValue('Write it in haiku.')
+    expect(calls.some((call) => call.cmd === 'config_set_global')).toBe(false)
+
+    // Esc closes settings without a blur ever firing on the box.
+    wrapper.unmount()
+    await flushPromises()
+    const saved = calls.find((call) => call.cmd === 'config_set_global')
+    expect((saved!.args.global as { ai: { commit_prompt: string } }).ai.commit_prompt).toBe(
+      'Write it in haiku.'
+    )
+  })
+
   it('offer the default back only once something else is in the box', async () => {
     const wrapper = await open()
     expect(wrapper.find('.link').exists()).toBe(false)

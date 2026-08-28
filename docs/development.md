@@ -154,8 +154,8 @@ policy that blocks the app's own scripts shows as a blank window.
 ## Testing
 
 ```sh
-cargo test --manifest-path src-tauri/Cargo.toml   # 373
-npm test                                          # 398 across 47 files
+cargo test --manifest-path src-tauri/Cargo.toml   # 377
+npm test                                          # 402 across 47 files
 npm run typecheck
 ```
 

@@ -267,7 +267,12 @@ function onKey(event: KeyboardEvent) {
   if (event.key === 'Escape') config.closeSettings()
 }
 
-onUnmounted(() => window.removeEventListener('keydown', onKey))
+onUnmounted(() => {
+  window.removeEventListener('keydown', onKey)
+  // Esc closes the window without the box ever losing focus, and a blur that
+  // never fires is an edit that never lands. Saving here catches it.
+  void saveCommitPrompt()
+})
 
 onMounted(async () => {
   window.addEventListener('keydown', onKey)
