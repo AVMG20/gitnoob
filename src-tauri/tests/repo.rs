@@ -513,8 +513,7 @@ fn discarding_a_move_made_outside_git_puts_the_file_back_where_it_was() {
 #[test]
 fn the_change_inside_a_move_made_outside_git_can_be_read() {
     let sandbox = moved_outside_git("wt-move-diff");
-    let found =
-        diff::working_file_diff(&sandbox.state(), "b/f.txt", diff::Side::Unstaged).unwrap();
+    let found = diff::working_file_diff(&sandbox.state(), "b/f.txt", diff::Side::Unstaged).unwrap();
     let lines: Vec<(char, &str)> = found
         .hunks
         .iter()
@@ -3120,7 +3119,11 @@ fn throwing_the_conflicts_away_leaves_what_the_branch_had() {
 fn throwing_away_a_conflict_the_branch_never_had_removes_the_file() {
     let sandbox = Sandbox::new("delete-clash");
     sandbox.commit("a.txt", "one\n", "Base");
-    sandbox.commit("gone.txt", "the other side keeps this\n", "A file to argue over");
+    sandbox.commit(
+        "gone.txt",
+        "the other side keeps this\n",
+        "A file to argue over",
+    );
     sandbox.git(&["checkout", "-q", "-b", "theirs"]);
     sandbox.commit("gone.txt", "the other side edits it\n", "Their edit");
     sandbox.git(&["checkout", "-q", "main"]);
@@ -3133,7 +3136,10 @@ fn throwing_away_a_conflict_the_branch_never_had_removes_the_file() {
     // Deleted by us: the path is unmerged but HEAD has no copy to restore
     // from, so throwing it away means the file goes.
     let state = sandbox.state();
-    assert_eq!(conflict::list(&state).unwrap(), vec!["gone.txt".to_string()]);
+    assert_eq!(
+        conflict::list(&state).unwrap(),
+        vec!["gone.txt".to_string()]
+    );
     conflict::discard(&state, &["gone.txt".to_string()]).unwrap();
     assert!(conflict::list(&state).unwrap().is_empty());
     assert!(!sandbox.root.join("gone.txt").exists());
@@ -3321,7 +3327,14 @@ fn undoing_an_apply_takes_the_stashs_new_files_with_it() {
     sandbox.commit("a.txt", "top\nmiddle\nbottom\n", "Base");
     sandbox.write("a.txt", "top\nstashed\nbottom\n");
     sandbox.write("fresh.txt", "only in the stash\n");
-    sandbox.git(&["stash", "push", "-q", "--include-untracked", "-m", "work in hand"]);
+    sandbox.git(&[
+        "stash",
+        "push",
+        "-q",
+        "--include-untracked",
+        "-m",
+        "work in hand",
+    ]);
     sandbox.commit("a.txt", "top\nsomebody else\nbottom\n", "Moved on");
 
     let state = sandbox.state();
@@ -5214,7 +5227,10 @@ fn squashing_a_run_leaves_one_commit_carrying_the_message_given() {
     .unwrap();
 
     assert!(said.contains("Squashed 2"), "{said}");
-    assert_eq!(subjects(&sandbox), vec!["First", "feat: a parser that works"]);
+    assert_eq!(
+        subjects(&sandbox),
+        vec!["First", "feat: a parser that works"]
+    );
     // The changes both commits made are still there; only the second commit is.
     assert_eq!(
         std::fs::read_to_string(sandbox.root.join("b.txt")).unwrap(),
@@ -5240,7 +5256,10 @@ fn the_message_is_taken_whole_body_and_all() {
     .unwrap();
 
     let body = sandbox.git(&["log", "-1", "--format=%B"]);
-    assert_eq!(body.trim(), "feat: a parser\n\nWhy it had to change, at length.");
+    assert_eq!(
+        body.trim(),
+        "feat: a parser\n\nWhy it had to change, at length."
+    );
 }
 
 #[test]
@@ -5263,7 +5282,11 @@ fn the_commits_above_the_fold_are_replayed_onto_it() {
         vec!["First", "feat: the parser", "Later work", "Later still"]
     );
     // Everything each of them changed is still in the tree.
-    for (file, content) in [("b.txt", "two fixed\n"), ("c.txt", "three\n"), ("d.txt", "four\n")] {
+    for (file, content) in [
+        ("b.txt", "two fixed\n"),
+        ("c.txt", "three\n"),
+        ("d.txt", "four\n"),
+    ] {
         assert_eq!(
             std::fs::read_to_string(sandbox.root.join(file)).unwrap(),
             content,
@@ -5321,7 +5344,12 @@ fn undoing_a_squash_puts_the_commits_back_and_redoing_folds_them_again() {
     let state = sandbox.state();
     let before = sandbox.git(&["rev-parse", "HEAD"]).trim().to_string();
 
-    rebase::squash(&state, &[ids[1].clone(), ids[2].clone()], "feat: the parser").unwrap();
+    rebase::squash(
+        &state,
+        &[ids[1].clone(), ids[2].clone()],
+        "feat: the parser",
+    )
+    .unwrap();
     let folded = sandbox.git(&["rev-parse", "HEAD"]).trim().to_string();
     assert_ne!(folded, before);
 
@@ -5345,7 +5373,12 @@ fn undoing_a_squash_leaves_the_files_alone() {
     let ids = oids(&sandbox);
     let state = sandbox.state();
 
-    rebase::squash(&state, &[ids[1].clone(), ids[2].clone()], "feat: the parser").unwrap();
+    rebase::squash(
+        &state,
+        &[ids[1].clone(), ids[2].clone()],
+        "feat: the parser",
+    )
+    .unwrap();
     sandbox.write("a.txt", "edited after the fold\n");
     journal::undo(&state).unwrap();
 
@@ -5489,17 +5522,15 @@ fn a_merge_between_the_run_and_the_tip_is_refused_rather_than_flattened() {
 
     let picked = [ids[1].clone(), ids[2].clone()];
     let preview = rebase::squash_preview(&sandbox.state(), &picked).unwrap();
-    assert!(preview
-        .refusal
-        .as_deref()
-        .unwrap()
-        .contains("merge commit"));
+    assert!(preview.refusal.as_deref().unwrap().contains("merge commit"));
 
     let refused = rebase::squash(&sandbox.state(), &picked, "feat: nope").unwrap_err();
     assert!(refused.contains("merge commit"), "{refused}");
     // The merge is untouched.
     assert_eq!(
-        sandbox.git(&["rev-list", "--merges", "--count", "HEAD"]).trim(),
+        sandbox
+            .git(&["rev-list", "--merges", "--count", "HEAD"])
+            .trim(),
         "1"
     );
 }
@@ -5549,11 +5580,19 @@ fn a_squash_on_a_detached_head_moves_the_detached_head() {
     assert!(preview.branch.is_none(), "there is no branch to name");
     assert!(preview.refusal.is_none(), "it is still a run of commits");
 
-    rebase::squash(&state, &[ids[1].clone(), ids[2].clone()], "feat: the parser").unwrap();
+    rebase::squash(
+        &state,
+        &[ids[1].clone(), ids[2].clone()],
+        "feat: the parser",
+    )
+    .unwrap();
     assert_eq!(subjects(&sandbox), vec!["First", "feat: the parser"]);
     // main is where it was: the fold moved HEAD, and HEAD is all it moved.
     assert_eq!(
-        sandbox.git(&["log", "--format=%s", "--reverse", "main"]).lines().count(),
+        sandbox
+            .git(&["log", "--format=%s", "--reverse", "main"])
+            .lines()
+            .count(),
         3
     );
     // And it can still be stepped back, without a branch name to check.
@@ -5629,7 +5668,12 @@ fn folding_keeps_the_author_of_the_oldest_commit() {
     sandbox.commit("b.txt", "two fixed\n", "Mine");
     let ids = oids(&sandbox);
 
-    rebase::squash(&sandbox.state(), &[ids[1].clone(), ids[2].clone()], "feat: both").unwrap();
+    rebase::squash(
+        &sandbox.state(),
+        &[ids[1].clone(), ids[2].clone()],
+        "feat: both",
+    )
+    .unwrap();
 
     // git's own fixup rule: the commit that survives is the first one, and it
     // keeps its author.
@@ -5921,6 +5965,3 @@ fn picking_a_stash_that_is_not_there_is_refused_before_anything_happens() {
     assert_eq!(sandbox.git(&["stash", "list"]).lines().count(), 3);
     assert!(!sandbox.root.join("three.txt").exists());
 }
-
-
-

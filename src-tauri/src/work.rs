@@ -738,8 +738,8 @@ pub fn applied_stash(root: &Path) -> Option<String> {
 /// both `apply` and a conflicted `pop` leave alone, is still on the list.
 pub fn undo_stash_apply(state: &AppState) -> Result<String, String> {
     let root = state.path()?;
-    let oid = applied_stash(&root)
-        .ok_or_else(|| "There is no stash apply to undo here".to_string())?;
+    let oid =
+        applied_stash(&root).ok_or_else(|| "There is no stash apply to undo here".to_string())?;
     // The marker is only written for an apply that stopped, which is backed
     // out of whatever state the resolving got to.
     undo_applied(state, &oid, None)

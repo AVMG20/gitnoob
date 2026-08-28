@@ -288,7 +288,8 @@ fn file_changes(diff: &Diff) -> Result<Vec<FileChange>, String> {
 /// A rename delta carries both, and the old one is the one a pathspec for the
 /// new name would never have matched.
 fn concerns(delta: &git2::DiffDelta<'_>, path: &str) -> bool {
-    let named = |file: git2::DiffFile<'_>| file.path().is_some_and(|found| found == Path::new(path));
+    let named =
+        |file: git2::DiffFile<'_>| file.path().is_some_and(|found| found == Path::new(path));
     named(delta.new_file()) || named(delta.old_file())
 }
 

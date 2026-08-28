@@ -418,7 +418,11 @@ fn survey(state: &AppState, oids: &[String]) -> Result<Survey, String> {
                 "Those commits are not next to each other: {between} other {} between them. \
                  Squashing folds a run with nothing in the middle — use the rebase plan to move \
                  them together first.",
-                if between == 1 { "commit sits" } else { "commits sit" }
+                if between == 1 {
+                    "commit sits"
+                } else {
+                    "commits sit"
+                }
             ));
         }
     }
@@ -842,7 +846,11 @@ mod tests {
 
     #[test]
     fn a_squash_folds_the_run_and_picks_what_sits_above_it() {
-        let todo = squash_todo(&ids(&["aaa", "bbb", "ccc", "ddd"]), 3, Path::new("/tmp/msg"));
+        let todo = squash_todo(
+            &ids(&["aaa", "bbb", "ccc", "ddd"]),
+            3,
+            Path::new("/tmp/msg"),
+        );
         assert_eq!(
             todo,
             "pick aaa\n\

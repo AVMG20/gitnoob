@@ -384,7 +384,8 @@ fn side(delta: Option<git2::DiffDelta<'_>>) -> Option<(Option<String>, String)> 
     // Left exactly as git reports it. A backslash is a legal character in a
     // filename on Linux and macOS, and rewriting one into a slash would hand
     // back a path that names a different file — or nothing at all.
-    let text = |file: git2::DiffFile<'_>| file.path().map(|path| path.to_string_lossy().into_owned());
+    let text =
+        |file: git2::DiffFile<'_>| file.path().map(|path| path.to_string_lossy().into_owned());
     let from = text(delta.old_file());
     let to = text(delta.new_file()).or_else(|| from.clone())?;
     Some((from.filter(|old| old != &to), to))

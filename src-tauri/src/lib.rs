@@ -1006,7 +1006,10 @@ async fn conflict_resolve_all(side: String, state: State<'_, AppState>) -> Resul
 
 /// Ends the named conflicts by taking the files back to what the branch has.
 #[tauri::command]
-async fn conflict_discard(paths: Vec<String>, state: State<'_, AppState>) -> Result<String, String> {
+async fn conflict_discard(
+    paths: Vec<String>,
+    state: State<'_, AppState>,
+) -> Result<String, String> {
     conflict::discard(&state, &paths)
 }
 

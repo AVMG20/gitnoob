@@ -279,8 +279,10 @@ fn step(state: &AppState, entry: &mut Entry, direction: Direction) -> Result<Str
                         "That stash is not in the list any more, so there is nothing to put on"
                             .to_string()
                     })?;
-                    let said =
-                        git_cmd::run_checked(&root, &["stash", "apply", &format!("stash@{{{at}}}")]);
+                    let said = git_cmd::run_checked(
+                        &root,
+                        &["stash", "apply", &format!("stash@{{{at}}}")],
+                    );
                     // A redo that stops on a conflict still put the stash on:
                     // treated as a failure the step would go back on the redo
                     // stack, leaving the mess it made with no way back.

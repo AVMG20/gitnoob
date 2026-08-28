@@ -1068,7 +1068,10 @@ mod tests {
             config.global.ai.commit_prompt.as_deref(),
             Some("Write it in haiku.")
         );
-        assert_eq!(crate::ai::commit_prompt(&config.global.ai), "Write it in haiku.");
+        assert_eq!(
+            crate::ai::commit_prompt(&config.global.ai),
+            "Write it in haiku."
+        );
     }
 
     #[test]
