@@ -44,6 +44,9 @@ export type Change = 'added' | 'modified' | 'deleted' | 'renamed'
 
 export type Tally = Record<Change, number>
 
+/** A file git could not merge, which is not one of the four changes. */
+export const CONFLICTED = 'conflicted'
+
 /**
  * Which of the four a git status letter belongs to.
  *
@@ -79,6 +82,8 @@ export interface Row {
   count?: number
   /** What happened inside, for a directory row: how many of each kind. */
   tally?: Tally
+  /** How many files below it git could not merge, for a directory row. */
+  conflicts?: number
   collapsed?: boolean
 }
 
@@ -135,13 +140,21 @@ export function buildRows(files: FileEntry[], mode: 'tree' | 'path', collapsed: 
   /** What happened anywhere below a folder, so a folded one still says so. */
   const tally = (node: Node): Tally => {
     const counts: Tally = { added: 0, modified: 0, deleted: 0, renamed: 0 }
-    for (const entry of node.files) counts[change(entry.kind)]++
+    // A conflict is not an edit yet — it is counted on its own, next door.
+    for (const entry of node.files) {
+      if (entry.kind !== CONFLICTED) counts[change(entry.kind)]++
+    }
     for (const dir of node.dirs.values()) {
       const inside = tally(dir)
       for (const key of Object.keys(counts) as Change[]) counts[key] += inside[key]
     }
     return counts
   }
+
+  /** Conflicts anywhere below a folder, so a folded one still says so. */
+  const conflicts = (node: Node): number =>
+    node.files.filter((entry) => entry.kind === CONFLICTED).length +
+    [...node.dirs.values()].reduce((sum, dir) => sum + conflicts(dir), 0)
 
   const rows: Row[] = []
 
@@ -166,6 +179,7 @@ export function buildRows(files: FileEntry[], mode: 'tree' | 'path', collapsed: 
         path: joined.path,
         count: total(joined),
         tally: tally(joined),
+        conflicts: conflicts(joined),
         collapsed: isCollapsed
       })
       if (!isCollapsed) walk(joined, depth + 1)

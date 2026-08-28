@@ -6,6 +6,7 @@ import WorkingChanges from '~/components/WorkingChanges.vue'
 import ContextMenu from '~/components/ContextMenu.vue'
 import FileList from '~/components/FileList.vue'
 import AppModal from '~/components/AppModal.vue'
+import DiscardConflictsDialog from '~/components/DiscardConflictsDialog.vue'
 import { useGit } from '~/composables/useGit'
 
 vi.mock('@tauri-apps/api/core', () => ({ invoke: vi.fn() }))
@@ -41,10 +42,14 @@ beforeEach(() => {
     ],
     conflicted: []
   }
+  // Nothing part-way through, unless a test says so.
+  git.store.progress = null
 })
 
 async function open() {
-  const wrapper = mount(Host, { global: { components: { FileList, AppModal } } })
+  const wrapper = mount(Host, {
+    global: { components: { FileList, AppModal, DiscardConflictsDialog } }
+  })
   await flushPromises()
   return wrapper
 }
@@ -90,5 +95,139 @@ describe('the working tree panel', () => {
     await flushPromises()
     // Straight through: the content is still in the index or in HEAD.
     expect(calls.find((call) => call.cmd === 'discard')?.args.paths).toEqual(['app/app.vue'])
+  })
+
+  it('lists a conflicted file among the unstaged changes, marked', async () => {
+    git.store.status = {
+      staged: [],
+      unstaged: [{ path: 'app/app.vue', kind: 'modified' }],
+      conflicted: ['app/store.ts']
+    }
+    const wrapper = await open()
+
+    // In the list where the file lives, not in a strip of its own.
+    const row = wrapper.findAll('.row.file').find((one) => one.text().includes('store.ts'))
+    expect(row).toBeTruthy()
+    expect(row!.find('.name.clash').exists()).toBe(true)
+    // Counted with the rest, and said again on its own.
+    expect(wrapper.find('.section-title').text()).toContain('2')
+    expect(wrapper.find('.clashes').text()).toContain('1')
+  })
+
+  it('opens the resolver rather than the diff when one is clicked', async () => {
+    git.store.status = { staged: [], unstaged: [], conflicted: ['app/store.ts'] }
+    const wrapper = await open()
+
+    await wrapper.findAll('.row.file')[0]!.trigger('click')
+    await flushPromises()
+    expect(git.store.resolving).toBe('app/store.ts')
+    expect(git.store.viewer).toBeFalsy()
+  })
+
+  it('offers to throw a conflict away, and asks before it does', async () => {
+    git.store.status = { staged: [], unstaged: [], conflicted: ['app/store.ts'] }
+    const wrapper = await open()
+
+    const items = await menuFor(wrapper, 'app/store.ts')
+    const labels = items.map((one) => one.text())
+    expect(labels.some((one) => one.includes('Throw the conflict away'))).toBe(true)
+    // Neither of these means anything for a file with both sides in the index.
+    expect(labels.some((one) => one.includes('Stage'))).toBe(false)
+    expect(labels.some((one) => one.includes('Discard changes'))).toBe(false)
+
+    await items.find((one) => one.text().includes('Throw the conflict away'))!.trigger('click')
+    await flushPromises()
+    expect(calls.some((call) => call.cmd === 'conflict_discard')).toBe(false)
+    expect(wrapper.text()).toContain('no undo')
+
+    await wrapper
+      .findAll('button')
+      .find((one) => one.text().includes('Throw it away'))!
+      .trigger('click')
+    await flushPromises()
+    expect(calls.find((call) => call.cmd === 'conflict_discard')?.args.paths).toEqual([
+      'app/store.ts'
+    ])
+  })
+
+  it('does not sweep conflicts into the index with "Stage all"', async () => {
+    git.store.status = {
+      staged: [],
+      unstaged: [{ path: 'app/app.vue', kind: 'modified' }],
+      conflicted: ['app/store.ts']
+    }
+    const wrapper = await open()
+
+    await wrapper
+      .findAll('button')
+      .find((one) => one.text() === 'Stage all')!
+      .trigger('click')
+    await flushPromises()
+
+    // `git add --all` would stage the conflicted file with its markers in it
+    // and call the conflict settled. Only the changed file goes on.
+    expect(calls.some((call) => call.cmd === 'stage_all')).toBe(false)
+    expect(calls.find((call) => call.cmd === 'stage')?.args.paths).toEqual(['app/app.vue'])
+  })
+
+  it('does not offer to discard a folder from the staged side', async () => {
+    git.store.status = {
+      staged: [{ path: 'app/pages/miner/lootbox.vue', kind: 'modified' }],
+      unstaged: [{ path: 'app/pages/shop/cart.vue', kind: 'modified' }],
+      conflicted: []
+    }
+    const wrapper = await open()
+
+    const folders = wrapper.findAll('.row.dir')
+    const staged = folders[folders.length - 1]!
+    await staged.trigger('contextmenu')
+    await flushPromises()
+    const labels = wrapper.findAll('.menu .item').map((one) => one.text())
+    expect(labels.some((one) => one.includes('Unstage folder'))).toBe(true)
+    expect(labels.some((one) => one.includes('Discard changes in this folder'))).toBe(false)
+  })
+
+  it('still offers it on the unstaged side, where it means one thing', async () => {
+    git.store.status = {
+      staged: [],
+      unstaged: [{ path: 'app/pages/shop/cart.vue', kind: 'modified' }],
+      conflicted: []
+    }
+    const wrapper = await open()
+
+    await wrapper.findAll('.row.dir')[0]!.trigger('contextmenu')
+    await flushPromises()
+    const discard = wrapper
+      .findAll('.menu .item')
+      .find((one) => one.text().includes('Discard changes in this folder'))
+    expect(discard).toBeTruthy()
+
+    await discard!.trigger('click')
+    await flushPromises()
+    expect(calls.find((call) => call.cmd === 'discard')?.args.paths).toEqual([
+      'app/pages/shop/cart.vue'
+    ])
+  })
+
+  it('does not offer to throw a conflict away while a rebase is running', async () => {
+    git.store.status = { staged: [], unstaged: [], conflicted: ['app/store.ts'] }
+    git.store.progress = {
+      merging: false,
+      rebasing: true,
+      cherry_picking: false,
+      reverting: false,
+      restoring: false,
+      applied_stash: null,
+      prepared: null
+    }
+    const wrapper = await open()
+
+    const items = await menuFor(wrapper, 'app/store.ts')
+    const labels = items.map((one) => one.text())
+    // Mid-rebase the committed side is the branch being rebased onto, so
+    // "keeps what the branch had" would be the wrong way round. Abort is the
+    // way out, and it lives in the bar.
+    expect(labels.some((one) => one.includes('Resolve'))).toBe(true)
+    expect(labels.some((one) => one.includes('Throw the conflict away'))).toBe(false)
   })
 })

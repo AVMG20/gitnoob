@@ -479,6 +479,57 @@ pub fn resolve_as_is(state: &AppState, path: &str) -> Result<String, String> {
     Ok(format!("Resolved {path} as it stands"))
 }
 
+/// Ends a conflict by throwing both sides away and taking the file back to
+/// what the branch already had.
+///
+/// The way out when the answer is "I did not want any of this": a stash that
+/// would not go back on, a merge nobody meant to start. The committed copy is
+/// what survives, so nothing that was already on the branch is at risk — but
+/// whatever the other side was bringing in is gone, which is the point.
+///
+/// A path the branch has never had cannot be restored from it; there the only
+/// thing "throw it away" can mean is removing it.
+pub fn discard(state: &AppState, paths: &[String]) -> Result<String, String> {
+    if paths.is_empty() {
+        return Err("Nothing to throw away".to_string());
+    }
+    let root = state.path()?;
+    for path in paths {
+        // A pathspec after `--` still wildmatches, so a file called `a*.txt`
+        // would take others with it. The literal form names the one file.
+        let spec = format!(":(literal){path}");
+        if in_head(&root, path) {
+            git_cmd::run_checked(
+                &root,
+                &[
+                    "restore",
+                    "--source=HEAD",
+                    "--staged",
+                    "--worktree",
+                    "--",
+                    &spec,
+                ],
+            )?;
+        } else {
+            // Unmerged and not in HEAD: an add/add clash, or a file the other
+            // side was creating. `rm -f` clears the index entry and the copy
+            // on disk together, which `restore` cannot do for a path with no
+            // committed version to come from.
+            git_cmd::run_checked(&root, &["rm", "-f", "--", &spec])?;
+        }
+    }
+    Ok(format!(
+        "Threw away {} conflicted {}",
+        paths.len(),
+        if paths.len() == 1 { "file" } else { "files" }
+    ))
+}
+
+/// Whether the commit that is checked out has this path in it.
+fn in_head(root: &std::path::Path, path: &str) -> bool {
+    git_cmd::run_checked(root, &["cat-file", "-e", &format!("HEAD:{path}")]).is_ok()
+}
+
 /// Extracts the branch name a conflict marker carries, e.g. `<<<<<<< HEAD`.
 fn label(line: &str, marker: &str) -> String {
     line.trim_start_matches(marker).trim().to_string()

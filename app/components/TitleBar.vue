@@ -19,11 +19,12 @@ import {
   Undo2,
   X
 } from 'lucide-vue-next'
-import { useGit, type CommitSummary } from '~/composables/useGit'
+import { isRunning, useGit, type CommitSummary } from '~/composables/useGit'
 import { useConfig } from '~/composables/useConfig'
 import { useShortcuts } from '~/composables/useShortcuts'
 import { useUpdates } from '~/composables/useUpdates'
 import { useRebase } from '~/composables/useRebase'
+import { usePanes } from '~/composables/usePanes'
 
 const emit = defineEmits<{ leave: [depth: number] }>()
 
@@ -35,6 +36,17 @@ const rootName = computed(() => store.inside[0]?.fromName ?? '')
 const config = useConfig()
 const updates = useUpdates()
 const rebase = useRebase()
+const { layout } = usePanes()
+
+/**
+ * How far the strips reach across the window.
+ *
+ * They hang under the toolbar over whatever is below, and the right panel's
+ * own header — what is staged, what is not — was being covered by them. The
+ * strips stop at the panel's edge instead: they are about the repository and
+ * the history, which is what they now sit over.
+ */
+const bannerRight = computed(() => `${layout.panel + 5}px`)
 
 /**
  * A release on offer, or on its way in. The button stays through the download
@@ -62,6 +74,9 @@ const naming = ref(false)
 
 /** The stash waiting to be confirmed for dropping; null when none is. */
 const dropping = ref<number | null>(null)
+
+/** Set while "throw the conflicts away" is being confirmed. */
+const clearingConflicts = ref(false)
 
 async function stashAction(what: 'apply' | 'pop') {
   const one = stash.value
@@ -98,6 +113,9 @@ const lastBranch = computed(() => {
   return (usual ?? locals[0])?.name ?? null
 })
 const conflicts = computed(() => store.status?.conflicted.length ?? 0)
+
+/** See `isRunning`: a merge or a rebase is aborted, not thrown away. */
+const running = computed(() => isRunning(store.progress))
 const nextUndo = computed(() => store.history.undo[0] ?? null)
 const nextRedo = computed(() => store.history.redo[0] ?? null)
 
@@ -367,7 +385,7 @@ async function reconcile(rebase: boolean) {
 
     <!-- Strips below the toolbar, stacked so a conflict and a refused push can
          both be shown. -->
-    <div class="banners">
+    <div class="banners" :style="{ right: bannerRight }">
     <!-- A rejected push turns the strip below the toolbar into the next step,
          rather than putting a dialog in the way. Force push gets its own
          second press: nothing rewrites a remote on one click. -->
@@ -500,11 +518,28 @@ async function reconcile(rebase: boolean) {
         {{ conflicts }} conflicted {{ conflicts === 1 ? 'file' : 'files' }}: your own changes did
         not fit on this branch. They are still in the stash.
       </span>
+      <span v-else-if="store.progress?.applied_stash">
+        {{ conflicts }} conflicted {{ conflicts === 1 ? 'file' : 'files' }}: the stash would not go
+        on as it is. It is still on the list.
+      </span>
       <span v-else>
         {{ conflicts }} conflicted {{ conflicts === 1 ? 'file' : 'files' }} to resolve
       </span>
       <button class="btn tiny" @click="store.resolving = store.status?.conflicted[0] ?? ''">
         Resolve
+      </button>
+      <!-- The way out when the answer is "none of this": the files go back to
+           what the branch had. Only where there is nothing to abort — a merge
+           or a rebase has its own way out, below, and aborting it puts the
+           whole thing back rather than just the files. -->
+      <button
+        v-if="!running"
+        class="btn tiny ghost"
+        :disabled="store.busy"
+        title="Take the files back to what the branch already had"
+        @click="clearingConflicts = true"
+      >
+        Throw them away
       </button>
       <!-- The way out is whatever git is actually part-way through. Offering
            "abort merge" for a stash that would not go back on is how you get
@@ -539,6 +574,13 @@ async function reconcile(rebase: boolean) {
     <HistoryMenu v-if="showHistory" @close="showHistory = false" />
     <BranchDialog v-if="showBranch" @close="showBranch = false" />
     <DropStashDialog v-if="dropping !== null" :index="dropping" @close="dropping = null" />
+
+    <DiscardConflictsDialog
+      v-if="clearingConflicts"
+      :paths="store.status?.conflicted ?? []"
+      @close="clearingConflicts = false"
+    />
+
     <PromptDialog
       v-if="naming"
       title="Branch from stash"
@@ -706,12 +748,20 @@ async function reconcile(rebase: boolean) {
   color: var(--accent);
 }
 
+/* Under the toolbar, over the graph — but never over the right panel, whose
+   own head says what is staged. The right edge is set from the panel's width. */
 .banners {
   position: absolute;
   left: 0;
   right: 0;
   top: 100%;
   z-index: 6;
+}
+
+/* The strips are stacked, and the lowest one's edge is what the eye follows
+   across to the panel. Rounding the corner keeps it from reading as a cut. */
+.banners > .banner:last-child {
+  border-bottom-right-radius: 4px;
 }
 
 .banner {
@@ -766,4 +816,5 @@ async function reconcile(rebase: boolean) {
   color: #fff;
   font-weight: 600;
 }
+
 </style>

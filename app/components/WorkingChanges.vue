@@ -15,11 +15,11 @@ import {
   TriangleAlert,
   Undo2
 } from 'lucide-vue-next'
-import { copyText, useGit } from '~/composables/useGit'
+import { copyText, isRunning, useGit } from '~/composables/useGit'
 import { useContextMenu } from '~/composables/useContextMenu'
 import { useDragDrop } from '~/composables/useDragDrop'
 import { useAi } from '~/composables/useAi'
-import { useFileView } from '~/composables/useFileView'
+import { CONFLICTED, useFileView } from '~/composables/useFileView'
 import { useConfig } from '~/composables/useConfig'
 
 const git = useGit()
@@ -75,6 +75,19 @@ function composed() {
 const staged = computed(() => store.status?.staged ?? [])
 const unstaged = computed(() => store.status?.unstaged ?? [])
 const conflicted = computed(() => store.status?.conflicted ?? [])
+
+/**
+ * What the unstaged list shows: the changes, and the conflicts among them.
+ *
+ * A conflicted file is a change to the working tree like any other — it is
+ * only one git will not let you stage yet. Kept in a list of its own it sat
+ * above the panel in a strip with no heading, in a tree the rest of the panel
+ * was not using. Here it is a row where the file actually lives, marked.
+ */
+const unstagedRows = computed(() => [
+  ...conflicted.value.map((path) => ({ path, kind: CONFLICTED })),
+  ...unstaged.value.filter((entry) => !conflicted.value.includes(entry.path))
+])
 const canCommit = computed(
   () => (staged.value.length > 0 || amend.value) && subject.value.length > 0 && !conflicted.value.length
 )
@@ -98,16 +111,7 @@ async function toggleAmend(on: boolean) {
  * The commit box is pinned to the bottom and the two file lists share what is
  * left equally. The diff only claims space once a file is actually open.
  */
-const rows = computed(() => {
-  // Only name rows for children that are actually rendered. Emitting `0px`
-  // placeholders for the hidden conflict banners handed those rows to the two
-  // file lists instead, which collapsed them and pushed the commit box to the
-  // top of the panel.
-  const parts: string[] = []
-  if (conflicted.value.length) parts.push('auto', 'auto')
-  parts.push('minmax(46px, 1fr)', 'minmax(46px, 1fr)', 'auto')
-  return parts.join(' ')
-})
+const rows = 'minmax(46px, 1fr) minmax(46px, 1fr) auto'
 
 /**
  * Fills the box with the message git already wrote, while it is still empty.
@@ -126,11 +130,25 @@ watch(
   { immediate: true }
 )
 
+/**
+ * Whether throwing a conflict away is on offer at all.
+ *
+ * See `isRunning`. Mid-rebase "what the branch had" is the wrong side of the
+ * argument, and a merge is undone by aborting it rather than file by file.
+ */
+const canThrowAway = computed(() => !isRunning(store.progress))
+
 /** Committing straight to a shared branch is worth a word of warning. */
 const onProtected = computed(() => ['main', 'master', 'develop'].includes(store.repo?.head ?? ''))
 
 /** Opens the file across the graph area, the way GitKraken does. */
 function show(path: string, side: 'staged' | 'unstaged') {
+  // A conflicted file has no one version to show side by side: what it needs
+  // is the resolver, which is what a click on it opens.
+  if (side === 'unstaged' && conflicted.value.includes(path)) {
+    store.resolving = path
+    return
+  }
   store.viewer =
     store.viewer?.path === path && store.viewer?.side === side ? null : { path, side }
 }
@@ -171,6 +189,13 @@ async function generate() {
  */
 const deleting = ref<string[] | null>(null)
 
+/**
+ * The conflicted files a menu has offered to throw away, while it is being
+ * asked. What the branch already had comes back; what the other side was
+ * bringing in is gone, and nothing on the list remembers it.
+ */
+const clearing = ref<string[] | null>(null)
+
 async function deleteUntracked() {
   const paths = deleting.value
   deleting.value = null
@@ -185,7 +210,7 @@ async function deleteUntracked() {
  * rows underneath it show, with nothing swept in from the other pane.
  */
 function dirMenu(event: MouseEvent, dir: string, side: 'staged' | 'unstaged') {
-  const inside = (side === 'staged' ? staged.value : unstaged.value).filter((entry) =>
+  const inside = (side === 'staged' ? staged.value : unstagedRows.value).filter((entry) =>
     entry.path.startsWith(`${dir}/`)
   )
   if (!inside.length) return
@@ -193,7 +218,11 @@ function dirMenu(event: MouseEvent, dir: string, side: 'staged' | 'unstaged') {
   const files = `${paths.length} ${paths.length === 1 ? 'file' : 'files'}`
   // Git will not discard a file it has never seen, and deleting one is not
   // something to do as a side effect of "discard changes".
-  const tracked = inside.filter((entry) => entry.kind !== 'untracked').map((entry) => entry.path)
+  const tracked = inside
+    .filter((entry) => entry.kind !== 'untracked' && entry.kind !== CONFLICTED)
+    .map((entry) => entry.path)
+  /** The conflicts under it, which are thrown away rather than discarded. */
+  const clashes = inside.filter((entry) => entry.kind === CONFLICTED).map((entry) => entry.path)
   // The ones git has never seen, which discard cannot touch and delete can.
   const fresh = inside.filter((entry) => entry.kind === 'untracked').map((entry) => entry.path)
 
@@ -202,16 +231,44 @@ function dirMenu(event: MouseEvent, dir: string, side: 'staged' | 'unstaged') {
     [
       side === 'staged'
         ? { label: `Unstage folder — ${files}`, icon: Minus, action: () => git.unstage(paths) }
-        : { label: `Stage folder — ${files}`, icon: Plus, action: () => git.stage(paths) },
-      {
-        label: `Discard changes in this folder — ${tracked.length} ${
-          tracked.length === 1 ? 'file' : 'files'
-        }`,
-        icon: Undo2,
-        danger: true,
-        disabled: !tracked.length,
-        action: () => git.discard(tracked)
-      },
+        : {
+            label: `Stage folder — ${files}`,
+            icon: Plus,
+            disabled: !tracked.length && !fresh.length,
+            action: () => git.stage(paths.filter((path) => !clashes.includes(path)))
+          },
+      // Only on the unstaged side. What "discard" means for a staged file is
+      // two questions at once — the copy on disk, and the one in the index —
+      // and a folder of them is that question several times over. Unstage
+      // first, and it is the one question this answers.
+      ...(side === 'unstaged'
+        ? [
+            {
+              label: `Discard changes in this folder — ${tracked.length} ${
+                tracked.length === 1 ? 'file' : 'files'
+              }`,
+              icon: Undo2,
+              danger: true,
+              disabled: !tracked.length,
+              action: () => git.discard(tracked)
+            }
+          ]
+        : []),
+      ...(clashes.length && canThrowAway.value
+        ? [
+            {
+              label: `Throw away the ${clashes.length} ${
+                clashes.length === 1 ? 'conflict' : 'conflicts'
+              } in it`,
+              hint: 'keeps what the branch had',
+              icon: Undo2,
+              danger: true,
+              action: () => {
+                clearing.value = clashes
+              }
+            }
+          ]
+        : []),
       ...(fresh.length
         ? [
             {
@@ -236,6 +293,36 @@ function dirMenu(event: MouseEvent, dir: string, side: 'staged' | 'unstaged') {
 }
 
 function fileMenu(event: MouseEvent, path: string, side: 'staged' | 'unstaged', kind: string) {
+  // A conflicted file is not stageable and has no changes to "discard" in the
+  // ordinary sense: both sides of it are in the index. It gets its own menu —
+  // decide it, or take the file back to what the branch already had.
+  if (kind === CONFLICTED) {
+    menu.show(
+      event,
+      [
+        { label: 'Resolve…', icon: TriangleAlert, action: () => (store.resolving = path) },
+        ...(canThrowAway.value
+          ? [
+              {
+                label: 'Throw the conflict away',
+                hint: 'keeps what the branch had',
+                icon: Undo2,
+                danger: true,
+                action: () => {
+                  clearing.value = [path]
+                }
+              }
+            ]
+          : []),
+        { separator: true, label: '' },
+        { label: git.revealLabel, icon: FolderOpen, action: () => git.reveal(path) },
+        { label: 'Copy path', icon: Copy, action: () => copyText(path, 'Path') }
+      ],
+      path
+    )
+    return
+  }
+
   menu.show(
     event,
     [
@@ -278,24 +365,6 @@ function fileMenu(event: MouseEvent, path: string, side: 'staged' | 'unstaged', 
 
 <template>
   <div class="working" :style="{ gridTemplateRows: rows }">
-    <div v-if="conflicted.length" class="conflict">
-      <TriangleAlert :size="14" />
-      <span class="grow">
-        {{ conflicted.length }} conflicted {{ conflicted.length === 1 ? 'file' : 'files' }}
-      </span>
-      <button class="btn tiny warn" @click="store.resolving = conflicted[0] ?? null">Resolve</button>
-    </div>
-    <div v-if="conflicted.length" class="conflict-files">
-      <button
-        v-for="path in conflicted"
-        :key="path"
-        class="conflict-file truncate"
-        @click="store.resolving = path"
-      >
-        {{ path }}
-      </button>
-    </div>
-
     <!-- Unstaged -->
     <div
       class="group"
@@ -310,7 +379,17 @@ function fileMenu(event: MouseEvent, path: string, side: 'staged' | 'unstaged', 
       "
     >
       <div class="group-head">
-        <span class="section-title">Unstaged <span class="num">{{ unstaged.length }}</span></span>
+        <span class="section-title">
+          Unstaged <span class="num">{{ unstagedRows.length }}</span>
+          <button
+            v-if="conflicted.length"
+            class="clashes"
+            :title="`${conflicted.length} conflicted — click to resolve the first`"
+            @click="store.resolving = conflicted[0] ?? null"
+          >
+            <TriangleAlert :size="11" />{{ conflicted.length }}
+          </button>
+        </span>
         <span class="head-tools">
           <span class="toggle">
             <button
@@ -330,19 +409,31 @@ function fileMenu(event: MouseEvent, path: string, side: 'staged' | 'unstaged', 
               Tree
             </button>
           </span>
-          <button class="btn tiny" :disabled="store.busy || !unstaged.length" @click="git.stageAll()">
+          <!-- `git add --all` would stage a conflicted file exactly as it
+               stands, markers and all, and call the conflict settled. While
+               any are open only the files git is willing to take go on. -->
+          <button
+            class="btn tiny"
+            :disabled="store.busy || !unstaged.length"
+            @click="
+              conflicted.length ? git.stage(unstaged.map((e) => e.path)) : git.stageAll()
+            "
+          >
             Stage all
           </button>
         </span>
       </div>
       <FileList
-        :files="unstaged"
+        :files="unstagedRows"
         :selected="selected?.side === 'unstaged' ? selected.path : null"
         empty="Nothing changed."
         draggable
         action="Stage file"
         @select="(path) => show(path, 'unstaged')"
-        @act="(entry) => git.stage([entry.path])"
+        @act="
+          (entry) =>
+            entry.kind === CONFLICTED ? (store.resolving = entry.path) : git.stage([entry.path])
+        "
         @menu="(event, entry) => fileMenu(event, entry.path, 'unstaged', entry.kind)"
         @dirmenu="(event, dir) => dirMenu(event, dir, 'unstaged')"
         @dragstart="
@@ -510,6 +601,8 @@ function fileMenu(event: MouseEvent, path: string, side: 'staged' | 'unstaged', 
       </button>
     </template>
   </AppModal>
+
+  <DiscardConflictsDialog v-if="clearing" :paths="clearing" @close="clearing = null" />
 </template>
 
 <style scoped>
@@ -539,38 +632,24 @@ function fileMenu(event: MouseEvent, path: string, side: 'staged' | 'unstaged', 
   overflow: hidden;
 }
 
-.conflict {
-  display: flex;
+/* How many of the rows below are conflicts, next to how many rows there are.
+   Amber rather than red: nothing has been lost, something is undecided. */
+.clashes {
+  display: inline-flex;
   align-items: center;
-  gap: 8px;
-  padding: 6px 12px;
-  font-size: 12px;
+  gap: 3px;
+  margin-left: 6px;
+  padding: 0 5px;
+  border: 1px solid var(--warning-line);
+  border-radius: 999px;
   color: var(--amber-soft);
+  font-size: 10.5px;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+}
+
+.clashes:hover {
   background: var(--warning-bg);
-  border-bottom: 1px solid var(--line-soft);
-}
-
-.grow {
-  flex: 1;
-}
-
-.conflict-files {
-  border-bottom: 1px solid var(--line-soft);
-  max-height: 90px;
-  overflow-y: auto;
-}
-
-.conflict-file {
-  display: block;
-  width: 100%;
-  text-align: left;
-  padding: 3px 12px;
-  font-size: 11.5px;
-  color: var(--red-soft);
-}
-
-.conflict-file:hover {
-  background: var(--bg-hover);
 }
 
 .group {

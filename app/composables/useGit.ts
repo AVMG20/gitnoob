@@ -176,8 +176,13 @@ export interface InProgress {
   rebasing: boolean
   cherry_picking: boolean
   reverting: boolean
-  /** Conflicts with nothing running: what a failed `stash pop` leaves. */
+  /**
+   * A switch put the work back and it did not fit: conflicts, nothing running,
+   * and the auto-stash it made still on the list — so the switch can be undone.
+   */
   restoring: boolean
+  /** The stash a conflicted apply came from, while it can still be undone. */
+  applied_stash: string | null
   /** The message git already wrote for it, e.g. "Merge branch 'x' into 'y'". */
   prepared: string | null
 }
@@ -773,6 +778,21 @@ function forget() {
   store.viewer = null
   store.inside = []
   store.query = ''
+}
+
+/**
+ * Whether git is part-way through something with its own way out.
+ *
+ * A merge, a rebase, a cherry-pick or a revert is aborted as a whole, and
+ * while one is running "throw the conflict away" is both the wrong tool and a
+ * lie: mid-rebase the committed side is the branch being rebased *onto*, so
+ * taking a file back to it keeps somebody else's version, not yours.
+ */
+export function isRunning(progress: InProgress | null | undefined) {
+  return (
+    !!progress &&
+    (progress.merging || progress.rebasing || progress.cherry_picking || progress.reverting)
+  )
 }
 
 export function useGit() {
@@ -1541,6 +1561,12 @@ export function useGit() {
       run<string>('Resolve every file', 'conflict_resolve_all', { side }),
     /** Stages every conflicted file as it stands, markers permitting. */
     conflictStageAll: () => run<string>('Stage every file', 'conflict_stage_all'),
+    /**
+     * Ends conflicts by taking the files back to what the branch already had,
+     * throwing away whatever the other side was bringing in.
+     */
+    conflictDiscard: (paths: string[]) =>
+      run<string>('Throw away the conflicts', 'conflict_discard', { paths }),
     /** Which conflicted files still have git's markers in them. */
     conflictMarked: () => guard('Read conflicts', () => invoke<string[]>('conflict_marked'))
   }

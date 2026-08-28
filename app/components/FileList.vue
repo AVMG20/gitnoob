@@ -9,11 +9,13 @@ import {
   MessageSquare,
   Minus,
   Pencil,
-  Plus
+  Plus,
+  TriangleAlert
 } from 'lucide-vue-next'
 import {
   buildRows,
   change,
+  CONFLICTED,
   useFileView,
   type Change,
   type FileEntry,
@@ -100,8 +102,11 @@ const MARKS: Record<Change, { icon: typeof Pencil; label: string }> = {
   renamed: { icon: ArrowRight, label: 'Renamed' }
 }
 
+/** A conflict is not one of the four: it is what has to be dealt with first. */
+const CLASH = { icon: TriangleAlert, label: 'Conflicted — resolve it' }
+
 function mark(kind: string) {
-  return MARKS[change(kind)]
+  return kind === CONFLICTED ? CLASH : MARKS[change(kind)]
 }
 
 /** A folder's counts, in a fixed order and with the empty ones left out. */
@@ -123,8 +128,13 @@ function counted(tally: Tally) {
         @contextmenu="emit('dirmenu', $event, row.path)"
       >
         <component :is="row.collapsed ? ChevronRight : ChevronDown" :size="12" class="chev" />
-        <Folder :size="12" class="folder" />
-        <span class="name truncate">{{ row.name }}</span>
+        <Folder :size="12" class="folder" :class="{ clash: row.conflicts }" />
+        <span class="name truncate" :class="{ clash: row.conflicts }">{{ row.name }}</span>
+        <!-- Said on the folder as well as on the files, so a folded one still
+             shows there is something below it to deal with. -->
+        <span v-if="row.conflicts" class="tally clash" :title="`${row.conflicts} conflicted`">
+          <TriangleAlert :size="10" :stroke-width="2.25" />{{ row.conflicts }}
+        </span>
         <!-- What is inside, summed, and only while it is folded away: with the
              folder open the files below say it themselves, in more detail. -->
         <template v-if="row.collapsed">
@@ -158,11 +168,13 @@ function counted(tally: Tally) {
           :size="12"
           :stroke-width="2"
           class="mark"
-          :class="change(row.entry?.kind ?? '')"
+          :class="row.entry?.kind === CONFLICTED ? 'clash' : change(row.entry?.kind ?? '')"
         >
           <title>{{ mark(row.entry?.kind ?? '').label }}</title>
         </component>
-        <span class="name truncate">{{ row.name }}</span>
+        <span class="name truncate" :class="{ clash: row.entry?.kind === CONFLICTED }">
+          {{ row.name }}
+        </span>
         <span v-if="row.entry?.additions" class="plus">+{{ row.entry.additions }}</span>
         <span v-if="row.entry?.deletions" class="minus">−{{ row.entry.deletions }}</span>
         <!-- What has been said about the file, so a list of the review's
@@ -182,13 +194,16 @@ function counted(tally: Tally) {
         />
         <!-- The whole file in one click, without going through the menu. It
              appears on hover rather than sitting on every row: a list of forty
-             files with forty buttons on it is a list nobody can read. -->
+             files with forty buttons on it is a list nobody can read. A
+             conflicted file cannot be staged as it stands, so on that row the
+             button offers the only thing that moves it along. -->
         <button
-          v-if="props.action && row.entry"
+          v-if="(props.action || row.entry?.kind === CONFLICTED) && row.entry"
           class="act"
+          :class="{ clash: row.entry.kind === CONFLICTED }"
           @click.stop="row.entry && emit('act', row.entry)"
         >
-          {{ props.action }}
+          {{ row.entry.kind === CONFLICTED ? 'Resolve' : props.action }}
         </button>
       </div>
     </template>
@@ -278,6 +293,24 @@ function counted(tally: Tally) {
 .mark.renamed,
 .tally.renamed svg {
   color: var(--purple);
+}
+
+/* A conflict is amber, not red: red on a file means its lines went. Nothing
+   has gone here — the file is waiting to be decided. The name carries the
+   colour too, which is what separates it from an ordinary edit. */
+.mark.clash,
+.tally.clash svg,
+.folder.clash {
+  color: var(--amber);
+}
+
+.name.clash {
+  color: var(--amber-soft);
+}
+
+.act.clash {
+  border-color: var(--warning-line);
+  color: var(--amber-soft);
 }
 
 /* The same ghost button the panel heads use, so a row's button belongs to this

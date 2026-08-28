@@ -735,9 +735,14 @@ pub struct InProgress {
     pub rebasing: bool,
     pub cherry_picking: bool,
     pub reverting: bool,
-    /// Files are conflicted but git is running nothing, which is what a `stash
-    /// pop` leaves behind. There is no merge to abort in this state.
+    /// A switch put the work back and it did not fit: files are conflicted,
+    /// git is running nothing, and the auto-stash the switch made is still on
+    /// the list. Only then is there a switch to undo — conflicts left by a
+    /// stash applied by hand look identical to git and are not undoable.
     pub restoring: bool,
+    /// The stash a conflicted apply or pop came from, while its mess is still
+    /// in the tree. Set only while the apply can still be taken back off.
+    pub applied_stash: Option<String>,
     /// The message git has already written for what it is part-way through.
     ///
     /// A merge names itself — "Merge branch 'x' into 'y'" — and git keeps that
@@ -789,7 +794,8 @@ pub fn in_progress(state: &AppState) -> Result<InProgress, String> {
         rebasing,
         cherry_picking,
         reverting,
-        restoring: !running && has_unmerged(&root),
+        restoring: !running && has_unmerged(&root) && auto_stash_on_top(&root),
+        applied_stash: (!running).then(|| work::applied_stash(&root)).flatten(),
         prepared: prepared_message(&git_dir),
     })
 }
@@ -811,6 +817,16 @@ fn prepared_message(git_dir: &std::path::Path) -> Option<String> {
         }
     }
     None
+}
+
+/// Whether the top stash is one this app made to carry work across a switch.
+///
+/// `undo_restore` puts that stash back, so without it on top there is nothing
+/// to undo and offering the button only leads to a refusal.
+fn auto_stash_on_top(root: &std::path::Path) -> bool {
+    git_cmd::run_checked(root, &["stash", "list", "-1"])
+        .map(|out| out.contains(work::AUTO_STASH))
+        .unwrap_or(false)
 }
 
 /// True when the index holds unmerged entries, whatever put them there.

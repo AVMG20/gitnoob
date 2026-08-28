@@ -985,6 +985,12 @@ async fn conflict_resolve_all(side: String, state: State<'_, AppState>) -> Resul
     conflict::resolve_all(&state, &side)
 }
 
+/// Ends the named conflicts by taking the files back to what the branch has.
+#[tauri::command]
+async fn conflict_discard(paths: Vec<String>, state: State<'_, AppState>) -> Result<String, String> {
+    conflict::discard(&state, &paths)
+}
+
 /// Stages every conflicted file as it stands, if none of them has markers left.
 #[tauri::command]
 async fn conflict_stage_all(state: State<'_, AppState>) -> Result<String, String> {
@@ -1898,6 +1904,7 @@ pub fn run() {
             conflict_resolve_as_is,
             conflict_resolve_all,
             conflict_stage_all,
+            conflict_discard,
             conflict_marked,
             config_get,
             config_set_global,

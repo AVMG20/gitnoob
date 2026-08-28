@@ -1,4 +1,4 @@
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeSet, HashMap};
 use std::fs;
 use std::path::Path;
 use std::sync::Mutex;
@@ -311,7 +311,103 @@ pub fn stash_pop(state: &AppState, index: usize) -> Result<String, String> {
     // window, shifts what that number means.
     let at = journal::stash_index(state, &oid)
         .ok_or_else(|| "That stash is no longer there".to_string())?;
-    git_cmd::run_checked(&root, &["stash", "pop", &format!("stash@{{{at}}}")])
+    // A pop that conflicts does not drop the entry, so this is as undoable as
+    // an apply — and worth remembering for the same reason.
+    let said = git_cmd::run_checked(&root, &["stash", "pop", &format!("stash@{{{at}}}")]);
+    remember_applied(&root, &oid, said.is_err());
+    // Only a pop that stopped: one that went through took the entry off the
+    // list with it, and putting the files back would leave the work nowhere.
+    if said.is_err() && has_unmerged(&root) {
+        record_applied(state, &oid, true);
+    }
+    said
+}
+
+/// What the files a stash touched look like right now, one line each.
+///
+/// Taken the moment an apply lands, and again when its undo is asked for. An
+/// undo puts every one of those paths back to what the branch has; if any of
+/// them has moved since, that is work done after the apply and putting it back
+/// would throw the work away rather than the stash.
+///
+/// `None` when it cannot be read — a fingerprint nobody can compare is not a
+/// reason to refuse an undo, only a reason not to promise the check.
+fn fingerprint(root: &Path, paths: &BTreeSet<String>) -> Option<String> {
+    let mut lines = Vec::new();
+    for path in paths {
+        let full = root.join(path);
+        let mark = if full.exists() {
+            // A filename, not a pathspec: `hash-object` reads the file itself,
+            // so the literal magic other commands need would be read as part
+            // of the name. `--` is what keeps a leading dash out of trouble.
+            git_cmd::run_checked(root, &["hash-object", "--", path])
+                .ok()?
+                .trim()
+                .to_string()
+        } else {
+            // Gone is a state like any other: the apply may have deleted it.
+            "absent".to_string()
+        };
+        lines.push(format!("{mark} {path}"));
+    }
+    Some(lines.join("\n"))
+}
+
+/// The first path whose content is not what the apply left, if any.
+fn moved_since(root: &Path, paths: &BTreeSet<String>, taken: &str) -> Option<String> {
+    let now = fingerprint(root, paths)?;
+    if now == taken {
+        return None;
+    }
+    let then: HashMap<&str, &str> = taken
+        .lines()
+        .filter_map(|line| line.split_once(' '))
+        .map(|(mark, path)| (path, mark))
+        .collect();
+    now.lines()
+        .filter_map(|line| line.split_once(' '))
+        .find(|(mark, path)| then.get(path) != Some(mark))
+        .map(|(_, path)| path.to_string())
+}
+
+/// Puts an apply on the undo stack, named by the stash it came from.
+///
+/// The top-right undo is where every other step back lives, and a stash that
+/// went on badly is the one people reach for it hardest.
+///
+/// A stash that went on cleanly is remembered with a fingerprint of what it
+/// left: undo it straight away and the files go back, but once they have been
+/// worked on the step refuses rather than taking that work with it. One that
+/// stopped on a conflict carries none — a half-merged file is git's mess, not
+/// anybody's work, and backing out of it has to stay possible however much
+/// resolving has been half-done.
+fn record_applied(state: &AppState, oid: &str, conflicted: bool) {
+    let label = stash_list(state)
+        .ok()
+        .and_then(|listed| {
+            listed
+                .into_iter()
+                .find(|entry| entry.oid == oid)
+                .map(|entry| entry.message)
+        })
+        .unwrap_or_else(|| "a stash".to_string());
+    let taken = (!conflicted)
+        .then(|| {
+            let root = state.path().ok()?;
+            let touched = stash_touched_paths(&root, oid).ok()?;
+            fingerprint(&root, &touched)
+        })
+        .flatten();
+    journal::record(
+        state,
+        "stash-apply",
+        format!("Apply: {label}"),
+        journal::current_branch(state),
+        taken,
+        Some(oid.to_string()),
+        Mode::Apply,
+        true,
+    );
 }
 
 // --- stash -----------------------------------------------------------------
@@ -504,8 +600,166 @@ pub fn stash_apply(state: &AppState, index: usize) -> Result<String, String> {
     // Applying the commit id itself, rather than `stash@{index}` again, means
     // the list shifting under this call — a push or drop elsewhere — cannot
     // land it on an entry other than the one just looked up.
-    git_cmd::run_checked(&root, &["stash", "apply", &oid])?;
+    let said = git_cmd::run_checked(&root, &["stash", "apply", &oid]);
+    remember_applied(&root, &oid, said.is_err());
+    let conflicted = said.is_err() && has_unmerged(&root);
+    // An apply that git refused outright changed nothing, and there is
+    // nothing to step back out of.
+    if said.is_ok() || conflicted {
+        record_applied(state, &oid, conflicted);
+    }
+    said?;
     Ok(format!("Applied {name}"))
+}
+
+/// Where the stash a conflicted apply came from is written down.
+///
+/// In git's own directory rather than in memory: the conflict outlives the
+/// window, and the way back out has to outlive it too.
+fn applied_marker(root: &Path) -> Option<std::path::PathBuf> {
+    crate::remote::git_dir(root)
+        .ok()
+        .map(|dir| dir.join("gitnoob-applied-stash"))
+}
+
+/// Notes which stash left the tree in this state, or clears the note.
+///
+/// Only a run that stopped is worth remembering: one that went on cleanly has
+/// nothing to undo here — the changes are ordinary working-tree changes now,
+/// and discarding them is what the file menu is for.
+fn remember_applied(root: &Path, oid: &str, conflicted: bool) {
+    let Some(marker) = applied_marker(root) else {
+        return;
+    };
+    if conflicted && has_unmerged(root) {
+        let _ = std::fs::write(&marker, format!("{oid}\n"));
+    } else {
+        let _ = std::fs::remove_file(&marker);
+    }
+}
+
+pub(crate) fn has_unmerged(root: &Path) -> bool {
+    git_cmd::run_checked(root, &["ls-files", "--unmerged"])
+        .map(|out| !out.trim().is_empty())
+        .unwrap_or(false)
+}
+
+/// The stash a conflicted apply or pop came from, while its mess is still here.
+///
+/// The note is cleared as soon as nothing is conflicted any more, so a stale
+/// one from an argument that was settled long ago cannot offer to undo work
+/// that has since been done by hand.
+pub fn applied_stash(root: &Path) -> Option<String> {
+    let marker = applied_marker(root)?;
+    let oid = std::fs::read_to_string(&marker).ok()?.trim().to_string();
+    if !has_unmerged(root) {
+        let _ = std::fs::remove_file(&marker);
+        return None;
+    }
+    // The stash itself has to still be there: putting the tree back is only
+    // half of it, and the point of undoing is that the work is still on the
+    // list afterwards.
+    if oid.is_empty() || git_cmd::run_checked(root, &["cat-file", "-e", &oid]).is_err() {
+        return None;
+    }
+    Some(oid)
+}
+
+/// Takes a conflicted stash apply back off, leaving the stash where it was.
+///
+/// A stash that would not go on is a dead end: the files are half from the
+/// branch and half from the stash, and git offers nothing to step back out of
+/// it. This puts every path the stash touched back to what the branch has, so
+/// the tree reads exactly as it did before the apply — and the stash, which
+/// both `apply` and a conflicted `pop` leave alone, is still on the list.
+pub fn undo_stash_apply(state: &AppState) -> Result<String, String> {
+    let root = state.path()?;
+    let oid = applied_stash(&root)
+        .ok_or_else(|| "There is no stash apply to undo here".to_string())?;
+    // The marker is only written for an apply that stopped, which is backed
+    // out of whatever state the resolving got to.
+    undo_applied(state, &oid, None)
+}
+
+/// Takes a named stash back off the tree. See [`undo_stash_apply`].
+///
+/// `taken` is the fingerprint from when the apply landed, for one that landed
+/// cleanly; `None` for one that stopped on a conflict, which is always backed
+/// out of. See [`record_applied`].
+pub fn undo_applied(state: &AppState, oid: &str, taken: Option<&str>) -> Result<String, String> {
+    let root = state.path()?;
+
+    // Only the paths the stash brought in. A reset of the whole tree would be
+    // simpler and would take everything else standing in it — a file edited
+    // beside the apply, work staged before it — with no way to tell any of it
+    // apart afterwards. Git refuses to apply a stash onto a file that is
+    // already dirty, so every path here is one the apply itself wrote.
+    let touched = stash_touched_paths(&root, oid)?;
+    if touched.is_empty() {
+        return Err("That stash touched nothing, so there is nothing to take back off".to_string());
+    }
+
+    // Work done on those files since the apply is work this would throw away,
+    // and unlike the stash there is nowhere it is kept.
+    if let Some(taken) = taken {
+        if let Some(path) = moved_since(&root, &touched, taken) {
+            return Err(format!(
+                "{path} has been worked on since the stash went on, so taking it back off would \
+                 throw that away. Discard it yourself if that is what you meant."
+            ));
+        }
+    }
+
+    let mut put_back = 0usize;
+    for path in &touched {
+        // Literal, so a stashed file whose name reads as a glob — `a*.txt`,
+        // `f[1].js` — takes only itself back off.
+        let spec = format!(":(literal){path}");
+        if in_head(&root, path) {
+            // Index and working tree together: an apply that stopped leaves
+            // both sides of the conflict in the index, and only the committed
+            // copy makes the path whole again.
+            git_cmd::run_checked(
+                &root,
+                &[
+                    "restore",
+                    "--source=HEAD",
+                    "--staged",
+                    "--worktree",
+                    "--",
+                    &spec,
+                ],
+            )?;
+        } else if tracked(&root, path) {
+            // In the index but never committed — the stash was adding it.
+            git_cmd::run_checked(&root, &["rm", "-f", "--quiet", "--", &spec])?;
+        } else if root.join(path).exists() {
+            // Only on disk: something the stash carried as an untracked file.
+            git_cmd::run_checked(&root, &["clean", "-f", "--", &spec])?;
+        } else {
+            continue;
+        }
+        put_back += 1;
+    }
+
+    if let Some(marker) = applied_marker(&root) {
+        let _ = std::fs::remove_file(marker);
+    }
+    Ok(format!(
+        "Put {put_back} {} back — the stash is still on the list",
+        if put_back == 1 { "file" } else { "files" }
+    ))
+}
+
+/// Whether the commit that is checked out has this path in it.
+fn in_head(root: &Path, path: &str) -> bool {
+    git_cmd::run_checked(root, &["cat-file", "-e", &format!("HEAD:{path}")]).is_ok()
+}
+
+/// Whether the index knows this path at all, committed or not.
+fn tracked(root: &Path, path: &str) -> bool {
+    let spec = format!(":(literal){path}");
+    git_cmd::run_checked(root, &["ls-files", "--error-unmatch", "--", &spec]).is_ok()
 }
 
 pub fn stash_drop(state: &AppState, index: usize) -> Result<String, String> {
@@ -589,16 +843,27 @@ pub fn stash_apply_many(
             } else {
                 out.stderr.trim().to_string()
             };
+            // One that stopped is on the undo stack too: the run is over, and
+            // this is the entry whose mess is in the tree.
+            if has_unmerged(&root) {
+                remember_applied(&root, &oid, true);
+                record_applied(state, &oid, true);
+            }
             run.stopped = Some(StashStop { message, reason });
             run.conflicted = unmerged_paths(&root);
             break;
         }
         run.applied.push(message);
+        // Each one steps back on its own, newest first — the same order they
+        // went on, reversed. A dropped stash has nowhere to go back to, so a
+        // pop of several records nothing.
         if drop_after {
             // Re-resolved from the commit id: every drop renumbers the rest.
             if let Some(at) = journal::stash_index(state, &oid) {
                 git_cmd::run_checked(&root, &["stash", "drop", &format!("stash@{{{at}}}")])?;
             }
+        } else {
+            record_applied(state, &oid, false);
         }
     }
 
@@ -699,7 +964,9 @@ pub fn restore_after(state: &AppState, held: Held) -> Result<Option<String>, Str
 /// untracked-files parent an auto-stash always has, since it was pushed with
 /// `--include-untracked`; asking for that parent too is what `--include-untracked`
 /// on `show` itself is for.
-fn stash_touched_paths(root: &Path, selector: &str) -> Result<HashSet<String>, String> {
+/// Sorted, so a fingerprint taken now and one taken later line up, and so the
+/// files go back in the same order every time.
+fn stash_touched_paths(root: &Path, selector: &str) -> Result<BTreeSet<String>, String> {
     let raw = git_cmd::run_checked(
         root,
         &[

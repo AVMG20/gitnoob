@@ -15,6 +15,9 @@ pub enum Mode {
     Hard,
     /// A stash push: undoing pops it back, redoing stashes again.
     Stash,
+    /// A stash applied onto the tree while the entry stayed on the list:
+    /// undoing takes those files back off, redoing puts them on again.
+    Apply,
 }
 
 /// One reversible operation.
@@ -254,6 +257,45 @@ fn step(state: &AppState, entry: &mut Entry, direction: Direction) -> Result<Str
                 Ok(format!("Stashed again: {}", entry.label))
             }
         },
+        Mode::Apply => {
+            let oid = entry
+                .after
+                .as_deref()
+                .ok_or_else(|| "Nothing recorded to put back".to_string())?;
+            match direction {
+                // The tree goes back to what the branch has. The stash is
+                // still on the list — an apply leaves it, and so does a pop
+                // that stopped — so nothing of the work is lost.
+                Direction::Back => {
+                    // `before` holds what the apply left, for one that landed
+                    // cleanly: putting it back is only safe while the files
+                    // still look like that. An apply that stopped carries
+                    // nothing there and is always backed out of.
+                    crate::work::undo_applied(state, oid, entry.before.as_deref())?;
+                    Ok(format!("Undid: {}", entry.label))
+                }
+                Direction::Forward => {
+                    let at = stash_index(state, oid).ok_or_else(|| {
+                        "That stash is not in the list any more, so there is nothing to put on"
+                            .to_string()
+                    })?;
+                    let said =
+                        git_cmd::run_checked(&root, &["stash", "apply", &format!("stash@{{{at}}}")]);
+                    // A redo that stops on a conflict still put the stash on:
+                    // treated as a failure the step would go back on the redo
+                    // stack, leaving the mess it made with no way back.
+                    if said.is_err() && crate::work::has_unmerged(&root) {
+                        entry.before = None;
+                        return Ok(format!(
+                            "{} — it stopped on a conflict. Resolve it, or undo again.",
+                            entry.label
+                        ));
+                    }
+                    said?;
+                    Ok(format!("Redid: {}", entry.label))
+                }
+            }
+        }
         Mode::Soft | Mode::Hard => {
             let oid = target.ok_or_else(|| "Nothing recorded to move back to".to_string())?;
             // Refuse if the branch has moved since, which means something the

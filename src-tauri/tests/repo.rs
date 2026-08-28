@@ -2719,6 +2719,603 @@ fn nothing_in_progress_is_reported_as_nothing() {
     assert!(!idle.merging && !idle.rebasing && !idle.cherry_picking && !idle.reverting);
 }
 
+/// A stash that will not go back on, which is what a hand-made `stash apply`
+/// leaves behind: files conflicted, nothing running, and no auto-stash.
+fn stash_conflict() -> Sandbox {
+    let sandbox = Sandbox::new("stash-clash");
+    sandbox.commit("a.txt", "top\nmiddle\nbottom\n", "Base");
+    sandbox.write("a.txt", "top\nstashed middle\nbottom\n");
+    sandbox.git(&["stash", "push", "-q", "-m", "work in hand"]);
+    sandbox.commit("a.txt", "top\ncommitted middle\nbottom\n", "Moved on");
+
+    // Through the app's own apply rather than raw git: that is what writes
+    // down which stash left the tree in this state.
+    assert!(
+        work::stash_apply(&sandbox.state(), 0).is_err(),
+        "the apply was supposed to conflict"
+    );
+    sandbox
+}
+
+#[test]
+fn conflicts_with_nothing_to_abort_are_not_offered_an_undo() {
+    let sandbox = stash_conflict();
+    let state = sandbox.state();
+    let stuck = remote::in_progress(&state).unwrap();
+
+    // Nothing is running, so there is no abort — and the stash on the list is
+    // the user's own, not one this app made, so there is no switch to undo.
+    assert!(!stuck.merging && !stuck.rebasing && !stuck.cherry_picking && !stuck.reverting);
+    assert!(
+        !stuck.restoring,
+        "only an auto-stash left by a switch can be put back"
+    );
+}
+
+#[test]
+fn throwing_the_conflicts_away_leaves_what_the_branch_had() {
+    let sandbox = stash_conflict();
+    let state = sandbox.state();
+    assert_eq!(conflict::list(&state).unwrap(), vec!["a.txt".to_string()]);
+
+    conflict::discard(&state, &["a.txt".to_string()]).unwrap();
+
+    // The committed side is back, whole, and git is no longer part-way
+    // through anything.
+    assert_eq!(
+        std::fs::read_to_string(sandbox.root.join("a.txt")).unwrap(),
+        "top\ncommitted middle\nbottom\n"
+    );
+    assert!(conflict::list(&state).unwrap().is_empty());
+    let status = refs::status(&state).unwrap();
+    assert!(status.staged.is_empty() && status.unstaged.is_empty());
+}
+
+#[test]
+fn throwing_away_a_conflict_the_branch_never_had_removes_the_file() {
+    let sandbox = Sandbox::new("delete-clash");
+    sandbox.commit("a.txt", "one\n", "Base");
+    sandbox.commit("gone.txt", "the other side keeps this\n", "A file to argue over");
+    sandbox.git(&["checkout", "-q", "-b", "theirs"]);
+    sandbox.commit("gone.txt", "the other side edits it\n", "Their edit");
+    sandbox.git(&["checkout", "-q", "main"]);
+    sandbox.git(&["rm", "-q", "gone.txt"]);
+    sandbox.git(&["commit", "-q", "-m", "We deleted it"]);
+
+    let merged = sandbox.git_may_fail(&["merge", "theirs"]);
+    assert!(!merged, "the merge was supposed to conflict");
+
+    // Deleted by us: the path is unmerged but HEAD has no copy to restore
+    // from, so throwing it away means the file goes.
+    let state = sandbox.state();
+    assert_eq!(conflict::list(&state).unwrap(), vec!["gone.txt".to_string()]);
+    conflict::discard(&state, &["gone.txt".to_string()]).unwrap();
+    assert!(conflict::list(&state).unwrap().is_empty());
+    assert!(!sandbox.root.join("gone.txt").exists());
+}
+
+#[test]
+fn a_stash_that_would_not_go_on_can_be_taken_back_off() {
+    let sandbox = stash_conflict();
+    let state = sandbox.state();
+
+    // The apply is remembered while its mess is here, so the way out survives
+    // the window being closed and reopened.
+    let stuck = remote::in_progress(&state).unwrap();
+    assert!(stuck.applied_stash.is_some());
+    assert!(!stuck.restoring, "there is no switch here, only an apply");
+
+    let said = work::undo_stash_apply(&state).unwrap();
+    assert!(said.contains("still on the list"), "{said}");
+
+    // The tree reads as it did before the apply, and the stash is untouched.
+    assert_eq!(
+        std::fs::read_to_string(sandbox.root.join("a.txt")).unwrap(),
+        "top\ncommitted middle\nbottom\n"
+    );
+    let after = refs::status(&state).unwrap();
+    assert!(after.staged.is_empty() && after.unstaged.is_empty() && after.conflicted.is_empty());
+    assert_eq!(work::stash_list(&state).unwrap().len(), 1);
+
+    // And with nothing conflicted the offer goes with it.
+    assert!(remote::in_progress(&state).unwrap().applied_stash.is_none());
+}
+
+#[test]
+fn undoing_an_apply_leaves_staged_work_beside_it_alone() {
+    let sandbox = stash_conflict();
+    // A file the stash never touched, staged while the conflict stood. Undoing
+    // the apply is about the apply's own paths and nothing else.
+    sandbox.write("other.txt", "typed while stuck\n");
+    sandbox.git(&["add", "other.txt"]);
+    let state = sandbox.state();
+
+    work::undo_stash_apply(&state).unwrap();
+
+    assert!(conflict::list(&state).unwrap().is_empty());
+    let after = refs::status(&state).unwrap();
+    assert_eq!(
+        after
+            .staged
+            .iter()
+            .map(|e| e.path.clone())
+            .collect::<Vec<_>>(),
+        vec!["other.txt".to_string()]
+    );
+    assert_eq!(
+        std::fs::read_to_string(sandbox.root.join("other.txt")).unwrap(),
+        "typed while stuck\n"
+    );
+}
+
+#[test]
+fn undoing_an_apply_leaves_an_unstaged_edit_beside_it_alone() {
+    let sandbox = Sandbox::new("apply-loose");
+    sandbox.commit("a.txt", "top\nmiddle\nbottom\n", "Base");
+    sandbox.commit("notes.md", "as committed\n", "A file beside it");
+    sandbox.write("a.txt", "top\nstashed middle\nbottom\n");
+    sandbox.git(&["stash", "push", "-q", "-m", "work in hand"]);
+    sandbox.commit("a.txt", "top\ncommitted middle\nbottom\n", "Moved on");
+
+    let state = sandbox.state();
+    assert!(work::stash_apply(&state, 0).is_err());
+
+    // Not staged, and not the stash's doing either. A reset of the whole tree
+    // would have taken it; only the apply's own paths are put back.
+    sandbox.write("notes.md", "edited while stuck\n");
+
+    work::undo_stash_apply(&state).unwrap();
+
+    assert!(conflict::list(&state).unwrap().is_empty());
+    assert_eq!(
+        std::fs::read_to_string(sandbox.root.join("notes.md")).unwrap(),
+        "edited while stuck\n"
+    );
+    assert_eq!(
+        std::fs::read_to_string(sandbox.root.join("a.txt")).unwrap(),
+        "top\ncommitted middle\nbottom\n"
+    );
+}
+
+#[test]
+fn work_the_stash_would_land_on_stops_the_apply_before_it_starts() {
+    let sandbox = Sandbox::new("apply-onto-dirty");
+    sandbox.commit("a.txt", "top\nmiddle\nbottom\n", "Base");
+    sandbox.write("a.txt", "top\nstashed\nbottom\n");
+    sandbox.git(&["stash", "push", "-q", "-m", "work in hand"]);
+    // The same file, edited again since. Git refuses rather than merging into
+    // it, which is what keeps the undo's rule — everything dirty is the
+    // apply's doing — true in the first place.
+    sandbox.write("a.txt", "top\nedited since\nbottom\n");
+
+    let state = sandbox.state();
+    assert!(work::stash_apply(&state, 0).is_err());
+
+    // Nothing was applied, nothing is conflicted, and no undo is offered for
+    // an apply that never happened.
+    assert!(conflict::list(&state).unwrap().is_empty());
+    assert!(remote::in_progress(&state).unwrap().applied_stash.is_none());
+    assert_eq!(
+        std::fs::read_to_string(sandbox.root.join("a.txt")).unwrap(),
+        "top\nedited since\nbottom\n"
+    );
+}
+
+#[test]
+fn undoing_an_apply_resets_every_path_it_brought_in() {
+    // Two files in the stash: one lands cleanly, the other cannot. Undoing
+    // takes both back — they are all the apply's doing — and the branch's own
+    // copies come back.
+    let sandbox = Sandbox::new("apply-shared");
+    sandbox.commit("a.txt", "top\nmiddle\nbottom\n", "Base");
+    sandbox.commit("shared.txt", "as committed\n", "A second file");
+    sandbox.write("a.txt", "top\nstashed\nbottom\n");
+    sandbox.write("shared.txt", "from the stash\n");
+    sandbox.git(&["stash", "push", "-q", "-m", "two files"]);
+    sandbox.commit("a.txt", "top\nsomebody else\nbottom\n", "Moved on");
+
+    let state = sandbox.state();
+    assert!(work::stash_apply(&state, 0).is_err());
+    assert_eq!(conflict::list(&state).unwrap(), vec!["a.txt".to_string()]);
+    assert_eq!(
+        std::fs::read_to_string(sandbox.root.join("shared.txt")).unwrap(),
+        "from the stash\n"
+    );
+
+    work::undo_stash_apply(&state).unwrap();
+    assert_eq!(
+        std::fs::read_to_string(sandbox.root.join("shared.txt")).unwrap(),
+        "as committed\n"
+    );
+    let after = refs::status(&state).unwrap();
+    assert!(after.staged.is_empty() && after.unstaged.is_empty() && after.conflicted.is_empty());
+    assert_eq!(work::stash_list(&state).unwrap().len(), 1);
+}
+
+#[test]
+fn throwing_a_conflict_away_leaves_the_rest_of_the_tree_as_it_was() {
+    let sandbox = stash_conflict();
+    // One staged file and one only edited, neither of them the stash's.
+    sandbox.commit("staged.txt", "as committed\n", "One");
+    sandbox.commit("loose.txt", "as committed\n", "Two");
+    sandbox.write("staged.txt", "staged by hand\n");
+    sandbox.git(&["add", "staged.txt"]);
+    sandbox.write("loose.txt", "edited by hand\n");
+
+    let state = sandbox.state();
+    conflict::discard(&state, &["a.txt".to_string()]).unwrap();
+
+    // The conflict is gone; the work beside it is exactly where it was.
+    assert!(conflict::list(&state).unwrap().is_empty());
+    let after = refs::status(&state).unwrap();
+    assert_eq!(
+        after
+            .staged
+            .iter()
+            .map(|e| e.path.clone())
+            .collect::<Vec<_>>(),
+        vec!["staged.txt".to_string()]
+    );
+    assert_eq!(
+        after
+            .unstaged
+            .iter()
+            .map(|e| e.path.clone())
+            .collect::<Vec<_>>(),
+        vec!["loose.txt".to_string()]
+    );
+    assert_eq!(
+        std::fs::read_to_string(sandbox.root.join("loose.txt")).unwrap(),
+        "edited by hand\n"
+    );
+}
+
+#[test]
+fn undoing_an_apply_takes_the_stashs_new_files_with_it() {
+    let sandbox = Sandbox::new("apply-untracked");
+    sandbox.commit("a.txt", "top\nmiddle\nbottom\n", "Base");
+    sandbox.write("a.txt", "top\nstashed\nbottom\n");
+    sandbox.write("fresh.txt", "only in the stash\n");
+    sandbox.git(&["stash", "push", "-q", "--include-untracked", "-m", "work in hand"]);
+    sandbox.commit("a.txt", "top\nsomebody else\nbottom\n", "Moved on");
+
+    let state = sandbox.state();
+    assert!(
+        work::stash_apply(&state, 0).is_err(),
+        "the apply was supposed to conflict"
+    );
+    assert!(sandbox.root.join("fresh.txt").exists());
+
+    work::undo_stash_apply(&state).unwrap();
+
+    // A reset alone leaves untracked files behind; the branch never had this
+    // one, so putting the tree back means it goes.
+    assert!(!sandbox.root.join("fresh.txt").exists());
+    assert!(refs::status(&state).unwrap().unstaged.is_empty());
+}
+
+#[test]
+fn an_apply_that_went_on_cleanly_is_not_offered_an_undo() {
+    let sandbox = Sandbox::new("apply-clean");
+    sandbox.commit("a.txt", "one\n", "Base");
+    sandbox.write("b.txt", "beside it\n");
+    sandbox.git(&["add", "b.txt"]);
+    sandbox.git(&["stash", "push", "-q", "-m", "a second file"]);
+    sandbox.commit("c.txt", "somewhere else entirely\n", "Moved on");
+
+    let state = sandbox.state();
+    work::stash_apply(&state, 0).unwrap();
+
+    // Those are ordinary working-tree changes now — discarding them is the
+    // file menu's job, not an undo the banner offers.
+    assert!(remote::in_progress(&state).unwrap().applied_stash.is_none());
+    assert!(work::undo_stash_apply(&state).is_err());
+}
+
+#[test]
+fn a_conflicted_pop_leaves_the_stash_and_can_be_undone() {
+    let sandbox = Sandbox::new("pop-clash");
+    sandbox.commit("a.txt", "top\nmiddle\nbottom\n", "Base");
+    sandbox.write("a.txt", "top\nstashed\nbottom\n");
+    sandbox.git(&["stash", "push", "-q", "-m", "work in hand"]);
+    sandbox.commit("a.txt", "top\nsomebody else\nbottom\n", "Moved on");
+
+    let state = sandbox.state();
+    // A pop that stops does not drop the entry, so it is as undoable as an
+    // apply — and the stash has to still be there afterwards.
+    assert!(work::stash_pop(&state, 0).is_err());
+    assert_eq!(work::stash_list(&state).unwrap().len(), 1);
+
+    work::undo_stash_apply(&state).unwrap();
+    assert_eq!(work::stash_list(&state).unwrap().len(), 1);
+    assert!(conflict::list(&state).unwrap().is_empty());
+    assert_eq!(
+        std::fs::read_to_string(sandbox.root.join("a.txt")).unwrap(),
+        "top\nsomebody else\nbottom\n"
+    );
+}
+
+#[test]
+fn the_undo_stack_carries_a_stash_that_would_not_go_on() {
+    let sandbox = Sandbox::new("apply-stack");
+    sandbox.commit("a.txt", "top\nmiddle\nbottom\n", "Base");
+    sandbox.write("a.txt", "top\nstashed middle\nbottom\n");
+    sandbox.git(&["stash", "push", "-q", "-m", "work in hand"]);
+    sandbox.commit("a.txt", "top\ncommitted middle\nbottom\n", "Moved on");
+
+    // One state throughout: the undo stack lives in it, the way it does in a
+    // running window.
+    let state = sandbox.state();
+    assert!(work::stash_apply(&state, 0).is_err());
+
+    // The same undo every other step uses, not a button of its own.
+    let stacks = journal::stacks(&state);
+    let top = stacks.undo.first().expect("the apply is on the stack");
+    assert!(top.label.starts_with("Apply:"), "{}", top.label);
+
+    let said = journal::undo(&state).unwrap();
+    assert!(said.contains("Undid"), "{said}");
+    assert!(conflict::list(&state).unwrap().is_empty());
+    assert_eq!(
+        std::fs::read_to_string(sandbox.root.join("a.txt")).unwrap(),
+        "top\ncommitted middle\nbottom\n"
+    );
+    // The work is still where it was: on the list.
+    assert_eq!(work::stash_list(&state).unwrap().len(), 1);
+}
+
+#[test]
+fn an_apply_that_went_on_cleanly_is_undone_the_same_way() {
+    let sandbox = Sandbox::new("apply-clean-undo");
+    sandbox.commit("a.txt", "one\n", "Base");
+    sandbox.write("b.txt", "beside it\n");
+    sandbox.git(&["add", "b.txt"]);
+    sandbox.git(&["stash", "push", "-q", "-m", "a second file"]);
+
+    let state = sandbox.state();
+    work::stash_apply(&state, 0).unwrap();
+    assert!(sandbox.root.join("b.txt").exists());
+
+    journal::undo(&state).unwrap();
+    assert!(!sandbox.root.join("b.txt").exists());
+    assert_eq!(work::stash_list(&state).unwrap().len(), 1);
+}
+
+#[test]
+fn undoing_a_clean_apply_refuses_once_those_files_have_been_worked_on() {
+    let sandbox = Sandbox::new("apply-worked-on");
+    sandbox.commit("a.txt", "as committed\n", "Base");
+    sandbox.write("a.txt", "from the stash\n");
+    sandbox.git(&["stash", "push", "-q", "-m", "work in hand"]);
+
+    let state = sandbox.state();
+    work::stash_apply(&state, 0).unwrap();
+    // An hour's work on top of what the stash brought. Undo would put the
+    // file back to the committed copy and take this with it.
+    sandbox.write("a.txt", "from the stash, and then some\n");
+
+    let refused = journal::undo(&state).unwrap_err();
+    assert!(refused.contains("a.txt"), "{refused}");
+    assert!(refused.contains("worked on since"), "{refused}");
+    assert_eq!(
+        std::fs::read_to_string(sandbox.root.join("a.txt")).unwrap(),
+        "from the stash, and then some\n"
+    );
+}
+
+#[test]
+fn undoing_an_apply_that_stopped_works_however_far_the_resolving_got() {
+    let sandbox = Sandbox::new("apply-half-resolved");
+    sandbox.commit("a.txt", "top\nmiddle\nbottom\n", "Base");
+    sandbox.write("a.txt", "top\nstashed\nbottom\n");
+    sandbox.git(&["stash", "push", "-q", "-m", "work in hand"]);
+    sandbox.commit("a.txt", "top\nsomebody else\nbottom\n", "Moved on");
+
+    let state = sandbox.state();
+    assert!(work::stash_apply(&state, 0).is_err());
+    // Half-resolved by hand, which changes the file the apply left. A
+    // half-merged file is git's mess, not work — the way out stays open.
+    sandbox.write("a.txt", "top\nhalf sorted out\nbottom\n");
+
+    journal::undo(&state).unwrap();
+    assert_eq!(
+        std::fs::read_to_string(sandbox.root.join("a.txt")).unwrap(),
+        "top\nsomebody else\nbottom\n"
+    );
+    assert_eq!(work::stash_list(&state).unwrap().len(), 1);
+}
+
+#[test]
+fn several_stashes_applied_at_once_step_back_one_at_a_time() {
+    let sandbox = Sandbox::new("apply-many-undo");
+    sandbox.commit("a.txt", "base\n", "Base");
+    sandbox.write("one.txt", "the first\n");
+    sandbox.git(&["add", "one.txt"]);
+    sandbox.git(&["stash", "push", "-q", "-m", "first"]);
+    sandbox.write("two.txt", "the second\n");
+    sandbox.git(&["add", "two.txt"]);
+    sandbox.git(&["stash", "push", "-q", "-m", "second"]);
+
+    let state = sandbox.state();
+    let run = work::stash_apply_many(&state, vec![0, 1], false).unwrap();
+    assert_eq!(run.applied.len(), 2);
+    assert!(sandbox.root.join("one.txt").exists() && sandbox.root.join("two.txt").exists());
+
+    // Newest first, the order they went on reversed.
+    journal::undo(&state).unwrap();
+    journal::undo(&state).unwrap();
+    assert!(!sandbox.root.join("one.txt").exists());
+    assert!(!sandbox.root.join("two.txt").exists());
+    assert_eq!(work::stash_list(&state).unwrap().len(), 2);
+}
+
+#[test]
+fn popping_several_records_nothing_to_undo() {
+    let sandbox = Sandbox::new("pop-many");
+    sandbox.commit("a.txt", "base\n", "Base");
+    sandbox.write("one.txt", "the first\n");
+    sandbox.git(&["add", "one.txt"]);
+    sandbox.git(&["stash", "push", "-q", "-m", "first"]);
+
+    let state = sandbox.state();
+    work::stash_apply_many(&state, vec![0], true).unwrap();
+
+    // The entries are gone, so there is nowhere for the files to go back to.
+    assert!(work::stash_list(&state).unwrap().is_empty());
+    assert!(!journal::stacks(&state)
+        .undo
+        .iter()
+        .any(|entry| entry.kind == "stash-apply"));
+}
+
+#[test]
+fn a_redo_that_stops_on_a_conflict_can_be_undone_again() {
+    let sandbox = Sandbox::new("redo-clash");
+    sandbox.commit("a.txt", "top\nmiddle\nbottom\n", "Base");
+    sandbox.write("a.txt", "top\nstashed\nbottom\n");
+    sandbox.git(&["stash", "push", "-q", "-m", "work in hand"]);
+    sandbox.commit("a.txt", "top\nsomebody else\nbottom\n", "Moved on");
+
+    let state = sandbox.state();
+    assert!(work::stash_apply(&state, 0).is_err());
+    journal::undo(&state).unwrap();
+
+    // Putting it back on stops the same way it did the first time. The step
+    // belongs on the undo side either way: the tree has the mess.
+    let said = journal::redo(&state).unwrap();
+    assert!(said.contains("conflict"), "{said}");
+    assert!(!conflict::list(&state).unwrap().is_empty());
+    assert!(journal::stacks(&state)
+        .undo
+        .first()
+        .is_some_and(|entry| entry.kind == "stash-apply"));
+
+    journal::undo(&state).unwrap();
+    assert!(conflict::list(&state).unwrap().is_empty());
+}
+
+#[test]
+fn a_pop_that_went_through_is_not_offered_as_an_apply_to_undo() {
+    let sandbox = Sandbox::new("pop-clean");
+    sandbox.commit("a.txt", "one\n", "Base");
+    sandbox.write("b.txt", "beside it\n");
+    sandbox.git(&["add", "b.txt"]);
+    sandbox.git(&["stash", "push", "-q", "-m", "a second file"]);
+
+    let state = sandbox.state();
+    work::stash_pop(&state, 0).unwrap();
+
+    // The entry is gone, so putting the files back would leave the work
+    // nowhere. Nothing is recorded rather than recording a step that lies.
+    assert!(work::stash_list(&state).unwrap().is_empty());
+    let stacks = journal::stacks(&state);
+    assert!(!stacks.undo.iter().any(|entry| entry.kind == "stash-apply"));
+}
+
+#[test]
+fn undoing_an_apply_from_the_stack_keeps_work_it_never_made() {
+    let sandbox = Sandbox::new("apply-stack-dirty");
+    sandbox.commit("a.txt", "top\nmiddle\nbottom\n", "Base");
+    sandbox.commit("notes.md", "as committed\n", "A file beside it");
+    sandbox.write("a.txt", "top\nstashed\nbottom\n");
+    sandbox.git(&["stash", "push", "-q", "-m", "work in hand"]);
+    sandbox.commit("a.txt", "top\nsomebody else\nbottom\n", "Moved on");
+
+    let state = sandbox.state();
+    assert!(work::stash_apply(&state, 0).is_err());
+    sandbox.write("notes.md", "typed while stuck\n");
+
+    journal::undo(&state).unwrap();
+
+    // The apply is off, the file typed beside it stands, and the step moved
+    // over to the redo side.
+    assert!(conflict::list(&state).unwrap().is_empty());
+    assert_eq!(
+        std::fs::read_to_string(sandbox.root.join("notes.md")).unwrap(),
+        "typed while stuck\n"
+    );
+    let stacks = journal::stacks(&state);
+    assert!(stacks
+        .redo
+        .first()
+        .is_some_and(|entry| entry.kind == "stash-apply"));
+}
+
+#[test]
+fn a_file_whose_name_reads_as_a_glob_takes_only_itself_back_off() {
+    let sandbox = Sandbox::new("apply-glob");
+    sandbox.commit("a[1].txt", "as committed\n", "Base");
+    sandbox.commit("ab.txt", "a bystander\n", "Another");
+    sandbox.write("a[1].txt", "from the stash\n");
+    sandbox.git(&["stash", "push", "-q", "-m", "an awkward name"]);
+
+    let state = sandbox.state();
+    work::stash_apply(&state, 0).unwrap();
+    // Edited beside it, and matched by `a[1]` read as a pattern.
+    sandbox.write("ab.txt", "edited by hand\n");
+
+    work::undo_applied(&state, &work::stash_list(&state).unwrap()[0].oid, None).unwrap();
+
+    assert_eq!(
+        std::fs::read_to_string(sandbox.root.join("a[1].txt")).unwrap(),
+        "as committed\n"
+    );
+    assert_eq!(
+        std::fs::read_to_string(sandbox.root.join("ab.txt")).unwrap(),
+        "edited by hand\n"
+    );
+}
+
+#[test]
+fn throwing_a_conflict_away_names_the_one_file_even_when_it_reads_as_a_glob() {
+    let sandbox = Sandbox::new("discard-glob");
+    sandbox.commit("a[1].txt", "top\nmiddle\nbottom\n", "Base");
+    sandbox.commit("ab.txt", "a bystander\n", "Another");
+    sandbox.git(&["checkout", "-q", "-b", "theirs"]);
+    sandbox.commit("a[1].txt", "top\ntheirs\nbottom\n", "Their change");
+    sandbox.git(&["checkout", "-q", "main"]);
+    sandbox.commit("a[1].txt", "top\nours\nbottom\n", "Our change");
+    assert!(!sandbox.git_may_fail(&["merge", "theirs"]));
+
+    let state = sandbox.state();
+    sandbox.write("ab.txt", "edited by hand\n");
+    conflict::discard(&state, &["a[1].txt".to_string()]).unwrap();
+
+    assert_eq!(
+        std::fs::read_to_string(sandbox.root.join("a[1].txt")).unwrap(),
+        "top\nours\nbottom\n"
+    );
+    assert_eq!(
+        std::fs::read_to_string(sandbox.root.join("ab.txt")).unwrap(),
+        "edited by hand\n"
+    );
+}
+
+#[test]
+fn a_switch_that_would_not_go_back_on_is_still_offered_the_undo() {
+    let sandbox = Sandbox::new("switch-clash");
+    sandbox.commit("a.txt", "top\nmiddle\nbottom\n", "Base");
+    sandbox.write("a.txt", "top\nmine\nbottom\n");
+    // The stash a switch makes, named the way this app names it.
+    sandbox.git(&[
+        "stash",
+        "push",
+        "-q",
+        "-m",
+        &format!("{} on main: switching to other", work::AUTO_STASH),
+    ]);
+    sandbox.commit("a.txt", "top\nsomebody else\nbottom\n", "Moved on");
+
+    let applied = sandbox.git_may_fail(&["stash", "apply"]);
+    assert!(!applied, "the apply was supposed to conflict");
+
+    let state = sandbox.state();
+    assert!(
+        remote::in_progress(&state).unwrap().restoring,
+        "the auto-stash is still there, so the switch can be undone"
+    );
+}
+
 #[test]
 fn a_branch_whose_remote_is_gone_is_reported_as_stale() {
     let sandbox = Sandbox::new("stale");

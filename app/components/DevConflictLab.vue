@@ -189,6 +189,7 @@ onMounted(() => {
     cherry_picking: false,
     reverting: false,
     restoring: false,
+    applied_stash: null,
     prepared: "Merge branch 'feature/ports'"
   }
   git.store.resolving = Object.keys(FILES)[0] ?? null
