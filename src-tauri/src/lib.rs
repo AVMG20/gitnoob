@@ -29,10 +29,16 @@ use tauri::{Emitter, Manager, State};
 
 // --- repository -------------------------------------------------------------
 
-/// Opens a repository and records it in the active profile's tab strip.
+/// Opens a repository and, unless told otherwise, records it in the active
+/// profile's tab strip.
+///
+/// `record: false` is for stepping into a submodule: it is a repository of its
+/// own and everything below has to point at it, but it is not a project the
+/// user opened and it should not turn into a tab of its own or into a recent.
 #[tauri::command]
 async fn open_repo(
     path: String,
+    record: Option<bool>,
     app: tauri::AppHandle,
     watching: State<'_, watch::Slot>,
     state: State<'_, AppState>,
@@ -45,18 +51,20 @@ async fn open_repo(
         .unwrap_or_else(|| recorded.clone());
 
     state.set_path(root);
-    state.update_config(|config| {
-        if let Some(profile) = config.active_mut() {
-            if !profile.projects.iter().any(|p| p.path == recorded) {
-                profile.projects.push(config::Project {
-                    path: recorded.clone(),
-                    name: name.clone(),
-                });
+    if record.unwrap_or(true) {
+        state.update_config(|config| {
+            if let Some(profile) = config.active_mut() {
+                if !profile.projects.iter().any(|p| p.path == recorded) {
+                    profile.projects.push(config::Project {
+                        path: recorded.clone(),
+                        name: name.clone(),
+                    });
+                }
+                config::remember_recent(profile, &recorded, &name);
+                profile.active_project = Some(recorded.clone());
             }
-            config::remember_recent(profile, &recorded, &name);
-            profile.active_project = Some(recorded.clone());
-        }
-    })?;
+        })?;
+    }
 
     // Watch this one instead of whichever was open before. Assigning replaces
     // the old watch, and dropping it stops its thread.

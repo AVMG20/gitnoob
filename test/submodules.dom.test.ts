@@ -89,12 +89,24 @@ describe('the submodules section', () => {
     })
   })
 
-  it('opens a cloned one as a tab rather than touching git', async () => {
+  it('steps into a cloned one rather than opening a tab or touching git', async () => {
     git.store.submodules = [submodule({})]
     const wrapper = mountSideBar()
     await wrapper.find('.row.stash').trigger('click')
     await flushPromises()
     expect(calls.some((c) => c.cmd === 'submodule_update')).toBe(false)
+    const bar = wrapper.findComponent(SideBar)
+    expect(bar.emitted('open')).toBeFalsy()
+    expect(bar.emitted('enter')?.[0]?.[0]).toMatchObject({ abs: '/repo/libs/shared' })
+  })
+
+  it('still offers a tab of its own, for looking at two at once', async () => {
+    git.store.submodules = [submodule({})]
+    const wrapper = mountSideBar()
+    await wrapper.find('.row.stash').trigger('contextmenu')
+    await flushPromises()
+    const asTab = wrapper.findAll('button').find((b) => b.text().startsWith('Open as its own tab'))
+    await asTab!.trigger('click')
     expect(wrapper.findComponent(SideBar).emitted('open')?.[0]).toEqual(['/repo/libs/shared'])
   })
 

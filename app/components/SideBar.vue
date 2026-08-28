@@ -46,7 +46,7 @@ import { useReview } from '~/composables/useReview'
 import { useConfig } from '~/composables/useConfig'
 
 /** A worktree row opens its folder as a project tab, which is the shell's job. */
-const emit = defineEmits<{ open: [path: string] }>()
+const emit = defineEmits<{ open: [path: string]; enter: [one: Submodule] }>()
 
 const git = useGit()
 const store = git.store
@@ -1167,15 +1167,19 @@ function describeSubmodule(one: Submodule) {
     if (one.state === 'conflicted') {
       lines.push('A merge left two answers for which commit this should be at.')
     }
-    lines.push('Click to open it as a tab.')
+    lines.push('Click to step into it.')
   }
   return lines.join('\n')
 }
 
-/** A cloned one opens as its own tab; one that is not there yet is fetched. */
+/**
+ * Clicking one steps into it, in the tab you are already in — a submodule is
+ * part of the project you are looking at, not another project. One that is not
+ * cloned yet is fetched instead, because there is nothing to step into.
+ */
 function openSubmodule(one: Submodule) {
   if (one.state === 'absent') return void git.submoduleUpdate(one.path)
-  emit('open', one.abs)
+  emit('enter', one)
 }
 
 function submoduleMenu(event: MouseEvent, one: Submodule) {
@@ -1183,7 +1187,14 @@ function submoduleMenu(event: MouseEvent, one: Submodule) {
     event,
     [
       {
-        label: 'Open as a tab',
+        label: 'Open it here',
+        icon: FolderOpen,
+        disabled: one.state === 'absent',
+        hint: one.state === 'absent' ? 'not cloned yet' : 'in this tab',
+        action: () => emit('enter', one)
+      },
+      {
+        label: 'Open as its own tab',
         icon: FolderOpen,
         disabled: one.state === 'absent',
         hint: one.state === 'absent' ? 'not cloned yet' : '',

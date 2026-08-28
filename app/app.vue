@@ -2,7 +2,7 @@
 import { computed, defineAsyncComponent, onMounted, onUnmounted, ref, watch } from 'vue'
 import { invoke } from '~/composables/useInvoke'
 import { listen, type UnlistenFn } from '@tauri-apps/api/event'
-import { useGit } from '~/composables/useGit'
+import { useGit, type Submodule } from '~/composables/useGit'
 import { useConfig } from '~/composables/useConfig'
 import { useForge } from '~/composables/useForge'
 import { useAi } from '~/composables/useAi'
@@ -136,6 +136,46 @@ const columns = computed(() => {
   return `minmax(0, ${layout.sidebar}px) 5px minmax(0, 1fr) 5px ${panel}`
 })
 
+/** What every open has to do once the repository itself is in place. */
+async function afterOpen() {
+  // A review page belongs to the repository it was opened on.
+  review.close()
+  rebase.close()
+  await Promise.all([forge.refreshStatus(), ai.refreshStatus()])
+  forge.loadReviews()
+}
+
+/**
+ * Steps into a submodule, in the tab it was reached from.
+ *
+ * A submodule is part of the project on screen rather than another project, so
+ * it gets no tab of its own; the trail in the toolbar says where you are and
+ * is the way back out.
+ */
+async function enterSubmodule(one: Submodule) {
+  const from = store.repo?.path
+  if (!from) return
+  const trail = [
+    ...store.inside,
+    { path: one.abs, name: one.path, from, fromName: store.repo?.name ?? from }
+  ]
+  if (!(await git.openRepo(one.abs, false))) return
+  store.inside = trail
+  await afterOpen()
+}
+
+/** Back out of the trail to the step before `depth`. */
+async function leaveSubmodule(depth = 0) {
+  const step = store.inside[depth]
+  if (!step) return
+  const back = store.inside.slice(0, depth)
+  // Only the outermost step returns to something that is a project of its
+  // own; the rest go back to another submodule, which is still not a tab.
+  if (!(await git.openRepo(step.from, back.length === 0))) return
+  store.inside = back
+  await afterOpen()
+}
+
 /** Opens a project and does the on-open housekeeping GitKraken does. */
 async function openProject(path: string) {
   // Before the first await, so the tab strip moves in the same frame as the
@@ -148,10 +188,7 @@ async function openProject(path: string) {
   } finally {
     config.endOpen()
   }
-  // A review page belongs to the repository it was opened on.
-  review.close()
-  await Promise.all([forge.refreshStatus(), ai.refreshStatus()])
-  forge.loadReviews()
+  await afterOpen()
   // Fetch straight away so the ahead/behind counts on screen are true rather
   // than whatever they were when the app last ran.
   if (settings.value?.auto_fetch_on_open) git.fetch()
@@ -290,7 +327,7 @@ onUnmounted(() => {
            open, and Back brings it straight back. Hidden rather than unmounted,
            because the repository's keyboard shortcuts live in it and those still
            work from a review page. -->
-      <TitleBar v-show="!review.store.current" />
+      <TitleBar v-show="!review.store.current" @leave="leaveSubmodule" />
       <BusyBar />
       <div class="body" :style="{ gridTemplateColumns: columns }">
         <!-- Opening a file takes over the graph area, as GitKraken does; so
@@ -306,7 +343,7 @@ onUnmounted(() => {
           <RebasePane />
         </template>
         <template v-else>
-          <SideBar @open="openProject" />
+          <SideBar @open="openProject" @enter="enterSubmodule" />
           <ResizeHandle side="sidebar" />
           <GraphList />
         </template>

@@ -530,6 +530,17 @@ const fields = reactive({
   signing: null as SigningSetup | null,
   /** Whether this repository uses LFS, and whether the tool for it is here. */
   lfs: null as LfsStatus | null,
+  /**
+   * The submodules stepped into to reach what is on screen, outermost first.
+   *
+   * Empty for an ordinary repository. Each entry is where to go back to and
+   * what to call both ends of the step, so the toolbar can draw the trail and
+   * the way out of it. A chain rather than one entry, because a submodule can
+   * have submodules of its own. The name it came from is carried rather than
+   * read off the path, because a project is called whatever the profile calls
+   * it.
+   */
+  inside: [] as { path: string; name: string; from: string; fromName: string }[],
   rows: [] as GraphRow[],
   hasMore: false,
   limit: COMMIT_PAGE,
@@ -740,13 +751,22 @@ function forget() {
   store.resolving = null
   store.revealing = null
   store.viewer = null
+  store.inside = []
   store.query = ''
 }
 
 export function useGit() {
-  async function openRepo(path: string) {
+  /**
+   * Opens a repository and points every later call at it.
+   *
+   * `record` false steps into one without it becoming a tab: a submodule is a
+   * repository, but it is not a project the user opened, and a tab strip that
+   * grows a new entry every time you look inside one is a tab strip nobody
+   * asked for.
+   */
+  async function openRepo(path: string, record = true) {
     const info = await guard('Open repository', () =>
-      invoke<RepoInfo>('open_repo', { path })
+      invoke<RepoInfo>('open_repo', { path, record })
     )
     if (!info) return false
     // From here every call says it is about this repository, so a switch to
@@ -763,6 +783,10 @@ export function useGit() {
     store.viewer = null
     store.resolving = null
     store.query = ''
+    // Opening a project is leaving whatever submodule was being looked at.
+    // Stepping into one passes `record` false and keeps the trail, which the
+    // caller then adds to.
+    if (record) store.inside = []
 
     // Whatever this tab was showing last time, back on screen before the reads
     // below are even sent. A tab that has not been opened this session starts

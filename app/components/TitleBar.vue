@@ -9,11 +9,14 @@ import {
   Download,
   GitBranchPlus,
   History,
+  ChevronRight,
+  Package,
   RefreshCw,
   Redo2,
   Settings,
   TriangleAlert,
-  Undo2
+  Undo2,
+  X
 } from 'lucide-vue-next'
 import { useGit, type CommitSummary } from '~/composables/useGit'
 import { useConfig } from '~/composables/useConfig'
@@ -21,8 +24,13 @@ import { useShortcuts } from '~/composables/useShortcuts'
 import { useUpdates } from '~/composables/useUpdates'
 import { useRebase } from '~/composables/useRebase'
 
+const emit = defineEmits<{ leave: [depth: number] }>()
+
 const git = useGit()
 const store = git.store
+
+/** The project the trail started from — the tab you are still in. */
+const rootName = computed(() => store.inside[0]?.fromName ?? '')
 const config = useConfig()
 const updates = useUpdates()
 const rebase = useRebase()
@@ -169,7 +177,37 @@ async function reconcile(rebase: boolean) {
 <template>
   <header class="bar">
     <div class="repo">
-      <strong class="name">{{ store.repo?.name }}</strong>
+      <!-- The trail into a submodule. The project it belongs to is still what
+           the tab says, so this is where being somewhere else has to be
+           visible — and each step is its own way back out. -->
+      <template v-if="store.inside.length">
+        <button
+          class="crumb root"
+          :title="`Back to ${rootName}`"
+          @click="emit('leave', 0)"
+        >
+          {{ rootName }}
+        </button>
+        <template v-for="(step, at) in store.inside" :key="step.path">
+          <ChevronRight :size="12" class="faint sep" />
+          <button
+            v-if="at < store.inside.length - 1"
+            class="crumb"
+            :title="`Back to ${step.name}`"
+            @click="emit('leave', at + 1)"
+          >
+            {{ step.name }}
+          </button>
+          <span v-else class="crumb here" :title="step.path">
+            <Package :size="12" />
+            {{ step.name }}
+            <button class="out" title="Leave the submodule" @click="emit('leave', 0)">
+              <X :size="12" />
+            </button>
+          </span>
+        </template>
+      </template>
+      <strong v-else class="name">{{ store.repo?.name }}</strong>
       <span class="faint">/</span>
       <span class="branch mono">
         {{ store.repo?.head }}
@@ -448,6 +486,53 @@ async function reconcile(rebase: boolean) {
 
 .name {
   white-space: nowrap;
+}
+
+/* The trail. The last step is where you are and carries the way out; the ones
+   before it are buttons back to themselves. */
+.crumb {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 2px 6px;
+  border-radius: 5px;
+  font-size: 12px;
+  color: var(--text-dim);
+  white-space: nowrap;
+}
+
+.crumb.root,
+.crumb:not(.here) {
+  font-weight: 600;
+}
+
+.crumb:not(.here):hover {
+  background: var(--bg-hover);
+  color: var(--text);
+}
+
+.crumb.here {
+  color: var(--text);
+  background: color-mix(in srgb, var(--accent) 14%, transparent);
+  font-family: var(--mono);
+  font-size: 11px;
+}
+
+.sep {
+  flex: none;
+}
+
+.out {
+  display: flex;
+  margin: 0 -3px 0 1px;
+  padding: 1px;
+  border-radius: 3px;
+  color: var(--text-faint);
+}
+
+.out:hover {
+  background: var(--bg-active);
+  color: var(--text);
 }
 
 .branch {
