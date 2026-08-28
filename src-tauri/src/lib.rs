@@ -317,6 +317,21 @@ fn add_to_gitignore(pattern: String, state: State<'_, AppState>) -> Result<Strin
     refs::add_to_gitignore(&state, &pattern)
 }
 
+/// A git command typed into the log's prompt, run in the open repository.
+#[tauri::command]
+async fn run_git(
+    args: Vec<String>,
+    state: State<'_, AppState>,
+) -> Result<git_cmd::CmdOutput, String> {
+    let cwd = state.path()?;
+    tauri::async_runtime::spawn_blocking(move || {
+        let args: Vec<&str> = args.iter().map(String::as_str).collect();
+        git_cmd::run_typed(&cwd, &args)
+    })
+    .await
+    .map_err(|e| format!("git did not finish: {e}"))?
+}
+
 #[tauri::command]
 fn remotes(state: State<'_, AppState>) -> Result<Vec<String>, String> {
     remote::remotes(&state)
@@ -1553,6 +1568,7 @@ pub fn run() {
             worktree_add,
             worktree_remove,
             add_to_gitignore,
+            run_git,
             remotes,
             remote_url,
             remote_add,

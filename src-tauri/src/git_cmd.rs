@@ -170,6 +170,28 @@ pub fn run(cwd: &Path, args: &[&str]) -> Result<CmdOutput, String> {
     })
 }
 
+/// Runs a command the user typed themselves, as written.
+///
+/// Not reported: the prompt it was typed at already shows it, and this is the
+/// one case where a read like `git log` is wanted in the log. There is no
+/// terminal for an editor to open in, so anything that would start one —
+/// `commit` without a message, `rebase -i` — takes what it is given instead of
+/// hanging with the window waiting on it.
+pub fn run_typed(cwd: &Path, args: &[&str]) -> Result<CmdOutput, String> {
+    let output = git(cwd, args)
+        .env("GIT_EDITOR", "true")
+        .output()
+        .map_err(|e| format!("Could not run git: {e}"))?;
+
+    Ok(CmdOutput {
+        argv: args.iter().map(|s| s.to_string()).collect(),
+        ok: output.status.success(),
+        code: output.status.code().unwrap_or(-1),
+        stdout: String::from_utf8_lossy(&output.stdout).into_owned(),
+        stderr: explained(&String::from_utf8_lossy(&output.stderr)),
+    })
+}
+
 /// Adds a line saying what to do about a transport failure, where git's own
 /// message says only that one happened.
 ///

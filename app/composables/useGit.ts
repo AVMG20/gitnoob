@@ -1,6 +1,7 @@
 import { aimAt, invoke } from './useInvoke'
 import { markRaw, reactive, ref } from 'vue'
 import { useConfig } from './useConfig'
+import { parseCommandLine } from './cli'
 import { useToasts } from './useToasts'
 
 /**
@@ -401,7 +402,8 @@ export interface Resolution {
  * sequence where six commands fail on the way to one reported failure would
  * raise seven, and the one worth reading would be the one underneath.
  */
-export type LogLevel = 'info' | 'error' | 'command' | 'failed'
+/** `output` is what a typed command printed: shown as it came, never a notice. */
+export type LogLevel = 'info' | 'error' | 'command' | 'failed' | 'output'
 
 export interface LogLine {
   id: number
@@ -598,6 +600,11 @@ function note(text: string, level: LogLevel = 'info') {
   store.log.unshift({ id: ++logSeq.value, at: Date.now(), level, text: text.trim() })
   if (store.log.length > 200) store.log.length = 200
   if (level === 'error') useToasts().fail(text)
+}
+
+/** An argument as it would have to be typed: quoted only when it needs it. */
+function quoteArg(arg: string) {
+  return arg === '' || /[\s'"\\]/.test(arg) ? `'${arg.replace(/'/g, "'\\''")}'` : arg
 }
 
 /** Runs a backend call, surfacing failures in the log instead of throwing. */
@@ -909,6 +916,31 @@ export function useGit() {
     return result
   }
 
+  /**
+   * Runs what was typed at the log's prompt, and writes back what git said.
+   *
+   * The line goes in as the command it was, in the colour of how it went, with
+   * git's own output under it: the log is newest-first, so the output is
+   * written before the line that produced it. The output is not a notice —
+   * you typed the command with the log open, and that is where the answer is.
+   * The refresh is the same one every button gets, since `git commit` typed
+   * here changes the window exactly as much as clicking it would.
+   */
+  async function typed(line: string) {
+    const parsed = parseCommandLine(line)
+    if ('error' in parsed) {
+      note(parsed.error, 'error')
+      return false
+    }
+    const shown = ['git', ...parsed.args.map(quoteArg)].join(' ')
+    const out = await run<CmdOutput>(shown, 'run_git', { args: parsed.args })
+    if (!out) return false
+    const text = [out.stdout, out.stderr].filter((s) => s.trim()).join('\n')
+    note(text || (out.ok ? '' : `exit ${out.code}`), 'output')
+    note(shown, out.ok ? 'command' : 'failed')
+    return out.ok
+  }
+
   /** Reports a `git` CLI run in the log, whichever way it went. */
   function report(label: string, out: CmdOutput | null) {
     if (!out) return false
@@ -921,6 +953,7 @@ export function useGit() {
     forget,
     store,
     note,
+    typed,
     refresh,
     refreshStatus,
     loadMore,
