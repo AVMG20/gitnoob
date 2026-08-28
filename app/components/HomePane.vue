@@ -79,12 +79,15 @@ const summary = computed<Fact[] | null>(() => {
   // Up or down on last week, in the two colours the diffs already use for more
   // and less: a number on its own says nothing about the week.
   if (change) {
-    // A drawn arrow, not the character: ↑ comes out of the text font at
+    // Said as the comparison it is. "↓23 on last week" left you working out
+    // whether last week was 23 or this week was 23 short of it.
+    //
+    // The arrow is drawn rather than typed: ↑ comes out of the text font at
     // whatever weight and baseline that font feels like, next to a digit set
     // in another.
     facts.push({
       value: String(Math.abs(change)),
-      label: 'on last week',
+      label: change > 0 ? 'more than last week' : 'fewer than last week',
       tone: change > 0 ? 'up' : 'down',
       arrow: change > 0 ? 'up' : 'down'
     })
