@@ -75,7 +75,8 @@ token, SSH key and open tabs together. Tokens live in your OS keychain.
 from your staged diff, and conflict resolution. No key, nothing sent.
 
 **It teaches, if you want.** Every action prints the git command it ran. Ignore
-it, or learn from it.
+it, or learn from it. The same bar takes a command typed by hand, run in the
+repository you are looking at, and the window catches up afterwards.
 
 ## Shortcuts
 
