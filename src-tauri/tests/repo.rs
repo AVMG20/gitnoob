@@ -2096,7 +2096,7 @@ fn stages_and_discards_one_hunk_at_a_time() {
     let state = sandbox.state();
 
     // Stage only the first region.
-    gitnoob_lib::work::apply_hunk(&state, "a.txt", 0, gitnoob_lib::work::HunkAction::Stage)
+    gitnoob_lib::work::apply_hunk(&state, "a.txt", 0, gitnoob_lib::work::HunkAction::Stage, None)
         .unwrap();
 
     let staged = diff::working_file_diff(&state, "a.txt", diff::Side::Staged).unwrap();
@@ -2120,14 +2120,14 @@ fn stages_and_discards_one_hunk_at_a_time() {
     assert_eq!(unstaged_added, vec!["second addition".to_string()]);
 
     // Take it back out again.
-    gitnoob_lib::work::apply_hunk(&state, "a.txt", 0, gitnoob_lib::work::HunkAction::Unstage)
+    gitnoob_lib::work::apply_hunk(&state, "a.txt", 0, gitnoob_lib::work::HunkAction::Unstage, None)
         .unwrap();
     assert!(refs::status(&state).unwrap().staged.is_empty());
 
     // Discarding the remaining region leaves the other edit alone.
     let before = std::fs::read_to_string(sandbox.root.join("a.txt")).unwrap();
     assert!(before.contains("first addition") && before.contains("second addition"));
-    gitnoob_lib::work::apply_hunk(&state, "a.txt", 1, gitnoob_lib::work::HunkAction::Discard)
+    gitnoob_lib::work::apply_hunk(&state, "a.txt", 1, gitnoob_lib::work::HunkAction::Discard, None)
         .unwrap();
     let after = std::fs::read_to_string(sandbox.root.join("a.txt")).unwrap();
     assert!(after.contains("first addition"));
@@ -2140,7 +2140,7 @@ fn hunk_staging_refuses_when_there_is_nothing_to_stage() {
     sandbox.commit("a.txt", "one\n", "Base");
     let state = sandbox.state();
     let error =
-        gitnoob_lib::work::apply_hunk(&state, "a.txt", 0, gitnoob_lib::work::HunkAction::Stage)
+        gitnoob_lib::work::apply_hunk(&state, "a.txt", 0, gitnoob_lib::work::HunkAction::Stage, None)
             .unwrap_err();
     assert!(error.contains("No unstaged changes"), "unexpected: {error}");
 }
@@ -4206,4 +4206,147 @@ fn rebase_progress_says_nothing_when_no_rebase_is_running() {
     let sandbox = Sandbox::new("rebase-idle");
     sandbox.commit("a.txt", "one\n", "First");
     assert!(rebase::progress(&sandbox.state()).unwrap().is_none());
+}
+
+// --- line-level staging ------------------------------------------------------
+
+#[test]
+fn staging_one_line_of_a_hunk_leaves_the_others_unstaged() {
+    let sandbox = Sandbox::new("stage-lines");
+    sandbox.commit("a.txt", "one\ntwo\nthree\nfour\n", "First");
+    // Two separate changes close enough together to land in one hunk.
+    sandbox.write("a.txt", "one\nTWO\nthree\nFOUR\n");
+
+    let state = sandbox.state();
+    let picked = gitnoob_lib::work::Lines {
+        added: vec![2],
+        removed: vec![2],
+    };
+    gitnoob_lib::work::apply_hunk(
+        &state,
+        "a.txt",
+        0,
+        gitnoob_lib::work::HunkAction::Stage,
+        Some(picked),
+    )
+    .unwrap();
+
+    let staged = sandbox.git(&["diff", "--cached"]);
+    assert!(staged.contains("+TWO"), "the picked line is staged: {staged}");
+    assert!(!staged.contains("+FOUR"), "the other one is not: {staged}");
+
+    // And the working tree still holds both changes.
+    let unstaged = sandbox.git(&["diff"]);
+    assert!(unstaged.contains("+FOUR"));
+    assert!(!unstaged.contains("+TWO"));
+}
+
+#[test]
+fn unstaging_one_line_leaves_the_rest_of_the_hunk_staged() {
+    let sandbox = Sandbox::new("unstage-lines");
+    sandbox.commit("a.txt", "one\ntwo\nthree\nfour\n", "First");
+    sandbox.write("a.txt", "one\nTWO\nthree\nFOUR\n");
+    sandbox.git(&["add", "a.txt"]);
+
+    let state = sandbox.state();
+    // Take just the second change back out of the index.
+    let picked = gitnoob_lib::work::Lines {
+        added: vec![4],
+        removed: vec![4],
+    };
+    gitnoob_lib::work::apply_hunk(
+        &state,
+        "a.txt",
+        0,
+        gitnoob_lib::work::HunkAction::Unstage,
+        Some(picked),
+    )
+    .unwrap();
+
+    let staged = sandbox.git(&["diff", "--cached"]);
+    assert!(staged.contains("+TWO"), "the first change stays staged: {staged}");
+    assert!(!staged.contains("+FOUR"), "the second one came back out: {staged}");
+    // Nothing was lost from the file itself.
+    assert_eq!(
+        std::fs::read_to_string(sandbox.root.join("a.txt")).unwrap(),
+        "one\nTWO\nthree\nFOUR\n"
+    );
+}
+
+#[test]
+fn discarding_one_line_puts_only_that_line_back() {
+    let sandbox = Sandbox::new("discard-lines");
+    sandbox.commit("a.txt", "one\ntwo\nthree\nfour\n", "First");
+    sandbox.write("a.txt", "one\nTWO\nthree\nFOUR\n");
+
+    let state = sandbox.state();
+    let picked = gitnoob_lib::work::Lines {
+        added: vec![2],
+        removed: vec![2],
+    };
+    gitnoob_lib::work::apply_hunk(
+        &state,
+        "a.txt",
+        0,
+        gitnoob_lib::work::HunkAction::Discard,
+        Some(picked),
+    )
+    .unwrap();
+
+    assert_eq!(
+        std::fs::read_to_string(sandbox.root.join("a.txt")).unwrap(),
+        "one\ntwo\nthree\nFOUR\n",
+        "the picked line went back, the other change stayed"
+    );
+}
+
+#[test]
+fn staging_only_an_addition_keeps_the_removal_in_the_working_tree() {
+    let sandbox = Sandbox::new("stage-added-only");
+    sandbox.commit("a.txt", "one\ntwo\nthree\n", "First");
+    // One line replaced: a removal and an addition in the same place.
+    sandbox.write("a.txt", "one\nTWO\nthree\n");
+
+    let state = sandbox.state();
+    // Take the addition without the removal, which is the awkward half.
+    let picked = gitnoob_lib::work::Lines {
+        added: vec![2],
+        removed: vec![],
+    };
+    gitnoob_lib::work::apply_hunk(
+        &state,
+        "a.txt",
+        0,
+        gitnoob_lib::work::HunkAction::Stage,
+        Some(picked),
+    )
+    .unwrap();
+
+    // The index now has both lines; the working tree still has only the new
+    // one, so what is left unstaged is the removal.
+    let staged = sandbox.git(&["diff", "--cached"]);
+    assert!(staged.contains("+TWO"));
+    assert!(!staged.contains("-two"));
+    let unstaged = sandbox.git(&["diff"]);
+    assert!(unstaged.contains("-two"));
+}
+
+#[test]
+fn no_lines_at_all_still_stages_the_whole_hunk() {
+    let sandbox = Sandbox::new("stage-whole");
+    sandbox.commit("a.txt", "one\ntwo\n", "First");
+    sandbox.write("a.txt", "one\nTWO\n");
+
+    let state = sandbox.state();
+    // An empty selection is the same request as no selection: the whole hunk.
+    gitnoob_lib::work::apply_hunk(
+        &state,
+        "a.txt",
+        0,
+        gitnoob_lib::work::HunkAction::Stage,
+        Some(gitnoob_lib::work::Lines::default()),
+    )
+    .unwrap();
+    assert!(sandbox.git(&["diff", "--cached"]).contains("+TWO"));
+    assert!(sandbox.git(&["diff"]).trim().is_empty());
 }

@@ -627,9 +627,10 @@ async fn apply_hunk(
     path: String,
     hunk_index: usize,
     action: work::HunkAction,
+    lines: Option<work::Lines>,
     state: State<'_, AppState>,
 ) -> Result<String, String> {
-    work::apply_hunk(&state, &path, hunk_index, action)
+    work::apply_hunk(&state, &path, hunk_index, action, lines)
 }
 
 #[tauri::command]

@@ -11,6 +11,7 @@ import {
 import { useContextMenu } from '~/composables/useContextMenu'
 import { labelFor } from '~/composables/useHighlight'
 import { diffMode, type DiffMode } from '~/composables/useDiffMode'
+import type { PickedLines } from '~/components/DiffView.vue'
 import { stepFile, useFileView, walkOrder, type FileStep } from '~/composables/useFileView'
 import {
   CODE_ROW,
@@ -295,10 +296,14 @@ function move(by: number) {
 }
 
 /** Stage, unstage or discard one hunk, then reload so the view is honest. */
-async function onHunk(index: number, action: 'stage' | 'unstage' | 'discard') {
+async function onHunk(
+  index: number,
+  action: 'stage' | 'unstage' | 'discard',
+  lines?: PickedLines
+) {
   const current = target.value
   if (!current || current.commit) return
-  await git.applyHunk(current.path, index, action)
+  await git.applyHunk(current.path, index, action, lines)
   await load()
 }
 

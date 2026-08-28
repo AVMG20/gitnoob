@@ -1045,6 +1045,24 @@ pub enum HunkAction {
     Discard,
 }
 
+/// The lines of a hunk the user picked out, named by their line numbers.
+///
+/// Numbers rather than positions in the list: the window's model of a hunk and
+/// the text `git diff` prints are built by two different pieces of code, and a
+/// line's number is the one thing both of them agree on. A `+` line is named by
+/// where it lands, a `-` line by where it was.
+#[derive(serde::Deserialize, Clone, Debug, Default)]
+pub struct Lines {
+    pub added: Vec<u32>,
+    pub removed: Vec<u32>,
+}
+
+impl Lines {
+    fn is_empty(&self) -> bool {
+        self.added.is_empty() && self.removed.is_empty()
+    }
+}
+
 /// Applies one hunk of a file's diff.
 ///
 /// Rather than reimplementing patch arithmetic, this asks git for the same diff
@@ -1057,6 +1075,7 @@ pub fn apply_hunk(
     path: &str,
     hunk_index: usize,
     action: HunkAction,
+    lines: Option<Lines>,
 ) -> Result<String, String> {
     let root = state.path()?;
 
@@ -1093,7 +1112,17 @@ pub fn apply_hunk(
         ));
     }
 
-    let patch = single_hunk_patch(&diff, hunk_index)?;
+    // Discarding and unstaging are applied backwards, which swaps what an
+    // unpicked line has to become — see `partial_hunk_patch`.
+    let reverse = action != HunkAction::Stage;
+    let picked = lines.filter(|lines| !lines.is_empty());
+    let count = picked
+        .as_ref()
+        .map(|lines| lines.added.len() + lines.removed.len());
+    let patch = match &picked {
+        Some(lines) => partial_hunk_patch(&diff, hunk_index, lines, reverse)?,
+        None => single_hunk_patch(&diff, hunk_index)?,
+    };
 
     let args: &[&str] = match action {
         HunkAction::Stage => &["apply", "--cached", "--whitespace=nowarn", "-"],
@@ -1111,18 +1140,22 @@ pub fn apply_hunk(
         return Err(format!("git could not apply that hunk: {}", detail.trim()));
     }
 
+    let what = match count {
+        Some(1) => "one line".to_string(),
+        Some(many) => format!("{many} lines"),
+        None => "one hunk".to_string(),
+    };
     Ok(match action {
-        HunkAction::Stage => format!("Staged one hunk of {path}"),
-        HunkAction::Unstage => format!("Unstaged one hunk of {path}"),
-        HunkAction::Discard => format!("Discarded one hunk of {path}"),
+        HunkAction::Stage => format!("Staged {what} of {path}"),
+        HunkAction::Unstage => format!("Unstaged {what} of {path}"),
+        HunkAction::Discard => format!("Discarded {what} of {path}"),
     })
 }
 
-/// Rebuilds a patch containing the file header and exactly one of its hunks.
-fn single_hunk_patch(diff: &str, hunk_index: usize) -> Result<String, String> {
+/// Splits a diff into its header and its hunks, as text.
+fn split_hunks(diff: &str) -> (Vec<&str>, Vec<Vec<&str>>) {
     let mut header: Vec<&str> = Vec::new();
     let mut hunks: Vec<Vec<&str>> = Vec::new();
-
     for line in diff.lines() {
         if line.starts_with("@@") {
             hunks.push(vec![line]);
@@ -1132,14 +1165,145 @@ fn single_hunk_patch(diff: &str, hunk_index: usize) -> Result<String, String> {
             header.push(line);
         }
     }
+    (header, hunks)
+}
 
-    let hunk = hunks.get(hunk_index).ok_or_else(|| {
-        format!(
-            "That hunk is no longer there — the file has {} {}",
-            hunks.len(),
-            if hunks.len() == 1 { "hunk" } else { "hunks" }
-        )
-    })?;
+/// The two starting line numbers out of an `@@ -a,b +c,d @@` header.
+fn header_starts(header: &str) -> Option<(u32, u32)> {
+    let rest = header.strip_prefix("@@")?;
+    let inner = rest.split("@@").next()?;
+    let mut old = None;
+    let mut new = None;
+    for part in inner.split_whitespace() {
+        let (sign, digits) = part.split_at(1);
+        let first = digits.split(',').next()?;
+        let value: u32 = first.parse().ok()?;
+        match sign {
+            "-" => old = Some(value),
+            "+" => new = Some(value),
+            _ => {}
+        }
+    }
+    Some((old?, new?))
+}
+
+/// Rebuilds one hunk holding only the lines that were picked.
+///
+/// This is what `git add -p` does when you answer its questions one line at a
+/// time. A line that was not picked has to become something the patch can still
+/// apply around:
+///
+/// - forwards, an unpicked `+` never happened, so it goes; an unpicked `-` is
+///   still in the file, so it becomes context.
+/// - backwards — unstaging, or discarding — the patch is applied in reverse, so
+///   the two swap: an unpicked `+` becomes context and an unpicked `-` goes.
+///
+/// The counts in the `@@` header are then whatever survived, which is why they
+/// are recomputed rather than carried over.
+fn partial_hunk_patch(
+    diff: &str,
+    hunk_index: usize,
+    lines: &Lines,
+    reverse: bool,
+) -> Result<String, String> {
+    let (header, hunks) = split_hunks(diff);
+    let hunk = hunks.get(hunk_index).ok_or_else(|| missing_hunk(&hunks))?;
+    let head = hunk.first().ok_or("That hunk is empty")?;
+    let (old_start, new_start) =
+        header_starts(head).ok_or_else(|| format!("Could not read the hunk header: {head}"))?;
+
+    let mut body: Vec<String> = Vec::new();
+    let mut old_at = old_start;
+    let mut new_at = new_start;
+    let mut old_count = 0u32;
+    let mut new_count = 0u32;
+    // Whether the line just written was kept, so the "no newline" remark that
+    // belongs to it can follow it or go with it.
+    let mut kept_last = true;
+
+    for line in hunk.iter().skip(1) {
+        let mut chars = line.chars();
+        match chars.next() {
+            Some('+') => {
+                let picked = lines.added.contains(&new_at);
+                new_at += 1;
+                if picked {
+                    body.push((*line).to_string());
+                    new_count += 1;
+                    kept_last = true;
+                } else if reverse {
+                    // Still in the index; it has to be there for the reverse
+                    // patch to line up, as context.
+                    body.push(format!(" {}", chars.as_str()));
+                    old_count += 1;
+                    new_count += 1;
+                    kept_last = true;
+                } else {
+                    kept_last = false;
+                }
+            }
+            Some('-') => {
+                let picked = lines.removed.contains(&old_at);
+                old_at += 1;
+                if picked {
+                    body.push((*line).to_string());
+                    old_count += 1;
+                    kept_last = true;
+                } else if reverse {
+                    kept_last = false;
+                } else {
+                    // Not being taken out after all, so it stays as context.
+                    body.push(format!(" {}", chars.as_str()));
+                    old_count += 1;
+                    new_count += 1;
+                    kept_last = true;
+                }
+            }
+            Some('\\') => {
+                // "No newline at end of file" belongs to the line above it.
+                if kept_last {
+                    body.push((*line).to_string());
+                }
+            }
+            // Context, and the empty line git writes for a blank context line.
+            _ => {
+                body.push((*line).to_string());
+                old_at += 1;
+                new_at += 1;
+                old_count += 1;
+                new_count += 1;
+                kept_last = true;
+            }
+        }
+    }
+
+    if old_count == new_count && !body.iter().any(|line| line.starts_with(['+', '-'])) {
+        return Err("None of those lines are changes".to_string());
+    }
+
+    let mut patch = header.join("\n");
+    patch.push('\n');
+    patch.push_str(&format!(
+        "@@ -{old_start},{old_count} +{new_start},{new_count} @@\n"
+    ));
+    patch.push_str(&body.join("\n"));
+    // `git apply` insists on a trailing newline.
+    patch.push('\n');
+    Ok(patch)
+}
+
+fn missing_hunk(hunks: &[Vec<&str>]) -> String {
+    format!(
+        "That hunk is no longer there — the file has {} {}",
+        hunks.len(),
+        if hunks.len() == 1 { "hunk" } else { "hunks" }
+    )
+}
+
+/// Rebuilds a patch containing the file header and exactly one of its hunks.
+fn single_hunk_patch(diff: &str, hunk_index: usize) -> Result<String, String> {
+    let (header, hunks) = split_hunks(diff);
+    let hunk = hunks.get(hunk_index).ok_or_else(|| missing_hunk(&hunks))?;
 
     let mut patch = header.join("\n");
     patch.push('\n');
@@ -1152,6 +1316,151 @@ fn single_hunk_patch(diff: &str, hunk_index: usize) -> Result<String, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A file with one hunk holding two added lines and one removed one.
+    const HUNK_DIFF: &str = concat!(
+        "diff --git a/a.txt b/a.txt\n",
+        "index 111..222 100644\n",
+        "--- a/a.txt\n",
+        "+++ b/a.txt\n",
+        "@@ -1,4 +1,5 @@\n",
+        " one\n",
+        "-two\n",
+        "+TWO\n",
+        "+two and a half\n",
+        " three\n",
+        " four\n"
+    );
+
+    fn body(patch: &str) -> Vec<&str> {
+        patch
+            .lines()
+            .skip_while(|line| !line.starts_with("@@"))
+            .collect()
+    }
+
+    #[test]
+    fn staging_one_added_line_leaves_the_rest_as_they_were() {
+        let lines = Lines {
+            added: vec![2],
+            removed: vec![],
+        };
+        let patch = partial_hunk_patch(HUNK_DIFF, 0, &lines, false).unwrap();
+        assert_eq!(
+            body(&patch),
+            vec![
+                "@@ -1,4 +1,5 @@",
+                " one",
+                // Not picked, and still in the file, so it becomes context.
+                " two",
+                "+TWO",
+                " three",
+                " four",
+            ]
+        );
+    }
+
+    #[test]
+    fn staging_only_the_removal_drops_the_additions() {
+        let lines = Lines {
+            added: vec![],
+            removed: vec![2],
+        };
+        let patch = partial_hunk_patch(HUNK_DIFF, 0, &lines, false).unwrap();
+        assert_eq!(
+            body(&patch),
+            vec!["@@ -1,4 +1,3 @@", " one", "-two", " three", " four"]
+        );
+    }
+
+    #[test]
+    fn unstaging_keeps_what_it_is_not_taking_back() {
+        // Applied in reverse, so an unpicked `+` has to stay as context and an
+        // unpicked `-` goes: the mirror of the forward case.
+        let lines = Lines {
+            added: vec![3],
+            removed: vec![],
+        };
+        let patch = partial_hunk_patch(HUNK_DIFF, 0, &lines, true).unwrap();
+        assert_eq!(
+            body(&patch),
+            vec![
+                "@@ -1,4 +1,5 @@",
+                " one",
+                " TWO",
+                "+two and a half",
+                " three",
+                " four",
+            ]
+        );
+    }
+
+    #[test]
+    fn the_counts_in_the_header_are_what_survived() {
+        let all = Lines {
+            added: vec![2, 3],
+            removed: vec![2],
+        };
+        let patch = partial_hunk_patch(HUNK_DIFF, 0, &all, false).unwrap();
+        // Everything picked is the whole hunk again.
+        assert!(patch.contains("@@ -1,4 +1,5 @@"));
+        assert_eq!(body(&patch), body(&single_hunk_patch(HUNK_DIFF, 0).unwrap()));
+    }
+
+    #[test]
+    fn picking_nothing_that_is_a_change_is_refused() {
+        let lines = Lines {
+            added: vec![99],
+            removed: vec![99],
+        };
+        assert!(partial_hunk_patch(HUNK_DIFF, 0, &lines, false).is_err());
+    }
+
+    #[test]
+    fn a_no_newline_remark_goes_with_the_line_it_belongs_to() {
+        const TAIL: &str = concat!(
+            "--- a/a.txt\n",
+            "+++ b/a.txt\n",
+            "@@ -1,2 +1,2 @@\n",
+            " one\n",
+            "-two\n",
+            "\\ No newline at end of file\n",
+            "+two\n"
+        );
+        // The removal is not picked, so going forwards it becomes context and
+        // the remark that belongs to it stays with it.
+        let kept = partial_hunk_patch(
+            TAIL,
+            0,
+            &Lines {
+                added: vec![2],
+                removed: vec![],
+            },
+            false,
+        )
+        .unwrap();
+        assert!(kept.contains("\\ No newline at end of file"));
+
+        // Reversing drops that line, and the remark has nothing left to
+        // belong to.
+        let dropped = partial_hunk_patch(
+            TAIL,
+            0,
+            &Lines {
+                added: vec![],
+                removed: vec![],
+            },
+            true,
+        );
+        assert!(dropped.is_err() || !dropped.unwrap().contains("No newline"));
+    }
+
+    #[test]
+    fn reads_the_starts_out_of_a_header() {
+        assert_eq!(header_starts("@@ -1,4 +1,5 @@"), Some((1, 1)));
+        assert_eq!(header_starts("@@ -12 +34 @@ fn thing()"), Some((12, 34)));
+        assert_eq!(header_starts("not a header"), None);
+    }
 
     /// A line as git writes it into `.git/logs/refs/stash`.
     const ENTRY: &str = "0000000000000000000000000000000000000000 abc123 A <a@b.c> 1700000000 +0100\tOn main: the old name";

@@ -1204,12 +1204,29 @@ export function useGit() {
     addToGitignore: (pattern: string) =>
       run<string>('Ignore', 'add_to_gitignore', { pattern }),
     commitPatch: (oid: string) => guard('Read patch', () => invoke<string>('commit_patch', { oid })),
-    applyHunk: (path: string, hunkIndex: number, action: 'stage' | 'unstage' | 'discard') =>
-      run<string>(
-        action === 'stage' ? 'Stage hunk' : action === 'unstage' ? 'Unstage hunk' : 'Discard hunk',
-        'apply_hunk',
-        { path, hunkIndex, action }
-      ),
+    /**
+     * Applies one hunk, or only the lines picked out of it.
+     *
+     * `lines` left out means the whole hunk, which is what the buttons did
+     * before there was any picking and what they still say when nothing is
+     * picked.
+     */
+    applyHunk: (
+      path: string,
+      hunkIndex: number,
+      action: 'stage' | 'unstage' | 'discard',
+      lines?: { added: number[]; removed: number[] }
+    ) => {
+      const some = lines ? `${lines.added.length + lines.removed.length} lines` : 'hunk'
+      const verb =
+        action === 'stage' ? 'Stage' : action === 'unstage' ? 'Unstage' : 'Discard'
+      return run<string>(`${verb} ${some}`, 'apply_hunk', {
+        path,
+        hunkIndex,
+        action,
+        lines: lines ?? null
+      })
+    },
     reveal: (path: string) => guard('Reveal', () => invoke('reveal', { path })),
     revealLabel: `Reveal in ${fileManagerName()}`,
 
