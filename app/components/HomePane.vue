@@ -11,6 +11,7 @@ import {
   Plus,
   RefreshCw,
   Search,
+  Settings,
   Shuffle,
   X
 } from 'lucide-vue-next'
@@ -51,52 +52,55 @@ const shown = computed(() => {
 /** Which tabs are open, so the list can say so instead of a date. */
 const open = computed(() => new Set(config.projects.value.map((one) => one.path)))
 
-/** A piece of a tile's figure, so one number can be two colours. */
-interface Part {
-  text: string
+/** A word of the summary line: a figure, and what it is a figure of. */
+interface Fact {
+  value: string
+  label: string
   tone?: 'up' | 'down'
+  /** Drawn before the figure, where an arrow is part of what it says. */
+  arrow?: 'up' | 'down'
 }
 
-const tiles = computed(() => {
+/**
+ * The week in one line.
+ *
+ * It was four tiles across the top, which is the shape a dashboard takes when
+ * nobody asks what the numbers are for. They are four small facts about the
+ * same week, and four small facts are a sentence: the figures carry the weight
+ * and the words stay out of the way.
+ */
+const summary = computed<Fact[] | null>(() => {
   const found = stats.value
-  if (!found) return []
+  if (!found) return null
   const change = found.week - found.previous_week
-  return [
-    {
-      label: 'commits this week',
-      parts: [{ text: String(found.week) }] as Part[],
-      hint:
-        change === 0
-          ? 'level with last week'
-          : `${change > 0 ? '↑' : '↓'} ${Math.abs(change)} on last week`,
-      // Up or down on last week, in the two colours the diffs already use for
-      // more and less: a number on its own says nothing about the week.
-      tone: change === 0 ? undefined : change > 0 ? 'up' : ('down' as Part['tone'])
-    },
-    {
-      label: 'day streak',
-      parts: [{ text: String(found.streak) }] as Part[],
-      hint: found.best_streak ? `best so far: ${found.best_streak}` : '',
-      tone: undefined
-    },
-    {
-      label: found.repos_this_week === 1 ? 'repository touched' : 'repositories touched',
-      parts: [{ text: String(found.repos_this_week) }] as Part[],
-      hint: `${found.read} commits in the year`,
-      tone: undefined
-    },
-    {
-      label: 'lines this week',
-      // Gained and lost are not one figure with a slash in it: they are the
-      // green number and the red one, the same pair the diffs colour.
-      parts: [
-        { text: `+${short(found.added)}`, tone: 'up' },
-        { text: `−${short(found.removed)}`, tone: 'down' }
-      ] as Part[],
-      hint: 'added and removed',
-      tone: undefined
-    }
+  const facts: Fact[] = [
+    { value: String(found.week), label: found.week === 1 ? 'commit this week' : 'commits this week' }
   ]
+  // Up or down on last week, in the two colours the diffs already use for more
+  // and less: a number on its own says nothing about the week.
+  if (change) {
+    // A drawn arrow, not the character: ↑ comes out of the text font at
+    // whatever weight and baseline that font feels like, next to a digit set
+    // in another.
+    facts.push({
+      value: String(Math.abs(change)),
+      label: 'on last week',
+      tone: change > 0 ? 'up' : 'down',
+      arrow: change > 0 ? 'up' : 'down'
+    })
+  }
+  facts.push({ value: String(found.streak), label: 'day streak' })
+  // How many repositories were touched said nothing on its own — two out of
+  // how many, and touched how hard? The line is about the week's work, and the
+  // list below says which projects it was done in.
+  return facts
+})
+
+/** Gained and lost stay two figures in two colours, not one with a slash. */
+const lines = computed(() => {
+  const found = stats.value
+  if (!found) return null
+  return { added: `+${short(found.added)}`, removed: `−${short(found.removed)}` }
 })
 
 /** The last 53 weeks as columns of seven, which is how the grid is drawn. */
@@ -276,13 +280,16 @@ const greeting =
   hour < 6 ? 'Still up' : hour < 12 ? 'Good morning' : hour < 18 ? 'Good afternoon' : 'Good evening'
 const who = computed(() => config.profile.value?.git_name?.split(' ')[0] ?? '')
 
+/**
+ * The two facts the page cannot say anywhere else, along the bottom.
+ *
+ * The commonest word in your subjects went with them: it was a party trick
+ * that took a third of the line and told you nothing you could act on.
+ */
 const fun = computed(() => {
   const found = stats.value
   if (!found) return ''
   const bits: string[] = []
-  if (found.favourite_count > 2) {
-    bits.push(`“${found.favourite_word}” starts ${found.favourite_count} of your subjects`)
-  }
   if (found.best_streak) bits.push(`longest streak ${found.best_streak} days`)
   if (found.read) bits.push(`${found.read} commits in the last year`)
   return bits.join(' · ')
@@ -338,35 +345,65 @@ function choose(repo: RepoCard) {
             {{ home.repos.value.length }}
             {{ home.repos.value.length === 1 ? 'repository' : 'repositories' }}
             <template v-if="open.size"> · {{ open.size }} open</template>
+            <!-- Said as the thing it counts. "Waiting" left you to guess what
+                 was waiting and for what; a loose end is a change nobody has
+                 committed or a commit nobody has pushed, which is what the list
+                 below is made of. -->
             <template v-if="attention.length">
-              · <span class="sub-flag">{{ attention.length }} waiting</span>
+              ·
+              <span class="sub-flag">
+                {{ attention.length }} loose {{ attention.length === 1 ? 'end' : 'ends' }}
+              </span>
             </template>
           </p>
         </div>
-        <div class="actions">
-          <button class="btn" title="Read everything again" @click="home.load(true)">
-            <RefreshCw :size="13" :class="{ spin: home.store.loading }" />
-          </button>
-          <button class="btn" @click="pick"><FolderOpen :size="13" /> Open</button>
-          <button class="btn" @click="emit('clone')"><Plus :size="13" /> Clone</button>
+        <div class="controls">
+          <!-- The toolbar is what usually carries these, and the toolbar is a
+               repository's own: with home up there was no way to reach settings
+               or change profile without opening a project first. They sit above
+               the buttons, because they are about the app and not about the
+               page under them. -->
+          <div class="actions app">
+            <button class="btn icon" title="Settings" @click="config.openSettings('profiles')">
+              <Settings :size="14" />
+            </button>
+            <ProfileMenu />
+          </div>
+          <div class="actions">
+            <button class="btn icon" title="Read everything again" @click="home.load(true)">
+              <RefreshCw :size="13" :class="{ spin: home.store.loading }" />
+            </button>
+            <button class="btn" @click="emit('clone')"><Plus :size="13" /> Clone</button>
+            <button class="btn" @click="pick"><FolderOpen :size="13" /> Open</button>
+          </div>
         </div>
       </header>
 
       <p v-if="home.store.error" class="oops">{{ home.store.error }}</p>
 
-      <!-- The week in four figures. One block rather than four, because they
-           are four readings of the same week and belong on one instrument. -->
-      <section v-if="tiles.length" class="stats">
-        <div v-for="tile in tiles" :key="tile.label" class="stat">
-          <span class="stat-label">{{ tile.label }}</span>
-          <span class="stat-value">
-            <span v-for="(part, at) in tile.parts" :key="at" class="part" :class="part.tone">
-              {{ part.text }}
+      <!-- The week, read as a sentence. Every figure is a fact about the same
+           seven days, so they belong in one line and not in four boxes. -->
+      <p v-if="summary" class="summary">
+        <template v-for="(fact, at) in summary" :key="fact.label">
+          <span v-if="at" class="dot">·</span>
+          <span class="fact">
+            <span class="figure" :class="fact.tone">
+              <ArrowUp v-if="fact.arrow === 'up'" :size="13" :stroke-width="2.5" class="way" />
+              <ArrowDown v-else-if="fact.arrow === 'down'" :size="13" :stroke-width="2.5" class="way" />
+              {{ fact.value }}
             </span>
+            {{ fact.label }}
           </span>
-          <span v-if="tile.hint" class="stat-hint" :class="tile.tone">{{ tile.hint }}</span>
-        </div>
-      </section>
+        </template>
+        <template v-if="lines">
+          <span class="dot">·</span>
+          <span class="fact">
+            <span class="figure up">{{ lines.added }}</span>
+            <span class="figure down">{{ lines.removed }}</span>
+            lines
+          </span>
+        </template>
+      </p>
 
       <!-- The year sits under the week's figures, because it is the same
            subject at a longer range: how it has been going. What is waiting
@@ -556,9 +593,12 @@ function choose(repo: RepoCard) {
 /* One column down the middle, so the page has an edge to line up against
    however wide the window is. */
 .sheet {
+  display: flex;
+  flex-direction: column;
+  min-height: 100%;
   max-width: 1280px;
   margin: 0 auto;
-  padding: 26px 30px 44px;
+  padding: 26px 30px 34px;
 }
 
 /* The greeting gets the room the sections below it get: it was sitting a
@@ -592,6 +632,13 @@ h1 {
   color: var(--accent-soft);
 }
 
+.controls {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 7px;
+}
+
 .actions {
   display: flex;
   gap: 7px;
@@ -606,6 +653,12 @@ h1 {
   border-radius: 7px;
   color: var(--text-dim);
   font-size: 12.5px;
+}
+
+/* Square, like the toolbar's own icon buttons: a lone glyph in a button with
+   a word's worth of padding round it reads as a button missing its word. */
+.actions .btn.icon {
+  padding: 6px 8px;
 }
 
 .actions .btn:hover {
@@ -634,78 +687,61 @@ h1 {
 }
 
 /*
- * The figures and the year below them sit straight on the page, under a rule.
+ * The week as a line of type, under a rule.
  *
- * A panel round every block turned the page into a stack of boxes with boxes
- * inside them; the two that are read straight through — four numbers and a
- * band of squares — need no walls to be told apart from what follows. The
- * lists keep theirs, because a list of rows on the bare page has no edge for
- * the rows to line up against.
+ * A panel round every block turned the page into a stack of boxes; four
+ * figures spread across the width turned it into a dashboard. Set as one
+ * sentence they are what they are — a note about the week — and the year below
+ * them is the same note at a longer range.
  */
-.stats {
+.summary {
   display: flex;
-  justify-content: space-between;
-  gap: 26px;
-  padding: 0 2px 20px;
-  margin-bottom: 20px;
-  border-bottom: 1px solid var(--line-soft);
-}
-
-.stat {
-  display: flex;
-  flex-direction: column;
-  gap: 3px;
-  min-width: 0;
-}
-
-/* Spread rather than columned: four blocks of different widths in four equal
-   columns left ragged gaps and a bare quarter at the right-hand end. Spread,
-   the first starts at the page's edge, the last ends at it, and what is
-   between them is even. */
-
-.stat-label {
-  font-size: 10.5px;
-  letter-spacing: 0.07em;
-  text-transform: uppercase;
-  color: var(--text-faint);
-}
-
-.stat-value {
-  display: flex;
+  flex-wrap: wrap;
   align-items: baseline;
-  gap: 8px;
-  font-size: 20px;
+  gap: 4px 10px;
+  margin: 0 0 18px;
+  padding: 0 2px 18px;
+  border-bottom: 1px solid var(--line-soft);
+  font-size: 12.5px;
+  color: var(--text-dim);
+}
+
+.fact {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 5px;
+}
+
+.figure {
+  display: inline-flex;
+  align-items: center;
+  gap: 1px;
+  font-size: 15px;
   font-weight: 600;
-  letter-spacing: -0.02em;
+  letter-spacing: -0.01em;
+  color: var(--text);
   font-variant-numeric: tabular-nums;
-  line-height: 1.15;
 }
 
 /* The same green and red the diffs use for lines gained and lost. */
-.part.up,
-.stat-hint.up {
+.figure.up {
   color: var(--green);
 }
 
-.part.down,
-.stat-hint.down {
+.figure.down {
   color: var(--red);
 }
 
-.stat-hint {
-  margin-top: auto;
-  padding-top: 4px;
-  font-size: 11px;
+/* Lucide draws on a padded 24-unit grid, so the arrow carries a sliver of its
+   own space; claw it back so it sits against its digit. */
+.way {
+  margin-right: -1px;
+}
+
+.dot {
   color: var(--text-faint);
 }
 
-/*
- * Nothing on the page is in a box.
- *
- * The lists had one so their rows had an edge to line up against; a rule down
- * the middle does that job without another four borders, and the page reads as
- * one sheet rather than as a tray of panels.
- */
 /*
  * The two lists are panels; everything above them is read straight off the
  * sheet.
@@ -1176,9 +1212,11 @@ h1 {
   color: var(--text-faint);
 }
 
+/* Held to the bottom of the page rather than following the tips up and down
+   as they are swapped. */
 .footnote {
-  margin-top: 18px;
-  padding-top: 15px;
+  margin-top: auto;
+  padding-top: 22px;
   border-top: 1px solid var(--line-soft);
   font-size: 11.5px;
   line-height: 1.6;

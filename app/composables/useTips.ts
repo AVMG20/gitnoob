@@ -130,22 +130,6 @@ export const TIPS: Tip[] = [
   {
     id: 'rebase',
     text: 'Rebasing is a plan you can see: drag commits into order, squash or reword, then run it.'
-  },
-  {
-    id: 'moved',
-    text: 'A file that moved is shown as one file that moved, not a delete and an add.'
-  },
-  {
-    id: 'sidebar-lists',
-    text: 'Tags, remotes, worktrees and submodules each keep their own list in the sidebar.'
-  },
-  {
-    id: 'themes',
-    text: 'Settings has a shelf of themes, light and dark, applied before the next repaint.'
-  },
-  {
-    id: 'log',
-    text: 'The bar along the bottom logs every git command the app ran, so nothing happens off-screen.'
   }
 ]
 
