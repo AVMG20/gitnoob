@@ -224,7 +224,7 @@ async function reconcile(rebase: boolean) {
       <button class="btn icon-only" title="Settings" @click="config.openSettings('profiles')">
         <Settings :size="15" />
       </button>
-      <ProfileMenu />
+      <ProfileMenu class="profile" />
     </div>
 
     <!-- Strips below the toolbar, stacked so a conflict and a refused push can
@@ -427,6 +427,12 @@ async function reconcile(rebase: boolean) {
 
 .icon-only {
   padding: 5px 7px;
+}
+
+/* The profile pill is bordered where the icons around it are not, so the 1px
+   gap the group uses reads as the settings icon touching it. */
+.profile {
+  margin-left: 6px;
 }
 
 .sep {
