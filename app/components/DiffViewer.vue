@@ -169,6 +169,21 @@ async function loadText() {
 }
 
 /**
+ * Opens or closes the blame column.
+ *
+ * The column belongs to the file view, so pressing this from the patch takes
+ * you there with it open rather than turning on something you cannot see.
+ */
+function toggleBlame() {
+  if (diffMode.mode !== 'file') {
+    diffMode.mode = 'file'
+    diffMode.blame = true
+    return
+  }
+  diffMode.blame = !diffMode.blame
+}
+
+/**
  * The file's own history, in the menu the rest of the app uses for lists.
  *
  * A commit here opens this file as it stood at that commit, which is the
@@ -458,23 +473,6 @@ onUnmounted(() => window.removeEventListener('keydown', onKey))
         </button>
       </span>
 
-      <!-- Blame belongs to the file view, so the button that opens it is only
-           offered there — the same toggle the line numbers offer on a
-           right-click. -->
-      <button
-        v-if="diffMode.mode === 'file'"
-        class="btn"
-        :class="{ on: diffMode.blame }"
-        :title="
-          diffMode.blame
-            ? 'Hide who last touched each line'
-            : 'Show who last touched each line'
-        "
-        @click="diffMode.blame = !diffMode.blame"
-      >
-        <Users :size="14" />
-      </button>
-
       <!-- Discard left, stage right, matching the hunk buttons in the diff
            below: the destructive one is never where the hand already is. -->
       <template v-if="!target.commit">
@@ -498,6 +496,26 @@ onUnmounted(() => window.removeEventListener('keydown', onKey))
           <Minus :size="14" /> Unstage file
         </button>
       </template>
+
+      <!-- Always here, whichever view is on screen. It used to appear along
+           with the file view and shove everything beside it sideways, so
+           switching views moved the buttons under the pointer. Blame is still
+           a column of the file, so asking for it from the patch opens that
+           view rather than doing nothing. -->
+      <button
+        class="btn"
+        :class="{ on: diffMode.mode === 'file' && diffMode.blame }"
+        :title="
+          diffMode.mode !== 'file'
+            ? 'Show who last touched each line — opens the file view'
+            : diffMode.blame
+              ? 'Hide who last touched each line'
+              : 'Show who last touched each line'
+        "
+        @click="toggleBlame"
+      >
+        <Users :size="14" />
+      </button>
 
       <button class="btn" title="Every commit that touched this file" @click="showHistory">
         <History :size="14" />

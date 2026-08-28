@@ -68,6 +68,12 @@ afterEach(() => {
 
 const blamed = () => calls.filter((call) => call.cmd === 'blame_file')
 
+/** The button that opens the blame column, wherever in the bar it sits. */
+const toggle = (wrapper: ReturnType<typeof mount>) =>
+  wrapper
+    .findAll('.bar .btn')
+    .find((btn) => btn.attributes('title')?.includes('who last touched'))!
+
 describe('the blame toggle in the bar', () => {
   it('walks the patch and the file, and offers no third view', async () => {
     const wrapper = await show()
@@ -82,8 +88,7 @@ describe('the blame toggle in the bar', () => {
 
   it('reads the blame when the button opens the column, and draws it', async () => {
     const wrapper = await show()
-    const toggle = wrapper.findAll('.bar .btn')[0]!
-    await toggle.trigger('click')
+    await toggle(wrapper).trigger('click')
     await flushPromises()
     expect(diffMode.blame).toBe(true)
     expect(blamed()).toHaveLength(1)
@@ -92,19 +97,33 @@ describe('the blame toggle in the bar', () => {
 
   it('takes the column away again, and the file stays', async () => {
     const wrapper = await show()
-    const toggle = wrapper.findAll('.bar .btn')[0]!
-    await toggle.trigger('click')
+    await toggle(wrapper).trigger('click')
     await flushPromises()
-    await toggle.trigger('click')
+    await toggle(wrapper).trigger('click')
     await flushPromises()
     expect(wrapper.find('.chip').exists()).toBe(false)
     expect(wrapper.findAll('.line').length).toBeGreaterThan(1)
   })
 
-  it('is not offered while the patch is what is on screen', async () => {
+  it('stands in the bar in the patch too, so switching views moves nothing', async () => {
     diffMode.mode = 'diff'
     const wrapper = await show()
-    const titles = wrapper.findAll('.bar .btn').map((btn) => btn.attributes('title'))
-    expect(titles.some((title) => title?.includes('who last touched'))).toBe(false)
+    // It used to appear along with the file view and shove the buttons beside
+    // it sideways, which moved them out from under the pointer.
+    expect(toggle(wrapper).exists()).toBe(true)
+    const order = wrapper.findAll('.bar .btn').map((btn) => btn.text() || btn.attributes('title'))
+    expect(order.indexOf('Stage file')).toBeLessThan(
+      order.findIndex((one) => one?.includes('who last touched'))
+    )
+  })
+
+  it('opens the file view along with the column when asked for from the patch', async () => {
+    diffMode.mode = 'diff'
+    const wrapper = await show()
+    await toggle(wrapper).trigger('click')
+    await flushPromises()
+    expect(diffMode.mode).toBe('file')
+    expect(diffMode.blame).toBe(true)
+    expect(wrapper.find('button.chip').text()).toContain('Ramon Robben')
   })
 })
