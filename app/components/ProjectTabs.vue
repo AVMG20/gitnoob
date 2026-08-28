@@ -106,7 +106,9 @@ useShortcuts({
   'project.previous': () => step(-1),
   'project.nth': (index: number) => {
     const path = config.projects.value[index]?.path
-    if (path && path !== config.selectedProject.value) emit('open', path)
+    // While home is up its own tab is the one on screen, so even the project
+    // the strip has marked is somewhere to go.
+    if (path && (props.home || path !== config.selectedProject.value)) emit('open', path)
   }
 })
 
@@ -145,7 +147,9 @@ function onDrop(target: string) {
         :key="project.path"
         class="tab"
         :class="{
-          on: project.path === config.selectedProject.value,
+          // Home is the page on screen while it is up, so no tab is: two lit
+          // tabs at once say the window is in both places.
+          on: !props.home && project.path === config.selectedProject.value,
           drag: dragging === project.path
         }"
         :title="project.path"

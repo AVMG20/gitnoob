@@ -208,12 +208,15 @@ async function leaveSubmodule(depth = 0) {
  */
 async function fromHome(path: string) {
   if (!path) return
-  home.value = false
   await openProject(path)
 }
 
 /** Opens a project and does the on-open housekeeping GitKraken does. */
 async function openProject(path: string) {
+  // Asking for a repository is asking to look at it, so home stands down —
+  // whether the ask came from the home page, a tab, or the keyboard. Ahead of
+  // the work below, so a repository that is already open still leaves home.
+  home.value = false
   // Before the first await, so the tab strip moves in the same frame as the
   // click rather than two round trips later. The work below is quick; it was
   // waiting for it to finish that made switching feel slow.
