@@ -52,7 +52,7 @@ const ready = ref(false)
 const labKind = import.meta.dev
   ? new URLSearchParams(window.location.search).get('lab')
   : null
-const lab = labKind === 'review' || labKind === 'conflict'
+const lab = labKind === 'review' || labKind === 'conflict' || labKind === 'squash'
 
 // Loaded only where it can be reached, so the fixture review is not bundled
 // into anything shipped: with `import.meta.dev` false the import goes with it.
@@ -63,7 +63,15 @@ const DevReviewLab = import.meta.dev
 const DevConflictLab = import.meta.dev
   ? defineAsyncComponent(() => import('~/components/DevConflictLab.vue'))
   : null
-const labPage = computed(() => (labKind === 'conflict' ? DevConflictLab : DevReviewLab))
+/** Squashing, moved files and the branch menu, at `?lab=squash`. */
+const DevSquashLab = import.meta.dev
+  ? defineAsyncComponent(() => import('~/components/DevSquashLab.vue'))
+  : null
+const labPage = computed(() => {
+  if (labKind === 'conflict') return DevConflictLab
+  if (labKind === 'squash') return DevSquashLab
+  return DevReviewLab
+})
 
 let fetchTimer: number | undefined
 let unlisten: UnlistenFn | undefined

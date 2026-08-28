@@ -24,9 +24,13 @@ and with no dev server there is nothing to show. Only a release build serves
 
 `npm run dev` alone serves the frontend in a browser, where every backend call
 fails because `invoke` needs the Tauri host. It is still useful for checking
-layout, and `?lab=review` there draws the review page against a fixture forge —
-compiled out of anything built for release. `GITUI_DEVTOOLS=1` opens the web
-inspector; debug builds only.
+layout, and the labs there draw a page against fixtures rather than against a
+repository — `?lab=review` the review page, `?lab=conflict` the resolver, and
+`?lab=squash` the commit graph, the working-tree panel and the sidebar together,
+which is where squashing, a moved file and the branch menus can be looked at
+without arranging a repository into that state first. `&settings=ai` on that one
+opens the settings on a section. All three are compiled out of anything built
+for release. `GITUI_DEVTOOLS=1` opens the web inspector; debug builds only.
 
 ### Platform build dependencies
 
@@ -93,6 +97,7 @@ src-tauri/src
   graph.rs      revision walk and commit-graph lane layout
   diff.rs       commit details, file diffs, working-tree diffs
   remote.rs     fetch, pull, push preview, push, merge, rebase
+  rebase.rs     the interactive rebase, and squashing a run of commits
   conflict.rs   conflict marker parsing and resolution
   work.rs       stage, unstage, discard, commit, amend, stash, hunks
   worktree.rs   listing, adding and removing worktrees
@@ -149,8 +154,8 @@ policy that blocks the app's own scripts shows as a blank window.
 ## Testing
 
 ```sh
-cargo test --manifest-path src-tauri/Cargo.toml   # 242
-npm test                                          # 213 across 21 files
+cargo test --manifest-path src-tauri/Cargo.toml   # 373
+npm test                                          # 398 across 47 files
 npm run typecheck
 ```
 
@@ -160,15 +165,17 @@ one-hunk patch rebuilding, SSH command building, transport-failure explanations,
 AI answer parsing, and the config file's round trip, migrations and corrupt-file
 path) and integration tests against real repositories built with the `git` CLI —
 graph lane invariants, divergence reporting, every conflict-resolution
-combination, undo and redo, auto-stash, cherry-picking out of order, empty
-repositories, detached HEAD, CRLF files, cloning and creating repositories,
-managing remotes against a bare one, and pushing to one, force push and its
-lease included.
+combination, undo and redo, auto-stash, cherry-picking out of order, squashing a
+run of commits and undoing it, files moved with `git mv` and files moved with
+the shell, staged, unstaged, discarded and read as a diff,
+empty repositories, detached HEAD, CRLF files, cloning and creating
+repositories, managing remotes against a bare one, and pushing to one, force
+push and its lease included.
 
 The frontend suite covers the review page end to end against a fixture forge,
 the markdown renderer, the patch parser, the conflict grid, the diff and graph
-views, the branch-deletion verdicts, the ref chips, the highlighter and the
-themes.
+views, the branch-deletion verdicts, the ref chips, the squash dialog and the
+menus that open it, the highlighter and the themes.
 
 Two notes for anyone running the suites on Windows:
 
