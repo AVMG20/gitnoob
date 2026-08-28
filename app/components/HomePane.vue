@@ -1,8 +1,8 @@
 <script setup lang="ts">
 import { computed, onMounted, ref } from 'vue'
 import { open as pickFolder } from '@tauri-apps/plugin-dialog'
-import { FolderOpen, GitBranch, Plus, RefreshCw, Search } from 'lucide-vue-next'
-import { ago, busiestLabel, short, useHome, type RepoCard } from '~/composables/useHome'
+import { FolderOpen, GitBranch, Plus, RefreshCw, Search, X } from 'lucide-vue-next'
+import { ago, short, useHome, type RepoCard } from '~/composables/useHome'
 import { useConfig } from '~/composables/useConfig'
 import { SHORTCUTS, keyLabel } from '~/composables/useShortcuts'
 
@@ -40,24 +40,28 @@ const tiles = computed(() => {
     {
       value: String(found.week),
       label: 'commits this week',
-      hint: change === 0 ? 'same as last week' : `${change > 0 ? '+' : ''}${change} on last week`
+      // Up or down on last week, in the two colours the diffs already use for
+      // more and less: a number on its own says nothing about the week.
+      hint: change === 0 ? 'same as last week' : `${change > 0 ? '+' : '−'}${Math.abs(change)} on last week`,
+      tone: change === 0 ? '' : change > 0 ? 'up' : 'down'
     },
     {
       value: found.streak === 1 ? '1 day' : `${found.streak} days`,
       label: 'commit streak',
-      hint: found.best_streak ? `best: ${found.best_streak}` : ''
+      hint: found.best_streak ? `best: ${found.best_streak}` : '',
+      tone: ''
     },
     {
-      value: busiestLabel(found) || '—',
-      label: 'when you work',
-      hint: found.read ? `${found.read} commits read` : ''
+      value: String(found.repos_this_week),
+      label: found.repos_this_week === 1 ? 'repository this week' : 'repositories this week',
+      hint: `${found.read} commits in the year`,
+      tone: ''
     },
     {
       value: `+${short(found.added)} / −${short(found.removed)}`,
       label: 'lines this week',
-      hint: found.repos_this_week
-        ? `${found.repos_this_week} ${found.repos_this_week === 1 ? 'repository' : 'repositories'}`
-        : ''
+      hint: 'added and removed',
+      tone: ''
     }
   ]
 })
@@ -155,6 +159,21 @@ async function pick() {
   if (typeof path === 'string') emit('open', path)
 }
 
+/**
+ * Takes a project off the list.
+ *
+ * Only the recents, and only the ones that are not open: a tab is closed by
+ * its own cross, and losing one from under the strip because a list somewhere
+ * else was being tidied is not what tidying means. Nothing on disk is touched,
+ * so it asks nothing — opening the folder again puts it straight back.
+ */
+async function forget(repo: RepoCard) {
+  if (open.value.has(repo.path)) return
+  await config.forgetProject(repo.path)
+  const summary = home.store.summary
+  if (summary) summary.repos = summary.repos.filter((one) => one.path !== repo.path)
+}
+
 function choose(repo: RepoCard) {
   if (!repo.exists) return
   emit('open', repo.path)
@@ -191,7 +210,7 @@ onMounted(() => home.load())
         <div v-for="tile in tiles" :key="tile.label" class="stat">
           <span class="stat-value">{{ tile.value }}</span>
           <span class="stat-label">{{ tile.label }}</span>
-          <span v-if="tile.hint" class="stat-hint">{{ tile.hint }}</span>
+          <span v-if="tile.hint" class="stat-hint" :class="tile.tone">{{ tile.hint }}</span>
         </div>
       </section>
 
@@ -264,6 +283,17 @@ onMounted(() => home.load())
               <span class="when">
                 {{ open.has(repo.path) ? 'open' : ago(repo.last_commit) }}
               </span>
+              <!-- Only on the ones that are not open, and only on hover: the
+                   list is for reading, not for a row of crosses down its edge. -->
+              <button
+                v-if="!open.has(repo.path)"
+                class="drop"
+                :title="`Take ${repo.name} off the list`"
+                @click.stop="forget(repo)"
+              >
+                <X :size="12" />
+              </button>
+              <span v-else class="drop-space" />
             </li>
           </ul>
         </section>
@@ -415,6 +445,15 @@ h1 {
   color: var(--text-faint);
 }
 
+/* The same green and red the diffs use for lines gained and lost. */
+.stat-hint.up {
+  color: var(--green);
+}
+
+.stat-hint.down {
+  color: var(--red);
+}
+
 .card {
   padding: 14px 16px 16px;
   border: 1px solid var(--line);
@@ -510,7 +549,7 @@ h1 {
    down the list instead of drifting with the text beside them. */
 .row {
   display: grid;
-  grid-template-columns: minmax(90px, auto) minmax(0, 1fr) 148px 58px 78px;
+  grid-template-columns: minmax(90px, auto) minmax(0, 1fr) 148px 58px 78px 18px;
   align-items: center;
   gap: 10px;
   padding: 7px 6px;
@@ -572,6 +611,29 @@ h1 {
 
 .when {
   text-align: right;
+}
+
+.drop {
+  display: grid;
+  place-items: center;
+  width: 18px;
+  height: 18px;
+  border-radius: 4px;
+  color: var(--text-faint);
+  opacity: 0;
+}
+
+.row:hover .drop {
+  opacity: 1;
+}
+
+.drop:hover {
+  color: var(--text);
+  background: var(--bg-active);
+}
+
+.drop-space {
+  width: 18px;
 }
 
 .find {

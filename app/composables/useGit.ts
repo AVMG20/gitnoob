@@ -3,6 +3,7 @@ import { markRaw, reactive, ref } from 'vue'
 import { useConfig } from './useConfig'
 import { useForge } from './useForge'
 import { stepFile, useFileView, walkOrder } from './useFileView'
+import { useHome } from './useHome'
 import { parseCommandLine } from './cli'
 import type { LfsStatus } from './useLfs'
 import { useToasts } from './useToasts'
@@ -1168,6 +1169,10 @@ export function useGit() {
     // switched, a rebase that stopped has moved HEAD — and leaving the window
     // showing the state from before is worse than an extra read.
     await refresh()
+    // The home tab counts commits and uncommitted files across every project,
+    // and this is the moment those stopped being true. It re-reads when it is
+    // next opened rather than now: nothing of it is on screen.
+    useHome().stale()
     return result
   }
 

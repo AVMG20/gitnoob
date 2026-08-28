@@ -5,7 +5,7 @@ import { invoke } from '@tauri-apps/api/core'
 import HomePane from '~/components/HomePane.vue'
 import MidTruncate from '~/components/MidTruncate.vue'
 import { useConfig } from '~/composables/useConfig'
-import { ago, busiestLabel, short, useHome, type HomeSummary } from '~/composables/useHome'
+import { ago, short, useHome, type HomeSummary } from '~/composables/useHome'
 
 vi.mock('@tauri-apps/api/core', () => ({ invoke: vi.fn() }))
 vi.mock('@tauri-apps/plugin-dialog', () => ({ open: vi.fn() }))
@@ -27,8 +27,6 @@ function summary(over: Partial<HomeSummary> = {}): HomeSummary {
       previous_week: 9,
       streak: 4,
       best_streak: 11,
-      busy_weekday: 4,
-      busy_hour: 16,
       read: 421,
       added: 4200,
       removed: 1800,
@@ -156,12 +154,54 @@ describe('the home tab', () => {
   })
 })
 
-describe('the numbers on it', () => {
-  it('says when you work in words, and nothing when it cannot', () => {
-    expect(busiestLabel(summary().stats)).toBe('Thu 16:00')
-    expect(busiestLabel({ ...summary().stats, busy_weekday: 0 })).toBe('')
+describe('taking one off the list', () => {
+  it('offers a cross on the ones that are not open, and none on the ones that are', async () => {
+    const wrapper = show()
+    await flushPromises()
+
+    // The first row is the open tab; the other two are only recents.
+    expect(wrapper.findAll('.row')[0]!.find('.drop').exists()).toBe(false)
+    expect(wrapper.findAll('.row')[1]!.find('.drop').exists()).toBe(true)
   })
 
+  it('forgets it without asking, and without re-reading everything', async () => {
+    const wrapper = show()
+    await flushPromises()
+    const before = asked.mock.calls.filter(([cmd]) => cmd === 'home_summary').length
+
+    await wrapper.findAll('.row')[1]!.find('.drop').trigger('click')
+    await flushPromises()
+
+    expect(asked.mock.calls.some(([cmd, args]) => cmd === 'project_forget' && (args as { path: string }).path === '/repos/api')).toBe(true)
+    // Gone from the list on the spot, and no second read of every repository.
+    expect(wrapper.findAll('.row')).toHaveLength(2)
+    expect(asked.mock.calls.filter(([cmd]) => cmd === 'home_summary')).toHaveLength(before)
+    // A cross is not a click on the row: nothing was opened.
+    expect(wrapper.emitted('open')).toBeUndefined()
+  })
+})
+
+describe('keeping the numbers honest', () => {
+  it('reads again after something has been committed, but not before', async () => {
+    const { useGit } = await import('~/composables/useGit')
+    const git = useGit()
+
+    const first = mount(HomePane, { global: { components: { MidTruncate } } })
+    await flushPromises()
+    first.unmount()
+    expect(asked.mock.calls.filter(([cmd]) => cmd === 'home_summary')).toHaveLength(1)
+
+    // Any write to any repository is the moment the counts stopped being true.
+    git.store.repo = null
+    await git.stage(['a.ts'])
+
+    mount(HomePane, { global: { components: { MidTruncate } } })
+    await flushPromises()
+    expect(asked.mock.calls.filter(([cmd]) => cmd === 'home_summary')).toHaveLength(2)
+  })
+})
+
+describe('the numbers on it', () => {
   it('shortens the big numbers and leaves the small ones alone', () => {
     expect(short(940)).toBe('940')
     expect(short(4231)).toBe('4.2k')

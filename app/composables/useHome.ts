@@ -22,9 +22,6 @@ export interface HomeStats {
   previous_week: number
   streak: number
   best_streak: number
-  /** 1–7, Monday first. Zero when there is nothing to say. */
-  busy_weekday: number
-  busy_hour: number
   read: number
   added: number
   removed: number
@@ -84,14 +81,6 @@ export function useHome() {
   }
 
   return { store, repos, stats, load, stale }
-}
-
-const WEEKDAYS = ['', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun']
-
-/** "Thu 16:00", or an empty string when no commit has been read. */
-export function busiestLabel(stats: HomeStats | null) {
-  if (!stats?.busy_weekday) return ''
-  return `${WEEKDAYS[stats.busy_weekday] ?? ''} ${String(stats.busy_hour).padStart(2, '0')}:00`
 }
 
 /** 4200 as "4.2k", because the tiles are one line each. */

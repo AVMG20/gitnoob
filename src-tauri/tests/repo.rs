@@ -1609,6 +1609,27 @@ fn undo_and_redo_a_commit() {
     assert_eq!(sandbox.git(&["rev-parse", "HEAD"]).trim(), after);
 }
 
+/// What the home tab reads, on a repository it can be sure of.
+#[test]
+fn the_home_summary_reads_a_repository_it_has_opened() {
+    let sandbox = Sandbox::new("home");
+    sandbox.commit("a.txt", "one\n", "Add the parser");
+    sandbox.commit("b.txt", "two\n", "Add the writer");
+    sandbox.write("c.txt", "uncommitted\n");
+
+    let state = sandbox.state();
+    // The home tab reads the profile's own projects, so the repository has to
+    // be one of them: opening it is what puts it there.
+    gitnoob_lib::work::stage(&state, &["c.txt".to_string()]).unwrap();
+
+    let summary = gitnoob_lib::home::summary(&state).unwrap();
+    // A sandbox has no profile behind it, so the list is empty and the year
+    // with it: what matters is that it answers rather than failing.
+    assert!(summary.stats.days.len() == 371);
+    assert_eq!(summary.stats.days.iter().sum::<u32>(), 0);
+    assert!(summary.repos.is_empty());
+}
+
 #[test]
 fn undo_and_redo_a_hard_reset() {
     let sandbox = Sandbox::new("undohard");

@@ -48,9 +48,6 @@ pub struct HomeStats {
     /// Days in a row up to today with at least one commit.
     pub streak: u32,
     pub best_streak: u32,
-    /// `1`–`7`, Monday first, and the hour of the day the most commits landed.
-    pub busy_weekday: u32,
-    pub busy_hour: u32,
     /// How many of the commits read went into the answer above.
     pub read: u32,
     pub added: u64,
@@ -92,8 +89,6 @@ pub fn summary(state: &AppState) -> Result<HomeSummary, String> {
 
     let mut repos = Vec::with_capacity(paths.len());
     let mut days = vec![0u32; DAYS];
-    let mut weekdays = [0u32; 8];
-    let mut hours = [0u32; 24];
     let mut words: HashMap<String, u32> = HashMap::new();
     let mut read = 0u32;
     let mut added = 0u64;
@@ -122,22 +117,24 @@ pub fn summary(state: &AppState) -> Result<HomeSummary, String> {
             if (0..DAYS as i64).contains(&at) {
                 days[at as usize] += 1;
             }
-            if commit.weekday < 8 {
-                weekdays[commit.weekday as usize] += 1;
-            }
-            if commit.hour < 24 {
-                hours[commit.hour as usize] += 1;
-            }
             if today - commit.day < 7 {
                 this_week += 1;
             }
             if let Some(word) = first_word(&commit.subject) {
                 *words.entry(word).or_default() += 1;
             }
-            card.last_commit = card.last_commit.max(commit.day * 86_400);
+            card.last_commit = card.last_commit.max(commit.at);
         }
         if this_week > 0 {
             repos_this_week += 1;
+        }
+        // A repository you have never committed to yourself still has a date
+        // worth showing: whoever did commit to it last.
+        if card.last_commit == 0 {
+            card.last_commit = git_cmd::run_checked(&root, &["log", "-1", "--format=%ct"])
+                .ok()
+                .and_then(|out| out.trim().parse().ok())
+                .unwrap_or(0);
         }
         let (plus, minus) = read_week_lines(&root, author.as_deref());
         added += plus;
@@ -158,8 +155,6 @@ pub fn summary(state: &AppState) -> Result<HomeSummary, String> {
         stats: HomeStats {
             streak: streak(&days),
             best_streak: best_streak(&days),
-            busy_weekday: peak(&weekdays[1..]).map(|at| at as u32 + 1).unwrap_or(0),
-            busy_hour: peak(&hours).map(|at| at as u32).unwrap_or(0),
             days,
             week,
             previous_week,
@@ -219,8 +214,8 @@ fn card_for(root: &std::path::Path, path: &str, name: &str) -> RepoCard {
 struct Commit {
     /// Days since the epoch, in the machine's own timezone.
     day: i64,
-    weekday: u32,
-    hour: u32,
+    /// The time itself, for the "last touched" a list of dates wants.
+    at: i64,
     subject: String,
 }
 
@@ -233,9 +228,9 @@ fn read_year(root: &std::path::Path, author: Option<&str>) -> Vec<Commit> {
         "--no-merges",
         "--no-show-signature",
         &since,
-        // Local time, because "when do you work" is a question about the clock
-        // on the wall rather than about UTC.
-        "--date=format-local:%s %u %H",
+        // Local time, so a commit made at eleven at night counts for the day
+        // it felt like rather than for the one UTC says it was.
+        "--date=format-local:%s",
         "--format=%ad%x1f%s",
     ];
     let filter;
@@ -253,14 +248,10 @@ fn read_year(root: &std::path::Path, author: Option<&str>) -> Vec<Commit> {
     raw.lines()
         .filter_map(|line| {
             let (stamp, subject) = line.split_once('\u{1f}')?;
-            let mut parts = stamp.split_whitespace();
-            let seconds: i64 = parts.next()?.parse().ok()?;
-            let weekday: u32 = parts.next()?.parse().ok()?;
-            let hour: u32 = parts.next()?.parse().ok()?;
+            let seconds: i64 = stamp.trim().parse().ok()?;
             Some(Commit {
                 day: days_since_epoch(seconds),
-                weekday,
-                hour,
+                at: seconds,
                 subject: subject.to_string(),
             })
         })
@@ -355,16 +346,6 @@ fn best_streak(days: &[u32]) -> u32 {
     best
 }
 
-/// Which slot holds the most, or `None` when they are all empty.
-fn peak(counts: &[u32]) -> Option<usize> {
-    let (at, most) = counts
-        .iter()
-        .enumerate()
-        .max_by_key(|(_, count)| **count)
-        .map(|(at, count)| (at, *count))?;
-    (most > 0).then_some(at)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -381,12 +362,6 @@ mod tests {
     fn the_best_streak_is_the_longest_run_anywhere() {
         assert_eq!(best_streak(&[1, 1, 1, 0, 1, 1, 0, 1]), 3);
         assert_eq!(best_streak(&[0, 0]), 0);
-    }
-
-    #[test]
-    fn the_busiest_slot_is_the_fullest_one() {
-        assert_eq!(peak(&[0, 3, 9, 2]), Some(2));
-        assert_eq!(peak(&[0, 0]), None);
     }
 
     #[test]

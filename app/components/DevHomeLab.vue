@@ -84,8 +84,6 @@ function summary() {
       previous_week: days.slice(-14, -7).reduce((all, one) => all + one, 0),
       streak: 9,
       best_streak: 14,
-      busy_weekday: 4,
-      busy_hour: 16,
       read: days.reduce((all, one) => all + one, 0),
       added: 4231,
       removed: 1804,
@@ -101,8 +99,14 @@ function summary() {
 function install() {
   const internals = ((window as unknown as Record<string, unknown>).__TAURI_INTERNALS__ ??=
     {}) as Record<string, unknown>
-  internals.invoke = async (cmd: string) => {
-    if (cmd === 'home_summary') return summary()
+  let answer = summary()
+  internals.invoke = async (cmd: string, args?: Record<string, unknown>) => {
+    if (cmd === 'home_summary') return answer
+    if (cmd === 'project_forget') {
+      const path = String(args?.path ?? '')
+      answer = { ...answer, repos: answer.repos.filter((one) => one.path !== path) }
+      return null
+    }
     if (cmd === 'config_get') {
       return {
         version: 1,
