@@ -5178,6 +5178,467 @@ fn rebase_progress_says_nothing_when_no_rebase_is_running() {
     assert!(rebase::progress(&sandbox.state()).unwrap().is_none());
 }
 
+// --- squash ------------------------------------------------------------------
+
+/// Puts a stand-in in the slot the app's own binary fills.
+///
+/// `rebase::squash` starts a real `git rebase -i`, and the editor it names is
+/// `gitnoob --write-todo`. The test binary is not gitnoob, so it hands git
+/// `cp` instead — which is the whole of what `--write-todo` does. Set once for
+/// the process, to the same value, so tests running side by side agree.
+fn lend_git_an_editor() {
+    static ONCE: std::sync::Once = std::sync::Once::new();
+    ONCE.call_once(|| std::env::set_var("GITNOOB_SEQUENCE_EDITOR", "cp"));
+}
+
+/// Three commits on main, the last two of which are the obvious fold.
+fn three_commits(tag: &str) -> Sandbox {
+    let sandbox = Sandbox::new(tag);
+    sandbox.commit("a.txt", "one\n", "First");
+    sandbox.commit("b.txt", "two\n", "Add the parser");
+    sandbox.commit("b.txt", "two fixed\n", "wip: fix the parser");
+    sandbox
+}
+
+#[test]
+fn squashing_a_run_leaves_one_commit_carrying_the_message_given() {
+    lend_git_an_editor();
+    let sandbox = three_commits("squash-run");
+    let ids = oids(&sandbox);
+
+    let said = rebase::squash(
+        &sandbox.state(),
+        &[ids[1].clone(), ids[2].clone()],
+        "feat: a parser that works",
+    )
+    .unwrap();
+
+    assert!(said.contains("Squashed 2"), "{said}");
+    assert_eq!(subjects(&sandbox), vec!["First", "feat: a parser that works"]);
+    // The changes both commits made are still there; only the second commit is.
+    assert_eq!(
+        std::fs::read_to_string(sandbox.root.join("b.txt")).unwrap(),
+        "two fixed\n"
+    );
+    assert!(rebase::progress(&sandbox.state()).unwrap().is_none());
+    // Nothing of the fold is left lying beside git's own files.
+    assert!(!sandbox.root.join(".git/gitnoob-squash-message").exists());
+    assert!(!sandbox.root.join(".git/gitnoob-rebase-todo").exists());
+}
+
+#[test]
+fn the_message_is_taken_whole_body_and_all() {
+    lend_git_an_editor();
+    let sandbox = three_commits("squash-body");
+    let ids = oids(&sandbox);
+
+    rebase::squash(
+        &sandbox.state(),
+        &[ids[1].clone(), ids[2].clone()],
+        "feat: a parser\n\nWhy it had to change, at length.\n",
+    )
+    .unwrap();
+
+    let body = sandbox.git(&["log", "-1", "--format=%B"]);
+    assert_eq!(body.trim(), "feat: a parser\n\nWhy it had to change, at length.");
+}
+
+#[test]
+fn the_commits_above_the_fold_are_replayed_onto_it() {
+    lend_git_an_editor();
+    let sandbox = three_commits("squash-above");
+    sandbox.commit("c.txt", "three\n", "Later work");
+    sandbox.commit("d.txt", "four\n", "Later still");
+    let ids = oids(&sandbox);
+
+    rebase::squash(
+        &sandbox.state(),
+        &[ids[1].clone(), ids[2].clone()],
+        "feat: the parser",
+    )
+    .unwrap();
+
+    assert_eq!(
+        subjects(&sandbox),
+        vec!["First", "feat: the parser", "Later work", "Later still"]
+    );
+    // Everything each of them changed is still in the tree.
+    for (file, content) in [("b.txt", "two fixed\n"), ("c.txt", "three\n"), ("d.txt", "four\n")] {
+        assert_eq!(
+            std::fs::read_to_string(sandbox.root.join(file)).unwrap(),
+            content,
+            "{file}"
+        );
+    }
+}
+
+#[test]
+fn a_fold_that_reaches_the_first_commit_rebases_from_the_root() {
+    lend_git_an_editor();
+    let sandbox = three_commits("squash-root");
+    let ids = oids(&sandbox);
+
+    rebase::squash(&sandbox.state(), &ids, "feat: all of it at once").unwrap();
+
+    assert_eq!(subjects(&sandbox), vec!["feat: all of it at once"]);
+    assert_eq!(
+        std::fs::read_to_string(sandbox.root.join("a.txt")).unwrap(),
+        "one\n"
+    );
+    assert_eq!(
+        std::fs::read_to_string(sandbox.root.join("b.txt")).unwrap(),
+        "two fixed\n"
+    );
+}
+
+#[test]
+fn uncommitted_work_is_stashed_over_the_fold_and_put_back() {
+    lend_git_an_editor();
+    let sandbox = three_commits("squash-dirty");
+    let ids = oids(&sandbox);
+    sandbox.write("a.txt", "one, half-edited\n");
+
+    rebase::squash(
+        &sandbox.state(),
+        &[ids[1].clone(), ids[2].clone()],
+        "feat: the parser",
+    )
+    .unwrap();
+
+    assert_eq!(
+        std::fs::read_to_string(sandbox.root.join("a.txt")).unwrap(),
+        "one, half-edited\n",
+        "the edit in progress should survive the fold"
+    );
+    assert_eq!(subjects(&sandbox), vec!["First", "feat: the parser"]);
+}
+
+#[test]
+fn undoing_a_squash_puts_the_commits_back_and_redoing_folds_them_again() {
+    lend_git_an_editor();
+    let sandbox = three_commits("squash-undo");
+    let ids = oids(&sandbox);
+    let state = sandbox.state();
+    let before = sandbox.git(&["rev-parse", "HEAD"]).trim().to_string();
+
+    rebase::squash(&state, &[ids[1].clone(), ids[2].clone()], "feat: the parser").unwrap();
+    let folded = sandbox.git(&["rev-parse", "HEAD"]).trim().to_string();
+    assert_ne!(folded, before);
+
+    let said = journal::undo(&state).unwrap();
+    assert!(said.contains("Squash 2 commits"), "{said}");
+    assert_eq!(sandbox.git(&["rev-parse", "HEAD"]).trim(), before);
+    assert_eq!(
+        subjects(&sandbox),
+        vec!["First", "Add the parser", "wip: fix the parser"]
+    );
+
+    journal::redo(&state).unwrap();
+    assert_eq!(sandbox.git(&["rev-parse", "HEAD"]).trim(), folded);
+    assert_eq!(subjects(&sandbox), vec!["First", "feat: the parser"]);
+}
+
+#[test]
+fn undoing_a_squash_leaves_the_files_alone() {
+    lend_git_an_editor();
+    let sandbox = three_commits("squash-undo-files");
+    let ids = oids(&sandbox);
+    let state = sandbox.state();
+
+    rebase::squash(&state, &[ids[1].clone(), ids[2].clone()], "feat: the parser").unwrap();
+    sandbox.write("a.txt", "edited after the fold\n");
+    journal::undo(&state).unwrap();
+
+    // The fold left the same tree it started from, so stepping the branch back
+    // is all an undo has to do — and work started since is not its business.
+    assert_eq!(
+        std::fs::read_to_string(sandbox.root.join("a.txt")).unwrap(),
+        "edited after the fold\n"
+    );
+    assert_eq!(
+        std::fs::read_to_string(sandbox.root.join("b.txt")).unwrap(),
+        "two fixed\n"
+    );
+}
+
+#[test]
+fn the_preview_joins_the_messages_oldest_first() {
+    let sandbox = three_commits("squash-preview");
+    let ids = oids(&sandbox);
+
+    // Handed newest first, as a shift-click upwards would.
+    let preview =
+        rebase::squash_preview(&sandbox.state(), &[ids[2].clone(), ids[1].clone()]).unwrap();
+
+    let summaries: Vec<&str> = preview.commits.iter().map(|c| c.summary.as_str()).collect();
+    assert_eq!(summaries, vec!["Add the parser", "wip: fix the parser"]);
+    assert_eq!(preview.message, "Add the parser\n\nwip: fix the parser");
+    assert_eq!(preview.onto.as_deref(), Some(&ids[0][..7]));
+    assert_eq!(preview.above, 0);
+    assert_eq!(preview.branch.as_deref(), Some("main"));
+    assert!(preview.refusal.is_none());
+    assert!(preview.commits.iter().all(|c| !c.pushed));
+}
+
+#[test]
+fn the_preview_counts_what_would_be_replayed_over_the_fold() {
+    let sandbox = three_commits("squash-preview-above");
+    sandbox.commit("c.txt", "three\n", "Later work");
+    let ids = oids(&sandbox);
+
+    let preview =
+        rebase::squash_preview(&sandbox.state(), &[ids[1].clone(), ids[2].clone()]).unwrap();
+    assert_eq!(preview.above, 1);
+}
+
+#[test]
+fn the_preview_says_at_the_root_that_there_is_nothing_underneath() {
+    let sandbox = three_commits("squash-preview-root");
+    let ids = oids(&sandbox);
+
+    let preview = rebase::squash_preview(&sandbox.state(), &ids).unwrap();
+    assert!(preview.onto.is_none(), "there is no commit under the first");
+    assert_eq!(preview.commits.len(), 3);
+}
+
+#[test]
+fn the_preview_says_which_commits_a_remote_already_has() {
+    let sandbox = three_commits("squash-preview-pushed");
+    let ids = oids(&sandbox);
+    sandbox.git(&["update-ref", "refs/remotes/origin/main", &ids[1]]);
+
+    let preview =
+        rebase::squash_preview(&sandbox.state(), &[ids[1].clone(), ids[2].clone()]).unwrap();
+    assert!(preview.commits[0].pushed, "the remote has this one");
+    assert!(!preview.commits[1].pushed);
+}
+
+#[test]
+fn commits_with_another_between_them_are_refused_with_the_reason() {
+    lend_git_an_editor();
+    let sandbox = three_commits("squash-gap");
+    sandbox.commit("c.txt", "three\n", "In between");
+    sandbox.commit("d.txt", "four\n", "The far one");
+    let ids = oids(&sandbox);
+
+    // The second and the fourth, with two commits standing between them.
+    let picked = [ids[1].clone(), ids[4].clone()];
+    let preview = rebase::squash_preview(&sandbox.state(), &picked).unwrap();
+    let refusal = preview.refusal.expect("it cannot fold these");
+    assert!(refusal.contains("not next to each other"), "{refusal}");
+    assert!(refusal.contains("2 other commits sit"), "{refusal}");
+    // It still describes what was picked, so the dialog can name them.
+    assert_eq!(preview.commits.len(), 2);
+
+    let refused = rebase::squash(&sandbox.state(), &picked, "feat: nope").unwrap_err();
+    assert!(refused.contains("not next to each other"), "{refused}");
+    // And nothing was rewritten on the way to saying so.
+    assert_eq!(
+        subjects(&sandbox),
+        vec![
+            "First",
+            "Add the parser",
+            "wip: fix the parser",
+            "In between",
+            "The far one"
+        ]
+    );
+}
+
+#[test]
+fn one_commit_between_two_is_counted_in_the_singular() {
+    let sandbox = three_commits("squash-gap-one");
+    sandbox.commit("c.txt", "three\n", "The far one");
+    let ids = oids(&sandbox);
+
+    let preview =
+        rebase::squash_preview(&sandbox.state(), &[ids[1].clone(), ids[3].clone()]).unwrap();
+    let refusal = preview.refusal.unwrap();
+    assert!(refusal.contains("1 other commit sits"), "{refusal}");
+}
+
+#[test]
+fn a_commit_that_is_not_on_this_branch_is_refused() {
+    lend_git_an_editor();
+    let sandbox = three_commits("squash-elsewhere");
+    sandbox.git(&["checkout", "-q", "-b", "side"]);
+    sandbox.commit("side.txt", "aside\n", "Off to the side");
+    let elsewhere = sandbox.git(&["rev-parse", "HEAD"]).trim().to_string();
+    sandbox.git(&["checkout", "-q", "main"]);
+    let ids = oids(&sandbox);
+
+    let picked = [ids[2].clone(), elsewhere];
+    let preview = rebase::squash_preview(&sandbox.state(), &picked).unwrap();
+    assert!(preview
+        .refusal
+        .as_deref()
+        .unwrap()
+        .contains("not on the branch you are on"));
+    assert!(rebase::squash(&sandbox.state(), &picked, "feat: nope").is_err());
+}
+
+#[test]
+fn a_merge_between_the_run_and_the_tip_is_refused_rather_than_flattened() {
+    lend_git_an_editor();
+    let sandbox = three_commits("squash-merge");
+    let ids = oids(&sandbox);
+    sandbox.git(&["checkout", "-q", "-b", "side", &ids[0]]);
+    sandbox.commit("side.txt", "aside\n", "Off to the side");
+    sandbox.git(&["checkout", "-q", "main"]);
+    sandbox.git(&["merge", "-q", "--no-ff", "-m", "Merge side", "side"]);
+
+    let picked = [ids[1].clone(), ids[2].clone()];
+    let preview = rebase::squash_preview(&sandbox.state(), &picked).unwrap();
+    assert!(preview
+        .refusal
+        .as_deref()
+        .unwrap()
+        .contains("merge commit"));
+
+    let refused = rebase::squash(&sandbox.state(), &picked, "feat: nope").unwrap_err();
+    assert!(refused.contains("merge commit"), "{refused}");
+    // The merge is untouched.
+    assert_eq!(
+        sandbox.git(&["rev-list", "--merges", "--count", "HEAD"]).trim(),
+        "1"
+    );
+}
+
+#[test]
+fn one_commit_on_its_own_is_not_a_squash() {
+    let sandbox = three_commits("squash-single");
+    let ids = oids(&sandbox);
+
+    let refused = rebase::squash_preview(&sandbox.state(), &[ids[2].clone()]).unwrap_err();
+    assert!(refused.contains("at least two"), "{refused}");
+    // The same commit twice is still one commit.
+    let refused =
+        rebase::squash(&sandbox.state(), &[ids[2].clone(), ids[2].clone()], "x").unwrap_err();
+    assert!(refused.contains("at least two"), "{refused}");
+}
+
+#[test]
+fn a_commit_that_is_not_in_the_repository_is_refused_rather_than_crashing() {
+    let sandbox = three_commits("squash-bogus");
+    let ids = oids(&sandbox);
+    let nowhere = "0".repeat(40);
+
+    let preview =
+        rebase::squash_preview(&sandbox.state(), &[ids[2].clone(), nowhere.clone()]).unwrap();
+    assert!(preview
+        .refusal
+        .as_deref()
+        .unwrap()
+        .contains("not on the branch you are on"));
+    // The one commit that does exist is still described; the other is left out
+    // rather than turning the whole answer into "bad object".
+    assert_eq!(preview.commits.len(), 1);
+    assert_eq!(preview.commits[0].oid, ids[2]);
+    assert!(rebase::squash(&sandbox.state(), &[ids[2].clone(), nowhere], "feat: nope").is_err());
+}
+
+#[test]
+fn a_squash_on_a_detached_head_moves_the_detached_head() {
+    lend_git_an_editor();
+    let sandbox = three_commits("squash-detached");
+    let ids = oids(&sandbox);
+    sandbox.git(&["checkout", "-q", "--detach"]);
+    let state = sandbox.state();
+
+    let preview = rebase::squash_preview(&state, &[ids[1].clone(), ids[2].clone()]).unwrap();
+    assert!(preview.branch.is_none(), "there is no branch to name");
+    assert!(preview.refusal.is_none(), "it is still a run of commits");
+
+    rebase::squash(&state, &[ids[1].clone(), ids[2].clone()], "feat: the parser").unwrap();
+    assert_eq!(subjects(&sandbox), vec!["First", "feat: the parser"]);
+    // main is where it was: the fold moved HEAD, and HEAD is all it moved.
+    assert_eq!(
+        sandbox.git(&["log", "--format=%s", "--reverse", "main"]).lines().count(),
+        3
+    );
+    // And it can still be stepped back, without a branch name to check.
+    journal::undo(&state).unwrap();
+    assert_eq!(
+        subjects(&sandbox),
+        vec!["First", "Add the parser", "wip: fix the parser"]
+    );
+}
+
+#[test]
+fn staged_work_survives_a_squash() {
+    lend_git_an_editor();
+    let sandbox = three_commits("squash-staged-dirty");
+    let ids = oids(&sandbox);
+    sandbox.write("staged.txt", "half an idea\n");
+    sandbox.git(&["add", "staged.txt"]);
+
+    rebase::squash(
+        &sandbox.state(),
+        &[ids[1].clone(), ids[2].clone()],
+        "feat: the parser",
+    )
+    .unwrap();
+
+    // The autostash puts it back. Git's stash does not remember what was
+    // staged, so it comes back as an edit rather than as a staged one — but it
+    // comes back, which is the part that matters.
+    assert_eq!(
+        std::fs::read_to_string(sandbox.root.join("staged.txt")).unwrap(),
+        "half an idea\n"
+    );
+    assert_eq!(subjects(&sandbox), vec!["First", "feat: the parser"]);
+}
+
+#[test]
+fn a_squash_needs_a_message() {
+    let sandbox = three_commits("squash-nomessage");
+    let ids = oids(&sandbox);
+
+    let refused =
+        rebase::squash(&sandbox.state(), &[ids[1].clone(), ids[2].clone()], "  \n ").unwrap_err();
+    assert!(refused.contains("needs a message"), "{refused}");
+}
+
+#[test]
+fn the_same_commit_picked_twice_is_folded_once() {
+    lend_git_an_editor();
+    let sandbox = three_commits("squash-dupe");
+    let ids = oids(&sandbox);
+
+    // A shift-range over a ctrl-click can hand the same oid twice.
+    let said = rebase::squash(
+        &sandbox.state(),
+        &[ids[1].clone(), ids[2].clone(), ids[1].clone()],
+        "feat: the parser",
+    )
+    .unwrap();
+    assert!(said.contains("Squashed 2"), "{said}");
+    assert_eq!(subjects(&sandbox), vec!["First", "feat: the parser"]);
+}
+
+#[test]
+fn folding_keeps_the_author_of_the_oldest_commit() {
+    lend_git_an_editor();
+    let sandbox = Sandbox::new("squash-author");
+    sandbox.commit("a.txt", "one\n", "First");
+    sandbox.git(&["config", "user.name", "Someone Else"]);
+    sandbox.git(&["config", "user.email", "else@example.com"]);
+    sandbox.commit("b.txt", "two\n", "Theirs");
+    sandbox.git(&["config", "user.name", "Test"]);
+    sandbox.git(&["config", "user.email", "test@example.com"]);
+    sandbox.commit("b.txt", "two fixed\n", "Mine");
+    let ids = oids(&sandbox);
+
+    rebase::squash(&sandbox.state(), &[ids[1].clone(), ids[2].clone()], "feat: both").unwrap();
+
+    // git's own fixup rule: the commit that survives is the first one, and it
+    // keeps its author.
+    assert_eq!(
+        sandbox.git(&["log", "-1", "--format=%ae"]).trim(),
+        "else@example.com"
+    );
+}
+
 // --- line-level staging ------------------------------------------------------
 
 #[test]

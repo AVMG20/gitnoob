@@ -387,6 +387,25 @@ async fn rebase_abort(state: State<'_, AppState>) -> Result<String, String> {
     rebase::abort(&state)
 }
 
+/// What a squash of the chosen commits would fold, and what would stop it.
+#[tauri::command]
+async fn squash_preview(
+    oids: Vec<String>,
+    state: State<'_, AppState>,
+) -> Result<rebase::SquashPreview, String> {
+    rebase::squash_preview(&state, &oids)
+}
+
+/// Folds a run of commits into one carrying the message the window collected.
+#[tauri::command]
+async fn squash(
+    oids: Vec<String>,
+    message: String,
+    state: State<'_, AppState>,
+) -> Result<String, String> {
+    rebase::squash(&state, &oids, &message)
+}
+
 /// Gives the commit a stopped rebase is sitting on a new message, and goes on.
 #[tauri::command]
 async fn rebase_reword(message: String, state: State<'_, AppState>) -> Result<String, String> {
@@ -1829,6 +1848,8 @@ pub fn run() {
             rebase_skip,
             rebase_abort,
             rebase_reword,
+            squash_preview,
+            squash,
             blame_file,
             file_history,
             signature_marks,

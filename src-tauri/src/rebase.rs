@@ -7,6 +7,10 @@
 //! everything after it is git's own rebase, with git's own conflict handling,
 //! `git rebase --continue` and `git rebase --abort`.
 //!
+//! Squashing a run of commits (`squash` below) is the same machinery with the
+//! plan written for it rather than by hand, and one `exec` line that puts the
+//! message the user typed onto the commit the fold leaves.
+//!
 //! `reword` is the one action not handed straight to git. Git would open the
 //! message editor itself, which is the thing there is none of, so a reword is
 //! written into the todo as `edit` and the oid is remembered on the side. When
@@ -18,6 +22,7 @@ use std::path::Path;
 use serde::{Deserialize, Serialize};
 
 use crate::git_cmd;
+use crate::journal::{self, Mode};
 use crate::state::AppState;
 
 /// What to do with one commit. The names are git's own.
@@ -174,14 +179,21 @@ pub fn todo_text(steps: &[Step]) -> Result<String, String> {
 /// This app's own binary, which answers `--write-todo` by copying and exiting.
 /// Git hands the value to a shell and appends the todo path, so what runs is
 /// `gitnoob --write-todo <ours> <git's>`.
+///
+/// `GITNOOB_SEQUENCE_EDITOR` stands in for the binary half, and exists for the
+/// test suite: the test binary is not this app and cannot answer
+/// `--write-todo`, so without it nothing that starts a rebase could be covered
+/// end to end. Nothing in the app sets it.
 fn sequence_editor(list: &Path) -> Result<String, String> {
-    let exe =
-        std::env::current_exe().map_err(|e| format!("Could not find gitnoob's own path: {e}"))?;
-    Ok(format!(
-        "{} --write-todo {}",
-        shell_quote(&exe),
-        shell_quote(list)
-    ))
+    let head = match std::env::var("GITNOOB_SEQUENCE_EDITOR") {
+        Ok(over) if !over.trim().is_empty() => over,
+        _ => {
+            let exe = std::env::current_exe()
+                .map_err(|e| format!("Could not find gitnoob's own path: {e}"))?;
+            format!("{} --write-todo", shell_quote(&exe))
+        }
+    };
+    Ok(format!("{head} {}", shell_quote(list)))
 }
 
 /// Quotes a path for the shell git runs the sequence editor through.
@@ -198,10 +210,6 @@ pub fn start(state: &AppState, onto: &str, steps: Vec<Step>) -> Result<String, S
     let root = state.path()?;
     let todo = todo_text(&steps)?;
 
-    let git_dir = crate::remote::git_dir(&root)?;
-    let list = git_dir.join("gitnoob-rebase-todo");
-    std::fs::write(&list, &todo).map_err(|e| format!("Could not write the plan: {e}"))?;
-
     // The oids the window called rewords, which go in as `edit`. Remembered on
     // disk rather than in memory so that closing the window part-way through a
     // rebase does not lose which stop is which.
@@ -210,13 +218,44 @@ pub fn start(state: &AppState, onto: &str, steps: Vec<Step>) -> Result<String, S
         .filter(|s| s.action == Action::Reword)
         .map(|s| s.oid.as_str())
         .collect();
+
+    run_todo(
+        &root,
+        Some(onto),
+        &todo,
+        &rewords,
+        format!("Rebased onto {onto}"),
+    )
+}
+
+/// Hands git a todo list and lets it replay.
+///
+/// Everything that starts a rebase here goes through this: the plan the pane
+/// built, and the fold a squash asks for. `onto` is `None` for a rebase that
+/// reaches the repository's first commit, which git spells `--root`.
+fn run_todo(
+    root: &Path,
+    onto: Option<&str>,
+    todo: &str,
+    rewords: &[&str],
+    done: String,
+) -> Result<String, String> {
+    let git_dir = crate::remote::git_dir(root)?;
+    let list = git_dir.join("gitnoob-rebase-todo");
+    std::fs::write(&list, todo).map_err(|e| format!("Could not write the plan: {e}"))?;
     let _ = std::fs::write(git_dir.join("gitnoob-rebase-rewords"), rewords.join("\n"));
 
     let editor = sequence_editor(&list)?;
 
+    let mut args: Vec<&str> = vec!["rebase", "-i", "--autostash"];
+    match onto {
+        Some(onto) => args.push(onto),
+        None => args.push("--root"),
+    }
+
     let out = git_cmd::run_with_env(
-        &root,
-        &["rebase", "-i", "--autostash", onto],
+        root,
+        &args,
         &[
             ("GIT_SEQUENCE_EDITOR", editor.as_str()),
             // Nothing else may open an editor: a squash would otherwise sit
@@ -229,7 +268,7 @@ pub fn start(state: &AppState, onto: &str, steps: Vec<Step>) -> Result<String, S
 
     if out.ok {
         clear_marks(&git_dir);
-        return Ok(format!("Rebased onto {onto}"));
+        return Ok(done);
     }
     // A rebase that stops is not a rebase that failed: it stopped for an edit,
     // a reword or a conflict, and the window has a strip for each of those.
@@ -238,6 +277,329 @@ pub fn start(state: &AppState, onto: &str, steps: Vec<Step>) -> Result<String, S
     }
     clear_marks(&git_dir);
     Err(one_message(&out))
+}
+
+// --- squash ------------------------------------------------------------------
+//
+// Folding a run of commits into one is a rebase with the second and later ones
+// written as `fixup`, and one `exec` after them that puts the message the user
+// wrote onto what is left. The message goes in through a file rather than an
+// editor for the same reason everything else here does: there is no editor.
+//
+// Only a *run* can be folded. Git replays a todo list in order, so commits with
+// others in between could only be folded by moving them together first — which
+// is a different operation with a different answer to "what did that do to the
+// commits I did not pick". The pane's rebase plan is where reordering lives;
+// this is the one-gesture version for commits that already sit together.
+
+/// One commit a squash would fold, with the message it brings to the join.
+#[derive(Serialize, Debug, PartialEq, Eq, Clone)]
+pub struct Folded {
+    pub oid: String,
+    pub short: String,
+    pub summary: String,
+    /// The whole message, which is what the joined default is built from.
+    pub message: String,
+    pub author: String,
+    /// When it was committed, for the line the dialog draws.
+    pub time: i64,
+    /// Already on a remote, so folding it means a force push afterwards.
+    pub pushed: bool,
+}
+
+/// What the window shows before asking for the fold.
+#[derive(Serialize, Debug, PartialEq, Eq)]
+pub struct SquashPreview {
+    /// The commits to be folded, oldest first — the order the join reads in.
+    pub commits: Vec<Folded>,
+    /// The joined message, for the box to start from.
+    pub message: String,
+    /// The commit the fold lands on, short, or `None` at the root.
+    pub onto: Option<String>,
+    /// How many commits sit above the run and get replayed onto the fold.
+    pub above: usize,
+    /// The branch this would rewrite, or `None` on a detached HEAD.
+    pub branch: Option<String>,
+    /// Why it cannot be done, in the words the dialog shows. `None` when it can.
+    pub refusal: Option<String>,
+}
+
+/// What the range looks like, worked out once and used by both calls.
+struct Survey {
+    /// The commits asked for, with any repeat taken out.
+    wanted: Vec<String>,
+    /// Every commit from the one under the run up to HEAD, oldest first.
+    chain: Vec<String>,
+    /// How many of the leading ones are being folded.
+    fold: usize,
+    /// The commit under the run, or `None` when the run starts at the root.
+    base: Option<String>,
+    refusal: Option<String>,
+}
+
+/// Reads the range a squash would touch and decides whether it can be done.
+///
+/// Everything it refuses on is said in full rather than left for git to fail
+/// on: the selection is the user's, and "those two are not next to each other"
+/// is an answer they can act on where `error: cannot squash without a previous
+/// commit` is not.
+fn survey(state: &AppState, oids: &[String]) -> Result<Survey, String> {
+    let root = state.path()?;
+
+    // The window can hand the same commit twice — a shift-range over a ctrl
+    // click — and git counts a repeated oid as a second commit to fold.
+    let mut wanted: Vec<String> = Vec::new();
+    for oid in oids {
+        if !wanted.contains(oid) {
+            wanted.push(oid.clone());
+        }
+    }
+    if wanted.len() < 2 {
+        return Err("Squashing folds commits together, so it takes at least two.".to_string());
+    }
+
+    // What the fold lands on. A first commit has no parent, and git spells
+    // rebasing from there `--root` rather than naming a commit.
+    let oldest = oldest_of(&root, &wanted)?;
+    let base = git_cmd::run(&root, &["rev-parse", "--verify", &format!("{oldest}^")])
+        .ok()
+        .filter(|out| out.ok)
+        .map(|out| out.stdout.trim().to_string())
+        .filter(|oid| !oid.is_empty());
+
+    let range = match &base {
+        Some(base) => format!("{base}..HEAD"),
+        None => "HEAD".to_string(),
+    };
+    let listed = git_cmd::run_checked(
+        &root,
+        &["log", "--reverse", "--topo-order", "--format=%H %P", &range],
+    )?;
+
+    let mut chain: Vec<String> = Vec::new();
+    let mut merged = false;
+    for line in listed.lines() {
+        let mut parts = line.split_whitespace();
+        let Some(oid) = parts.next() else { continue };
+        // Everything after the commit is its parents; two or more is a merge.
+        if parts.count() > 1 {
+            merged = true;
+        }
+        chain.push(oid.to_string());
+    }
+
+    let mut refusal = None;
+    if wanted.iter().any(|oid| !chain.contains(oid)) {
+        refusal = Some(
+            "Some of those commits are not on the branch you are on. Squashing folds commits \
+             that already sit together on this branch."
+                .to_string(),
+        );
+    } else if merged {
+        refusal = Some(
+            "There is a merge commit between these and the tip of the branch. Replaying over \
+             one would flatten it, so this is not offered here."
+                .to_string(),
+        );
+    } else {
+        // With no merges the range is a straight line, so the run is contiguous
+        // exactly when the chosen commits are the first few of it — `base` is
+        // the parent of the oldest, which puts that one at the front.
+        let mut positions: Vec<usize> = wanted
+            .iter()
+            .filter_map(|oid| chain.iter().position(|one| one == oid))
+            .collect();
+        positions.sort_unstable();
+        let run = positions.first() == Some(&0)
+            && positions.windows(2).all(|pair| pair[1] == pair[0] + 1);
+        if !run {
+            let between = positions.last().copied().unwrap_or(0) + 1 - positions.len();
+            refusal = Some(format!(
+                "Those commits are not next to each other: {between} other {} between them. \
+                 Squashing folds a run with nothing in the middle — use the rebase plan to move \
+                 them together first.",
+                if between == 1 { "commit sits" } else { "commits sit" }
+            ));
+        }
+    }
+
+    Ok(Survey {
+        fold: wanted.len(),
+        wanted,
+        chain,
+        base,
+        refusal,
+    })
+}
+
+/// The oldest of a set of commits: the one all the others have as an ancestor.
+///
+/// Asked of git rather than worked out from commit dates. Two commits made in
+/// the same second are not ordered by their dates at all, and a rebase todo
+/// written in the wrong order folds the wrong commit into the wrong one.
+fn oldest_of(root: &Path, oids: &[String]) -> Result<String, String> {
+    let mut oldest = oids.first().cloned().unwrap_or_default();
+    for other in oids.iter().skip(1) {
+        let out = git_cmd::run(root, &["merge-base", "--is-ancestor", other, &oldest])?;
+        if out.ok {
+            oldest = other.clone();
+        }
+    }
+    Ok(oldest)
+}
+
+/// The commits a squash would fold, the message it would start from, and what
+/// would stop it.
+pub fn squash_preview(state: &AppState, oids: &[String]) -> Result<SquashPreview, String> {
+    let root = state.path()?;
+    let found = survey(state, oids)?;
+    // A refused selection is not a run, so there is no front of the chain to
+    // read it off: what is described is what was picked, oldest first by date,
+    // which is only ever a list to look at rather than an order to fold in.
+    let subjects: Vec<String> = if found.refusal.is_some() {
+        found.wanted.clone()
+    } else {
+        found.chain.iter().take(found.fold).cloned().collect()
+    };
+
+    let published = published_commits(&root);
+    // Anything git cannot read is left out rather than made into an error: it
+    // is already the reason for a refusal, and the dialog has more to say about
+    // that than "bad object" does.
+    let mut commits: Vec<Folded> = subjects
+        .iter()
+        .filter_map(|oid| read_folded(&root, oid, &published))
+        .collect();
+    if found.refusal.is_some() {
+        commits.sort_by_key(|one| one.time);
+    }
+
+    Ok(SquashPreview {
+        message: joined_message(&commits),
+        onto: found.base.as_ref().map(|oid| oid.chars().take(7).collect()),
+        above: found.chain.len().saturating_sub(found.fold),
+        branch: journal::current_branch(state),
+        refusal: found.refusal,
+        commits,
+    })
+}
+
+fn read_folded(root: &Path, oid: &str, published: &[String]) -> Option<Folded> {
+    let raw = git_cmd::run_checked(
+        root,
+        &[
+            "log",
+            "-1",
+            "--no-show-signature",
+            "--format=%H%x1f%an%x1f%ct%x1f%s%x1f%B",
+            oid,
+        ],
+    )
+    .ok()?;
+    let mut parts = raw.split('\u{1f}');
+    let full = parts.next().unwrap_or(oid).trim().to_string();
+    let author = parts.next().unwrap_or("").to_string();
+    let time = parts.next().unwrap_or("0").trim().parse().unwrap_or(0);
+    let summary = parts.next().unwrap_or("").to_string();
+    let message = parts.next().unwrap_or("").trim().to_string();
+    Some(Folded {
+        short: full.chars().take(7).collect(),
+        pushed: published.contains(&full),
+        oid: full,
+        summary,
+        message,
+        author,
+        time,
+    })
+}
+
+/// The messages of the folded commits, joined the way git's own squash joins
+/// them: each one whole, in history order, a blank line between.
+fn joined_message(commits: &[Folded]) -> String {
+    commits
+        .iter()
+        .map(|one| one.message.trim())
+        .filter(|text| !text.is_empty())
+        .collect::<Vec<_>>()
+        .join("\n\n")
+}
+
+/// The todo list that folds the first `fold` commits of `chain` into one.
+///
+/// `fixup` rather than `squash` for the ones being folded: their messages are
+/// already in the text the user has edited, and a `squash` would open the
+/// editor that does not exist. The `exec` after them is what puts that text on.
+fn squash_todo(chain: &[String], fold: usize, message: &Path) -> String {
+    let mut lines: Vec<String> = Vec::with_capacity(chain.len() + 1);
+    for (at, oid) in chain.iter().enumerate() {
+        if at == 0 || at >= fold {
+            lines.push(format!("pick {oid}"));
+        } else {
+            lines.push(format!("fixup {oid}"));
+        }
+        if at + 1 == fold {
+            // Straight after the last fold and before anything above it is
+            // replayed, so the commits on top land on a finished commit.
+            lines.push(format!(
+                "exec git commit --amend --no-verify --file={}",
+                shell_quote(message)
+            ));
+        }
+    }
+    lines.push(String::new());
+    lines.join("\n")
+}
+
+/// Folds a run of commits into one carrying `message`.
+pub fn squash(state: &AppState, oids: &[String], message: &str) -> Result<String, String> {
+    let text = message.trim();
+    if text.is_empty() {
+        return Err("A commit needs a message".to_string());
+    }
+    let found = survey(state, oids)?;
+    if let Some(why) = found.refusal {
+        return Err(why);
+    }
+
+    let root = state.path()?;
+    let git_dir = crate::remote::git_dir(&root)?;
+    let note = git_dir.join("gitnoob-squash-message");
+    std::fs::write(&note, format!("{text}\n"))
+        .map_err(|e| format!("Could not write the message: {e}"))?;
+
+    let todo = squash_todo(&found.chain, found.fold, &note);
+    let before = journal::head_oid(state);
+    let branch = journal::current_branch(state);
+    let folded = found.fold;
+
+    let said = run_todo(
+        &root,
+        found.base.as_deref(),
+        &todo,
+        &[],
+        format!("Squashed {folded} commits into one"),
+    )?;
+
+    // A rebase that stopped has not finished folding, so there is nothing whole
+    // to step back from yet; the strip under the toolbar takes it from here.
+    if said == "Rebase stopped" {
+        return Ok("The squash stopped part-way — resolve it, then continue".to_string());
+    }
+
+    // Soft rather than hard: the fold leaves the same tree it started with, so
+    // moving the branch back is all an undo has to do, and doing it softly
+    // keeps whatever is uncommitted out of it.
+    journal::record(
+        state,
+        "squash",
+        format!("Squash {folded} commits"),
+        branch,
+        before,
+        journal::head_oid(state),
+        Mode::Soft,
+        false,
+    );
+    Ok(said)
 }
 
 /// Where a rebase has got to, or `None` when none is running.
@@ -381,6 +743,7 @@ fn settle(git_dir: &Path, out: git_cmd::CmdOutput, done: &str) -> Result<String,
 fn clear_marks(git_dir: &Path) {
     let _ = std::fs::remove_file(git_dir.join("gitnoob-rebase-todo"));
     let _ = std::fs::remove_file(git_dir.join("gitnoob-rebase-rewords"));
+    let _ = std::fs::remove_file(git_dir.join("gitnoob-squash-message"));
 }
 
 fn one_message(out: &git_cmd::CmdOutput) -> String {
@@ -471,6 +834,77 @@ mod tests {
         let exe = std::env::current_exe().unwrap();
         assert!(line.starts_with(&shell_quote(&exe)), "{line}");
         assert!(line.ends_with("--write-todo '/tmp/plan'"), "{line}");
+    }
+
+    fn ids(names: &[&str]) -> Vec<String> {
+        names.iter().map(|n| n.to_string()).collect()
+    }
+
+    #[test]
+    fn a_squash_folds_the_run_and_picks_what_sits_above_it() {
+        let todo = squash_todo(&ids(&["aaa", "bbb", "ccc", "ddd"]), 3, Path::new("/tmp/msg"));
+        assert_eq!(
+            todo,
+            "pick aaa\n\
+             fixup bbb\n\
+             fixup ccc\n\
+             exec git commit --amend --no-verify --file='/tmp/msg'\n\
+             pick ddd\n"
+        );
+    }
+
+    #[test]
+    fn the_message_is_put_on_before_anything_is_replayed_over_it() {
+        // The exec has to sit between the last fold and the first commit above
+        // it: run at the end instead, it would amend the wrong commit.
+        let todo = squash_todo(&ids(&["aaa", "bbb", "ccc"]), 2, Path::new("/tmp/msg"));
+        let lines: Vec<&str> = todo.lines().collect();
+        assert_eq!(lines[1], "fixup bbb");
+        assert!(lines[2].starts_with("exec git commit --amend"));
+        assert_eq!(lines[3], "pick ccc");
+    }
+
+    #[test]
+    fn folding_the_whole_branch_leaves_nothing_to_replay() {
+        let todo = squash_todo(&ids(&["aaa", "bbb"]), 2, Path::new("/tmp/msg"));
+        assert_eq!(
+            todo,
+            "pick aaa\nfixup bbb\nexec git commit --amend --no-verify --file='/tmp/msg'\n"
+        );
+    }
+
+    #[test]
+    fn a_message_path_with_a_space_reaches_the_shell_as_one_word() {
+        let todo = squash_todo(&ids(&["aaa", "bbb"]), 2, Path::new("/a b/msg"));
+        assert!(todo.contains("--file='/a b/msg'"), "{todo}");
+    }
+
+    fn folded(message: &str) -> Folded {
+        Folded {
+            oid: "a".repeat(40),
+            short: "aaaaaaa".to_string(),
+            summary: message.lines().next().unwrap_or("").to_string(),
+            message: message.to_string(),
+            author: "Ramon".to_string(),
+            time: 1756000000,
+            pushed: false,
+        }
+    }
+
+    #[test]
+    fn the_joined_message_keeps_every_message_whole_and_in_order() {
+        let joined = joined_message(&[
+            folded("feat: the first\n\nwith a body"),
+            folded("wip"),
+            folded("typo"),
+        ]);
+        assert_eq!(joined, "feat: the first\n\nwith a body\n\nwip\n\ntypo");
+    }
+
+    #[test]
+    fn a_commit_with_no_message_adds_no_blank_lines_to_the_join() {
+        let joined = joined_message(&[folded("feat: one"), folded("   "), folded("feat: two")]);
+        assert_eq!(joined, "feat: one\n\nfeat: two");
     }
 
     #[test]

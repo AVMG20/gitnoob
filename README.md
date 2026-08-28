@@ -48,7 +48,9 @@ reset, tag, stash, branch, worktrees, remotes, submodules.
 
 **Rewrite history without the text editor.** Right-click a commit → rebase
 everything above it: drag the rows into the order you want, pick what each one
-becomes, and read what you will end up with before it runs.
+becomes, and read what you will end up with before it runs. Or pick a run of
+commits and squash them into one: the messages arrive joined, ready to cut down
+to the one the single commit will carry, and undo puts them all back.
 
 <img src="docs/screenshots/diff.png" alt="A changed file in the diff view, hunk by hunk, with Stage file and Discard on the bar above it" width="900" />
 

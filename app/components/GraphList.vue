@@ -12,6 +12,7 @@ import {
   GitBranch,
   GitBranchPlus,
   GitCommitHorizontal,
+  GitMerge,
   MonitorDot,
   Search,
   Settings2,
@@ -100,6 +101,8 @@ const tagTarget = ref<GraphRow | null>(null)
 const branchTarget = ref<GraphRow | null>(null)
 /** The stash whose drop is being confirmed, by index; null when none is. */
 const dropping = ref<number | null>(null)
+/** The commits whose fold is being composed, or null when none is. */
+const squashing = ref<string[] | null>(null)
 
 /**
  * Commits picked out with shift or ctrl, for the operations that take more than
@@ -830,6 +833,24 @@ function commitMenu(event: MouseEvent, row: GraphRow) {
             : 'reorder, squash, drop',
         action: () => rebase.planFrom(row.oid, row.short)
       },
+      {
+        // The one-gesture version of the plan above: a run of commits already
+        // sitting together, folded into one without a list to arrange. Picking
+        // a single commit means it and the one under it, which is what "squash
+        // this into its parent" is for.
+        label: picked.length > 1 ? `Squash ${picked.length} commits into one…` : 'Squash into the commit below…',
+        icon: GitMerge,
+        disabled: picked.length === 1 && !row.parents.length,
+        hint:
+          picked.length > 1
+            ? 'one commit, one message'
+            : row.parents.length
+              ? `with ${row.parents[0]!.slice(0, 7)}`
+              : 'nothing below it',
+        action: () => {
+          squashing.value = picked.length > 1 ? picked : [row.parents[0]!, row.oid]
+        }
+      },
       { separator: true, label: '' },
       {
         label:
@@ -1534,6 +1555,12 @@ onUnmounted(() => {
     />
     <TagDialog v-if="tagTarget" :row="tagTarget" @close="tagTarget = null" />
     <DropStashDialog v-if="dropping !== null" :index="dropping" @close="dropping = null" />
+    <SquashDialog
+      v-if="squashing"
+      :oids="squashing"
+      @done="clearMarks()"
+      @close="squashing = null"
+    />
     <BranchDialog
       v-if="branchTarget"
       :start="branchTarget.oid"

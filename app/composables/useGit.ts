@@ -333,6 +333,34 @@ export interface CherryPickOptions {
   record_origin?: boolean
 }
 
+/** One commit a squash would fold into the others. */
+export interface Folded {
+  oid: string
+  short: string
+  summary: string
+  /** The whole message, which is what the joined default is built from. */
+  message: string
+  author: string
+  time: number
+  /** Already on a remote, so folding it means a force push afterwards. */
+  pushed: boolean
+}
+
+/** What the squash dialog shows before the fold is asked for. */
+export interface SquashPreview {
+  /** Oldest first — the order the messages are joined in. */
+  commits: Folded[]
+  /** The joined message, for the box to start from. */
+  message: string
+  /** The commit the fold lands on, short, or null at the root. */
+  onto: string | null
+  /** How many commits sit above the run and get replayed onto the fold. */
+  above: number
+  branch: string | null
+  /** Why it cannot be done, or null when it can. */
+  refusal: string | null
+}
+
 /** How two branches stand to each other. */
 export interface BranchRelation {
   /** Commits the source has that the target does not. */
@@ -1378,6 +1406,16 @@ export function useGit() {
      */
     cherryPick: (oids: string[], options: CherryPickOptions = {}) =>
       run<string>('Cherry-pick', 'cherry_pick', { oids, options }),
+    /**
+     * What folding these commits into one would do, and what would stop it.
+     * Unguarded refusals — a selection that cannot be folded is an answer the
+     * dialog shows, not an error.
+     */
+    squashPreview: (oids: string[]) =>
+      guard('Read squash', () => invoke<SquashPreview>('squash_preview', { oids })),
+    /** Folds a run of commits into one carrying `message`. */
+    squash: (oids: string[], message: string) =>
+      run<string>('Squash', 'squash', { oids, message }),
     revert: (oid: string) => run<string>('Revert', 'revert', { oid }),
     createTag: (name: string, oid: string, message?: string) =>
       run<string>('Tag', 'create_tag', { name, oid, message }),
