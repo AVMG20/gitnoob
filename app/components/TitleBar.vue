@@ -6,6 +6,7 @@ import {
   ArrowUp,
   ArrowUpFromLine,
   Archive,
+  Download,
   GitBranchPlus,
   History,
   RefreshCw,
@@ -17,10 +18,20 @@ import {
 import { useGit, type CommitSummary } from '~/composables/useGit'
 import { useConfig } from '~/composables/useConfig'
 import { useShortcuts } from '~/composables/useShortcuts'
+import { useUpdates } from '~/composables/useUpdates'
 
 const git = useGit()
 const store = git.store
 const config = useConfig()
+const updates = useUpdates()
+
+/**
+ * A release on offer, or on its way in. The button stays through the download
+ * so the progress in settings is one click away, and goes with "not now".
+ */
+const updateOffered = computed(() =>
+  ['available', 'downloading', 'ready'].includes(updates.store.stage)
+)
 
 const showBranch = ref(false)
 const showHistory = ref(false)
@@ -221,6 +232,15 @@ async function reconcile(rebase: boolean) {
 
       <span class="sep" />
 
+      <button
+        v-if="updateOffered"
+        class="btn update"
+        :title="`Version ${updates.store.version} is available`"
+        @click="config.openSettings('updates')"
+      >
+        <Download :size="14" />
+        {{ updates.store.stage === 'available' ? 'Update' : 'Updating…' }}
+      </button>
       <button class="btn icon-only" title="Settings" @click="config.openSettings('profiles')">
         <Settings :size="15" />
       </button>
@@ -427,6 +447,20 @@ async function reconcile(rebase: boolean) {
 
 .icon-only {
   padding: 5px 7px;
+}
+
+/* Tinted rather than filled: news, not an alarm, and the pull and push
+   buttons beside it should still be the ones the eye lands on. */
+.update {
+  margin-right: 3px;
+  background: color-mix(in srgb, var(--accent) 16%, transparent);
+  color: var(--accent);
+  font-weight: 600;
+}
+
+.update:hover:not(:disabled) {
+  background: color-mix(in srgb, var(--accent) 26%, transparent);
+  color: var(--accent);
 }
 
 /* The profile pill is bordered where the icons around it are not, so the 1px

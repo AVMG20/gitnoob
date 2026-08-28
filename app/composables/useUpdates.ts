@@ -28,6 +28,20 @@ export type UpdateStage =
  */
 let pending: Update | null = null
 
+/**
+ * How often to ask again while the window stays open. A release a day is the
+ * busiest this project gets, so four hours finds one the same afternoon
+ * without the request becoming a habit GitHub notices.
+ */
+const CHECK_EVERY = 4 * 60 * 60_000
+
+/** A window coming back to the front re-asks only if the last answer is this
+    old; cmd-tabbing through windows is not a reason to hit the network. */
+const STALE_AFTER = 60 * 60_000
+
+let timer: number | undefined
+let watching = false
+
 const store = reactive({
   stage: 'idle' as UpdateStage,
   /** This app's own version, read once from the bundle. */
@@ -42,7 +56,10 @@ const store = reactive({
   total: 0,
   error: null as string | null,
   /** When the last check finished, so the page can say "no, just now". */
-  checked: null as number | null
+  checked: null as number | null,
+  /** A version the user said "not now" to. A later quiet check keeps it
+      quiet; the button in settings still shows it. */
+  dismissed: null as string | null
 })
 
 /** The date the updater reports, `2026-08-25 09:14:02.0 +00:00:00`, trimmed. */
@@ -87,7 +104,7 @@ export function useUpdates() {
       store.version = found.version
       store.notes = found.body ?? null
       store.date = readDate(found.date)
-      store.stage = 'available'
+      store.stage = quiet && found.version === store.dismissed ? 'idle' : 'available'
       return found
     } catch (error) {
       pending = null
@@ -129,8 +146,47 @@ export function useUpdates() {
   }
 
   function dismiss() {
-    if (store.stage === 'available') store.stage = 'idle'
+    if (store.stage !== 'available') return
+    store.dismissed = store.version
+    store.stage = 'idle'
   }
 
-  return { store, busy, progress, version, checkForUpdate, install, dismiss }
+  /** A quiet check, unless one is running or the answer is fresh enough. */
+  function checkIfStale() {
+    if (busy.value) return
+    if (store.checked && Date.now() - store.checked < STALE_AFTER) return
+    void checkForUpdate(true)
+  }
+
+  /**
+   * Keeps asking for as long as the window is open: once now, on a schedule,
+   * and when the window comes back to the front after a while away. All of it
+   * quiet — what it finds becomes a button, not a dialog.
+   */
+  function watchForUpdates() {
+    if (watching) return
+    watching = true
+    void checkForUpdate(true)
+    timer = window.setInterval(() => void checkForUpdate(true), CHECK_EVERY)
+    window.addEventListener('focus', checkIfStale)
+  }
+
+  function stopWatching() {
+    if (!watching) return
+    watching = false
+    window.clearInterval(timer)
+    window.removeEventListener('focus', checkIfStale)
+  }
+
+  return {
+    store,
+    busy,
+    progress,
+    version,
+    checkForUpdate,
+    install,
+    dismiss,
+    watchForUpdates,
+    stopWatching
+  }
 }

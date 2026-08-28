@@ -173,6 +173,15 @@ watch(
 
 watch(() => settings.value?.auto_fetch_minutes, scheduleFetch)
 
+/** Follows the setting: switching it off stops the schedule, not only the
+    next launch. */
+function watchUpdates() {
+  if (settings.value?.check_updates !== false) updates.watchForUpdates()
+  else updates.stopWatching()
+}
+
+watch(() => settings.value?.check_updates, watchUpdates)
+
 onMounted(async () => {
   // A failure here must not take the whole window down with it; without the
   // config the welcome pane is still usable.
@@ -208,13 +217,11 @@ onMounted(async () => {
     ({ payload }) => git.note(payload.line, payload.ok ? 'command' : 'failed')
   ).catch(() => undefined)
 
-  // Whether a newer release exists, asked once and quietly: a machine that is
-  // offline should not be told so every time the window opens. What it finds
-  // shows up as a dot next to Updates in settings, not as a dialog over the
-  // repository you came here to look at.
-  if (config.settings.value?.check_updates !== false) {
-    updates.checkForUpdate(true)
-  }
+  // Whether a newer release exists, asked quietly and kept asking: a machine
+  // that is offline should not be told so every time the window opens. What
+  // it finds shows up as a button in the toolbar and a dot next to Updates in
+  // settings, not as a dialog over the repository you came here to look at.
+  watchUpdates()
 
   // Belt and braces for anything the watcher cannot see — a network share, a
   // platform without file notifications — and for the commonest case of all:
@@ -243,6 +250,7 @@ onUnmounted(() => {
   if (fetchTimer) window.clearInterval(fetchTimer)
   unlisten?.()
   unlistenCommand?.()
+  updates.stopWatching()
   window.removeEventListener('focus', onFocus)
 })
 </script>
