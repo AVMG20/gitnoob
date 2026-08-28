@@ -306,7 +306,6 @@ async function saveMessage() {
 
 <style scoped>
 .rebase {
-  grid-column: 1 / -2;
   display: flex;
   flex-direction: column;
   min-width: 0;

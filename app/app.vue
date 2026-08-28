@@ -132,9 +132,10 @@ const rebase = useRebase()
  */
 const columns = computed(() => {
   const panel = `minmax(0, ${layout.panel}px)`
-  if (store.viewer || reviewOpen.value || rebase.store.open || store.stashView) {
-    return `minmax(0, 1fr) 5px ${panel}`
-  }
+  // The viewer and a review page take the whole middle; the rebase plan and a
+  // stash keep the sidebar, because the sidebar is where the next branch or
+  // the next stash is picked from.
+  if (store.viewer || reviewOpen.value) return `minmax(0, 1fr) 5px ${panel}`
   return `minmax(0, ${layout.sidebar}px) 5px minmax(0, 1fr) 5px ${panel}`
 })
 
@@ -341,16 +342,14 @@ onUnmounted(() => {
         <template v-else-if="review.store.current">
           <ReviewPane />
         </template>
-        <template v-else-if="rebase.store.open">
-          <RebasePane />
-        </template>
-        <template v-else-if="store.stashView">
-          <StashPane />
-        </template>
         <template v-else>
           <SideBar @open="openProject" @enter="enterSubmodule" />
           <ResizeHandle side="sidebar" />
-          <GraphList />
+          <!-- What stands where the commit list would. Both are worked on with
+               the branches and stashes still in reach beside them. -->
+          <RebasePane v-if="rebase.store.open" />
+          <StashPane v-else-if="store.stashView" />
+          <GraphList v-else />
         </template>
         <ResizeHandle side="panel" />
         <!-- While a review is being read, the panel holds its files: the

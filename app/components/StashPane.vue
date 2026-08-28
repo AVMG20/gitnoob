@@ -180,7 +180,6 @@ function close() {
 
 <style scoped>
 .stash-pane {
-  grid-column: 1 / -2;
   display: flex;
   flex-direction: column;
   min-width: 0;
