@@ -114,6 +114,14 @@ const prompt = ref<{
   danger?: boolean
   run: (value: string) => void
 } | null>(null)
+/** A question that only wants a yes: no name to type back, just the button. */
+const confirming = ref<{
+  title: string
+  hint?: string
+  confirm: string
+  danger?: boolean
+  run: () => void
+} | null>(null)
 
 const match = (name: string) =>
   !filter.value.trim() || name.toLowerCase().includes(filter.value.trim().toLowerCase())
@@ -964,16 +972,15 @@ function remoteHeaderMenu(event: MouseEvent, remote: string) {
         icon: Trash2,
         danger: true,
         action: () => {
-          prompt.value = {
+          // Nothing on the other side is touched and nothing local is lost, so
+          // this only wants a yes: adding the remote back brings the tracking
+          // branches with it.
+          confirming.value = {
             title: `Remove remote ${remote}?`,
-            label: 'Type the remote name to confirm',
             confirm: 'Remove remote',
             danger: true,
             hint: 'Removes the remote and its remote-tracking branches. Local branches and their commits stay; adding the remote back restores the tracking branches.',
-            run: (value) => {
-              if (value === remote) void git.remoteRemove(remote)
-              else git.note('Name did not match; nothing was removed', 'error')
-            }
+            run: () => void git.remoteRemove(remote)
           }
         }
       }
@@ -1907,6 +1914,21 @@ async function removeSubmodule(one: Submodule) {
         (value) => {
           prompt?.run(value)
           prompt = null
+        }
+      "
+    />
+
+    <ConfirmDialog
+      v-if="confirming"
+      :title="confirming.title"
+      :hint="confirming.hint"
+      :confirm="confirming.confirm"
+      :danger="confirming.danger"
+      @close="confirming = null"
+      @confirm="
+        () => {
+          confirming?.run()
+          confirming = null
         }
       "
     />

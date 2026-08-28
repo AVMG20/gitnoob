@@ -50,7 +50,6 @@ onMounted(async () => {
   <AppModal
     :title="`Delete ${props.name}?`"
     :width="540"
-    :tone="local?.tone === 'danger' ? 'danger' : 'normal'"
     @close="emit('close')"
   >
     <p v-if="!preview" class="dim">Working out what this would lose…</p>

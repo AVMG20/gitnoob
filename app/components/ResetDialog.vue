@@ -58,7 +58,6 @@ onMounted(async () => {
   <AppModal
     :title="`Move ${preview?.branch ?? 'branch'} to ${preview?.short ?? ''}`"
     :width="620"
-    :tone="mode === 'hard' ? 'danger' : 'normal'"
     @close="emit('close')"
   >
     <p v-if="!preview" class="dim">Working out what this would do…</p>

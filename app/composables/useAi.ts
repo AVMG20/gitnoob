@@ -72,6 +72,9 @@ export function useAi() {
     /** A message for a commit that already exists, written from its own diff. */
     commitMessageFor: (oid: string) =>
       run('commit message', () => invoke<CommitMessage>('ai_commit_message_for', { oid })),
+    /** One message for the commits a squash is about to fold into one. */
+    squashMessage: (oids: string[]) =>
+      run('commit message', () => invoke<CommitMessage>('ai_squash_message', { oids })),
     /** A review's title and description, written from the branch's commits. */
     reviewMessage: (source: string, target: string) =>
       run('review description', () =>

@@ -1617,6 +1617,15 @@ async fn ai_commit_message_for(
     ai::commit_message_for(&state, &oid).await
 }
 
+/// One message for the commits a squash would fold, from their folded diff.
+#[tauri::command]
+async fn ai_squash_message(
+    oids: Vec<String>,
+    state: State<'_, AppState>,
+) -> Result<ai::CommitMessage, String> {
+    ai::squash_message(&state, &oids).await
+}
+
 /// The title and description of a review, written from the branch's commits.
 #[tauri::command]
 async fn ai_review_message(
@@ -1977,6 +1986,7 @@ pub fn run() {
             ai_models,
             ai_commit_message,
             ai_commit_message_for,
+            ai_squash_message,
             ai_review_message,
             ai_resolve_conflict,
             open_external,

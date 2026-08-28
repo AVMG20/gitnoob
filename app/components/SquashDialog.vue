@@ -1,7 +1,8 @@
 <script setup lang="ts">
 import { computed, nextTick, onMounted, ref } from 'vue'
-import { TriangleAlert } from 'lucide-vue-next'
+import { Sparkles, TriangleAlert } from 'lucide-vue-next'
 import { relativeTime, useGit, type SquashPreview } from '~/composables/useGit'
+import { useAi } from '~/composables/useAi'
 
 /**
  * Folding a run of commits into one.
@@ -18,6 +19,7 @@ const props = defineProps<{ oids: string[] }>()
 const emit = defineEmits<{ close: []; done: [] }>()
 
 const git = useGit()
+const ai = useAi()
 const store = git.store
 
 const preview = ref<SquashPreview | null>(null)
@@ -46,6 +48,21 @@ onMounted(async () => {
   const at = message.value.indexOf('\n')
   box.value?.setSelectionRange(at < 0 ? message.value.length : at, at < 0 ? message.value.length : at)
 })
+
+/**
+ * Asks the model for one message instead of the join.
+ *
+ * The join says what each commit did, one after another; the fold is one
+ * change and wants one message about it, which is exactly the rewriting this
+ * box exists for and the part nobody enjoys doing by hand.
+ */
+async function write() {
+  if (!preview.value || refusal.value || ai.store.busy) return
+  const written = await ai.squashMessage(props.oids)
+  if (!written) return
+  message.value = written.body ? `${written.summary}\n\n${written.body}` : written.summary
+  git.note('Squash message written by the model — read it before folding')
+}
 
 async function apply() {
   if (!ready.value || store.busy) return
@@ -89,8 +106,20 @@ async function apply() {
       </p>
 
       <template v-else>
-        <label class="field">
-          <span class="label">The message the one commit carries</span>
+        <div class="field">
+          <div class="field-head">
+            <span class="label">The message the one commit carries</span>
+            <button
+              v-if="ai.configured.value"
+              class="btn btn-ghost write"
+              :disabled="!!ai.store.busy"
+              title="Read the folded diff and write one message for it"
+              @click="write"
+            >
+              <Sparkles :size="13" />
+              {{ ai.store.busy ? 'Writing…' : 'Generate' }}
+            </button>
+          </div>
           <textarea
             ref="box"
             v-model="message"
@@ -99,7 +128,7 @@ async function apply() {
             @keydown.meta.enter="apply"
             @keydown.ctrl.enter="apply"
           />
-        </label>
+        </div>
 
         <p class="dim small">
           {{
@@ -191,6 +220,26 @@ async function apply() {
 
 .field {
   display: block;
+}
+
+.field-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.write {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  padding: 3px 8px;
+  margin-bottom: 5px;
+  font-size: 11.5px;
+}
+
+.write:not(:disabled) {
+  color: var(--purple);
 }
 
 .label {

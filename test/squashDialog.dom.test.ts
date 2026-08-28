@@ -5,11 +5,13 @@ import { invoke } from '@tauri-apps/api/core'
 import AppModal from '~/components/AppModal.vue'
 import SquashDialog from '~/components/SquashDialog.vue'
 import { useGit, type Folded, type SquashPreview } from '~/composables/useGit'
+import { useAi } from '~/composables/useAi'
 
 vi.mock('@tauri-apps/api/core', () => ({ invoke: vi.fn() }))
 
 const asked = vi.mocked(invoke)
 const git = useGit()
+const ai = useAi()
 let calls: { cmd: string; args: Record<string, unknown> }[] = []
 
 const folded = (over: Partial<Folded> = {}): Folded => ({
@@ -60,6 +62,8 @@ beforeEach(() => {
   answering(preview())
   git.store.busyLabel = null
   git.store.log = []
+  ai.store.busy = null
+  ai.store.status = { configured: true, model: 'a/model', default_commit_prompt: '' }
 })
 
 describe('the squash dialog', () => {
@@ -235,5 +239,36 @@ describe('the squash dialog', () => {
     // Cancel still works; there is nothing else the dialog can do.
     await wrapper.find('.btn-ghost').trigger('click')
     expect(wrapper.emitted('close')).toHaveLength(1)
+  })
+})
+
+describe('writing the squash message with a model', () => {
+  it('replaces the join with one message about the fold', async () => {
+    asked.mockImplementation(async (cmd: string, args?: Record<string, unknown>) => {
+      calls.push({ cmd, args: args ?? {} })
+      if (cmd === 'squash_preview') return preview()
+      if (cmd === 'ai_squash_message') {
+        return { summary: 'Add a parser for the log format', body: 'The old one guessed.' }
+      }
+      return null
+    })
+    const wrapper = show()
+    await flushPromises()
+
+    await wrapper.find('.write').trigger('click')
+    await flushPromises()
+
+    // The commits are named, not the range: the backend works the fold out.
+    expect(calls.find((c) => c.cmd === 'ai_squash_message')?.args).toEqual({ oids })
+    expect((wrapper.find('textarea').element as HTMLTextAreaElement).value).toBe(
+      'Add a parser for the log format\n\nThe old one guessed.'
+    )
+  })
+
+  it('offers nothing to press when no model is configured', async () => {
+    ai.store.status = { configured: false, model: null, default_commit_prompt: '' }
+    const wrapper = show()
+    await flushPromises()
+    expect(wrapper.find('.write').exists()).toBe(false)
   })
 })

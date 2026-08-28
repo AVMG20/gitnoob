@@ -16,7 +16,7 @@ const value = ref(props.initial ?? '')
 </script>
 
 <template>
-  <AppModal :title="props.title" :width="420" :tone="props.danger ? 'danger' : 'normal'" @close="emit('close')">
+  <AppModal :title="props.title" :width="420" @close="emit('close')">
     <label class="field">
       <span class="label">{{ props.label }}</span>
       <input

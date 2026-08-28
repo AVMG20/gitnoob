@@ -11,6 +11,8 @@ const BASE: &str = "https://openrouter.ai/api/v1";
 const MODEL_CACHE_SECS: u64 = 60 * 60 * 6;
 /// Diffs get large; past this the model adds nothing but cost.
 const MAX_DIFF_CHARS: usize = 48_000;
+/// Git's empty tree, which is what a first commit is diffed against.
+const EMPTY_TREE: &str = "4b825dc642cb6eb9a060e54bf8d69288fbee4904";
 
 #[derive(Serialize, Deserialize, Clone)]
 pub struct Model {
@@ -261,6 +263,82 @@ pub async fn commit_message_for(state: &AppState, oid: &str) -> Result<CommitMes
     describe_change(state, "Diff", &files, &diff, &recent).await
 }
 
+/// Writes one message for the commits a squash would fold.
+///
+/// The dialog starts from git's own join — every message one after another —
+/// which says what each commit did and never what the fold as a whole did. So
+/// the model is shown the range as a single diff, the way the folded commit
+/// will read afterwards, together with the messages being replaced: they carry
+/// the reasoning that the diff alone does not.
+pub async fn squash_message(state: &AppState, oids: &[String]) -> Result<CommitMessage, String> {
+    let root = state.path()?;
+    let mut wanted: Vec<String> = Vec::new();
+    for oid in oids {
+        let oid = checked_ref(oid)?;
+        if !wanted.contains(&oid) {
+            wanted.push(oid);
+        }
+    }
+    if wanted.len() < 2 {
+        return Err("Squashing folds commits together, so it takes at least two.".to_string());
+    }
+
+    let ordered = crate::work::in_history_order(state, &wanted)?;
+    let oldest = ordered.first().expect("checked non-empty above");
+    let newest = ordered.last().expect("checked non-empty above");
+    // The parent of the oldest, or the empty tree when the run starts at the
+    // root: a first commit has nothing behind it to diff against.
+    let base = git_cmd::run(&root, &["rev-parse", "--verify", &format!("{oldest}^")])
+        .ok()
+        .filter(|out| out.ok)
+        .map(|out| out.stdout.trim().to_string())
+        .filter(|oid| !oid.is_empty())
+        .unwrap_or_else(|| EMPTY_TREE.to_string());
+
+    let diff = git_cmd::run_checked(
+        &root,
+        &[
+            "diff",
+            "--no-color",
+            "--unified=3",
+            "--stat-width=200",
+            &base,
+            newest,
+        ],
+    )?;
+    if diff.trim().is_empty() {
+        return Err(
+            "Those commits change nothing together, so there is nothing to describe.".to_string(),
+        );
+    }
+    let files = git_cmd::run_checked(&root, &["diff", "--name-status", &base, newest])?;
+    // What the commits say about themselves, which is the part of the join
+    // worth keeping. Subjects from before the run set the tone.
+    let folded = git_cmd::run_checked(
+        &root,
+        &[
+            "log",
+            "--reverse",
+            "--format=%B",
+            &format!("{base}..{newest}"),
+        ],
+    )
+    .unwrap_or_default();
+    let recent =
+        git_cmd::run_checked(&root, &["log", "-8", "--format=%s", &base]).unwrap_or_default();
+
+    let truncated = diff.chars().count() > MAX_DIFF_CHARS;
+    let short: String = diff.chars().take(MAX_DIFF_CHARS).collect();
+    let system = commit_prompt(&state.config().global.ai);
+    let prompt = format!(
+        "These commits are being folded into one. Their own messages:\n{folded}\n\n         Files changed:\n{files}\n\nRecent commit subjects in this repository:\n{recent}\n\n         The folded diff{}:\n{short}",
+        if truncated { " (truncated)" } else { "" }
+    );
+
+    let answer = complete(state, &system, prompt).await?;
+    Ok(split_message(&answer))
+}
+
 /// Asks the model for a subject and body describing one set of changes.
 async fn describe_change(
     state: &AppState,
@@ -277,7 +355,7 @@ async fn describe_change(
 
     let prompt = format!(
         "Files changed:\n{files}\n\nRecent commit subjects in this repository, \
-         to match tone and conventions:\n{recent}\n\n{label}{}:\n{diff}",
+         for the vocabulary this codebase uses:\n{recent}\n\n{label}{}:\n{diff}",
         if truncated { " (truncated)" } else { "" }
     );
 
@@ -518,14 +596,17 @@ fn strip_fences(answer: &str) -> Vec<String> {
 /// One line, most of the time. A body is the exception rather than the shape,
 /// because a commit that needs three sentences of explanation is rarer than
 /// the models writing them believe.
+///
+/// It says nothing about `feat:` and `fix:` on purpose. A type prefix is a
+/// convention a repository either has or does not, and a default that reaches
+/// for one writes it into repositories that never asked. Anyone who wants them
+/// has the settings box to say so.
 pub const DEFAULT_COMMIT_PROMPT: &str = "\
 You write git commit messages for a working developer. Reply with the message \
 and nothing else: no preamble, no markdown, no code fences, no quotes.
 
 Line 1 is the message, and usually the whole of it: imperative mood, no \
-trailing period, under 72 characters, specific about what changed. Match the \
-repository's own recent subjects — use a type prefix like feat: or fix: only \
-where they do.
+trailing period, under 72 characters, specific about what changed.
 
 Add a body only where the summary cannot carry the change on its own. When you \
 do, leave a blank line after the summary and keep it to one or two sentences \
@@ -617,6 +698,17 @@ mod tests {
         assert!(DEFAULT_COMMIT_PROMPT.contains("usually the whole of it"));
         assert!(DEFAULT_COMMIT_PROMPT.contains("Add a body only where"));
         assert!(DEFAULT_COMMIT_PROMPT.contains("Most commits need no body at all"));
+    }
+
+    #[test]
+    fn the_default_asks_for_no_type_prefix() {
+        // A prefix is a convention a repository either has or does not, and
+        // the default writing `feat:` into one that never used it is the thing
+        // people turn the whole feature off over. Conventional Commits are
+        // still there for anyone who wants them, in the settings box.
+        assert!(!DEFAULT_COMMIT_PROMPT.contains("feat:"));
+        assert!(!DEFAULT_COMMIT_PROMPT.contains("fix:"));
+        assert!(CONVENTIONAL_COMMIT_PROMPT.contains("feat"));
     }
 
     #[test]

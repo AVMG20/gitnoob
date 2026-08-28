@@ -75,7 +75,7 @@ const MESSAGES: Record<string, string> = {
 const DEFAULT_COMMIT_PROMPT = [
   'You write git commit messages for a working developer. Reply with the message and nothing else: no preamble, no markdown, no code fences, no quotes.',
   '',
-  "Line 1 is the message, and usually the whole of it: imperative mood, no trailing period, under 72 characters, specific about what changed. Match the repository's own recent subjects — use a type prefix like feat: or fix: only where they do.",
+  'Line 1 is the message, and usually the whole of it: imperative mood, no trailing period, under 72 characters, specific about what changed.',
   '',
   'Add a body only where the summary cannot carry the change on its own. When you do, leave a blank line after the summary and keep it to one or two sentences on WHY. Most commits need no body at all. Never list the files, never restate the diff, never pad.'
 ].join('\n')
@@ -170,6 +170,14 @@ function install() {
         configured: true,
         model: 'anthropic/claude-sonnet-4.5',
         default_commit_prompt: DEFAULT_COMMIT_PROMPT
+      }
+    }
+    if (cmd === 'ai_squash_message') {
+      // What the model is for here: one message about the fold, in place of
+      // the join of the messages being folded.
+      return {
+        summary: 'Add the ticket and email migrations together',
+        body: 'They were written a week apart with no release between them, so one migration is the honest record.'
       }
     }
     if (cmd === 'ai_models') return []

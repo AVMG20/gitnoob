@@ -581,7 +581,6 @@ function fileMenu(event: MouseEvent, path: string, side: 'staged' | 'unstaged', 
     v-if="deleting"
     :title="deleting.length === 1 ? 'Delete this file?' : `Delete ${deleting.length} files?`"
     :width="420"
-    tone="danger"
     @close="deleting = null"
   >
     <p class="gone">

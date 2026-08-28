@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { onMounted, onUnmounted } from 'vue'
 
-const props = defineProps<{ title: string; width?: number; tone?: 'normal' | 'danger' }>()
+const props = defineProps<{ title: string; width?: number }>()
 const emit = defineEmits<{ close: [] }>()
 
 function onKey(event: KeyboardEvent) {
@@ -14,7 +14,7 @@ onUnmounted(() => window.removeEventListener('keydown', onKey))
 
 <template>
   <div class="scrim" @click.self="emit('close')">
-    <div class="modal" :class="props.tone" :style="{ width: `${props.width ?? 460}px` }">
+    <div class="modal" :style="{ width: `${props.width ?? 460}px` }">
       <div class="head">
         <h2>{{ props.title }}</h2>
         <button class="btn" @click="emit('close')">✕</button>
@@ -48,10 +48,6 @@ onUnmounted(() => window.removeEventListener('keydown', onKey))
   border: 1px solid var(--line);
   border-radius: 9px;
   box-shadow: 0 18px 50px var(--shadow-strong);
-}
-
-.modal.danger {
-  border-color: var(--danger-line);
 }
 
 .head {
