@@ -21,6 +21,8 @@ const git = useGit()
 const store = git.store
 
 const preview = ref<SquashPreview | null>(null)
+/** Set when the preview could not be read at all — a null with a reason. */
+const failed = ref(false)
 const message = ref('')
 const box = ref<HTMLTextAreaElement | null>(null)
 
@@ -31,8 +33,11 @@ const ready = computed(() => !!preview.value && !refusal.value && !!message.valu
 
 onMounted(async () => {
   preview.value = await git.squashPreview(props.oids)
+  // The toast already carries git's words; the dialog must not sit on
+  // "Reading those commits…" for ever as though it were still working.
+  failed.value = preview.value === null
   message.value = preview.value?.message ?? ''
-  if (preview.value?.refusal) return
+  if (!preview.value || preview.value.refusal) return
   await nextTick()
   box.value?.focus()
   // The cursor lands at the end of the first line rather than the end of the
@@ -58,7 +63,10 @@ async function apply() {
     :width="620"
     @close="emit('close')"
   >
-    <p v-if="!preview" class="dim">Reading those commits…</p>
+    <p v-if="failed" class="note bad">
+      Could not read those commits — the activity log has git's answer.
+    </p>
+    <p v-else-if="!preview" class="dim">Reading those commits…</p>
 
     <template v-else>
       <div class="block">

@@ -221,4 +221,19 @@ describe('the squash dialog', () => {
     expect(wrapper.text()).toContain('Reading those commits')
     expect(wrapper.find('.btn-primary').attributes('disabled')).toBeDefined()
   })
+
+  it('says so when the preview cannot be read, rather than reading for ever', async () => {
+    asked.mockImplementation(async (cmd: string) => {
+      if (cmd === 'squash_preview') throw new Error('fatal: bad object')
+      return null
+    })
+    const wrapper = show()
+    await flushPromises()
+    expect(wrapper.find('.note.bad').text()).toContain('Could not read those commits')
+    expect(wrapper.text()).not.toContain('Reading those commits')
+    expect(wrapper.find('.btn-primary').attributes('disabled')).toBeDefined()
+    // Cancel still works; there is nothing else the dialog can do.
+    await wrapper.find('.btn-ghost').trigger('click')
+    expect(wrapper.emitted('close')).toHaveLength(1)
+  })
 })

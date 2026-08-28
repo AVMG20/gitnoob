@@ -224,6 +224,7 @@ pub fn start(state: &AppState, onto: &str, steps: Vec<Step>) -> Result<String, S
         Some(onto),
         &todo,
         &rewords,
+        "true",
         format!("Rebased onto {onto}"),
     )
 }
@@ -238,6 +239,7 @@ fn run_todo(
     onto: Option<&str>,
     todo: &str,
     rewords: &[&str],
+    editor: &str,
     done: String,
 ) -> Result<String, String> {
     let git_dir = crate::remote::git_dir(root)?;
@@ -254,7 +256,7 @@ fn run_todo(
     std::fs::write(&list, todo).map_err(|e| format!("Could not write the plan: {e}"))?;
     let _ = std::fs::write(git_dir.join("gitnoob-rebase-rewords"), rewords.join("\n"));
 
-    let editor = sequence_editor(&list)?;
+    let list_editor = sequence_editor(&list)?;
 
     let mut args: Vec<&str> = vec!["rebase", "-i", "--autostash"];
     match onto {
@@ -266,12 +268,14 @@ fn run_todo(
         root,
         &args,
         &[
-            ("GIT_SEQUENCE_EDITOR", editor.as_str()),
-            // Nothing else may open an editor: a squash would otherwise sit
-            // waiting on a message box that does not exist. `true` accepts
-            // whatever message git prepared, which for a squash is both
-            // messages joined — the same thing saving an unedited editor does.
-            ("GIT_EDITOR", "true"),
+            ("GIT_SEQUENCE_EDITOR", list_editor.as_str()),
+            // No editor may sit open waiting on a window that does not exist.
+            // For the plan this is `true` — a squash there takes the joined
+            // message git prepared, the same thing saving an unedited editor
+            // does. The one-gesture squash instead points it at the message
+            // the user already wrote, through the same copy-and-exit trick
+            // the todo list itself arrives by.
+            ("GIT_EDITOR", editor),
         ],
     )?;
 
@@ -539,24 +543,21 @@ fn joined_message(commits: &[Folded]) -> String {
 
 /// The todo list that folds the first `fold` commits of `chain` into one.
 ///
-/// `fixup` rather than `squash` for the ones being folded: their messages are
-/// already in the text the user has edited, and a `squash` would open the
-/// editor that does not exist. The `exec` after them is what puts that text on.
-fn squash_todo(chain: &[String], fold: usize, message: &Path) -> String {
+/// `squash` rather than `fixup` plus an `exec git commit --amend`: git opens
+/// the message editor once for the whole run, and the editor slot is already
+/// ours, so the user's text goes in through the front door. An exec used to do
+/// it, and had a failure mode all its own — an exec that fails (a signing
+/// hiccup, say) is *not* re-run by `git rebase --continue`, so the fold kept
+/// the wrong message without a word said. A squash-commit that fails is
+/// retried on continue, message and all, because the message is git's own
+/// state by then.
+fn squash_todo(chain: &[String], fold: usize) -> String {
     let mut lines: Vec<String> = Vec::with_capacity(chain.len() + 1);
     for (at, oid) in chain.iter().enumerate() {
         if at == 0 || at >= fold {
             lines.push(format!("pick {oid}"));
         } else {
-            lines.push(format!("fixup {oid}"));
-        }
-        if at + 1 == fold {
-            // Straight after the last fold and before anything above it is
-            // replayed, so the commits on top land on a finished commit.
-            lines.push(format!(
-                "exec git commit --amend --no-verify --file={}",
-                shell_quote(message)
-            ));
+            lines.push(format!("squash {oid}"));
         }
     }
     lines.push(String::new());
@@ -580,7 +581,8 @@ pub fn squash(state: &AppState, oids: &[String], message: &str) -> Result<String
     std::fs::write(&note, format!("{text}\n"))
         .map_err(|e| format!("Could not write the message: {e}"))?;
 
-    let todo = squash_todo(&found.chain, found.fold, &note);
+    let todo = squash_todo(&found.chain, found.fold);
+    let editor = sequence_editor(&note)?;
     let before = journal::head_oid(state);
     let branch = journal::current_branch(state);
     let folded = found.fold;
@@ -590,6 +592,7 @@ pub fn squash(state: &AppState, oids: &[String], message: &str) -> Result<String
         found.base.as_deref(),
         &todo,
         &[],
+        &editor,
         format!("Squashed {folded} commits into one"),
     )?;
 
@@ -855,45 +858,26 @@ mod tests {
 
     #[test]
     fn a_squash_folds_the_run_and_picks_what_sits_above_it() {
-        let todo = squash_todo(
-            &ids(&["aaa", "bbb", "ccc", "ddd"]),
-            3,
-            Path::new("/tmp/msg"),
-        );
-        assert_eq!(
-            todo,
-            "pick aaa\n\
-             fixup bbb\n\
-             fixup ccc\n\
-             exec git commit --amend --no-verify --file='/tmp/msg'\n\
-             pick ddd\n"
-        );
-    }
-
-    #[test]
-    fn the_message_is_put_on_before_anything_is_replayed_over_it() {
-        // The exec has to sit between the last fold and the first commit above
-        // it: run at the end instead, it would amend the wrong commit.
-        let todo = squash_todo(&ids(&["aaa", "bbb", "ccc"]), 2, Path::new("/tmp/msg"));
-        let lines: Vec<&str> = todo.lines().collect();
-        assert_eq!(lines[1], "fixup bbb");
-        assert!(lines[2].starts_with("exec git commit --amend"));
-        assert_eq!(lines[3], "pick ccc");
+        let todo = squash_todo(&ids(&["aaa", "bbb", "ccc", "ddd"]), 3);
+        assert_eq!(todo, "pick aaa\nsquash bbb\nsquash ccc\npick ddd\n");
     }
 
     #[test]
     fn folding_the_whole_branch_leaves_nothing_to_replay() {
-        let todo = squash_todo(&ids(&["aaa", "bbb"]), 2, Path::new("/tmp/msg"));
-        assert_eq!(
-            todo,
-            "pick aaa\nfixup bbb\nexec git commit --amend --no-verify --file='/tmp/msg'\n"
-        );
+        let todo = squash_todo(&ids(&["aaa", "bbb"]), 2);
+        assert_eq!(todo, "pick aaa\nsquash bbb\n");
     }
 
     #[test]
-    fn a_message_path_with_a_space_reaches_the_shell_as_one_word() {
-        let todo = squash_todo(&ids(&["aaa", "bbb"]), 2, Path::new("/a b/msg"));
-        assert!(todo.contains("--file='/a b/msg'"), "{todo}");
+    fn the_fold_is_squashes_not_fixups_so_the_editor_is_asked_once() {
+        // The editor slot is ours, so "asked" means the user's message file is
+        // copied in. A fixup would skip the editor and keep the first commit's
+        // message; an exec after it was the old way, and an exec that fails is
+        // not re-run on continue — the message would go missing in silence.
+        let todo = squash_todo(&ids(&["aaa", "bbb", "ccc"]), 3);
+        assert!(!todo.contains("fixup"), "{todo}");
+        assert!(!todo.contains("exec"), "{todo}");
+        assert_eq!(todo.matches("squash").count(), 2, "{todo}");
     }
 
     fn folded(message: &str) -> Folded {
