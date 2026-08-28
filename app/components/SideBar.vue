@@ -844,14 +844,46 @@ function remoteMenu(event: MouseEvent, remote: string, name: string) {
           promptWorktree(name, local ? undefined : full)
         }
       },
+      { separator: true, label: '' },
+      // Both directions, each naming which branch ends up changed. "Merge"
+      // alone does not say which way, and on a remote branch the second
+      // direction is not what it sounds like: a remote-tracking ref is not
+      // somewhere commits can be written, so it acts on the local branch of
+      // the same name and leaves the push to you.
       {
-        label: `Merge into ${head.value}`,
+        label: `Merge ${full} into ${head.value}`,
         icon: GitMerge,
+        disabled: !head.value,
         action: async () => {
           const outcome = await git.merge(full, false)
           if (outcome?.conflicts.length) store.resolving = outcome.conflicts[0] ?? null
         }
       },
+      {
+        label: `Merge ${head.value} into ${name}`,
+        icon: GitMerge,
+        disabled: !hasLocal(name) || name === head.value,
+        hint: !hasLocal(name)
+          ? 'check it out here first'
+          : name === head.value
+            ? 'you are on it'
+            : 'the local branch; push afterwards',
+        action: async () => {
+          const outcome = await git.mergeInto(head.value, name, false)
+          if (outcome?.conflicts.length) store.resolving = outcome.conflicts[0] ?? null
+        }
+      },
+      {
+        label: `Rebase ${head.value} onto ${full}`,
+        icon: GitBranch,
+        hint: 'rewrites history',
+        disabled: !head.value,
+        action: async () => {
+          const outcome = await git.rebase(full)
+          if (outcome?.conflicts.length) store.resolving = outcome.conflicts[0] ?? null
+        }
+      },
+      { separator: true, label: '' },
       {
         label: 'Set as upstream of current branch',
         icon: Cloud,
@@ -1133,6 +1165,11 @@ function stashMenu(event: MouseEvent, index: number, message: string) {
 const worktrees = computed(() =>
   store.worktrees.filter((tree) => match(`${tree.name} ${tree.branch ?? ''}`))
 )
+
+/** Whether a remote branch has a local branch of the same name here. */
+function hasLocal(name: string) {
+  return (store.refs?.locals ?? []).some((one) => one.name === name)
+}
 
 /** The worktree holding a branch, which is what blocks checking it out twice. */
 function inWorktree(branch: string) {
