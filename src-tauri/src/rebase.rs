@@ -372,8 +372,13 @@ fn survey(state: &AppState, oids: &[String]) -> Result<Survey, String> {
     }
 
     // What the fold lands on. A first commit has no parent, and git spells
-    // rebasing from there `--root` rather than naming a commit.
-    let oldest = oldest_of(&root, &wanted)?;
+    // rebasing from there `--root` rather than naming a commit. The oldest is
+    // asked of ancestry, the same way cherry-pick orders its picks: dates tie,
+    // lines of history do not.
+    let oldest = crate::work::in_history_order(state, &wanted)?
+        .into_iter()
+        .next()
+        .expect("checked non-empty above");
     let base = git_cmd::run(&root, &["rev-parse", "--verify", &format!("{oldest}^")])
         .ok()
         .filter(|out| out.ok)
@@ -447,22 +452,6 @@ fn survey(state: &AppState, oids: &[String]) -> Result<Survey, String> {
         base,
         refusal,
     })
-}
-
-/// The oldest of a set of commits: the one all the others have as an ancestor.
-///
-/// Asked of git rather than worked out from commit dates. Two commits made in
-/// the same second are not ordered by their dates at all, and a rebase todo
-/// written in the wrong order folds the wrong commit into the wrong one.
-fn oldest_of(root: &Path, oids: &[String]) -> Result<String, String> {
-    let mut oldest = oids.first().cloned().unwrap_or_default();
-    for other in oids.iter().skip(1) {
-        let out = git_cmd::run(root, &["merge-base", "--is-ancestor", other, &oldest])?;
-        if out.ok {
-            oldest = other.clone();
-        }
-    }
-    Ok(oldest)
 }
 
 /// The commits a squash would fold, the message it would start from, and what

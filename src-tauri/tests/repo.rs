@@ -5191,6 +5191,55 @@ fn rebase_progress_says_nothing_when_no_rebase_is_running() {
     assert!(rebase::progress(&sandbox.state()).unwrap().is_none());
 }
 
+#[test]
+fn commits_made_in_the_same_second_still_cherry_pick_oldest_first() {
+    let sandbox = Sandbox::new("cherry-ties");
+    sandbox.commit("a.txt", "one\n", "First");
+    sandbox.git(&["checkout", "-q", "-b", "side"]);
+
+    // Two commits sharing one timestamp, each building on the last: dates
+    // cannot order them, only ancestry can. The order used to come from
+    // `rev-list --no-walk`, which sorts by date and leaves ties in the order
+    // the window happened to hand them over.
+    let dated = |args: &[&str]| {
+        let out = Command::new("git")
+            .args(args)
+            .current_dir(&sandbox.root)
+            .env("GIT_AUTHOR_DATE", "2026-08-28T10:00:00 +0000")
+            .env("GIT_COMMITTER_DATE", "2026-08-28T10:00:00 +0000")
+            .output()
+            .expect("git should be on PATH");
+        assert!(
+            out.status.success(),
+            "{}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+    };
+    sandbox.write("b.txt", "base\n");
+    sandbox.git(&["add", "--all"]);
+    dated(&["commit", "-q", "-m", "Older"]);
+    sandbox.write("b.txt", "base\nmore\n");
+    sandbox.git(&["add", "--all"]);
+    dated(&["commit", "-q", "-m", "Newer"]);
+    let older = sandbox.git(&["rev-parse", "HEAD^"]).trim().to_string();
+    let newer = sandbox.git(&["rev-parse", "HEAD"]).trim().to_string();
+    sandbox.git(&["checkout", "-q", "main"]);
+
+    // Oldest-first as given — the order that used to come back reversed.
+    let said = work::cherry_pick(
+        &sandbox.state(),
+        &[older, newer],
+        work::CherryPickOptions::default(),
+    )
+    .unwrap();
+    assert!(said.starts_with("Cherry-picked"), "{said}");
+    assert_eq!(
+        std::fs::read_to_string(sandbox.root.join("b.txt")).unwrap(),
+        "base\nmore\n"
+    );
+    assert_eq!(subjects(&sandbox), vec!["First", "Older", "Newer"]);
+}
+
 // --- squash ------------------------------------------------------------------
 
 /// Puts a stand-in in the slot the app's own binary fills.

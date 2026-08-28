@@ -1323,35 +1323,33 @@ pub fn cherry_pick(
     })
 }
 
-/// Sorts commits oldest first, using the order git itself walks them in.
+/// Sorts commits oldest first, by asking git who descends from whom.
 ///
-/// `rev-list --topo-order` lists newest first over the whole repository, so the
-/// chosen commits keep their relative history order once reversed. Anything git
-/// does not report back is appended in the order it was given, rather than
-/// dropped.
-fn in_history_order(state: &AppState, oids: &[String]) -> Result<Vec<String>, String> {
+/// It used to be one `rev-list --topo-order --no-walk`, which reads well and
+/// does something else: `--no-walk` orders by commit *date*, and two commits
+/// made in the same second have no order by date at all — the answer depended
+/// on the order the selection was clicked in. Ancestry is the thing actually
+/// meant, so ancestry is what is asked: each commit goes in front of the first
+/// one that descends from it, and commits with no line between them — picks
+/// off two different branches — keep the order they were given in.
+pub(crate) fn in_history_order(state: &AppState, oids: &[String]) -> Result<Vec<String>, String> {
     if oids.len() < 2 {
         return Ok(oids.to_vec());
     }
     let root = state.path()?;
-
-    let mut args: Vec<&str> = vec!["rev-list", "--topo-order", "--no-walk"];
-    args.extend(oids.iter().map(String::as_str));
-    let listed = git_cmd::run_checked(&root, &args)?;
+    let descends = |old: &str, new: &str| {
+        git_cmd::run(&root, &["merge-base", "--is-ancestor", old, new])
+            .map(|out| out.ok)
+            .unwrap_or(false)
+    };
 
     let mut ordered: Vec<String> = Vec::with_capacity(oids.len());
-    for line in listed.lines().rev() {
-        let line = line.trim();
-        if let Some(found) = oids.iter().find(|o| line.starts_with(o.as_str())) {
-            if !ordered.contains(found) {
-                ordered.push(found.clone());
-            }
-        }
-    }
     for oid in oids {
-        if !ordered.contains(oid) {
-            ordered.push(oid.clone());
-        }
+        let at = ordered
+            .iter()
+            .position(|placed| descends(oid, placed))
+            .unwrap_or(ordered.len());
+        ordered.insert(at, oid.clone());
     }
     Ok(ordered)
 }
