@@ -82,6 +82,34 @@ export interface CheckoutOutcome {
   diverged: Diverged | null
 }
 
+/** What git made of a commit's signature. */
+export type SignatureVerdict = 'good' | 'untrusted' | 'bad' | 'unchecked' | 'none'
+
+/** The mark one row of the graph carries. Rows with no signature carry none. */
+export interface SignatureMark {
+  verdict: SignatureVerdict
+  signer: string | null
+}
+
+/** Everything git will say about one commit's signature. */
+export interface CommitSignature {
+  verdict: SignatureVerdict | null
+  signer: string | null
+  key: string | null
+  fingerprint: string | null
+  /** gpg's or ssh-keygen's own words, for the fold-out under the line. */
+  raw: string | null
+}
+
+/** What this repository would do if you committed right now. */
+export interface SigningSetup {
+  signs: boolean
+  signs_tags: boolean
+  /** `openpgp`, `ssh` or `x509`. */
+  format: string
+  key: string | null
+}
+
 /** Where a submodule stands, from the mark `git submodule status` prints. */
 export type SubmoduleState = 'ready' | 'absent' | 'moved' | 'conflicted'
 
@@ -470,6 +498,10 @@ const fields = reactive({
   worktrees: [] as Worktree[],
   /** Every repository kept inside this one. Empty for almost every project. */
   submodules: [] as Submodule[],
+  /** Signature verdicts by commit, empty while the setting is off. */
+  signatures: {} as Record<string, SignatureMark>,
+  /** Whether a commit made here would be signed, and with what. */
+  signing: null as SigningSetup | null,
   rows: [] as GraphRow[],
   hasMore: false,
   limit: COMMIT_PAGE,
@@ -553,6 +585,8 @@ interface Snapshot {
   status: WorkingStatus | null
   worktrees: Worktree[]
   submodules: Submodule[]
+  signatures: Record<string, SignatureMark>
+  signing: SigningSetup | null
   rows: GraphRow[]
   hasMore: boolean
   limit: number
@@ -587,6 +621,8 @@ function clearData() {
   store.status = null
   store.worktrees = []
   store.submodules = []
+  store.signatures = {}
+  store.signing = null
   store.rows = []
   store.hasMore = false
   store.limit = pageSize()
@@ -602,6 +638,8 @@ function paint(snapshot: Snapshot) {
   store.status = snapshot.status
   store.worktrees = snapshot.worktrees
   store.submodules = snapshot.submodules
+  store.signatures = snapshot.signatures
+  store.signing = snapshot.signing
   store.rows = snapshot.rows
   store.hasMore = snapshot.hasMore
   store.limit = snapshot.limit
@@ -762,14 +800,35 @@ export function useGit() {
     if (!store.repo) return
     const path = store.repo.path
     const limit = store.limit
-    const [info, refs, trunk, status, worktrees, submodules, page, stashes, history, progress] =
-      await Promise.all([
+    const [
+      info,
+      refs,
+      trunk,
+      status,
+      worktrees,
+      submodules,
+      signatures,
+      signing,
+      page,
+      stashes,
+      history,
+      progress
+    ] = await Promise.all([
       part('the repository', invoke<RepoInfo>('repo_info'), store.repo),
       part('the branches', invoke<RefTree>('ref_tree'), null),
       part('the main branch', invoke<Trunk>('trunk_branch'), store.trunk),
       part('the working tree', invoke<WorkingStatus>('working_status'), null),
       part('the worktrees', invoke<Worktree[]>('worktree_list'), [] as Worktree[]),
       part('the submodules', invoke<Submodule[]>('submodule_list'), [] as Submodule[]),
+      // Answered with an empty map, without running anything, while the
+      // setting is off — so this costs one round trip rather than a gpg run
+      // per commit for the repositories that never asked for it.
+      part(
+        'the signatures',
+        invoke<Record<string, SignatureMark>>('signature_marks', { limit }),
+        {} as Record<string, SignatureMark>
+      ),
+      part('the signing setup', invoke<SigningSetup>('signing_setup'), null),
       part(
         'the history',
         invoke<{ rows: GraphRow[]; has_more: boolean }>('commit_graph', { limit }),
@@ -802,6 +861,8 @@ export function useGit() {
     if (status) store.status = settle('status', status, store.status)
     store.worktrees = settle('worktrees', worktrees ?? [], store.worktrees)
     store.submodules = settle('submodules', submodules ?? [], store.submodules)
+    store.signatures = settle('signatures', signatures ?? {}, store.signatures)
+    store.signing = settle('signing', signing, store.signing)
     if (page) {
       store.rows = settle('rows', page.rows, store.rows)
       store.hasMore = page.has_more
@@ -817,6 +878,8 @@ export function useGit() {
       status: store.status,
       worktrees: store.worktrees,
       submodules: store.submodules,
+      signatures: store.signatures,
+      signing: store.signing,
       rows: store.rows,
       hasMore: store.hasMore,
       limit,
@@ -931,6 +994,16 @@ export function useGit() {
    * size of a lockfile — is an ordinary answer here, and the viewer says so
    * where the file would have been rather than in a passing notice.
    */
+  /**
+   * One commit's signature, asked for as it is selected.
+   *
+   * Unguarded and unrefreshed: this is a read whose commonest answer is "it
+   * was not signed", and a repository where nothing is signed should not put
+   * a line in the log every time a row is clicked.
+   */
+  const commitSignature = (oid: string) =>
+    invoke<CommitSignature>('commit_signature', { oid }).catch(() => null)
+
   const fileText = (path: string, commit?: string | null, side?: 'staged' | 'unstaged' | null) =>
     invoke<string>('file_text', { path, commit: commit ?? null, side: side ?? null })
 
@@ -1037,6 +1110,7 @@ export function useGit() {
      * submodule that has just been cloned or emptied changes the parent's
      * working tree as surely as a checkout does.
      */
+    commitSignature,
     submoduleUpdate: (path?: string, recursive = false) =>
       run<string>(
         path ? `Update ${path}` : 'Update submodules',

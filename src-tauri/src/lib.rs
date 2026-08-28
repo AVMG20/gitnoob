@@ -11,6 +11,7 @@ pub mod journal;
 pub mod refs;
 pub mod remote;
 pub mod review;
+pub mod sign;
 pub mod ssh;
 pub mod submodule;
 pub mod state;
@@ -316,6 +317,39 @@ async fn worktree_remove(
 #[tauri::command]
 fn add_to_gitignore(pattern: String, state: State<'_, AppState>) -> Result<String, String> {
     refs::add_to_gitignore(&state, &pattern)
+}
+
+// --- signatures --------------------------------------------------------------
+
+/// What git makes of the signature on every commit of the current page.
+///
+/// Asked for only while the setting is on: it runs the machine's gpg or
+/// ssh-keygen once per commit, which is not a thing to do on every refresh
+/// without being told to.
+#[tauri::command]
+async fn signature_marks(
+    limit: usize,
+    state: State<'_, AppState>,
+) -> Result<std::collections::HashMap<String, sign::Mark>, String> {
+    if !state.config().global.verify_signatures {
+        return Ok(std::collections::HashMap::new());
+    }
+    sign::marks(&state, limit)
+}
+
+/// Everything git will say about one commit's signature.
+#[tauri::command]
+async fn commit_signature(
+    oid: String,
+    state: State<'_, AppState>,
+) -> Result<sign::Signature, String> {
+    sign::of(&state, &oid)
+}
+
+/// Whether a commit made in this repository right now would be signed.
+#[tauri::command]
+fn signing_setup(state: State<'_, AppState>) -> Result<sign::Setup, String> {
+    sign::setup(&state)
 }
 
 // --- submodules --------------------------------------------------------------
@@ -1006,22 +1040,59 @@ fn apply_identity(state: State<'_, AppState>) -> Result<Option<String>, String> 
     let Some(profile) = config.active() else {
         return Ok(None);
     };
-    let (Some(name), Some(email)) = (
+    let mut said: Vec<String> = Vec::new();
+
+    if let (Some(name), Some(email)) = (
         profile.git_name.clone().filter(|s| !s.trim().is_empty()),
         profile.git_email.clone().filter(|s| !s.trim().is_empty()),
-    ) else {
-        return Ok(None);
-    };
-
-    if configured(&root, "user.name").as_deref() == Some(name.as_str())
-        && configured(&root, "user.email").as_deref() == Some(email.as_str())
-    {
-        return Ok(None);
+    ) {
+        if configured(&root, "user.name").as_deref() != Some(name.as_str())
+            || configured(&root, "user.email").as_deref() != Some(email.as_str())
+        {
+            git_cmd::run_checked(&root, &["config", "--local", "user.name", &name])?;
+            git_cmd::run_checked(&root, &["config", "--local", "user.email", &email])?;
+            said.push(format!("Committing here as {name} <{email}>"));
+        }
     }
 
-    git_cmd::run_checked(&root, &["config", "--local", "user.name", &name])?;
-    git_cmd::run_checked(&root, &["config", "--local", "user.email", &email])?;
-    Ok(Some(format!("Committing here as {name} <{email}>")))
+    // Signing is applied separately from the identity, because a profile may
+    // well set one and not the other. Each setting the profile has no opinion
+    // about is left exactly as the machine had it: a `None` here means "say
+    // nothing", which is not the same as "off".
+    let mut signing = Vec::new();
+    if let Some(key) = profile.signing_key.clone().filter(|s| !s.trim().is_empty()) {
+        signing.push(("user.signingkey", key));
+    }
+    if let Some(format) = profile
+        .signing_format
+        .clone()
+        .filter(|s| !s.trim().is_empty())
+    {
+        signing.push(("gpg.format", format));
+    }
+    if let Some(on) = profile.sign_commits {
+        signing.push(("commit.gpgsign", on.to_string()));
+    }
+    if let Some(on) = profile.sign_tags {
+        signing.push(("tag.gpgsign", on.to_string()));
+    }
+
+    let mut signing_changed = false;
+    for (key, value) in signing {
+        if configured(&root, key).as_deref() == Some(value.as_str()) {
+            continue;
+        }
+        git_cmd::run_checked(&root, &["config", "--local", key, &value])?;
+        signing_changed = true;
+    }
+    if signing_changed {
+        said.push(match profile.sign_commits {
+            Some(false) => "Commits here are not signed".to_string(),
+            _ => "Signing set up for this repository".to_string(),
+        });
+    }
+
+    Ok((!said.is_empty()).then(|| said.join(". ")))
 }
 
 /// What git would use for a setting in this repository, local or inherited.
@@ -1627,6 +1698,9 @@ pub fn run() {
             worktree_remove,
             add_to_gitignore,
             run_git,
+            signature_marks,
+            commit_signature,
+            signing_setup,
             submodule_list,
             submodule_update,
             submodule_sync,

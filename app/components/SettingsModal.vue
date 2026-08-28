@@ -6,12 +6,13 @@ import {
   ExternalLink,
   Github,
   Gitlab,
-  KeyRound,
   Keyboard,
+  KeyRound,
   Palette,
   Plus,
   RefreshCw,
   Settings2,
+  ShieldCheck,
   Sparkles,
   Trash2,
   User,
@@ -450,6 +451,81 @@ onMounted(async () => {
               </p>
             </div>
 
+            <!-- Signing sits beside the ssh key because it is the same idea
+                 and, for ssh signing, usually the same file. Every field is
+                 optional: what the profile says nothing about is left exactly
+                 as this machine already had it. -->
+            <div class="field">
+              <span class="label">
+                <ShieldCheck :size="12" /> Signing key
+              </span>
+              <div class="signing-row">
+                <select
+                  class="sign-format"
+                  :value="editing.signing_format ?? ''"
+                  @change="
+                    editing.signing_format =
+                      ($event.target as HTMLSelectElement).value || null
+                  "
+                >
+                  <option value="">Leave as is</option>
+                  <option value="ssh">SSH</option>
+                  <option value="openpgp">GPG</option>
+                  <option value="x509">X.509</option>
+                </select>
+                <input
+                  type="text"
+                  :value="editing.signing_key ?? ''"
+                  :placeholder="
+                    editing.signing_format === 'ssh'
+                      ? '~/.ssh/id_ed25519.pub'
+                      : 'Key id, or a path for ssh'
+                  "
+                  spellcheck="false"
+                  @input="
+                    editing.signing_key =
+                      ($event.target as HTMLInputElement).value.trim() || null
+                  "
+                />
+              </div>
+              <span class="hint faint">
+                Written to each repository as <span class="mono">user.signingkey</span> and
+                <span class="mono">gpg.format</span> when it is opened under this profile. Your
+                global git config is never touched.
+              </span>
+            </div>
+
+            <label class="check">
+              <input
+                type="checkbox"
+                :checked="editing.sign_commits === true"
+                @change="
+                  editing.sign_commits = ($event.target as HTMLInputElement).checked ? true : null
+                "
+              />
+              <span>
+                Sign every commit
+                <span class="sub faint">
+                  Sets <span class="mono">commit.gpgsign</span> on repositories opened under this
+                  profile. Unticked leaves whatever each repository already says.
+                </span>
+              </span>
+            </label>
+
+            <label class="check">
+              <input
+                type="checkbox"
+                :checked="editing.sign_tags === true"
+                @change="
+                  editing.sign_tags = ($event.target as HTMLInputElement).checked ? true : null
+                "
+              />
+              <span>
+                Sign annotated tags
+                <span class="sub faint">Sets <span class="mono">tag.gpgsign</span>.</span>
+              </span>
+            </label>
+
             <div class="two">
               <label class="field">
                 <span class="label">Commit name</span>
@@ -846,6 +922,25 @@ onMounted(async () => {
             when that is a plain fast-forward. This decides what happens on the rare day both
             sides have commits of their own.
           </p>
+
+          <label class="check">
+            <input
+              type="checkbox"
+              :checked="config.settings.value?.verify_signatures"
+              @change="
+                patchGlobal({ verify_signatures: ($event.target as HTMLInputElement).checked })
+              "
+            />
+            <span>
+              <strong>Check signatures in the commit list</strong>
+              <span class="faint block">
+                Puts a mark beside every signed commit, and says which of them cannot be trusted.
+                Off by default because it runs gpg or ssh-keygen once per commit on the page,
+                which on a large repository is the slowest thing on the screen. The commit you
+                have selected is checked either way.
+              </span>
+            </span>
+          </label>
 
           <label class="check">
             <input
@@ -1490,5 +1585,27 @@ select {
   display: flex;
   gap: 8px;
   margin-top: 12px;
+}
+
+/* Format and key on one line: the format decides what the key field means, so
+   reading them apart from each other is reading half a setting. */
+.signing-row {
+  display: flex;
+  gap: 8px;
+}
+
+.sign-format {
+  flex: none;
+  width: 140px;
+}
+
+.signing-row input {
+  flex: 1;
+  min-width: 0;
+}
+
+.check .sub {
+  display: block;
+  font-size: 11px;
 }
 </style>

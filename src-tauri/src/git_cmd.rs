@@ -66,6 +66,8 @@ fn is_query(args: &[&str]) -> bool {
         "cat-file",
         "for-each-ref",
         "symbolic-ref",
+        "verify-commit",
+        "verify-tag",
     ];
     if args.first().is_some_and(|first| READS.contains(first)) {
         return true;

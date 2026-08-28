@@ -9,6 +9,7 @@ import {
   FolderOpen,
   Minus,
   Plus,
+  ShieldCheck,
   Sparkles,
   Trash2,
   TriangleAlert,
@@ -19,6 +20,7 @@ import { useContextMenu } from '~/composables/useContextMenu'
 import { useDragDrop } from '~/composables/useDragDrop'
 import { useAi } from '~/composables/useAi'
 import { useFileView } from '~/composables/useFileView'
+import { useConfig } from '~/composables/useConfig'
 
 const git = useGit()
 const store = git.store
@@ -26,6 +28,19 @@ const menu = useContextMenu()
 const drag = useDragDrop()
 const ai = useAi()
 const view = useFileView()
+const config = useConfig()
+
+/**
+ * The key, short enough to sit on one line. An ssh key is configured as a
+ * path and the tail of it is the part that identifies it; a gpg key id is
+ * already short.
+ */
+const signingKey = computed(() => {
+  const key = store.signing?.key
+  if (!key) return ''
+  const tail = key.split(/[/\\]/).pop() ?? key
+  return tail.length > 28 ? `…${tail.slice(-27)}` : tail
+})
 
 const selected = computed(() =>
   store.viewer && !store.viewer.commit
@@ -425,6 +440,18 @@ function fileMenu(event: MouseEvent, path: string, side: 'staged' | 'unstaged', 
         <TriangleAlert :size="12" /> You are committing straight to
         <span class="mono">{{ store.repo?.head }}</span>.
       </p>
+      <!-- What is about to happen, where the button that does it is. An
+           unset key is one click from being set rather than a web search. -->
+      <button
+        v-if="store.signing?.signs"
+        class="signhint"
+        title="Set by this repository’s commit.gpgsign"
+        @click="config.openSettings('profiles')"
+      >
+        <ShieldCheck :size="12" />
+        Will be signed<template v-if="signingKey"> · <span class="mono">{{ signingKey }}</span></template>
+      </button>
+
       <div class="buttons">
         <button class="btn btn-primary wide" :disabled="store.busy || !canCommit" @click="commit">
         <Spinner v-if="store.busy" :size="13" />
@@ -693,6 +720,27 @@ textarea {
 
 .blocked {
   margin: 7px 0 0;
+  color: var(--text-faint);
+}
+
+/* Says what the button above it will do, in the colour of it being fine. */
+.signhint {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  margin: 8px 0 0;
+  padding: 0;
+  font-size: 11px;
+  color: var(--green);
+}
+
+.signhint:hover {
+  color: var(--green-soft);
+}
+
+.signhint .mono {
+  font-family: var(--mono);
+  font-size: 10px;
   color: var(--text-faint);
 }
 </style>

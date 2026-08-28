@@ -3,6 +3,7 @@ import { computed, nextTick, ref, watch } from 'vue'
 import {
   ArrowRight,
   Check,
+  ChevronDown,
   Copy,
   ExternalLink,
   FileText,
@@ -14,8 +15,9 @@ import {
   X
 } from 'lucide-vue-next'
 import { copyText, fullTime, relativeTime, useGit } from '~/composables/useGit'
-import type { RewordCheck } from '~/composables/useGit'
+import type { CommitSignature, RewordCheck } from '~/composables/useGit'
 import { initials, tint } from '~/composables/useAvatars'
+import { signatureLook } from '~/composables/useSigning'
 import { useContextMenu } from '~/composables/useContextMenu'
 import { useFileView } from '~/composables/useFileView'
 import { useForge } from '~/composables/useForge'
@@ -33,6 +35,33 @@ const openFile = computed(() =>
 )
 
 const detail = computed(() => store.detail)
+
+// --- the signature
+
+/**
+ * Asked for per commit rather than taken from the graph's map, because the
+ * map is only filled while the setting is on and this line is worth having
+ * either way: checking one commit is one subprocess, at the moment somebody
+ * asked to look at it.
+ */
+const signature = ref<CommitSignature | null>(null)
+const signatureOpen = ref(false)
+
+const signatureShown = computed(() => signatureLook(signature.value?.verdict))
+
+watch(
+  () => store.detail?.oid,
+  async (oid) => {
+    signature.value = null
+    signatureOpen.value = false
+    if (!oid) return
+    const found = await git.commitSignature(oid)
+    // A slower answer for a commit that is no longer the one on screen is
+    // not this commit's answer.
+    if (store.detail?.oid === oid) signature.value = found
+  },
+  { immediate: true }
+)
 const stats = computed(() => {
   const files = detail.value?.files ?? []
   return {
@@ -320,6 +349,36 @@ function fileMenu(event: MouseEvent, path: string) {
             </div>
           </div>
         </div>
+
+        <!-- One line, folded shut, holding git's own words for when the key
+             id is actually wanted. Absent entirely for an unsigned commit. -->
+        <template v-if="signatureShown">
+          <button
+            class="verline"
+            :class="[signatureShown.tone, { open: signatureOpen }]"
+            :disabled="!signature?.raw"
+            @click="signatureOpen = !signatureOpen"
+          >
+            <component :is="signatureShown.icon" :size="14" :stroke-width="2.2" />
+            <span class="verwords">
+              <strong>
+                {{ signatureShown.title
+                }}<template v-if="signature?.signer"> by {{ signature.signer }}</template>
+              </strong>
+              — {{ signatureShown.because }}
+            </span>
+            <ChevronDown v-if="signature?.raw" :size="13" class="chev" />
+          </button>
+          <div v-if="signatureOpen && signature" class="verbody">
+            <div v-if="signature.key" class="kv">
+              <span>Key</span><span class="mono">{{ signature.key }}</span>
+            </div>
+            <div v-if="signature.fingerprint" class="kv">
+              <span>Fingerprint</span><span class="mono">{{ signature.fingerprint }}</span>
+            </div>
+            <pre v-if="signature.raw" class="raw">{{ signature.raw }}</pre>
+          </div>
+        </template>
 
         <div class="parents">
           <GitCommitHorizontal :size="12" class="faint" />
@@ -860,4 +919,88 @@ h3 {
   font-size: 11px;
 }
 
+
+/* --- the signature line */
+
+.verline {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  margin: 12px 0 0;
+  padding: 6px 9px;
+  border-radius: var(--radius-sm);
+  font-size: 12px;
+  text-align: left;
+  border: 1px solid transparent;
+}
+
+.verline:disabled {
+  cursor: default;
+}
+
+.verline.open {
+  border-bottom-left-radius: 0;
+  border-bottom-right-radius: 0;
+}
+
+.verline.good {
+  background: var(--success-bg);
+  color: var(--green-soft);
+  border-color: var(--success-line);
+}
+
+.verline.warn {
+  background: var(--warning-bg);
+  color: var(--amber-soft);
+  border-color: var(--warning-line);
+}
+
+.verline.bad {
+  background: var(--danger-bg);
+  color: var(--red-soft);
+  border-color: var(--danger-line);
+}
+
+.verwords {
+  flex: 1;
+  min-width: 0;
+}
+
+.verline .chev {
+  flex: none;
+  opacity: 0.6;
+}
+
+.verbody {
+  padding: 8px 10px;
+  border: 1px solid var(--line-soft);
+  border-top: none;
+  border-radius: 0 0 var(--radius-sm) var(--radius-sm);
+  background: var(--bg-deep);
+  font-size: 11px;
+}
+
+.kv {
+  display: grid;
+  grid-template-columns: 82px minmax(0, 1fr);
+  gap: 10px;
+  color: var(--text-faint);
+}
+
+.kv .mono {
+  color: var(--text-dim);
+  word-break: break-all;
+}
+
+/* git hands this over as gpg or ssh-keygen wrote it, lines and all. */
+.raw {
+  margin: 6px 0 0;
+  font-family: var(--mono);
+  font-size: 11px;
+  line-height: 1.6;
+  white-space: pre-wrap;
+  word-break: break-word;
+  color: var(--text-faint);
+}
 </style>

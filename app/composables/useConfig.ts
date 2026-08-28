@@ -17,6 +17,15 @@ export interface Profile {
   git_email: string | null
   /** Path to the private key this profile pushes and pulls with. */
   ssh_key: string | null
+  /** `user.signingkey` — a path for ssh, a key id for gpg. */
+  signing_key: string | null
+  /** `gpg.format`: `openpgp`, `ssh` or `x509`. */
+  signing_format: string | null
+  /** `commit.gpgsign`. Null means the profile has no opinion and the
+      repository's own configuration is left alone. */
+  sign_commits: boolean | null
+  /** `tag.gpgsign`. */
+  sign_tags: boolean | null
   projects: Project[]
   active_project: string | null
 }
@@ -51,6 +60,8 @@ export interface GlobalSettings {
   diverged_checkout: 'ask' | 'rebase' | 'merge' | 'leave'
   show_avatars: boolean
   check_updates: boolean
+  /** Check the signature on every commit the graph draws. */
+  verify_signatures: boolean
 }
 
 export interface Config {
@@ -201,6 +212,10 @@ export function emptyProfile(): Profile {
     git_name: null,
     git_email: null,
     ssh_key: null,
+    signing_key: null,
+    signing_format: null,
+    sign_commits: null,
+    sign_tags: null,
     projects: [],
     active_project: null
   }

@@ -39,6 +39,7 @@ import {
   type RefChip
 } from '~/composables/useRefChips'
 import { avatarFor, initials, tint } from '~/composables/useAvatars'
+import { signatureLook, signatureTitle } from '~/composables/useSigning'
 import { useContextMenu } from '~/composables/useContextMenu'
 import { useDragDrop } from '~/composables/useDragDrop'
 import { keyLabel, useShortcuts } from '~/composables/useShortcuts'
@@ -1373,6 +1374,24 @@ onUnmounted(() => {
           </span>
 
           <span class="col-msg">
+            <!-- Signed, and what that was worth. Nothing at all for the
+                 commits nobody signed, which in most repositories is all of
+                 them: a column of grey marks would be noise standing in for
+                 information. Off unless the setting asks for it. -->
+            <component
+              :is="signatureLook(store.signatures[item.row.oid]?.verdict)?.icon"
+              v-if="store.signatures[item.row.oid]"
+              :size="13"
+              :stroke-width="2.2"
+              class="sig"
+              :class="signatureLook(store.signatures[item.row.oid]?.verdict)?.tone"
+              :title="
+                signatureTitle(
+                  store.signatures[item.row.oid]?.verdict,
+                  store.signatures[item.row.oid]?.signer
+                )
+              "
+            />
             <!-- The message in full on hover. A narrowed message column cuts
                  most summaries off, and the alternative to reading it here is
                  selecting the commit to see it in the panel — which throws away
@@ -1925,6 +1944,24 @@ onUnmounted(() => {
 
 .summary {
   min-width: 0;
+}
+
+/* Quiet when it is fine, loud only when it is wrong: a bad signature is the
+   one case here that needs a decision. */
+.sig {
+  flex: none;
+}
+
+.sig.good {
+  color: var(--green);
+}
+
+.sig.warn {
+  color: var(--amber);
+}
+
+.sig.bad {
+  color: var(--red);
 }
 
 .summary.quiet {

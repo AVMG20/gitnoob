@@ -55,6 +55,20 @@ pub struct Profile {
     /// lets a work account and a personal account share one machine.
     #[serde(default)]
     pub ssh_key: Option<String>,
+    /// The key commits and tags made under this profile are signed with —
+    /// `user.signingkey`. Unset leaves whatever the machine already says.
+    #[serde(default)]
+    pub signing_key: Option<String>,
+    /// `gpg.format`: `openpgp`, `ssh` or `x509`.
+    #[serde(default)]
+    pub signing_format: Option<String>,
+    /// `commit.gpgsign`. `None` means the profile has no opinion and the
+    /// repository's own configuration is left exactly as it is.
+    #[serde(default)]
+    pub sign_commits: Option<bool>,
+    /// `tag.gpgsign`.
+    #[serde(default)]
+    pub sign_tags: Option<bool>,
     #[serde(default)]
     pub projects: Vec<Project>,
     #[serde(default)]
@@ -71,6 +85,10 @@ impl Profile {
             git_name: None,
             git_email: None,
             ssh_key: None,
+            signing_key: None,
+            signing_format: None,
+            sign_commits: None,
+            sign_tags: None,
             projects: Vec::new(),
             active_project: None,
         }
@@ -108,6 +126,11 @@ pub struct Global {
     /// only check is the button in settings.
     #[serde(default = "yes")]
     pub check_updates: bool,
+    /// Check the signature on every commit the graph draws. Off by default:
+    /// it is a `git log` that runs gpg or ssh-keygen once per commit, and on a
+    /// large page that is the slowest thing on the screen.
+    #[serde(default)]
+    pub verify_signatures: bool,
     /// How big the window was when it was last closed.
     #[serde(default)]
     pub window: Option<WindowSize>,
@@ -240,6 +263,7 @@ impl Default for Global {
             diverged_checkout: default_diverged_checkout(),
             show_avatars: true,
             check_updates: true,
+            verify_signatures: false,
             window: None,
         }
     }
