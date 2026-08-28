@@ -331,7 +331,14 @@ mod tests {
         assert_eq!(shared.branch, None);
         assert_eq!(shared.short, "0e8a1f2");
         assert_eq!(shared.described.as_deref(), Some("v1.4.0"));
-        assert_eq!(shared.abs, "/repo/libs/shared");
+        // Rooted at the repository. Compared as a path rather than as a
+        // string: Windows joins with a backslash, and what is under test is
+        // where the folder is, not which character the platform spells a
+        // separator with.
+        assert_eq!(
+            Path::new(&shared.abs),
+            Path::new("/repo").join("libs/shared")
+        );
     }
 
     #[test]
