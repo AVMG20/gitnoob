@@ -1,7 +1,8 @@
 // @vitest-environment happy-dom
 import { mount } from '@vue/test-utils'
 import { describe, expect, it, vi } from 'vitest'
-import BlameView from '~/components/BlameView.vue'
+import FileView from '~/components/FileView.vue'
+import { useContextMenu } from '~/composables/useContextMenu'
 import type { BlameRun } from '~/composables/useGit'
 
 vi.mock('@tauri-apps/api/core', () => ({ invoke: vi.fn() }))
@@ -25,16 +26,15 @@ function run(over: Partial<BlameRun>): BlameRun {
 
 const diff = { path: 'app/app.vue', binary: false, hunks: [], truncated: 0 }
 
-const show = (runs: BlameRun[], text: string | null = 'one\ntwo\nthree\nfour') =>
-  mount(BlameView, { props: { diff, text, runs, top: 0, view: 900 } })
+const show = (runs: BlameRun[], blame = true, text: string | null = 'one\ntwo\nthree\nfour') =>
+  mount(FileView, { props: { diff, text, runs, blame, top: 0, view: 900 } })
 
-describe('the blame view', () => {
+describe('the blame column in the file view', () => {
   it('draws one chip per run, not one per line', () => {
     const wrapper = show([
       run({ start: 1, lines: 2 }),
       run({ start: 3, lines: 2, author: 'A Contributor', oid: 'bbb', short: 'bbb1111' })
     ])
-    expect(wrapper.findAll('.line')).toHaveLength(5) // four lines plus the gauge
     expect(wrapper.findAll('button.chip')).toHaveLength(2)
     expect(wrapper.findAll('.chip.rule')).toHaveLength(2)
   })
@@ -52,20 +52,6 @@ describe('the blame view', () => {
     const chips = wrapper.findAll('button.chip')
     expect(chips[1]!.text()).toContain('Uncommitted')
     expect(chips[1]!.attributes('disabled')).toBeDefined()
-    expect(wrapper.findAll('.line.mine').length).toBeGreaterThan(0)
-  })
-
-  it('says so rather than drawing an empty column when there is no history', () => {
-    const wrapper = show([])
-    expect(wrapper.find('.note').text()).toContain('no history yet')
-    expect(wrapper.find('button.chip').exists()).toBe(false)
-  })
-
-  it('has nothing to say about a binary file', () => {
-    const wrapper = mount(BlameView, {
-      props: { diff: { ...diff, binary: true }, text: null, runs: [], top: 0, view: 900 }
-    })
-    expect(wrapper.find('.note').text()).toContain('Binary')
   })
 
   it('fades the oldest run and leaves the newest at full strength', () => {
@@ -78,5 +64,39 @@ describe('the blame view', () => {
     const newer = Number(chips[1]!.attributes('style')?.match(/opacity:\s*([\d.]+)/)?.[1])
     expect(older).toBeLessThan(newer)
     expect(newer).toBeCloseTo(1)
+  })
+
+  it('draws no column at all while blame is off', () => {
+    const wrapper = show([run({ start: 1, lines: 4 })], false)
+    expect(wrapper.find('.chip').exists()).toBe(false)
+    // The file is still there to read.
+    expect(wrapper.findAll('.line').length).toBeGreaterThan(1)
+  })
+
+  it('offers the toggle on a right-click of the line numbers', async () => {
+    const menu = useContextMenu()
+    const wrapper = show([run({ start: 1, lines: 4 })], false)
+    await wrapper.findAll('.no')[1]!.trigger('contextmenu')
+    expect(menu.state.open).toBe(true)
+    expect(menu.state.items[0]!.label).toBe('Show blame')
+    menu.state.items[0]!.action?.()
+    expect(wrapper.emitted('toggle-blame')).toHaveLength(1)
+    menu.close()
+  })
+
+  it('says the column could not be read without taking the file away', () => {
+    const wrapper = mount(FileView, {
+      props: {
+        diff,
+        text: 'one\ntwo',
+        runs: [],
+        blame: true,
+        blameError: 'No blame here',
+        top: 0,
+        view: 900
+      }
+    })
+    expect(wrapper.text()).toContain('No blame here')
+    expect(wrapper.findAll('.line').length).toBeGreaterThan(1)
   })
 })

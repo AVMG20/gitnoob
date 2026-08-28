@@ -1,8 +1,11 @@
 <script setup lang="ts">
 import { computed, onMounted, onUnmounted, ref } from 'vue'
-import type { FileDiff } from '~/composables/useGit'
+import { Users } from 'lucide-vue-next'
+import { relativeTime, useGit, type BlameRun, type FileDiff } from '~/composables/useGit'
 import { highlightWhole, languageFor } from '~/composables/useHighlight'
 import { CODE_ROW, markedLines, windowOf, type Line } from '~/composables/useCode'
+import { useContextMenu } from '~/composables/useContextMenu'
+import { tint } from '~/composables/useAvatars'
 
 const props = defineProps<{
   diff: FileDiff | null
@@ -13,7 +16,17 @@ const props = defineProps<{
   /** Where the box that scrolls this is scrolled to, and how tall it is. */
   top?: number
   view?: number
+  /** Who last touched each line, drawn beside the numbers when it is asked for. */
+  runs?: BlameRun[]
+  blame?: boolean
+  blameLoading?: boolean
+  blameError?: string | null
 }>()
+
+const emit = defineEmits<{ (event: 'toggle-blame'): void }>()
+
+const git = useGit()
+const menu = useContextMenu()
 
 const language = computed(() => (props.diff ? languageFor(props.diff.path) : null))
 
@@ -102,11 +115,103 @@ const longest = computed(() => {
   return found
 })
 
+// --- who touched what
+//
+// A column rather than a view of its own: the file is the thing being read
+// either way, and the question "who wrote this" is asked about a line you are
+// already looking at. Turned on from the numbers it sits against, and the
+// answer is remembered for every file after.
+const runs = computed(() => props.runs ?? [])
+
+/** The run each line belongs to, so a window into the middle still knows. */
+const runOf = computed(() => {
+  const map: BlameRun[] = []
+  for (const run of runs.value) {
+    for (let at = 0; at < run.lines; at++) map[run.start + at - 1] = run
+  }
+  return map
+})
+
+const runAt = (number: number) => runOf.value[number - 1]
+
+/** True on the first line of a run: the only row that draws the chip. */
+const heads = (number: number) => {
+  const run = runAt(number)
+  return !!run && run.start === number
+}
+
+/**
+ * How old a run is, on a scale of nothing to one.
+ *
+ * The oldest line in the file is the far end of the scale rather than some
+ * fixed number of years: a file written last month and a file written in 2014
+ * both want their earliest lines to read as the earliest, and a fixed scale
+ * would paint one of them entirely one colour.
+ */
+const ages = computed(() => {
+  const times = runs.value.filter((run) => !run.uncommitted).map((run) => run.time)
+  const newest = Math.max(...times, 0)
+  const oldest = Math.min(...times, newest)
+  return { oldest, span: newest - oldest }
+})
+
+function ageOf(run: BlameRun | undefined) {
+  if (!run || run.uncommitted) return 1
+  const { oldest, span } = ages.value
+  return span > 0 ? (run.time - oldest) / span : 1
+}
+
+/** Newer lines stand out; older ones fade into the page. */
+function chipStyle(run: BlameRun | undefined) {
+  return { opacity: `${0.45 + ageOf(run) * 0.55}` }
+}
+
+function faceStyle(run: BlameRun | undefined) {
+  return {
+    background: run?.uncommitted ? 'var(--text-faint)' : tint(run?.email || run?.author || '')
+  }
+}
+
+function when(run: BlameRun | undefined) {
+  if (!run) return ''
+  return run.uncommitted ? 'now' : relativeTime(run.time)
+}
+
+function title(run: BlameRun | undefined) {
+  if (!run) return ''
+  if (run.uncommitted) return 'Not committed yet — this line is your own working copy.'
+  return [
+    run.summary,
+    `${run.author} <${run.email}>`,
+    relativeTime(run.time),
+    run.oid,
+    'Click to open this commit.'
+  ].join('\n')
+}
+
+/** A chip is a way into the commit that put the line there. */
+function openCommit(run: BlameRun | undefined) {
+  if (!run || run.uncommitted) return
+  git.revealCommit(run.oid)
+}
+
+/** The numbers answer for the column beside them: right-click turns it on. */
+function onNumbers(event: MouseEvent) {
+  menu.show(event, [
+    {
+      label: props.blame ? 'Hide blame' : 'Show blame',
+      icon: Users,
+      hint: 'Who last touched each line',
+      action: () => emit('toggle-blame')
+    }
+  ])
+}
+
 const ROW = CODE_ROW
 </script>
 
 <template>
-  <div class="file">
+  <div class="file" :class="{ waiting: props.blame && props.blameLoading }">
     <p v-if="props.loading" class="note dim">Loading file…</p>
     <p v-else-if="props.error" class="note dim">{{ props.error }}</p>
     <p v-else-if="props.diff?.binary" class="note dim">Binary file — nothing to read.</p>
@@ -116,8 +221,12 @@ const ROW = CODE_ROW
       <p v-if="!counts.marked && !counts.gaps" class="note dim">
         Nothing changed in this file — it is shown as it stands.
       </p>
+      <!-- Blame is a column of this view, so when it cannot be read the file
+           is still here to read; it says so and stays out of the way. -->
+      <p v-if="props.blame && props.blameError" class="note dim">{{ props.blameError }}</p>
       <!-- Not painted, and no height of its own; it is here to be measured. -->
       <div class="line gauge" aria-hidden="true">
+        <span v-if="props.blame" class="chip"><span class="who">MMMMMMMMMMMM</span></span>
         <span class="no">{{ lines.length }}</span>
         <span class="gutter" />
         <span class="text">{{ longest }}</span>
@@ -131,7 +240,27 @@ const ROW = CODE_ROW
         }"
       >
       <div v-for="line in visible" :key="line.number" class="line" :class="line.mark ?? ''">
-        <span class="no">{{ line.number }}</span>
+        <!-- One chip per run, on the line the run starts at. The rest of the
+             run carries the rule down its left instead, which is what ties the
+             lines to the chip above them. -->
+        <template v-if="props.blame">
+          <button
+            v-if="heads(line.number)"
+            class="chip"
+            :style="chipStyle(runAt(line.number))"
+            :title="title(runAt(line.number))"
+            :disabled="runAt(line.number)?.uncommitted"
+            @click="openCommit(runAt(line.number))"
+          >
+            <span class="face" :style="faceStyle(runAt(line.number))" />
+            <span class="who truncate">{{
+              runAt(line.number)?.uncommitted ? 'Uncommitted' : runAt(line.number)?.author
+            }}</span>
+            <span class="ago">{{ when(runAt(line.number)) }}</span>
+          </button>
+          <span v-else class="chip rule" />
+        </template>
+        <span class="no" @contextmenu="onNumbers">{{ line.number }}</span>
         <!-- The bar an editor draws between the numbers and the code: solid
              where a line is new or changed, and a wedge where lines were taken
              out and nothing put in their place, since a removal has no line of
@@ -218,6 +347,78 @@ const ROW = CODE_ROW
   overflow: hidden;
   visibility: hidden;
   pointer-events: none;
+}
+
+/* The blame column: wide enough for a name and a date, and no wider — the code
+   is what the eye should land on. It sits outside the numbers, so turning it on
+   pushes nothing about the file around but its left edge. */
+.chip {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  flex: none;
+  width: 178px;
+  height: 18px;
+  padding: 0 8px 0 6px;
+  font-family: var(--font);
+  font-size: 11px;
+  line-height: 18px;
+  color: var(--text-dim);
+  text-align: left;
+  border-right: 1px solid var(--line-soft);
+  /* The rule that ties a run together, drawn where the chip's own left edge
+     would be. */
+  box-shadow: inset 2px 0 0 var(--line-soft);
+}
+
+button.chip {
+  box-shadow: inset 2px 0 0 var(--line);
+}
+
+button.chip:hover:not(:disabled) {
+  background: var(--bg-hover);
+  color: var(--text);
+  box-shadow: inset 2px 0 0 var(--accent);
+}
+
+button.chip:disabled {
+  cursor: default;
+  box-shadow: inset 2px 0 0 var(--accent);
+}
+
+.chip.rule {
+  cursor: default;
+}
+
+/* While the history is still being walked there are no chips yet, only the
+   rules between them; faded, so the column reads as an answer on its way
+   rather than as an answer of nothing. */
+.file.waiting .chip {
+  opacity: 0.4;
+}
+
+.face {
+  flex: none;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+}
+
+.who {
+  flex: 1;
+  min-width: 0;
+}
+
+.ago {
+  flex: none;
+  font-size: 10px;
+  color: var(--text-faint);
+}
+
+/* Only when the blame column stands to its left do the numbers need air on
+   that side; without it they keep the width they always had. */
+.chip + .no {
+  padding-left: 9px;
 }
 
 /* Between the numbers and the code, where an editor puts it: the mark belongs
@@ -347,6 +548,7 @@ const ROW = CODE_ROW
   text-align: right;
   color: var(--text-faint);
   user-select: none;
+  cursor: context-menu;
 }
 
 /* Never wrapped. Every row is exactly one line tall, because that is what the

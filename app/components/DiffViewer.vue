@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed, nextTick, onBeforeUnmount, onMounted, onUnmounted, ref, watch } from 'vue'
-import { ArrowDownToLine, Check, Copy, FileBox, FolderOpen, History, Minus, Undo2, X } from 'lucide-vue-next'
+import { ArrowDownToLine, Check, Copy, FileBox, FolderOpen, History, Minus, Undo2, Users, X } from 'lucide-vue-next'
 import {
   copyText,
   relativeTime,
@@ -24,7 +24,7 @@ import {
 } from '~/composables/useCode'
 
 /** The order Tab walks the views in. */
-const MODES: DiffMode[] = ['diff', 'file', 'blame']
+const MODES: DiffMode[] = ['diff', 'file']
 
 const git = useGit()
 const menu = useContextMenu()
@@ -222,16 +222,16 @@ async function fetchFromLfs() {
 
 // --- who touched what
 //
-// Read only while the blame view is on screen, and again when the file or the
+// Read only while the blame column is on screen, and again when the file or the
 // commit under it changes. It is a walk of the file's history, which is not a
-// thing to do for a view nobody opened.
+// thing to do for a column nobody opened.
 const blame = ref<BlameRun[]>([])
 const blaming = ref(false)
 const blameError = ref<string | null>(null)
 
 async function loadBlame() {
   const current = target.value
-  if (!current || diffMode.mode !== 'blame') return
+  if (!current || diffMode.mode !== 'file' || !diffMode.blame) return
   blaming.value = true
   blameError.value = null
   try {
@@ -251,6 +251,10 @@ watch(() => diffMode.mode, async () => {
   await loadBlame()
   await toFirstChange()
 })
+
+// Turning the column on is the one thing that asks for a walk of the history,
+// so it is what pays for it.
+watch(() => diffMode.blame, () => loadBlame())
 
 /**
  * Where the changes are, for the strip beside the scrollbar.
@@ -452,15 +456,24 @@ onUnmounted(() => window.removeEventListener('keydown', onKey))
         >
           File
         </button>
-        <button
-          class="seg"
-          :class="{ on: diffMode.mode === 'blame' }"
-          title="The whole file, with the commit that last touched each line (Tab)"
-          @click="diffMode.mode = 'blame'"
-        >
-          Blame
-        </button>
       </span>
+
+      <!-- Blame belongs to the file view, so the button that opens it is only
+           offered there — the same toggle the line numbers offer on a
+           right-click. -->
+      <button
+        v-if="diffMode.mode === 'file'"
+        class="btn"
+        :class="{ on: diffMode.blame }"
+        :title="
+          diffMode.blame
+            ? 'Hide who last touched each line'
+            : 'Show who last touched each line'
+        "
+        @click="diffMode.blame = !diffMode.blame"
+      >
+        <Users :size="14" />
+      </button>
 
       <!-- Discard left, stage right, matching the hunk buttons in the diff
            below: the destructive one is never where the hand already is. -->
@@ -526,16 +539,6 @@ onUnmounted(() => window.removeEventListener('keydown', onKey))
           </p>
         </div>
 
-        <BlameView
-          v-else-if="diffMode.mode === 'blame'"
-          :diff="diff"
-          :text="text"
-          :runs="blame"
-          :loading="loading || blaming"
-          :error="textError ?? blameError"
-          :top="top"
-          :view="boxHeight"
-        />
         <FileView
           v-else-if="diffMode.mode === 'file'"
           :diff="diff"
@@ -544,6 +547,11 @@ onUnmounted(() => window.removeEventListener('keydown', onKey))
           :error="textError"
           :top="top"
           :view="boxHeight"
+          :runs="blame"
+          :blame="diffMode.blame"
+          :blame-loading="blaming"
+          :blame-error="blameError"
+          @toggle-blame="diffMode.blame = !diffMode.blame"
         />
         <DiffView
           v-else
@@ -615,6 +623,13 @@ onUnmounted(() => window.removeEventListener('keydown', onKey))
 }
 
 .seg.on {
+  background: var(--bg-active);
+  color: var(--text);
+}
+
+/* A toggle rather than an action: on, it holds the pressed look the segmented
+   control uses, so the bar has one idea of what "this is on" looks like. */
+.btn.on {
   background: var(--bg-active);
   color: var(--text);
 }
