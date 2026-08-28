@@ -79,6 +79,12 @@ fn is_query(args: &[&str]) -> bool {
             .any(|arg| arg.starts_with("--format") || *arg == "--list"),
         ["stash", "list", ..] | ["stash", "show", ..] => true,
         ["submodule", "status", ..] => true,
+        // `git worktree list` and `git remote` with nothing after it are both
+        // read on every refresh; so is the version check that says whether
+        // git-lfs is here at all.
+        ["worktree", "list", ..] => true,
+        ["remote"] | ["remote", "get-url", ..] | ["remote", "show", ..] => true,
+        ["lfs", "version", ..] => true,
         // Every way of asking config a question is spelled `--get`-something,
         // and the file being asked may come first: `config --file .gitmodules
         // --get-regexp`. Anything without one of those is setting a value.
@@ -392,6 +398,14 @@ mod tests {
         assert!(is_query(&["stash", "list"]));
         assert!(is_query(&["stash", "show", "--name-only", "stash@{0}"]));
         assert!(is_query(&["submodule", "status"]));
+        assert!(is_query(&["worktree", "list", "--porcelain"]));
+        assert!(is_query(&["remote"]));
+        assert!(is_query(&["remote", "get-url", "origin"]));
+        assert!(is_query(&["lfs", "version"]));
+        assert!(!is_query(&["worktree", "add", "/tmp/x", "main"]));
+        assert!(!is_query(&["remote", "add", "origin", "url"]));
+        assert!(!is_query(&["remote", "remove", "origin"]));
+        assert!(!is_query(&["lfs", "pull"]));
         assert!(is_query(&["config", "--get", "user.name"]));
         assert!(is_query(&[
             "config",
