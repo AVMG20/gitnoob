@@ -241,6 +241,15 @@ fn run_todo(
     done: String,
 ) -> Result<String, String> {
     let git_dir = crate::remote::git_dir(root)?;
+    // Refused here, before anything is written: git would refuse anyway, but
+    // by then the todo and rewords files of the rebase that IS running would
+    // have been overwritten — and the exists-afterwards check below would read
+    // that old rebase as this one having stopped.
+    if git_dir.join("rebase-merge").exists() || git_dir.join("rebase-apply").exists() {
+        return Err(
+            "A rebase is already part-way through. Continue or abort that one first.".to_string(),
+        );
+    }
     let list = git_dir.join("gitnoob-rebase-todo");
     std::fs::write(&list, todo).map_err(|e| format!("Could not write the plan: {e}"))?;
     let _ = std::fs::write(git_dir.join("gitnoob-rebase-rewords"), rewords.join("\n"));

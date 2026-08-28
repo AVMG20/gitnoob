@@ -5629,6 +5629,51 @@ fn staged_work_survives_a_squash() {
 }
 
 #[test]
+fn a_squash_asked_for_mid_rebase_refuses_and_touches_nothing() {
+    lend_git_an_editor();
+    let sandbox = three_commits("squash-midrebase");
+    let ids = oids(&sandbox);
+    // A rebase of this same branch, stopped at an edit that was meant as a
+    // reword: the sidecar carries that oid, and losing it would downgrade the
+    // stop to a plain edit.
+    let todo = format!("edit {}\npick {}\n", ids[1], ids[2]);
+    begin_rebase(&sandbox, &ids[0], &todo, &[&ids[1]]);
+    let state = sandbox.state();
+    assert!(rebase::progress(&state).unwrap().unwrap().rewording);
+
+    // It used to overwrite the running rebase's todo and rewords files, then
+    // read git's refusal as "the squash stopped" — a lie about both rebases.
+    let refused = rebase::squash(&state, &[ids[0].clone(), ids[1].clone()], "feat: x").unwrap_err();
+    assert!(refused.contains("already part-way through"), "{refused}");
+
+    // The running rebase still knows its stop is a reword.
+    assert!(rebase::progress(&state).unwrap().unwrap().rewording);
+    assert_eq!(
+        std::fs::read_to_string(sandbox.root.join(".git/gitnoob-rebase-rewords")).unwrap(),
+        ids[1]
+    );
+    let said = rebase::abort(&state).unwrap();
+    assert!(said.contains("as it was"));
+}
+
+#[test]
+fn a_plan_started_mid_rebase_is_refused_the_same_way() {
+    lend_git_an_editor();
+    let sandbox = three_commits("plan-midrebase");
+    let ids = oids(&sandbox);
+    begin_rebase(&sandbox, &ids[0], &format!("edit {}\n", ids[1]), &[]);
+    let state = sandbox.state();
+
+    let steps = vec![rebase::Step {
+        oid: ids[1].clone(),
+        action: rebase::Action::Pick,
+    }];
+    let refused = rebase::start(&state, &ids[0], steps).unwrap_err();
+    assert!(refused.contains("already part-way through"), "{refused}");
+    rebase::abort(&state).unwrap();
+}
+
+#[test]
 fn a_squash_needs_a_message() {
     let sandbox = three_commits("squash-nomessage");
     let ids = oids(&sandbox);
