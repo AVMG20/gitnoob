@@ -26,10 +26,16 @@ const updates = useUpdates()
 useTheme()
 const zoom = useZoom()
 
+/** The repository switcher, which is reachable with no repository open. */
+const switching = ref(false)
+
 useShortcuts({
   'zoom.in': zoom.zoomIn,
   'zoom.out': zoom.zoomOut,
-  'zoom.reset': zoom.reset
+  'zoom.reset': zoom.reset,
+  'project.switch': () => {
+    switching.value = !switching.value
+  }
 })
 
 const ready = ref(false)
@@ -302,6 +308,12 @@ onUnmounted(() => {
 
     <ActivityLog />
     <Toasts />
+
+    <ProjectSwitcher
+      v-if="switching"
+      @open="openProject"
+      @close="switching = false"
+    />
 
     <SettingsModal v-if="config.store.settingsOpen" />
     <CloneDialog v-if="cloneOpen" @close="cloneOpen = false" @done="made" />

@@ -69,6 +69,7 @@ export const SHORTCUTS: Shortcut[] = [
 
   // Projects and windows
   { id: 'project.open', keys: 'mod+o', label: 'Open a repository', where: ANYWHERE, group: 'Projects and windows' },
+  { id: 'project.switch', keys: 'mod+p', label: 'Go to a repository', where: ANYWHERE, group: 'Projects and windows', note: 'Searches the open tabs and everything opened before them.' },
   { id: 'project.close', keys: 'mod+w', label: 'Close the current project tab', where: ANYWHERE, group: 'Projects and windows' },
   { id: 'project.next', keys: 'mod+alt+ArrowRight', label: 'Next project tab', where: ANYWHERE, group: 'Projects and windows' },
   { id: 'project.previous', keys: 'mod+alt+ArrowLeft', label: 'Previous project tab', where: ANYWHERE, group: 'Projects and windows' },

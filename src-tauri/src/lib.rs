@@ -47,9 +47,10 @@ async fn open_repo(
             if !profile.projects.iter().any(|p| p.path == recorded) {
                 profile.projects.push(config::Project {
                     path: recorded.clone(),
-                    name,
+                    name: name.clone(),
                 });
             }
+            config::remember_recent(profile, &recorded, &name);
             profile.active_project = Some(recorded.clone());
         }
     })?;
@@ -1027,6 +1028,17 @@ fn project_reorder(
     Ok(state.config())
 }
 
+/// Takes a repository out of the profile's recents. The folder is untouched.
+#[tauri::command]
+fn project_forget(path: String, state: State<'_, AppState>) -> Result<config::Config, String> {
+    state.update_config(|config| {
+        if let Some(profile) = config.active_mut() {
+            profile.recents.retain(|one| one.path != path);
+        }
+    })?;
+    Ok(state.config())
+}
+
 /// Writes the active profile's identity into this repository's local config.
 ///
 /// A profile is a person, and choosing one is the whole statement, so this runs
@@ -1778,6 +1790,7 @@ pub fn run() {
             profile_activate,
             project_close,
             project_reorder,
+            project_forget,
             apply_identity,
             ssh_keys,
             ssh_test,

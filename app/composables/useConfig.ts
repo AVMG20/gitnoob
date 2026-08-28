@@ -27,6 +27,8 @@ export interface Profile {
   /** `tag.gpgsign`. */
   sign_tags: boolean | null
   projects: Project[]
+  /** Everything opened under this profile, newest first, tabs included. */
+  recents: Project[]
   active_project: string | null
 }
 
@@ -102,6 +104,8 @@ export function useConfig() {
     () => profiles.value.find((p) => p.id === store.config?.active_profile) ?? null
   )
   const projects = computed(() => profile.value?.projects ?? [])
+  /** Everything opened under this profile, newest first. */
+  const recents = computed(() => profile.value?.recents ?? [])
   const activeProject = computed(() => profile.value?.active_project ?? null)
   /**
    * Which tab to draw as the current one.
@@ -146,6 +150,7 @@ export function useConfig() {
     profiles,
     profile,
     projects,
+    recents,
     activeProject,
     selectedProject,
     settings,
@@ -190,6 +195,10 @@ export function useConfig() {
     async closeProject(path: string) {
       apply(await invoke<Config>('project_close', { path }))
     },
+    /** Takes one out of the recents. The folder on disk is not touched. */
+    async forgetProject(path: string) {
+      apply(await invoke<Config>('project_forget', { path }))
+    },
     async reorderProjects(paths: string[]) {
       apply(await invoke<Config>('project_reorder', { paths }))
     },
@@ -217,6 +226,7 @@ export function emptyProfile(): Profile {
     sign_commits: null,
     sign_tags: null,
     projects: [],
+    recents: [],
     active_project: null
   }
 }
