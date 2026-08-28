@@ -40,7 +40,7 @@ that it updates itself.
 | Merge, rebase, fast-forward | drag a branch onto another |
 | Cherry-pick | drag a commit onto a branch |
 | Apply a stash elsewhere | drag the stash onto a branch |
-| Stage / unstage | click the file, or one hunk of it |
+| Stage / unstage | click the file, one hunk of it, or the lines you pick |
 | Everything else | right-click it |
 
 Also here without typing anything: fetch, pull, push, commit, amend, revert,
@@ -95,7 +95,7 @@ Full list in Settings → Shortcuts. `Ctrl` on Windows and Linux.
 - Your repos stay where they are. No account, no upload, no service.
 - Writes run your own `git`, so hooks, signing, SSH agent and credential helpers
   all keep working. Close gitnoob and carry on in a terminal any time.
-- Not yet: line-level staging, LFS.
+- Not yet: LFS.
   Windows is tested less than macOS and Linux.
 
 ## Build it
