@@ -79,6 +79,21 @@ let sizer: ResizeObserver | null = null
 
 const target = computed(() => store.viewer)
 const language = computed(() => (target.value ? labelFor(target.value.path) : null))
+/**
+ * Whether the file being read has been deleted.
+ *
+ * A deletion has no file on disk, so what both views show is the copy git
+ * still has — and saying so is the difference between a page that explains
+ * itself and one that looks like the app went wrong.
+ */
+const gone = computed(() => {
+  const current = target.value
+  if (!current || current.commit) return false
+  const list =
+    (current.side ?? 'unstaged') === 'staged' ? store.status?.staged : store.status?.unstaged
+  return (list ?? []).some((entry) => entry.path === current.path && entry.kind === 'deleted')
+})
+
 const stats = computed(() => {
   const lines = (diff.value?.hunks ?? []).flatMap((hunk) => hunk.lines)
   return {
@@ -402,11 +417,11 @@ watch(
   () => store.status,
   (status) => {
     // A commit stays open whatever the working tree does; a working file is
-    // open because it had changes, and after a commit it has none — nor does
-    // anything else, so there is nothing to move on to and the viewer is left
-    // showing an empty page over the list you now want. Only when both sides
-    // are empty: with other files still changed, walking to them is the point
-    // of staying here.
+    // open because it had changes, and once nothing anywhere has any — the
+    // lot discarded, stashed, or dealt with outside the window — the viewer is
+    // left showing an empty page over the list you now want. Committing closes
+    // it in the panel itself, whether or not it emptied the tree; this is the
+    // other ways the changes can go.
     const nothingLeft =
       status && !status.staged.length && !status.unstaged.length && !status.conflicted.length
     if (target.value && !target.value.commit && nothingLeft) {
@@ -560,6 +575,7 @@ onUnmounted(() => window.removeEventListener('keydown', onKey))
         <FileView
           v-else-if="diffMode.mode === 'file'"
           :diff="diff"
+          :gone="gone"
           :text="text"
           :loading="loading"
           :error="textError"

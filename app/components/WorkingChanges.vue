@@ -160,6 +160,11 @@ async function commit() {
     stashedMessage.value = null
     amend.value = false
     amendPushed.value = false
+    // Back to the graph, whether or not anything is still uncommitted. The
+    // commit that was being written is now in the history, which is what
+    // there is to look at; what is left over is a fresh read, started from
+    // the list rather than from whatever page the last one ended on.
+    store.viewer = null
   }
 }
 

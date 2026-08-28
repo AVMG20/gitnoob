@@ -11,6 +11,8 @@ const props = defineProps<{
   diff: FileDiff | null
   /** The whole file as it stands on the side being shown. */
   text: string | null
+  /** The file has been deleted, so what is shown is the copy git still has. */
+  gone?: boolean
   loading?: boolean
   error?: string | null
   /** Where the box that scrolls this is scrolled to, and how tall it is. */
@@ -218,7 +220,13 @@ const ROW = CODE_ROW
     <p v-else-if="props.text === null" class="note dim">Select a file.</p>
 
     <template v-else>
-      <p v-if="!counts.marked && !counts.gaps" class="note dim">
+      <!-- A deletion has no file left to show, so this is the copy git kept.
+           Said plainly, because a page of code for a file that is not there
+           any more reads as a bug otherwise. -->
+      <p v-if="props.gone" class="note dim">
+        Deleted — this is the copy git still has, as it was before it went.
+      </p>
+      <p v-else-if="!counts.marked && !counts.gaps" class="note dim">
         Nothing changed in this file — it is shown as it stands.
       </p>
       <!-- Blame is a column of this view, so when it cannot be read the file

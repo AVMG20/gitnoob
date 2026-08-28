@@ -53,9 +53,20 @@ pub fn of(state: &AppState, path: &str, at: Option<&str>) -> Result<Vec<BlameRun
         options.newest_commit(commit.id());
     }
 
-    let blame = repo
-        .blame_file(std::path::Path::new(path), Some(&mut options))
-        .map_err(|e| format!("Could not blame {path}: {e}"))?;
+    let blame = match repo.blame_file(std::path::Path::new(path), Some(&mut options)) {
+        Ok(blame) => blame,
+        // A file that has never been committed is not in the tree blame reads
+        // from, and libgit2 says so as an error. It is not one: every line of
+        // it is yours and uncommitted, which is exactly what the column would
+        // have said had the file been added a minute ago instead of not at
+        // all. Only when the working tree is what is being blamed — asking
+        // about a commit that really does not have the file is a question with
+        // no answer.
+        Err(e) if at.is_none() && e.code() == git2::ErrorCode::NotFound => {
+            return Ok(all_uncommitted(state, path))
+        }
+        Err(e) => return Err(format!("Could not blame {path}: {e}")),
+    };
 
     let mut summaries: HashMap<git2::Oid, (String, String, String, i64)> = HashMap::new();
     let mut runs = Vec::with_capacity(blame.len());
@@ -97,6 +108,55 @@ pub fn of(state: &AppState, path: &str, at: Option<&str>) -> Result<Vec<BlameRun
     }
 
     Ok(runs)
+}
+
+/// One run over the whole of a file nothing has committed yet.
+///
+/// Named for whoever the repository would commit as, since that is who wrote
+/// the lines; an empty or unreadable file gets no runs at all rather than a
+/// run of nothing.
+fn all_uncommitted(state: &AppState, path: &str) -> Vec<BlameRun> {
+    let Ok(root) = state.path() else {
+        return Vec::new();
+    };
+    let Ok(text) = std::fs::read_to_string(root.join(path)) else {
+        return Vec::new();
+    };
+    let lines = text.lines().count();
+    if lines == 0 {
+        return Vec::new();
+    }
+    let who = state
+        .repo()
+        .ok()
+        .and_then(|repo| repo.signature().ok())
+        .map(|signature| {
+            (
+                signature.name().unwrap_or("You").to_string(),
+                signature.email().unwrap_or("").to_string(),
+            )
+        })
+        .unwrap_or_else(|| ("You".to_string(), String::new()));
+
+    vec![BlameRun {
+        oid: git2::Oid::zero().to_string(),
+        short: String::new(),
+        summary: "Not committed yet".to_string(),
+        author: who.0,
+        email: who.1,
+        time: chrono_now(),
+        start: 1,
+        lines,
+        uncommitted: true,
+    }]
+}
+
+/// Seconds since the epoch, for a run that has no commit to take a time from.
+fn chrono_now() -> i64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|since| since.as_secs() as i64)
+        .unwrap_or(0)
 }
 
 /// The parts of a commit a blame chip shows. Read once per commit, however
@@ -183,6 +243,68 @@ fn read_history(raw: &str) -> Vec<FileCommit> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::path::Path;
+    use std::process::Command;
+
+    fn git(dir: &Path, args: &[&str]) -> String {
+        let out = Command::new("git")
+            .args(args)
+            .current_dir(dir)
+            .output()
+            .unwrap();
+        assert!(
+            out.status.success(),
+            "git {args:?} failed: {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        String::from_utf8_lossy(&out.stdout).to_string()
+    }
+
+    /// A file nobody has committed is every line yours, not an error.
+    ///
+    /// libgit2 blames against a tree, and a new file is in no tree: it answers
+    /// "the path does not exist in the given tree", which the window used to
+    /// print across the top of the file the user was reading.
+    #[test]
+    fn a_file_with_no_commits_is_blamed_as_uncommitted_work() {
+        let root = std::env::temp_dir().join(format!("gitnoob-blame-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).unwrap();
+        git(&root, &["init", "--quiet", "--initial-branch=main"]);
+        git(&root, &["config", "user.email", "test@example.com"]);
+        git(&root, &["config", "user.name", "Test"]);
+        std::fs::write(root.join("first.txt"), "one\n").unwrap();
+        git(&root, &["add", "-A"]);
+        git(&root, &["commit", "--quiet", "-m", "first"]);
+
+        // Added but never committed, which is the case that failed.
+        std::fs::write(root.join("new.txt"), "a\nb\nc\n").unwrap();
+        git(&root, &["add", "new.txt"]);
+
+        let state = AppState::new(root.join("config"));
+        state.set_path(root.clone());
+
+        let runs = of(&state, "new.txt", None).unwrap();
+        assert_eq!(runs.len(), 1);
+        assert!(runs[0].uncommitted);
+        assert_eq!(runs[0].summary, "Not committed yet");
+        assert_eq!(runs[0].start, 1);
+        assert_eq!(runs[0].lines, 3);
+        assert_eq!(runs[0].author, "Test");
+
+        // A committed file still gets its real answer.
+        let committed = of(&state, "first.txt", None).unwrap();
+        assert_eq!(committed.len(), 1);
+        assert!(!committed[0].uncommitted);
+        assert_eq!(committed[0].summary, "first");
+
+        // A file that is genuinely not there is still an error, and so is one
+        // asked about as of a commit that never had it.
+        assert!(of(&state, "nothing.txt", None).unwrap().is_empty());
+        assert!(of(&state, "new.txt", Some("HEAD")).is_err());
+
+        let _ = std::fs::remove_dir_all(&root);
+    }
 
     #[test]
     fn reads_a_commit_a_line() {

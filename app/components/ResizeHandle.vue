@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { usePanes, type Edge } from '~/composables/usePanes'
+import { isRow, usePanes, type Edge } from '~/composables/usePanes'
 
 const props = defineProps<{ side: Edge }>()
 const { layout, start, reset } = usePanes()
@@ -8,7 +8,7 @@ const { layout, start, reset } = usePanes()
 <template>
   <div
     class="handle"
-    :class="{ active: layout.dragging === props.side, row: props.side === 'result' }"
+    :class="{ active: layout.dragging === props.side, row: isRow(props.side) }"
     title="Drag to resize, double-click to reset"
     @pointerdown="start($event, props.side)"
     @dblclick="reset(props.side)"

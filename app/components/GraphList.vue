@@ -26,6 +26,7 @@ import {
   copyText,
   fullTime,
   highlight,
+  isRunning,
   laneColor,
   laneTint,
   relativeTime,
@@ -96,7 +97,8 @@ const searchOpen = ref(false)
 const scrollTop = ref(0)
 const height = ref(600)
 const hit = ref(0)
-const resetTarget = ref<{ oid: string; mode: ResetMode } | null>(null)
+/** The commit a hard reset is being confirmed against; the only one that asks. */
+const resetTarget = ref<string | null>(null)
 const tagTarget = ref<GraphRow | null>(null)
 const branchTarget = ref<GraphRow | null>(null)
 /** The stash whose drop is being confirmed, by index; null when none is. */
@@ -567,7 +569,7 @@ function onKey(event: KeyboardEvent) {
  */
 async function openReset(oid: string, mode: ResetMode) {
   if (mode === 'hard') {
-    resetTarget.value = { oid, mode }
+    resetTarget.value = oid
     return
   }
   // Nothing is said about one that worked: the branch chip lands on the row
@@ -1003,10 +1005,59 @@ function wipMenu(event: MouseEvent) {
   )
 }
 
-/** Dropping a branch on a commit moves that branch there. */
+/**
+ * Picks a row up: a commit to cherry-pick, or a stash to apply.
+ *
+ * The sidebar has taken both of these on a branch since it was written — it is
+ * the drop half of a gesture whose other half was never here, so dragging a
+ * commit did nothing at all. The row already answers to a branch dropped on
+ * it; now it can be picked up as well.
+ */
+function beginDrag(event: DragEvent, row: GraphRow) {
+  if (row.stash !== null) {
+    const stash = store.stashes.find((one) => one.index === row.stash)
+    drag.begin(event, {
+      kind: 'stash',
+      index: row.stash,
+      message: stash?.message ?? row.summary
+    })
+    return
+  }
+  drag.begin(event, {
+    kind: 'commit',
+    oid: row.oid,
+    short: row.short,
+    summary: row.summary
+  })
+}
+
+/**
+ * Dropping a branch on a commit moves the branch there.
+ *
+ * A mixed reset, which is why it asks nothing: every change on disk is left
+ * exactly as it is — staged ones simply stop being staged — and undo puts the
+ * branch back where it was. Dragging up the list is the way back by hand.
+ *
+ * Only the branch you are on, though. `git reset` moves whichever branch HEAD
+ * points at, so dropping another one here moved the current branch instead and
+ * said nothing about it: the wrong branch, silently, on a gesture meant to be
+ * quick.
+ */
 function onDropOnRow(row: GraphRow) {
   const payload = drag.take(['branch'])
   if (!payload || payload.kind !== 'branch' || payload.remote) return
+  // A stash is not a place a branch belongs.
+  if (row.stash !== null) return
+  if (payload.name !== store.repo?.head) {
+    git.note(`Check out ${payload.name} first — this moves the branch you are on`, 'error')
+    return
+  }
+  // Mid-merge or mid-rebase the reset would take the operation apart under it,
+  // which is not what dragging a branch a few rows means.
+  if (isRunning(store.progress)) {
+    git.note('Finish or abort what is running before moving the branch', 'error')
+    return
+  }
   openReset(row.oid, 'mixed')
 }
 
@@ -1186,8 +1237,11 @@ onUnmounted(() => {
             drop: drag.state.over === `commit:${item.row.oid}`
           }"
           :style="{ top: `${item.top}px` }"
+          draggable="true"
           @click="onRowClick($event, item.row)"
           @contextmenu="commitMenu($event, item.row)"
+          @dragstart="beginDrag($event, item.row)"
+          @dragend="drag.end()"
           @dragover="drag.hover($event, `commit:${item.row.oid}`, ['branch'])"
           @dragleave="drag.leave($event, `commit:${item.row.oid}`)"
           @drop.prevent="onDropOnRow(item.row)"
@@ -1547,12 +1601,7 @@ onUnmounted(() => {
       <span class="truncate">{{ store.repo?.detached ? 'HEAD' : store.repo?.head }}</span>
     </button>
 
-    <ResetDialog
-      v-if="resetTarget"
-      :oid="resetTarget.oid"
-      :mode="resetTarget.mode"
-      @close="resetTarget = null"
-    />
+    <ResetDialog v-if="resetTarget" :oid="resetTarget" @close="resetTarget = null" />
     <TagDialog v-if="tagTarget" :row="tagTarget" @close="tagTarget = null" />
     <DropStashDialog v-if="dropping !== null" :index="dropping" @close="dropping = null" />
     <SquashDialog

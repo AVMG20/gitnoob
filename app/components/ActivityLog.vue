@@ -8,6 +8,7 @@ import {
   replaceWord,
   type CompletionSource
 } from '~/composables/useCompletion'
+import { usePanes } from '~/composables/usePanes'
 
 /**
  * The console: what git has run, and a prompt to run more.
@@ -21,6 +22,7 @@ const git = useGit()
 const store = git.store
 
 const open = ref(false)
+const { layout } = usePanes()
 
 const latest = computed(() => store.log[0] ?? null)
 /** The log the way a terminal shows it. */
@@ -126,6 +128,9 @@ async function take(match: string) {
 
 <template>
   <footer class="console" :class="{ open }">
+    <!-- Only while it is open: closed, there is a one-line strip and nothing
+         to resize. -->
+    <ResizeHandle v-if="open" side="console" />
     <div class="strip-row">
       <button class="strip" :title="open ? 'Collapse' : 'Expand'" @click="toggle">
         <ChevronUp :size="12" class="chev" :class="{ down: open }" />
@@ -144,7 +149,7 @@ async function take(match: string) {
     </div>
 
     <template v-if="open">
-      <div ref="scroller" class="body">
+      <div ref="scroller" class="body" :style="{ height: `${layout.console}px` }">
         <div v-for="entry in lines" :key="entry.id" class="entry" :class="entry.level">
           <span class="faint time">{{ new Date(entry.at).toLocaleTimeString() }}</span>
           <!-- A command is shown as it would be typed, so the log reads as the
@@ -279,12 +284,19 @@ async function take(match: string) {
   font-size: 11px;
 }
 
-/* The transcript. Oldest at the top, so it is read downwards and the newest
-   line is the one nearest the prompt. */
+/*
+ * The transcript. Oldest at the top, so it is read downwards and the newest
+ * line is the one nearest the prompt.
+ *
+ * As tall as the handle above it says, and never taller than the window can
+ * spare. Written as `flex: 1` with a height it took its size from its own
+ * contents instead: a few hundred lines of log, and opening the console
+ * covered the whole window.
+ */
 .body {
-  flex: 1;
+  flex: none;
   min-height: 0;
-  height: 220px;
+  max-height: 60vh;
   overflow-y: auto;
   border-top: 1px solid var(--line-soft);
 }

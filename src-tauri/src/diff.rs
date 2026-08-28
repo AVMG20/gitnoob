@@ -415,6 +415,25 @@ const MAX_FILE_BYTES: usize = 2 * 1024 * 1024;
 /// Which copy depends on what is being looked at: a commit's blob, the staged
 /// copy in the index, or the file as it currently sits on disk — the same three
 /// sides the diff view works from, so the marks line up with the text.
+/// The staged copy of a file, when the index has one.
+fn from_index(repo: &git2::Repository, path: &str) -> Option<Vec<u8>> {
+    let index = repo.index().ok()?;
+    let entry = index.get_path(std::path::Path::new(path), 0)?;
+    Some(repo.find_blob(entry.id).ok()?.content().to_vec())
+}
+
+/// The committed copy of a file, which is what is left once it is deleted.
+fn from_head(repo: &git2::Repository, path: &str) -> Option<Vec<u8>> {
+    let head = repo.head().ok()?.peel_to_commit().ok()?;
+    let entry = head
+        .tree()
+        .ok()?
+        .get_path(std::path::Path::new(path))
+        .ok()?;
+    let object = entry.to_object(repo).ok()?;
+    Some(object.peel_to_blob().ok()?.content().to_vec())
+}
+
 pub fn file_text(
     state: &AppState,
     path: &str,
@@ -437,16 +456,24 @@ pub fn file_text(
                 .content()
                 .to_vec()
         }
-        None if staged => {
-            let index = repo.index().map_err(err)?;
-            let entry = index
-                .get_path(std::path::Path::new(path), 0)
-                .ok_or_else(|| format!("{path} is not staged"))?;
-            repo.find_blob(entry.id).map_err(err)?.content().to_vec()
-        }
+        // A staged deletion has nothing in the index either, and what the view
+        // wants is the copy the deletion is removing: HEAD's.
+        None if staged => from_index(&repo, path)
+            .or_else(|| from_head(&repo, path))
+            .ok_or_else(|| format!("{path} is not staged"))?,
         None => {
             let file = state.path()?.join(path);
-            std::fs::read(&file).map_err(|e| format!("Could not read {path}: {e}"))?
+            match std::fs::read(&file) {
+                Ok(bytes) => bytes,
+                // Deleted in the working tree: the file the view is asking
+                // about is the one that has just gone, and git still has it.
+                // Reading it back is what makes an open file survive its own
+                // deletion instead of turning into an operating-system error.
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound => from_index(&repo, path)
+                    .or_else(|| from_head(&repo, path))
+                    .ok_or_else(|| format!("{path} is not on disk, and git has no copy of it"))?,
+                Err(e) => return Err(format!("Could not read {path}: {e}")),
+            }
         }
     };
 
@@ -467,6 +494,61 @@ fn err(e: git2::Error) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A deleted file still has a copy: reading it is not an error.
+    ///
+    /// The window keeps the file open while you delete it — that is the moment
+    /// the deletion is being looked at — and it used to answer with the
+    /// operating system's own "No such file or directory", which reads as the
+    /// app breaking rather than as the file being gone.
+    #[test]
+    fn a_deleted_file_is_read_from_git_rather_than_from_disk() {
+        let root = std::env::temp_dir().join(format!("gitnoob-gone-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).unwrap();
+        let git = |args: &[&str]| {
+            let out = std::process::Command::new("git")
+                .args(args)
+                .current_dir(&root)
+                .output()
+                .unwrap();
+            assert!(out.status.success(), "git {args:?} failed");
+        };
+        git(&["init", "--quiet", "--initial-branch=main"]);
+        git(&["config", "user.email", "test@example.com"]);
+        git(&["config", "user.name", "Test"]);
+        std::fs::write(root.join("gone.txt"), "one\ntwo\n").unwrap();
+        git(&["add", "-A"]);
+        git(&["commit", "--quiet", "-m", "first"]);
+
+        let state = AppState::new(root.join("config"));
+        state.set_path(root.clone());
+
+        // Deleted in the working tree: the index still has it.
+        std::fs::remove_file(root.join("gone.txt")).unwrap();
+        assert_eq!(
+            file_text(&state, "gone.txt", None, false).unwrap(),
+            "one\ntwo\n"
+        );
+
+        // Deleted and staged: the index has nothing either, and HEAD answers.
+        git(&["add", "-A"]);
+        assert_eq!(
+            file_text(&state, "gone.txt", None, true).unwrap(),
+            "one\ntwo\n"
+        );
+        assert_eq!(
+            file_text(&state, "gone.txt", None, false).unwrap(),
+            "one\ntwo\n"
+        );
+
+        // A path git has never heard of is still an error, and says so in
+        // words rather than in an errno.
+        let missing = file_text(&state, "never.txt", None, false).unwrap_err();
+        assert!(missing.contains("git has no copy of it"), "{missing}");
+
+        let _ = std::fs::remove_dir_all(&root);
+    }
 
     #[test]
     fn the_no_newline_origins_become_one_remark_with_no_line_number() {

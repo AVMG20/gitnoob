@@ -4,6 +4,8 @@ import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { invoke } from '@tauri-apps/api/core'
 import ActivityLog from '~/components/ActivityLog.vue'
 import { useGit } from '~/composables/useGit'
+import ResizeHandle from '~/components/ResizeHandle.vue'
+import { usePanes } from '~/composables/usePanes'
 
 vi.mock('@tauri-apps/api/core', () => ({ invoke: vi.fn() }))
 
@@ -111,5 +113,56 @@ describe('the console', () => {
     const wrapper = mount(ActivityLog)
     await wrapper.find('.term').trigger('click')
     expect(wrapper.find('input').attributes('disabled')).toBeDefined()
+  })
+})
+
+/**
+ * How tall the console is.
+ *
+ * It used to take its height from its own contents, so a session with a few
+ * hundred lines in it opened over the whole window. It is a pane now: a
+ * height, a handle to drag, and the window's own limit above that.
+ */
+describe('the size of the console', () => {
+  const { layout, reset, start } = usePanes()
+
+  /** One drag of the console's handle, `by` pixels down the screen. */
+  function drag(by: number) {
+    start(new PointerEvent('pointerdown', { clientY: 400 }), 'console')
+    window.dispatchEvent(new PointerEvent('pointermove', { clientY: 400 + by }))
+    window.dispatchEvent(new PointerEvent('pointerup', { clientY: 400 + by }))
+  }
+
+  const open = async () => {
+    const wrapper = mount(ActivityLog, { global: { components: { ResizeHandle } } })
+    await wrapper.find('.strip').trigger('click')
+    await flushPromises()
+    return wrapper
+  }
+
+  beforeEach(() => reset('console'))
+
+  it('is as tall as the layout says, whatever is in it', async () => {
+    for (let at = 0; at < 200; at += 1) git.note(`line ${at}`)
+    const wrapper = await open()
+    expect(wrapper.find('.body').attributes('style')).toContain('height: 220px')
+  })
+
+  it('has a handle of its own, which grows it upwards and stops at the limits', async () => {
+    const wrapper = await open()
+    expect(wrapper.findComponent(ResizeHandle).props('side')).toBe('console')
+
+    // Dragging up grows it, and neither direction runs away with the window.
+    drag(-120)
+    expect(layout.console).toBe(340)
+    drag(-5000)
+    expect(layout.console).toBe(640)
+    drag(5000)
+    expect(layout.console).toBe(96)
+  })
+
+  it('has no handle to drag while it is shut', async () => {
+    const wrapper = mount(ActivityLog, { global: { components: { ResizeHandle } } })
+    expect(wrapper.findComponent(ResizeHandle).exists()).toBe(false)
   })
 })

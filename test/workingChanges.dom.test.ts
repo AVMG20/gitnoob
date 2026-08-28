@@ -231,3 +231,55 @@ describe('the working tree panel', () => {
     expect(labels.some((one) => one.includes('Throw the conflict away'))).toBe(false)
   })
 })
+
+/**
+ * Committing is the end of a read, so it goes back to the graph.
+ *
+ * It used to close only when the commit emptied the working tree, which meant
+ * committing half of it left the last file staring back at you over the list
+ * you were about to pick the next one from.
+ */
+describe('committing from the panel', () => {
+  it('goes back to the main view, with changes still left over', async () => {
+    asked.mockImplementation(async (cmd: string, args?: Record<string, unknown>) => {
+      calls.push({ cmd, args: args ?? {} })
+      if (cmd === 'commit') return 'Committed 1 file'
+      return null
+    })
+    git.store.status = {
+      staged: [{ path: 'app/app.vue', kind: 'modified' }],
+      unstaged: [{ path: 'notes.md', kind: 'untracked' }],
+      conflicted: []
+    }
+    git.store.viewer = { path: 'app/app.vue', side: 'staged' }
+
+    const wrapper = await open()
+    await wrapper.find('textarea').setValue('Add the parser')
+    await wrapper.find('.btn-primary').trigger('click')
+    await flushPromises()
+
+    expect(calls.some((call) => call.cmd === 'commit')).toBe(true)
+    expect(git.store.viewer).toBeNull()
+  })
+
+  it('stays where it is when git refused the commit', async () => {
+    asked.mockImplementation(async (cmd: string, args?: Record<string, unknown>) => {
+      calls.push({ cmd, args: args ?? {} })
+      if (cmd === 'commit') throw new Error('the hook said no')
+      return null
+    })
+    git.store.status = {
+      staged: [{ path: 'app/app.vue', kind: 'modified' }],
+      unstaged: [],
+      conflicted: []
+    }
+    git.store.viewer = { path: 'app/app.vue', side: 'staged' }
+
+    const wrapper = await open()
+    await wrapper.find('textarea').setValue('Add the parser')
+    await wrapper.find('.btn-primary').trigger('click')
+    await flushPromises()
+
+    expect(git.store.viewer).toEqual({ path: 'app/app.vue', side: 'staged' })
+  })
+})

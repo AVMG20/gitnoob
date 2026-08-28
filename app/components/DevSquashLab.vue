@@ -5,6 +5,7 @@ import WorkingChanges from './WorkingChanges.vue'
 import DiffViewer from './DiffViewer.vue'
 import SideBar from './SideBar.vue'
 import ContextMenu from './ContextMenu.vue'
+import ActivityLog from './ActivityLog.vue'
 import SettingsModal from './SettingsModal.vue'
 import { useGit, type GraphRow, type SquashPreview } from '~/composables/useGit'
 import { useConfig } from '~/composables/useConfig'
@@ -149,6 +150,13 @@ function install() {
     }
     if (cmd === 'commit_message_text') return MESSAGES[String(args.oid)] ?? ''
     if (cmd === 'working_file_diff') {
+      // The staged side of the moved file is a pure rename: nothing inside it
+      // changed, so the viewer draws the "moved, contents unchanged" page.
+      // Kept in the fixture because that page is otherwise hard to reach on
+      // purpose.
+      if (args.side === 'staged' && String(args.path) === MOVED_TO) {
+        return { path: MOVED_TO, from: MOVED_FROM, binary: false, truncated: 0, hunks: [] }
+      }
       return {
         path: String(args.path),
         binary: false,
@@ -170,6 +178,26 @@ function install() {
         configured: true,
         model: 'anthropic/claude-sonnet-4.5',
         default_commit_prompt: DEFAULT_COMMIT_PROMPT
+      }
+    }
+    if (cmd === 'reset_preview') {
+      // The hard-reset question, which is the only reset that asks one.
+      const at = ROWS.findIndex((one) => one.oid === args.oid)
+      return {
+        target: String(args.oid),
+        short: ROWS[at]?.short ?? '0000000',
+        summary: ROWS[at]?.summary ?? '',
+        branch: 'tickets',
+        dropped: ROWS.slice(0, Math.max(at, 0)).map((one) => ({
+          oid: one.oid,
+          short: one.short,
+          summary: one.summary,
+          author: one.author,
+          time: one.time
+        })),
+        diverges: false,
+        staged_files: 1,
+        unstaged_files: 3
       }
     }
     if (cmd === 'ai_squash_message') {
@@ -252,17 +280,25 @@ onMounted(async () => {
     <DiffViewer v-if="git.store.viewer" class="graph" />
     <GraphList v-else class="graph" />
     <WorkingChanges class="work" />
+    <ActivityLog class="console" />
     <ContextMenu />
     <SettingsModal v-if="config.store.settingsOpen" />
   </div>
 </template>
 
 <style scoped>
+/* The three panels side by side with the console under them, which is the
+   shape the window has — the console is sized against what is left. */
 .lab {
   display: grid;
   grid-template-columns: 260px minmax(0, 1fr) 380px;
+  grid-template-rows: minmax(0, 1fr) auto;
   height: 100vh;
   min-height: 0;
+}
+
+.console {
+  grid-column: 1 / -1;
 }
 
 .side,

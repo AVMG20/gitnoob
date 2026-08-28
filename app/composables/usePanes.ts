@@ -2,17 +2,29 @@ import { reactive, watch } from 'vue'
 
 const KEY = 'gitnoob.layout'
 
-const limits = { sidebar: [180, 460], panel: [280, 720], result: [40, 1200] } as const
+const limits = {
+  sidebar: [180, 460],
+  panel: [280, 720],
+  result: [40, 1200],
+  console: [96, 640]
+} as const
 
-const DEFAULTS = { sidebar: 252, panel: 400, result: 260 }
+const DEFAULTS = { sidebar: 252, panel: 400, result: 260, console: 220 }
 
 export type Edge = keyof typeof DEFAULTS
+
+/** The edges that move up and down rather than side to side. */
+const ROWS: Edge[] = ['result', 'console']
+
+export const isRow = (side: Edge) => ROWS.includes(side)
 
 const layout = reactive({
   sidebar: 252,
   panel: 400,
   /** How tall the resolver keeps the result pane. */
   result: 260,
+  /** How tall the console is when it is open. */
+  console: 220,
   /** Which edge is being dragged, if any. */
   dragging: null as Edge | null
 })
@@ -22,12 +34,13 @@ try {
   if (typeof saved.sidebar === 'number') layout.sidebar = saved.sidebar
   if (typeof saved.panel === 'number') layout.panel = saved.panel
   if (typeof saved.result === 'number') layout.result = saved.result
+  if (typeof saved.console === 'number') layout.console = saved.console
 } catch {
   // A missing or unreadable preference just means the defaults.
 }
 
 watch(
-  () => [layout.sidebar, layout.panel, layout.result],
+  () => [layout.sidebar, layout.panel, layout.result, layout.console],
   () => {
     try {
       localStorage.setItem(
@@ -35,7 +48,8 @@ watch(
         JSON.stringify({
           sidebar: layout.sidebar,
           panel: layout.panel,
-          result: layout.result
+          result: layout.result,
+          console: layout.console
         })
       )
     } catch {
@@ -51,9 +65,9 @@ export function usePanes() {
   /** Starts a drag; `side` says which edge moved and which way it grows. */
   function start(event: PointerEvent, side: Edge) {
     event.preventDefault()
-    // The result pane is the one edge that moves up and down, and it grows as
-    // the pointer goes up — as the right panel grows when it goes left.
-    const down = side === 'result'
+    // The result pane and the console move up and down, and both grow as the
+    // pointer goes up — as the right panel grows when it goes left.
+    const down = isRow(side)
     const from = down ? event.clientY : event.clientX
     const startSize = layout[side]
     layout.dragging = side

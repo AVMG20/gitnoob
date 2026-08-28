@@ -1,52 +1,38 @@
 <script setup lang="ts">
 import { computed, onMounted, ref } from 'vue'
 import { TriangleAlert } from 'lucide-vue-next'
-import { relativeTime, useGit, type ResetMode, type ResetPreview } from '~/composables/useGit'
+import { relativeTime, useGit, type ResetPreview } from '~/composables/useGit'
 
-const props = defineProps<{
-  oid: string
-  /** Preselected when the caller already asked which kind of reset. */
-  mode?: ResetMode
-}>()
+/**
+ * The question asked before a hard reset.
+ *
+ * Only this one asks. A soft or mixed reset keeps every change on disk and the
+ * commits it takes off the branch are a keystroke away in undo, so those run
+ * on the click that asked for them; the mode is chosen in the menu, not here.
+ * What is left is the one reset that writes over the working tree, and the two
+ * things worth knowing before it does: which commits leave the branch, and how
+ * much uncommitted work goes with them.
+ */
+const props = defineProps<{ oid: string }>()
 const emit = defineEmits<{ close: [] }>()
 
 const git = useGit()
 const store = git.store
 
 const preview = ref<ResetPreview | null>(null)
-const mode = ref<ResetMode>(props.mode ?? 'mixed')
 const acknowledged = ref(false)
 
 const dropped = computed(() => preview.value?.dropped ?? [])
 const dirty = computed(
   () => (preview.value?.staged_files ?? 0) + (preview.value?.unstaged_files ?? 0)
 )
-/** Only a hard reset can destroy work that is not in a commit. */
-const risky = computed(() => mode.value === 'hard' && dirty.value > 0)
-const blocked = computed(() => risky.value && !acknowledged.value)
-
-const modes: { id: ResetMode; title: string; what: string }[] = [
-  {
-    id: 'soft',
-    title: 'Soft',
-    what: 'Moves the branch. Everything those commits changed ends up staged, ready to recommit.'
-  },
-  {
-    id: 'mixed',
-    title: 'Mixed',
-    what: 'Moves the branch. The changes stay in your files but are no longer staged.'
-  },
-  {
-    id: 'hard',
-    title: 'Hard',
-    what: 'Moves the branch and rewrites your files to match. Uncommitted work is destroyed.'
-  }
-]
+/** The tick is only asked for when there is work on disk to lose. */
+const blocked = computed(() => dirty.value > 0 && !acknowledged.value)
 
 async function apply() {
   if (blocked.value) return
   // Null means it failed; any string, empty or not, means it ran.
-  if ((await git.reset(props.oid, mode.value)) !== null) emit('close')
+  if ((await git.reset(props.oid, 'hard')) !== null) emit('close')
 }
 
 onMounted(async () => {
@@ -56,8 +42,8 @@ onMounted(async () => {
 
 <template>
   <AppModal
-    :title="`Move ${preview?.branch ?? 'branch'} to ${preview?.short ?? ''}`"
-    :width="620"
+    :title="`Hard reset ${preview?.branch ?? 'branch'} to ${preview?.short ?? ''}`"
+    :width="560"
     @close="emit('close')"
   >
     <p v-if="!preview" class="dim">Working out what this would do…</p>
@@ -67,29 +53,13 @@ onMounted(async () => {
         <span class="mono">{{ preview.short }}</span>
         <span class="truncate">{{ preview.summary }}</span>
       </p>
-
-      <div class="modes">
-        <button
-          v-for="option in modes"
-          :key="option.id"
-          class="mode"
-          :class="{ on: mode === option.id, danger: option.id === 'hard' }"
-          @click="mode = option.id"
-        >
-          <span class="mode-title">{{ option.title }}</span>
-          <span class="mode-what">{{ option.what }}</span>
-        </button>
-      </div>
+      <p class="what dim">Your files are rewritten to match that commit.</p>
 
       <div v-if="dropped.length" class="block">
         <div class="block-head">
-          {{ dropped.length }} {{ dropped.length === 1 ? 'commit' : 'commits' }} would no longer be
-          on {{ preview.branch }}
+          {{ dropped.length }} {{ dropped.length === 1 ? 'commit' : 'commits' }} would leave
+          {{ preview.branch }}. Undo brings them back.
         </div>
-        <p class="dim small">
-          The commits themselves survive — undo brings the branch straight back, and they stay
-          reachable until git eventually collects them.
-        </p>
         <ul class="commits">
           <li v-for="commit in dropped" :key="commit.oid">
             <span class="mono faint">{{ commit.short }}</span>
@@ -105,33 +75,23 @@ onMounted(async () => {
         rather than rewinding it.
       </p>
 
-      <div v-if="dirty" class="dirty" :class="{ bad: mode === 'hard' }">
-        <TriangleAlert :size="13" />
-        <span v-if="mode === 'hard'">
-          You have {{ dirty }} uncommitted {{ dirty === 1 ? 'change' : 'changes' }}. A hard reset
-          throws them away — stash first if you might want them.
-        </span>
-        <span v-else>
-          Your {{ dirty }} uncommitted {{ dirty === 1 ? 'change' : 'changes' }} will be left alone.
-        </span>
-      </div>
-
-      <label v-if="risky" class="ack">
+      <!-- The one thing said about uncommitted work, and it is the tick: saying
+           it in a banner above as well was the same sentence twice. -->
+      <label v-if="dirty" class="ack">
         <input v-model="acknowledged" type="checkbox" />
-        I understand {{ dirty }} uncommitted
-        {{ dirty === 1 ? 'change' : 'changes' }} will be destroyed
+        Throw away {{ dirty }} uncommitted {{ dirty === 1 ? 'change' : 'changes' }}. Stash first if
+        you might want them.
       </label>
     </template>
 
     <template #footer>
       <button class="btn btn-ghost" @click="emit('close')">Cancel</button>
       <button
-        class="btn"
-        :class="mode === 'hard' ? 'btn-danger' : 'btn-primary'"
+        class="btn btn-danger"
         :disabled="store.busy || !preview || blocked"
         @click="apply"
       >
-        {{ mode === 'hard' ? 'Hard reset' : `${mode === 'soft' ? 'Soft' : 'Mixed'} reset` }}
+        Hard reset
       </button>
     </template>
   </AppModal>
@@ -141,48 +101,13 @@ onMounted(async () => {
 .target {
   display: flex;
   gap: 9px;
-  margin: 0 0 14px;
+  margin: 0 0 4px;
   font-size: 13px;
 }
 
-.modes {
-  display: grid;
-  gap: 6px;
-}
-
-.mode {
-  display: flex;
-  flex-direction: column;
-  gap: 3px;
-  padding: 9px 11px;
-  text-align: left;
-  border: 1px solid var(--line);
-  border-radius: 7px;
-}
-
-.mode:hover {
-  background: var(--bg-hover);
-}
-
-.mode.on {
-  border-color: var(--accent);
-  background: color-mix(in srgb, var(--accent) 10%, transparent);
-}
-
-.mode.on.danger {
-  border-color: var(--red);
-  background: var(--danger-bg);
-}
-
-.mode-title {
-  font-weight: 600;
-  font-size: 12.5px;
-}
-
-.mode-what {
-  font-size: 11.5px;
-  color: var(--text-dim);
-  line-height: 1.45;
+.what {
+  margin: 0;
+  font-size: 12px;
 }
 
 .block {
@@ -193,15 +118,8 @@ onMounted(async () => {
 }
 
 .block-head {
-  font-weight: 600;
   font-size: 12.5px;
-  margin-bottom: 3px;
-}
-
-.small {
-  font-size: 11.5px;
-  margin: 0 0 8px;
-  line-height: 1.5;
+  margin-bottom: 5px;
 }
 
 .commits {
@@ -231,8 +149,7 @@ onMounted(async () => {
   font-size: 11px;
 }
 
-.note,
-.dirty {
+.note {
   display: flex;
   align-items: flex-start;
   gap: 8px;
@@ -246,25 +163,14 @@ onMounted(async () => {
   border: 1px solid var(--warning-line);
 }
 
-.dirty:not(.bad) {
-  color: var(--text-dim);
-  background: var(--bg-raised);
-  border-color: var(--line);
-}
-
-.dirty.bad {
-  color: var(--red-soft);
-  background: var(--danger-bg);
-  border-color: var(--danger-line);
-}
-
 .ack {
   display: flex;
-  align-items: center;
+  align-items: flex-start;
   gap: 8px;
-  margin-top: 12px;
+  margin-top: 14px;
   font-size: 12px;
-  color: var(--red);
+  line-height: 1.5;
+  color: var(--text);
   cursor: pointer;
 }
 </style>

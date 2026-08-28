@@ -2,6 +2,7 @@ import { aimAt, invoke } from './useInvoke'
 import { markRaw, reactive, ref } from 'vue'
 import { useConfig } from './useConfig'
 import { useForge } from './useForge'
+import { stepFile, useFileView, walkOrder } from './useFileView'
 import { parseCommandLine } from './cli'
 import type { LfsStatus } from './useLfs'
 import { useToasts } from './useToasts'
@@ -1194,6 +1195,119 @@ export function useGit() {
     return out.ok
   }
 
+  /**
+   * Stages files, and moves the viewer on when the open one is what left.
+   *
+   * Reviewing a change is reading a file, staging it, reading the next one.
+   * The file that was just staged is no longer where the viewer is pointing,
+   * so it either sat on an empty page or had to be closed by hand before the
+   * next one could be opened. Now it walks to the next unstaged file the way
+   * the arrow keys would — down first, up when that was the last one, and shut
+   * when there is nothing left to read.
+   *
+   * Only for a single file, and only when it is the one on screen: staging a
+   * folder, or a file other than the one being read, is not a step through a
+   * review and must not move the page under it.
+   */
+  async function stageFiles(paths: string[]) {
+    const open = openWorkingFile('unstaged')
+    const taken = !!open && paths.includes(open.path)
+    // The walk is for the one-file gesture. Staging a folder or the whole list
+    // is not stepping through a review, so the file on screen simply follows
+    // itself across rather than jumping somewhere new.
+    const next = taken && paths.length === 1 ? nextToRead(open.path) : null
+    const said = await run<string>('Stage', 'stage', { paths })
+    // A refusal leaves the file where it was, so the viewer stays on it.
+    if (said !== null && taken) {
+      store.viewer =
+        paths.length === 1 ? (next ? { path: next, side: 'unstaged' } : null) : sideOf(open.path)
+    }
+    return said
+  }
+
+  /** Stages the lot; the file on screen follows itself to the staged side. */
+  async function stageEverything() {
+    const open = openWorkingFile('unstaged')
+    const said = await run<string>('Stage all', 'stage_all')
+    if (said !== null && open) store.viewer = sideOf(open.path)
+    return said
+  }
+
+  /** The working file on screen when it is on `side`, or null. */
+  function openWorkingFile(side: 'staged' | 'unstaged') {
+    const open = store.viewer
+    if (!open || open.commit) return null
+    return (open.side ?? 'unstaged') === side ? open : null
+  }
+
+  /**
+   * Where a path still has something to show, staged side first.
+   *
+   * A file that has moved between the lists is the same file, and reading it
+   * should carry on; one that has nothing left on either side has no page.
+   */
+  function sideOf(path: string) {
+    if ((store.status?.staged ?? []).some((entry) => entry.path === path)) {
+      return { path, side: 'staged' as const }
+    }
+    if ((store.status?.unstaged ?? []).some((entry) => entry.path === path)) {
+      return { path, side: 'unstaged' as const }
+    }
+    return null
+  }
+
+  /**
+   * The unstaged file to read after `path`, or null when it was the last one.
+   *
+   * Walked in the order the panel draws rather than the order git lists: a
+   * folded-away directory is not somewhere to land, and in tree mode "the next
+   * one down" is the next one down on screen. Conflicted files are left out —
+   * clicking one opens the resolver, not the viewer, so landing on one would
+   * take over the window rather than show the next change.
+   */
+  function nextToRead(path: string): string | null {
+    const conflicted = store.status?.conflicted ?? []
+    const files = (store.status?.unstaged ?? []).filter(
+      (entry) => !conflicted.includes(entry.path)
+    )
+    const { state: how } = useFileView()
+    const order = walkOrder([{ files, side: 'unstaged' }], how.mode, how.collapsed)
+    const from = { path, side: 'unstaged' as const }
+    const next = stepFile(order, from, 1) ?? stepFile(order, from, -1)
+    return next?.path ?? null
+  }
+
+  /**
+   * Unstages files, and follows the open one to the side it moved to.
+   *
+   * A file is unstaged to carry on working on it, not to stop reading it. The
+   * viewer was pointed at the staged copy, which no longer exists — so it sat
+   * on a page with nothing on it while the file itself was one list down.
+   */
+  async function unstageFiles(paths: string[]) {
+    const open = openWorkingFile('staged')
+    const taken = !!open && paths.includes(open.path)
+    const said = await run<string>('Unstage', 'unstage', { paths })
+    // Only where there is really something left: a staged change the work tree
+    // already matches leaves nothing on either side.
+    if (said !== null && taken) store.viewer = sideOf(open.path)
+    return said
+  }
+
+  /**
+   * Throws changes away, and shuts the viewer when it was reading one of them.
+   *
+   * What is discarded has nothing left to show — the file matches HEAD, or is
+   * gone from the disk altogether.
+   */
+  async function throwAway(label: string, command: string, paths: string[]) {
+    const open = store.viewer
+    const reading = !!open && !open.commit && paths.includes(open.path)
+    const said = await run<string>(label, command, { paths })
+    if (said !== null && reading) store.viewer = null
+    return said
+  }
+
   /** Reports a `git` CLI run in the log, whichever way it went. */
   function report(label: string, out: CmdOutput | null) {
     if (!out) return false
@@ -1363,13 +1477,12 @@ export function useGit() {
       run<string>('Rename remote', 'remote_rename', { from, to }),
     remoteRemove: (name: string) => run<string>('Remove remote', 'remote_remove', { name }),
 
-    stage: (paths: string[]) => run<string>('Stage', 'stage', { paths }),
-    stageAll: () => run<string>('Stage all', 'stage_all'),
-    unstage: (paths: string[]) => run<string>('Unstage', 'unstage', { paths }),
-    discard: (paths: string[]) => run<string>('Discard', 'discard', { paths }),
+    stage: stageFiles,
+    stageAll: stageEverything,
+    unstage: unstageFiles,
+    discard: (paths: string[]) => throwAway('Discard', 'discard', paths),
     /** Deletes files git is not tracking, which is what discarding one means. */
-    deleteUntracked: (paths: string[]) =>
-      run<string>('Delete', 'delete_untracked', { paths }),
+    deleteUntracked: (paths: string[]) => throwAway('Delete', 'delete_untracked', paths),
     commit: (message: string, amend = false) =>
       run<string>('Commit', 'commit', { message, amend }),
     amendDraft: () => guard('Read HEAD', () => invoke<AmendDraft>('amend_draft')),
