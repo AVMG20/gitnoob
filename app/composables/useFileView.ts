@@ -35,6 +35,8 @@ export interface FileEntry {
   path: string
   /** Status letter class: added, modified, deleted, renamed, untracked… */
   kind: string
+  /** Where a moved file came from. Absent for everything that stayed put. */
+  from?: string | null
   additions?: number
   deletions?: number
 }

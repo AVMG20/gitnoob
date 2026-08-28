@@ -32,7 +32,12 @@ fn literal_pathspecs(paths: &[String]) -> Vec<String> {
 
 pub fn stage(state: &AppState, paths: &[String]) -> Result<String, String> {
     let root = state.path()?;
-    let pathspecs = literal_pathspecs(paths);
+    // A file moved in the working tree is one row but two things to stage: the
+    // deletion where it was, and the file where it is now. Staging only the new
+    // name leaves the old one hanging as an unstaged deletion, and git never
+    // sees the pair as the move it is.
+    let both = with_both_halves(state, paths, Side::Unstaged);
+    let pathspecs = literal_pathspecs(&both);
     let mut args = vec!["add", "--"];
     args.extend(pathspecs.iter().map(String::as_str));
     git_cmd::run_checked(&root, &args)
@@ -45,10 +50,50 @@ pub fn stage_all(state: &AppState) -> Result<String, String> {
 
 pub fn unstage(state: &AppState, paths: &[String]) -> Result<String, String> {
     let root = state.path()?;
-    let pathspecs = literal_pathspecs(paths);
+    // Same as staging, the other way round: taking back only the name the row
+    // carries leaves the file both moved and deleted in the index.
+    let both = with_both_halves(state, paths, Side::Staged);
+    let pathspecs = literal_pathspecs(&both);
     let mut args = vec!["restore", "--staged", "--"];
     args.extend(pathspecs.iter().map(String::as_str));
     git_cmd::run_checked(&root, &args)
+}
+
+/// Which side of the index a path was read off.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Side {
+    Staged,
+    Unstaged,
+}
+
+/// The moves among `paths`, as the name a file has now and the one it had.
+///
+/// A move is two entries — a deletion and an arrival — drawn as one row, so a
+/// command given the row's path is only ever given half of it.
+fn moves(state: &AppState, paths: &[String], side: Side) -> Vec<(String, String)> {
+    let Ok(status) = crate::refs::status(state) else {
+        return Vec::new();
+    };
+    let list = if side == Side::Staged {
+        status.staged
+    } else {
+        status.unstaged
+    };
+    list.into_iter()
+        .filter(|entry| paths.contains(&entry.path))
+        .filter_map(|entry| entry.from.map(|from| (entry.path, from)))
+        .collect()
+}
+
+/// `paths` with the other half of every move among them added.
+fn with_both_halves(state: &AppState, paths: &[String], side: Side) -> Vec<String> {
+    let mut all = paths.to_vec();
+    for (_, from) in moves(state, paths, side) {
+        if !all.contains(&from) {
+            all.push(from);
+        }
+    }
+    all
 }
 
 /// Throws away working-tree changes to the given paths. Untracked files are left
@@ -56,7 +101,26 @@ pub fn unstage(state: &AppState, paths: &[String]) -> Result<String, String> {
 /// side effect of "discard changes".
 pub fn discard(state: &AppState, paths: &[String]) -> Result<String, String> {
     let root = state.path()?;
-    let pathspecs = literal_pathspecs(paths);
+    // Undoing a move that was never staged means putting the file back where it
+    // was — that half is a deletion the index can restore. The copy at the new
+    // name is untracked, and `git restore` has nothing to say about it; it is
+    // left where it is, to be deleted deliberately or not at all, which is the
+    // same promise discarding makes about every other untracked file.
+    let moved = moves(state, paths, Side::Unstaged);
+    let mut aimed: Vec<String> = paths
+        .iter()
+        .filter(|path| !moved.iter().any(|(to, _)| &to == path))
+        .cloned()
+        .collect();
+    for (_, from) in moved {
+        if !aimed.contains(&from) {
+            aimed.push(from);
+        }
+    }
+    if aimed.is_empty() {
+        return Ok(String::new());
+    }
+    let pathspecs = literal_pathspecs(&aimed);
     let mut args = vec!["restore", "--worktree", "--"];
     args.extend(pathspecs.iter().map(String::as_str));
     git_cmd::run_checked(&root, &args)

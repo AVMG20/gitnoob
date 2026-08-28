@@ -105,6 +105,33 @@ const MARKS: Record<Change, { icon: typeof Pencil; label: string }> = {
 /** A conflict is not one of the four: it is what has to be dealt with first. */
 const CLASH = { icon: TriangleAlert, label: 'Conflicted — resolve it' }
 
+/**
+ * The old location of a moved file, said as shortly as it can be.
+ *
+ * The folder is what changed nine times in ten, so the file name is dropped
+ * when it stayed the same — "moved from tests/Feature" rather than the whole
+ * path repeated with one folder different.
+ */
+function movedFrom(from: string, to: string) {
+  const cut = from.lastIndexOf('/')
+  if (from.slice(cut + 1) !== to.slice(to.lastIndexOf('/') + 1)) return from
+  // No slash at all means it sat in the root, and `slice(0, -1)` would quietly
+  // hand back the name with its last letter missing.
+  return cut < 0 ? 'the top of the repository' : from.slice(0, cut)
+}
+
+/**
+ * How much of the old location must survive the truncation: its last part.
+ *
+ * `tests/Feature/Filament` cut at the end reads "tests/Featur…", which is the
+ * half that was never in doubt. Cut in the middle it reads "tests/…/Filament",
+ * and the folder the file came out of is the thing being said.
+ */
+function lastPart(text: string) {
+  const cut = text.lastIndexOf('/')
+  return cut < 0 ? text.length : Math.min(text.length - cut - 1, 24)
+}
+
 function mark(kind: string) {
   return kind === CONFLICTED ? CLASH : MARKS[change(kind)]
 }
@@ -156,7 +183,7 @@ function counted(tally: Tally) {
         :class="{ on: props.selected === row.path }"
         :data-path="row.path"
         :style="{ paddingLeft: `${indent(row.depth, true)}px` }"
-        :title="row.path"
+        :title="row.entry?.from ? `${row.entry.from} → ${row.path}` : row.path"
         :draggable="props.draggable"
         @click="emit('select', row.path)"
         @contextmenu="row.entry && emit('menu', $event, row.entry)"
@@ -174,6 +201,16 @@ function counted(tally: Tally) {
         </component>
         <span class="name truncate" :class="{ clash: row.entry?.kind === CONFLICTED }">
           {{ row.name }}
+        </span>
+        <!-- A moved file is one file, and the row it is on is where it went.
+             Where it came from is the part that cannot be read off the tree,
+             so it is said here rather than left to a tooltip. -->
+        <span v-if="row.entry?.from" class="moved">
+          <span class="moved-word">moved from</span>
+          <MidTruncate
+            :text="movedFrom(row.entry.from, row.path)"
+            :tail="lastPart(movedFrom(row.entry.from, row.path))"
+          />
         </span>
         <span v-if="row.entry?.additions" class="plus">+{{ row.entry.additions }}</span>
         <span v-if="row.entry?.deletions" class="minus">−{{ row.entry.deletions }}</span>
@@ -335,6 +372,24 @@ function counted(tally: Tally) {
 .act:hover {
   background: var(--bg-hover);
   color: var(--text);
+}
+
+/* Shrinks four times faster than the name beside it: which file this is
+   matters more than where it used to be, so the path is what gives way. */
+.moved {
+  display: flex;
+  align-items: baseline;
+  gap: 4px;
+  flex: 0 4 auto;
+  min-width: 0;
+  max-width: 50%;
+  font-size: 10.5px;
+  color: var(--text-faint);
+}
+
+/* The words never shrink; only the path they introduce does. */
+.moved-word {
+  flex: none;
 }
 
 .plus {

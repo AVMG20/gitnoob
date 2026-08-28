@@ -1,4 +1,5 @@
 use std::cell::{Cell, RefCell};
+use std::path::Path;
 
 use git2::{Commit, Delta, Diff, DiffOptions, Oid, Repository, Tree};
 use serde::Serialize;
@@ -90,7 +91,7 @@ pub struct FileDiff {
 const MAX_DIFF_LINES: usize = 10_000;
 
 /// Which side of the index a working-tree diff should describe.
-#[derive(serde::Deserialize)]
+#[derive(serde::Deserialize, Clone, Copy, PartialEq, Eq, Debug)]
 #[serde(rename_all = "lowercase")]
 pub enum Side {
     Staged,
@@ -142,6 +143,15 @@ pub fn working_file_diff(state: &AppState, path: &str, side: Side) -> Result<Fil
     let repo = state.repo()?;
     let mut opts = base_options();
     opts.pathspec(path);
+    // A moved file is two things to git — the old name gone, the new one
+    // arrived — and only the pair makes a rename. Asked for the new name alone
+    // the diff holds the arrival on its own, and the whole file reads as added
+    // where two lines changed. So the old name is named too, and git is asked
+    // to put them back together.
+    let origin = rename_origin(state, path, side);
+    if let Some(from) = &origin {
+        opts.pathspec(from);
+    }
     // Untracked files have nothing to diff against, so show them whole. Listing
     // them is not enough on its own: without the content flag the file appears
     // in the diff with no hunks, which reads as "no changes" for a file that is
@@ -150,7 +160,7 @@ pub fn working_file_diff(state: &AppState, path: &str, side: Side) -> Result<Fil
         .recurse_untracked_dirs(true)
         .show_untracked_content(true);
 
-    let diff = match side {
+    let mut diff = match side {
         Side::Unstaged => repo.diff_index_to_workdir(None, Some(&mut opts)),
         Side::Staged => {
             let head_tree = head_tree(&repo)?;
@@ -159,7 +169,32 @@ pub fn working_file_diff(state: &AppState, path: &str, side: Side) -> Result<Fil
     }
     .map_err(err)?;
 
+    if origin.is_some() {
+        let mut find = git2::DiffFindOptions::new();
+        // `for_untracked` as well as `renames`: a file moved with the shell
+        // rather than with `git mv` arrives as an untracked file beside a
+        // deletion, and without this git pairs only what the index knows about.
+        find.renames(true).for_untracked(true);
+        let _ = diff.find_similar(Some(&mut find));
+    }
+
     collect_hunks(&diff, path)
+}
+
+/// The name a file had before it was moved, on the side being looked at.
+///
+/// Read from the status rather than guessed: it is the same rename detection
+/// the file lists are drawn from, so the viewer and the list never disagree
+/// about which two paths are one file.
+fn rename_origin(state: &AppState, path: &str, side: Side) -> Option<String> {
+    let status = crate::refs::status(state).ok()?;
+    let list = match side {
+        Side::Staged => status.staged,
+        Side::Unstaged => status.unstaged,
+    };
+    list.into_iter()
+        .find(|entry| entry.path == path)
+        .and_then(|entry| entry.from)
 }
 
 fn commit_diff<'r>(
@@ -248,6 +283,15 @@ fn file_changes(diff: &Diff) -> Result<Vec<FileChange>, String> {
     Ok(files.into_inner())
 }
 
+/// Whether a delta is about the file being looked at, under either name.
+///
+/// A rename delta carries both, and the old one is the one a pathspec for the
+/// new name would never have matched.
+fn concerns(delta: &git2::DiffDelta<'_>, path: &str) -> bool {
+    let named = |file: git2::DiffFile<'_>| file.path().is_some_and(|found| found == Path::new(path));
+    named(delta.new_file()) || named(delta.old_file())
+}
+
 fn collect_hunks(diff: &Diff, path: &str) -> Result<FileDiff, String> {
     let binary = Cell::new(false);
     let hunks: RefCell<Vec<DiffHunk>> = RefCell::new(Vec::new());
@@ -256,13 +300,21 @@ fn collect_hunks(diff: &Diff, path: &str) -> Result<FileDiff, String> {
 
     diff.foreach(
         &mut |delta, _| {
+            if !concerns(&delta, path) {
+                return true;
+            }
             if delta.new_file().is_binary() || delta.old_file().is_binary() {
                 binary.set(true);
             }
             true
         },
         None,
-        Some(&mut |_, hunk| {
+        Some(&mut |delta, hunk| {
+            // The old name of a move is in the diff so the pair can be found;
+            // anything that did not pair up is not this file.
+            if !concerns(&delta, path) {
+                return true;
+            }
             // Past the cap, stop opening hunks too, or the view ends on a run of
             // empty headers.
             if taken.get() >= MAX_DIFF_LINES {
@@ -276,7 +328,10 @@ fn collect_hunks(diff: &Diff, path: &str) -> Result<FileDiff, String> {
             });
             true
         }),
-        Some(&mut |_, _, line| {
+        Some(&mut |delta, _, line| {
+            if !concerns(&delta, path) {
+                return true;
+            }
             if taken.get() >= MAX_DIFF_LINES {
                 dropped.set(dropped.get() + 1);
                 return true;

@@ -74,9 +74,11 @@ pub struct RefTree {
 }
 
 /// One entry in the working-tree status list.
-#[derive(Serialize)]
+#[derive(Debug, Serialize)]
 pub struct StatusEntry {
     pub path: String,
+    /// Where a renamed file came from, and `None` for everything else.
+    pub from: Option<String>,
     /// One of: added, modified, deleted, renamed, typechange, untracked.
     pub kind: String,
 }
@@ -334,40 +336,77 @@ pub fn status(state: &AppState) -> Result<WorkingStatus, String> {
     };
 
     for entry in statuses.iter() {
-        let path = entry.path().unwrap_or("").to_string();
-        if path.is_empty() {
-            continue;
-        }
         let s = entry.status();
+        // `entry.path()` is the *old* side of the head-to-index delta, so for a
+        // staged rename it is the name the file used to have — a path that is
+        // no longer in the working tree, and one `git add` answers with
+        // "pathspec ... did not match any files". Each side is asked for its
+        // own path instead: what the index calls it, and what is on disk.
+        let staged_at = side(entry.head_to_index());
+        let work_at = side(entry.index_to_workdir());
+        let fallback = entry.path().unwrap_or("").to_string();
 
         if s.is_conflicted() {
-            out.conflicted.push(path);
+            let path = work_at.map(|(_, to)| to).unwrap_or(fallback);
+            if !path.is_empty() {
+                out.conflicted.push(path);
+            }
             continue;
         }
         if let Some(kind) = staged_kind(s) {
-            out.staged.push(StatusEntry {
-                path: path.clone(),
-                kind,
-            });
+            let (from, path) = staged_at.clone().unwrap_or((None, fallback.clone()));
+            if !path.is_empty() {
+                out.staged.push(StatusEntry { path, from, kind });
+            }
         }
         if let Some(kind) = unstaged_kind(s) {
-            out.unstaged.push(StatusEntry { path, kind });
+            // A file renamed in the index and edited since is listed by the
+            // index under its new name, and that is the name on disk: the
+            // working-tree delta is against the index, not against HEAD.
+            let (from, path) = work_at
+                .or_else(|| staged_at.map(|(_, to)| (None, to)))
+                .unwrap_or((None, fallback));
+            if !path.is_empty() {
+                out.unstaged.push(StatusEntry { path, from, kind });
+            }
         }
     }
     Ok(out)
 }
 
+/// One side of a status entry: where the file came from, and what it is called
+/// now. `None` when this entry has no delta on that side at all.
+///
+/// The origin is only reported when it differs, so an ordinary edit does not
+/// carry a rename that never happened.
+fn side(delta: Option<git2::DiffDelta<'_>>) -> Option<(Option<String>, String)> {
+    let delta = delta?;
+    // Left exactly as git reports it. A backslash is a legal character in a
+    // filename on Linux and macOS, and rewriting one into a slash would hand
+    // back a path that names a different file — or nothing at all.
+    let text = |file: git2::DiffFile<'_>| file.path().map(|path| path.to_string_lossy().into_owned());
+    let from = text(delta.old_file());
+    let to = text(delta.new_file()).or_else(|| from.clone())?;
+    Some((from.filter(|old| old != &to), to))
+}
+
+/// Renamed is asked about first, and everything else after.
+///
+/// A file that was moved *and* edited carries both bits, and it is the move
+/// that has to be said: "modified" on a row whose path is new reads as an
+/// ordinary edit and leaves nothing to explain where the file went. This is
+/// what git's own `R` status letter does with the same pair.
 fn staged_kind(s: git2::Status) -> Option<String> {
-    let kind = if s.is_index_new() {
+    let kind = if s.is_index_renamed() {
+        "renamed"
+    } else if s.is_index_new() {
         "added"
-    } else if s.is_index_modified() {
-        "modified"
     } else if s.is_index_deleted() {
         "deleted"
-    } else if s.is_index_renamed() {
-        "renamed"
     } else if s.is_index_typechange() {
         "typechange"
+    } else if s.is_index_modified() {
+        "modified"
     } else {
         return None;
     };
@@ -375,16 +414,16 @@ fn staged_kind(s: git2::Status) -> Option<String> {
 }
 
 fn unstaged_kind(s: git2::Status) -> Option<String> {
-    let kind = if s.is_wt_new() {
+    let kind = if s.is_wt_renamed() {
+        "renamed"
+    } else if s.is_wt_new() {
         "untracked"
-    } else if s.is_wt_modified() {
-        "modified"
     } else if s.is_wt_deleted() {
         "deleted"
-    } else if s.is_wt_renamed() {
-        "renamed"
     } else if s.is_wt_typechange() {
         "typechange"
+    } else if s.is_wt_modified() {
+        "modified"
     } else {
         return None;
     };

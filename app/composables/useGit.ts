@@ -187,7 +187,12 @@ export interface InProgress {
   prepared: string | null
 }
 
-export interface StatusEntry { path: string; kind: string }
+export interface StatusEntry {
+  path: string
+  kind: string
+  /** Where a moved file came from. Null for everything that stayed put. */
+  from?: string | null
+}
 export interface WorkingStatus {
   staged: StatusEntry[]
   unstaged: StatusEntry[]

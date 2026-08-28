@@ -321,6 +321,351 @@ fn lists_branches_with_ahead_and_behind_counts() {
     assert_eq!(tree.tags[0].name, "v1");
 }
 
+/// A file moved into a subfolder and edited afterwards.
+///
+/// libgit2 reports a status entry's path as the *old* side of the head-to-index
+/// delta, so a rename used to be listed under the name the file no longer has —
+/// and staging it answered "pathspec ... did not match any files", because
+/// there is nothing there any more.
+fn moved_and_edited(tag: &str) -> Sandbox {
+    let sandbox = Sandbox::new(tag);
+    std::fs::create_dir_all(sandbox.root.join("tests/Feature/Filament")).unwrap();
+    sandbox.commit(
+        "tests/Feature/Filament/CreateTicketFormTest.php",
+        "<?php\nold\n",
+        "First",
+    );
+    std::fs::create_dir_all(sandbox.root.join("tests/Feature/Filament/Tickets")).unwrap();
+    sandbox.git(&[
+        "mv",
+        "tests/Feature/Filament/CreateTicketFormTest.php",
+        "tests/Feature/Filament/Tickets/CreateTicketFormTest.php",
+    ]);
+    sandbox.write(
+        "tests/Feature/Filament/Tickets/CreateTicketFormTest.php",
+        "<?php\nold\nedited after the move\n",
+    );
+    sandbox
+}
+
+const MOVED_TO: &str = "tests/Feature/Filament/Tickets/CreateTicketFormTest.php";
+const MOVED_FROM: &str = "tests/Feature/Filament/CreateTicketFormTest.php";
+
+#[test]
+fn a_file_moved_and_then_edited_is_listed_where_it_now_is() {
+    let sandbox = moved_and_edited("moved-status");
+    let status = refs::status(&sandbox.state()).unwrap();
+
+    let staged = status
+        .staged
+        .iter()
+        .find(|e| e.kind == "renamed")
+        .expect("the move is staged");
+    assert_eq!(staged.path, MOVED_TO);
+    assert_eq!(staged.from.as_deref(), Some(MOVED_FROM));
+
+    // The edit made since is against the index, so it belongs to the new name.
+    let unstaged = status
+        .unstaged
+        .iter()
+        .find(|e| e.kind == "modified")
+        .expect("the edit is not staged");
+    assert_eq!(unstaged.path, MOVED_TO);
+    assert!(
+        !status.unstaged.iter().any(|e| e.path == MOVED_FROM),
+        "nothing should be listed under a name that is no longer on disk"
+    );
+}
+
+#[test]
+fn staging_the_edit_made_after_a_move_finds_the_file() {
+    let sandbox = moved_and_edited("moved-stage");
+    let state = sandbox.state();
+    let path = refs::status(&state)
+        .unwrap()
+        .unstaged
+        .iter()
+        .find(|e| e.kind == "modified")
+        .expect("the edit is listed")
+        .path
+        .clone();
+
+    // The path the window shows is the path it stages, and `git add` has to
+    // find it: with the old name this failed with "did not match any files".
+    work::stage(&state, &[path]).unwrap();
+
+    let after = refs::status(&state).unwrap();
+    assert!(
+        after.unstaged.is_empty(),
+        "the edit should be staged: {:?}",
+        after.unstaged
+    );
+    assert!(after.staged.iter().any(|e| e.path == MOVED_TO));
+}
+
+#[test]
+fn staging_everything_leaves_the_move_listed_where_it_landed() {
+    let sandbox = moved_and_edited("moved-stage-all");
+    let state = sandbox.state();
+    work::stage_all(&state).unwrap();
+
+    let status = refs::status(&state).unwrap();
+    assert!(status.unstaged.is_empty(), "{:?}", status.unstaged);
+    let moved = status
+        .staged
+        .iter()
+        .find(|e| e.kind == "renamed")
+        .expect("one entry for one file");
+    assert_eq!(moved.path, MOVED_TO);
+    assert_eq!(moved.from.as_deref(), Some(MOVED_FROM));
+    assert!(
+        !status.staged.iter().any(|e| e.path == MOVED_FROM),
+        "the old name is not a second file: {:?}",
+        status.staged
+    );
+}
+
+#[test]
+fn a_move_taken_off_the_index_is_still_a_move_in_the_working_tree() {
+    let sandbox = moved_and_edited("moved-unstaged-move");
+    let state = sandbox.state();
+    work::stage_all(&state).unwrap();
+    work::unstage(&state, &[MOVED_TO.to_string()]).unwrap();
+
+    // Nothing is staged, and the working tree still says one file moved rather
+    // than one deleted and another appearing out of nowhere.
+    let status = refs::status(&state).unwrap();
+    assert!(status.staged.is_empty(), "{:?}", status.staged);
+    let moved = status
+        .unstaged
+        .iter()
+        .find(|e| e.path == MOVED_TO)
+        .expect("listed under the name on disk");
+    assert_eq!(moved.kind, "renamed");
+    assert_eq!(moved.from.as_deref(), Some(MOVED_FROM));
+}
+
+/// A file moved with the shell rather than with `git mv`: nothing is staged,
+/// and git sees a deletion at the old name beside an untracked file at the new
+/// one until something pairs them up.
+fn moved_outside_git(tag: &str) -> Sandbox {
+    let sandbox = Sandbox::new(tag);
+    std::fs::create_dir_all(sandbox.root.join("a")).unwrap();
+    sandbox.commit("a/f.txt", "one\ntwo\nthree\nfour\nfive\n", "First");
+    std::fs::create_dir_all(sandbox.root.join("b")).unwrap();
+    std::fs::rename(sandbox.root.join("a/f.txt"), sandbox.root.join("b/f.txt")).unwrap();
+    sandbox.write("b/f.txt", "one\ntwo\nthree\nfour\nsix\n");
+    sandbox
+}
+
+#[test]
+fn a_move_made_outside_git_is_one_row_under_the_name_on_disk() {
+    let sandbox = moved_outside_git("wt-move-status");
+    let status = refs::status(&sandbox.state()).unwrap();
+
+    assert!(status.staged.is_empty());
+    assert_eq!(status.unstaged.len(), 1, "{:?}", status.unstaged);
+    let moved = &status.unstaged[0];
+    assert_eq!(moved.path, "b/f.txt");
+    assert_eq!(moved.from.as_deref(), Some("a/f.txt"));
+    assert_eq!(moved.kind, "renamed");
+}
+
+#[test]
+fn staging_a_move_made_outside_git_stages_both_halves_of_it() {
+    let sandbox = moved_outside_git("wt-move-stage");
+    let state = sandbox.state();
+
+    work::stage(&state, &["b/f.txt".to_string()]).unwrap();
+
+    // Staging only the new name would leave `a/f.txt` behind as an unstaged
+    // deletion, and git would never see the two as one move.
+    let status = refs::status(&state).unwrap();
+    assert!(status.unstaged.is_empty(), "{:?}", status.unstaged);
+    assert_eq!(status.staged.len(), 1, "{:?}", status.staged);
+    assert_eq!(status.staged[0].path, "b/f.txt");
+    assert_eq!(status.staged[0].from.as_deref(), Some("a/f.txt"));
+    assert_eq!(status.staged[0].kind, "renamed");
+}
+
+#[test]
+fn discarding_a_move_made_outside_git_puts_the_file_back_where_it_was() {
+    let sandbox = moved_outside_git("wt-move-discard");
+    let state = sandbox.state();
+
+    work::discard(&state, &["b/f.txt".to_string()]).unwrap();
+
+    assert!(
+        sandbox.root.join("a/f.txt").exists(),
+        "the deletion at the old name is what discarding can undo"
+    );
+    // The copy at the new name is untracked, and nothing here deletes an
+    // untracked file as a side effect — it is listed as one, to be dealt with
+    // deliberately.
+    let status = refs::status(&state).unwrap();
+    assert!(status
+        .unstaged
+        .iter()
+        .any(|e| e.path == "b/f.txt" && e.kind == "untracked"));
+    assert!(!status.unstaged.iter().any(|e| e.path == "a/f.txt"));
+}
+
+#[test]
+fn the_change_inside_a_move_made_outside_git_can_be_read() {
+    let sandbox = moved_outside_git("wt-move-diff");
+    let found =
+        diff::working_file_diff(&sandbox.state(), "b/f.txt", diff::Side::Unstaged).unwrap();
+    let lines: Vec<(char, &str)> = found
+        .hunks
+        .iter()
+        .flat_map(|hunk| hunk.lines.iter())
+        .filter(|line| line.origin == '+' || line.origin == '-')
+        .map(|line| (line.origin, line.content.as_str()))
+        .collect();
+    assert_eq!(lines, vec![('-', "five"), ('+', "six")]);
+}
+
+#[test]
+fn a_deleted_file_is_listed_under_its_own_name_and_came_from_nowhere() {
+    let sandbox = Sandbox::new("deleted-file");
+    sandbox.commit("gone.txt", "one\n", "First");
+    std::fs::remove_file(sandbox.root.join("gone.txt")).unwrap();
+
+    let status = refs::status(&sandbox.state()).unwrap();
+    let gone = status
+        .unstaged
+        .iter()
+        .find(|e| e.kind == "deleted")
+        .expect("it is gone");
+    assert_eq!(gone.path, "gone.txt");
+    assert!(gone.from.is_none(), "a deletion is not a move");
+}
+
+#[test]
+fn an_untracked_file_is_listed_under_its_own_name() {
+    let sandbox = Sandbox::new("untracked-file");
+    sandbox.commit("a.txt", "one\n", "First");
+    sandbox.write("fresh.txt", "new\n");
+
+    let status = refs::status(&sandbox.state()).unwrap();
+    let fresh = status
+        .unstaged
+        .iter()
+        .find(|e| e.path == "fresh.txt")
+        .expect("it is listed");
+    assert_eq!(fresh.kind, "untracked");
+    assert!(fresh.from.is_none());
+}
+
+#[test]
+fn a_file_deleted_after_being_staged_is_still_one_file_on_each_side() {
+    let sandbox = Sandbox::new("staged-then-deleted");
+    sandbox.commit("a.txt", "one\n", "First");
+    sandbox.write("a.txt", "one\ntwo\n");
+    sandbox.git(&["add", "a.txt"]);
+    std::fs::remove_file(sandbox.root.join("a.txt")).unwrap();
+
+    let status = refs::status(&sandbox.state()).unwrap();
+    assert!(status
+        .staged
+        .iter()
+        .any(|e| e.path == "a.txt" && e.kind == "modified" && e.from.is_none()));
+    assert!(status
+        .unstaged
+        .iter()
+        .any(|e| e.path == "a.txt" && e.kind == "deleted" && e.from.is_none()));
+}
+
+#[test]
+fn discarding_an_ordinary_edit_is_untouched_by_any_of_this() {
+    let sandbox = Sandbox::new("plain-discard");
+    sandbox.commit("a.txt", "one\n", "First");
+    sandbox.write("a.txt", "one\ntwo\n");
+
+    work::discard(&sandbox.state(), &["a.txt".to_string()]).unwrap();
+    assert_eq!(
+        std::fs::read_to_string(sandbox.root.join("a.txt")).unwrap(),
+        "one\n"
+    );
+}
+
+#[test]
+fn ordinary_changes_carry_no_rename_origin() {
+    let sandbox = Sandbox::new("moved-plain");
+    sandbox.commit("a.txt", "one\n", "First");
+    sandbox.write("a.txt", "one\ntwo\n");
+    sandbox.git(&["add", "a.txt"]);
+
+    let status = refs::status(&sandbox.state()).unwrap();
+    assert!(status.staged.iter().all(|e| e.from.is_none()));
+}
+
+#[test]
+fn unstaging_a_move_takes_both_halves_back() {
+    let sandbox = moved_and_edited("moved-unstage");
+    let state = sandbox.state();
+    work::stage(&state, &[MOVED_TO.to_string()]).unwrap();
+
+    // The row names one path; the rename behind it is two index entries, and
+    // putting back only one leaves the file both moved and deleted.
+    work::unstage(&state, &[MOVED_TO.to_string()]).unwrap();
+
+    let status = refs::status(&state).unwrap();
+    assert!(
+        status.staged.is_empty(),
+        "nothing should still be staged: {:?}",
+        status.staged
+    );
+    assert!(
+        !status.unstaged.iter().any(|e| e.kind == "deleted"),
+        "the file is not deleted, it moved: {:?}",
+        status.unstaged
+    );
+    // What is on disk is untouched by any of it.
+    assert_eq!(
+        std::fs::read_to_string(sandbox.root.join(MOVED_TO)).unwrap(),
+        "<?php\nold\nedited after the move\n"
+    );
+}
+
+#[test]
+fn the_change_a_moved_file_carries_can_still_be_read() {
+    let sandbox = moved_and_edited("moved-diff");
+    let state = sandbox.state();
+    let found = diff::working_file_diff(&state, MOVED_TO, diff::Side::Unstaged).unwrap();
+    assert!(
+        !found.hunks.is_empty(),
+        "clicking the row should show the edit, not an empty pane"
+    );
+    let added: Vec<&str> = found
+        .hunks
+        .iter()
+        .flat_map(|hunk| hunk.lines.iter())
+        .filter(|line| line.origin == '+')
+        .map(|line| line.content.as_str())
+        .collect();
+    assert_eq!(added, vec!["edited after the move"]);
+}
+
+#[test]
+fn a_staged_move_reads_as_a_move_rather_than_the_whole_file_deleted() {
+    let sandbox = moved_and_edited("moved-staged-diff");
+    let state = sandbox.state();
+    work::stage(&state, &[MOVED_TO.to_string()]).unwrap();
+
+    let found = diff::working_file_diff(&state, MOVED_TO, diff::Side::Staged).unwrap();
+    let lines: Vec<(char, &str)> = found
+        .hunks
+        .iter()
+        .flat_map(|hunk| hunk.lines.iter())
+        .filter(|line| line.origin == '+' || line.origin == '-')
+        .map(|line| (line.origin, line.content.as_str()))
+        .collect();
+    // The one line that actually changed, and not 160 deletions and 160
+    // additions of a file that only moved.
+    assert_eq!(lines, vec![('+', "edited after the move")]);
+}
+
 #[test]
 fn reports_staged_and_unstaged_changes_separately() {
     let sandbox = Sandbox::new("status");
@@ -5115,3 +5460,6 @@ fn picking_a_stash_that_is_not_there_is_refused_before_anything_happens() {
     assert_eq!(sandbox.git(&["stash", "list"]).lines().count(), 3);
     assert!(!sandbox.root.join("three.txt").exists());
 }
+
+
+
