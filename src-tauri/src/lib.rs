@@ -16,8 +16,8 @@ pub mod remote;
 pub mod review;
 pub mod sign;
 pub mod ssh;
-pub mod submodule;
 pub mod state;
+pub mod submodule;
 pub mod watch;
 pub mod work;
 pub mod worktree;
@@ -498,10 +498,7 @@ async fn submodule_deinit(
 
 /// Takes a submodule out of the working tree, the index and `.gitmodules`.
 #[tauri::command]
-async fn submodule_remove(
-    path: String,
-    state: State<'_, AppState>,
-) -> Result<String, String> {
+async fn submodule_remove(path: String, state: State<'_, AppState>) -> Result<String, String> {
     submodule::remove(&state, &path)
 }
 

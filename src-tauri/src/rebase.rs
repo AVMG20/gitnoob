@@ -175,8 +175,8 @@ pub fn todo_text(steps: &[Step]) -> Result<String, String> {
 /// Git hands the value to a shell and appends the todo path, so what runs is
 /// `gitnoob --write-todo <ours> <git's>`.
 fn sequence_editor(list: &Path) -> Result<String, String> {
-    let exe = std::env::current_exe()
-        .map_err(|e| format!("Could not find gitnoob's own path: {e}"))?;
+    let exe =
+        std::env::current_exe().map_err(|e| format!("Could not find gitnoob's own path: {e}"))?;
     Ok(format!(
         "{} --write-todo {}",
         shell_quote(&exe),
@@ -323,11 +323,7 @@ fn message_of(root: &Path, oid: &str) -> Option<String> {
 pub fn resume(state: &AppState) -> Result<String, String> {
     let root = state.path()?;
     let git_dir = crate::remote::git_dir(&root)?;
-    let out = git_cmd::run_with_env(
-        &root,
-        &["rebase", "--continue"],
-        &[("GIT_EDITOR", "true")],
-    )?;
+    let out = git_cmd::run_with_env(&root, &["rebase", "--continue"], &[("GIT_EDITOR", "true")])?;
     settle(&git_dir, out, "Rebase finished")
 }
 

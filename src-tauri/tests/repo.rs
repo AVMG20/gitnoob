@@ -2096,8 +2096,14 @@ fn stages_and_discards_one_hunk_at_a_time() {
     let state = sandbox.state();
 
     // Stage only the first region.
-    gitnoob_lib::work::apply_hunk(&state, "a.txt", 0, gitnoob_lib::work::HunkAction::Stage, None)
-        .unwrap();
+    gitnoob_lib::work::apply_hunk(
+        &state,
+        "a.txt",
+        0,
+        gitnoob_lib::work::HunkAction::Stage,
+        None,
+    )
+    .unwrap();
 
     let staged = diff::working_file_diff(&state, "a.txt", diff::Side::Staged).unwrap();
     let staged_added: Vec<String> = staged
@@ -2120,15 +2126,27 @@ fn stages_and_discards_one_hunk_at_a_time() {
     assert_eq!(unstaged_added, vec!["second addition".to_string()]);
 
     // Take it back out again.
-    gitnoob_lib::work::apply_hunk(&state, "a.txt", 0, gitnoob_lib::work::HunkAction::Unstage, None)
-        .unwrap();
+    gitnoob_lib::work::apply_hunk(
+        &state,
+        "a.txt",
+        0,
+        gitnoob_lib::work::HunkAction::Unstage,
+        None,
+    )
+    .unwrap();
     assert!(refs::status(&state).unwrap().staged.is_empty());
 
     // Discarding the remaining region leaves the other edit alone.
     let before = std::fs::read_to_string(sandbox.root.join("a.txt")).unwrap();
     assert!(before.contains("first addition") && before.contains("second addition"));
-    gitnoob_lib::work::apply_hunk(&state, "a.txt", 1, gitnoob_lib::work::HunkAction::Discard, None)
-        .unwrap();
+    gitnoob_lib::work::apply_hunk(
+        &state,
+        "a.txt",
+        1,
+        gitnoob_lib::work::HunkAction::Discard,
+        None,
+    )
+    .unwrap();
     let after = std::fs::read_to_string(sandbox.root.join("a.txt")).unwrap();
     assert!(after.contains("first addition"));
     assert!(!after.contains("second addition"));
@@ -2139,9 +2157,14 @@ fn hunk_staging_refuses_when_there_is_nothing_to_stage() {
     let sandbox = Sandbox::new("hunksempty");
     sandbox.commit("a.txt", "one\n", "Base");
     let state = sandbox.state();
-    let error =
-        gitnoob_lib::work::apply_hunk(&state, "a.txt", 0, gitnoob_lib::work::HunkAction::Stage, None)
-            .unwrap_err();
+    let error = gitnoob_lib::work::apply_hunk(
+        &state,
+        "a.txt",
+        0,
+        gitnoob_lib::work::HunkAction::Stage,
+        None,
+    )
+    .unwrap_err();
     assert!(error.contains("No unstaged changes"), "unexpected: {error}");
 }
 
@@ -4122,7 +4145,9 @@ fn a_reword_stops_and_reports_itself_as_one() {
     begin_rebase(&sandbox, &ids[0], &todo, &[ids[1].clone().as_str()]);
 
     let state = sandbox.state();
-    let stopped = rebase::progress(&state).unwrap().expect("it should have stopped");
+    let stopped = rebase::progress(&state)
+        .unwrap()
+        .expect("it should have stopped");
     assert!(stopped.rewording, "the sidecar names this one a reword");
     assert_eq!(stopped.stopped.as_deref(), Some(ids[1].as_str()));
     assert_eq!(stopped.summary.as_deref(), Some("wip"));
@@ -4170,7 +4195,10 @@ fn a_conflict_stops_the_rebase_and_abort_puts_the_branch_back() {
     let side = sandbox.git(&["rev-parse", "side"]).trim().to_string();
     let head = sandbox.git(&["rev-parse", "HEAD"]).trim().to_string();
     let todo = format!("pick {head}\n");
-    assert!(!begin_rebase(&sandbox, &side, &todo, &[]), "it should conflict");
+    assert!(
+        !begin_rebase(&sandbox, &side, &todo, &[]),
+        "it should conflict"
+    );
 
     let state = sandbox.state();
     assert!(rebase::progress(&state).unwrap().is_some());
@@ -4232,7 +4260,10 @@ fn staging_one_line_of_a_hunk_leaves_the_others_unstaged() {
     .unwrap();
 
     let staged = sandbox.git(&["diff", "--cached"]);
-    assert!(staged.contains("+TWO"), "the picked line is staged: {staged}");
+    assert!(
+        staged.contains("+TWO"),
+        "the picked line is staged: {staged}"
+    );
     assert!(!staged.contains("+FOUR"), "the other one is not: {staged}");
 
     // And the working tree still holds both changes.
@@ -4264,8 +4295,14 @@ fn unstaging_one_line_leaves_the_rest_of_the_hunk_staged() {
     .unwrap();
 
     let staged = sandbox.git(&["diff", "--cached"]);
-    assert!(staged.contains("+TWO"), "the first change stays staged: {staged}");
-    assert!(!staged.contains("+FOUR"), "the second one came back out: {staged}");
+    assert!(
+        staged.contains("+TWO"),
+        "the first change stays staged: {staged}"
+    );
+    assert!(
+        !staged.contains("+FOUR"),
+        "the second one came back out: {staged}"
+    );
     // Nothing was lost from the file itself.
     assert_eq!(
         std::fs::read_to_string(sandbox.root.join("a.txt")).unwrap(),
@@ -4375,7 +4412,10 @@ fn several_stashes_go_on_oldest_first_and_stay_in_the_list() {
     assert_eq!(run.applied, vec!["one", "two", "three"], "oldest first");
     assert!(run.stopped.is_none());
     for name in ["one", "two", "three"] {
-        assert!(sandbox.root.join(format!("{name}.txt")).exists(), "{name} went on");
+        assert!(
+            sandbox.root.join(format!("{name}.txt")).exists(),
+            "{name} went on"
+        );
     }
     // Applying keeps them.
     assert_eq!(sandbox.git(&["stash", "list"]).lines().count(), 3);
@@ -4411,7 +4451,10 @@ fn popping_some_of_them_drops_those_and_leaves_the_rest() {
     assert_eq!(run.applied, vec!["one", "three"]);
     let left = sandbox.git(&["stash", "list"]);
     assert_eq!(left.lines().count(), 1);
-    assert!(left.contains("two"), "the one not picked is still there: {left}");
+    assert!(
+        left.contains("two"),
+        "the one not picked is still there: {left}"
+    );
     assert!(sandbox.root.join("one.txt").exists());
     assert!(sandbox.root.join("three.txt").exists());
     assert!(!sandbox.root.join("two.txt").exists());

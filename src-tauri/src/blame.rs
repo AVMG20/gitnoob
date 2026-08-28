@@ -68,10 +68,7 @@ pub fn of(state: &AppState, path: &str, at: Option<&str>) -> Result<Vec<BlameRun
         let (summary, author, email, time) = if uncommitted {
             (
                 "Not committed yet".to_string(),
-                hunk.final_signature()
-                    .name()
-                    .unwrap_or("You")
-                    .to_string(),
+                hunk.final_signature().name().unwrap_or("You").to_string(),
                 hunk.final_signature().email().unwrap_or("").to_string(),
                 hunk.final_signature().when().seconds(),
             )

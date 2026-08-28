@@ -259,7 +259,9 @@ pub fn deinit(state: &AppState, path: &str, force: bool) -> Result<String, Strin
     args.push("--");
     args.push(path);
     git_cmd::run_checked(&root, &args)?;
-    Ok(format!("Emptied {path}; it is still declared in .gitmodules"))
+    Ok(format!(
+        "Emptied {path}; it is still declared in .gitmodules"
+    ))
 }
 
 /// Takes a submodule out altogether: out of the working tree, out of the
@@ -358,9 +360,16 @@ mod tests {
 
     #[test]
     fn one_git_still_reports_but_the_file_has_forgotten_is_kept() {
-        let found = join(STATUS, "submodule.libs/shared.path libs/shared\n", Path::new("/repo"));
+        let found = join(
+            STATUS,
+            "submodule.libs/shared.path libs/shared\n",
+            Path::new("/repo"),
+        );
         let paths: Vec<_> = found.iter().map(|s| s.path.as_str()).collect();
-        assert_eq!(paths, vec!["apps/web", "libs/shared", "tools/cli", "vendor/theme"]);
+        assert_eq!(
+            paths,
+            vec!["apps/web", "libs/shared", "tools/cli", "vendor/theme"]
+        );
         let orphan = found.iter().find(|s| s.path == "apps/web").unwrap();
         assert_eq!(orphan.url, None);
     }

@@ -573,7 +573,7 @@ pub fn stash_apply_many(
         return Err("No stashes were picked".to_string());
     }
     // Highest index first: that is the oldest, and it goes on first.
-    picked.sort_by(|a, b| b.0.cmp(&a.0));
+    picked.sort_by_key(|(index, _, _)| std::cmp::Reverse(*index));
 
     let mut run = StashRun {
         applied: Vec::new(),
@@ -1501,7 +1501,10 @@ mod tests {
         let patch = partial_hunk_patch(HUNK_DIFF, 0, &all, false).unwrap();
         // Everything picked is the whole hunk again.
         assert!(patch.contains("@@ -1,4 +1,5 @@"));
-        assert_eq!(body(&patch), body(&single_hunk_patch(HUNK_DIFF, 0).unwrap()));
+        assert_eq!(
+            body(&patch),
+            body(&single_hunk_patch(HUNK_DIFF, 0).unwrap())
+        );
     }
 
     #[test]

@@ -204,8 +204,7 @@ fn with_stashes(state: &AppState, repo: &git2::Repository, commits: Vec<Commit>)
 
     // Keyed by the commit each one hangs off, newest first within a parent so
     // `stash@{0}` sits closest to the top.
-    let mut hanging: std::collections::HashMap<Oid, Vec<Commit>> =
-        std::collections::HashMap::new();
+    let mut hanging: std::collections::HashMap<Oid, Vec<Commit>> = std::collections::HashMap::new();
     for entry in entries {
         let Ok(oid) = Oid::from_str(&entry.oid) else {
             continue;
@@ -701,7 +700,12 @@ mod tests {
     #[test]
     fn a_stash_hangs_off_its_commit_on_a_broken_line() {
         // 1 ← 2 ← 3, with a stash made while standing on 2.
-        let commits = vec![commit(1, &[2]), stash(9, 2, 0), commit(2, &[3]), commit(3, &[])];
+        let commits = vec![
+            commit(1, &[2]),
+            stash(9, 2, 0),
+            commit(2, &[3]),
+            commit(3, &[]),
+        ];
         assert!(faults(&commits, None).is_empty());
 
         let places = plot(&commits, None);
@@ -723,13 +727,21 @@ mod tests {
             .iter()
             .filter(|seg| seg.x1 == places[1].lane)
             .collect();
-        assert!(!arriving.is_empty(), "the stash's line has to land somewhere");
+        assert!(
+            !arriving.is_empty(),
+            "the stash's line has to land somewhere"
+        );
         assert!(arriving.iter().all(|seg| seg.dashed));
     }
 
     #[test]
     fn the_history_itself_is_never_drawn_broken() {
-        let commits = vec![commit(1, &[2]), stash(9, 2, 0), commit(2, &[3]), commit(3, &[])];
+        let commits = vec![
+            commit(1, &[2]),
+            stash(9, 2, 0),
+            commit(2, &[3]),
+            commit(3, &[]),
+        ];
         let places = plot(&commits, None);
         // Row 0 and row 3 have nothing to do with the stash.
         for at in [0usize, 3] {
@@ -769,7 +781,10 @@ mod tests {
             .iter()
             .filter(|seg| seg.x1 == first)
             .collect();
-        assert!(!passing.is_empty(), "the first stash's line passes this row");
+        assert!(
+            !passing.is_empty(),
+            "the first stash's line passes this row"
+        );
         assert!(
             passing.iter().all(|seg| seg.dashed),
             "a stash line stays broken where it merely passes by"
