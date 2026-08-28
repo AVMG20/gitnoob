@@ -52,8 +52,11 @@ watch(open, (showing) => {
 async function pick(id: string) {
   open.value = false
   if (id === profile.value?.id) return
+  // Only the switch. The window follows it to whatever the new profile has
+  // open and asks the forge about that; asking from here as well raced the
+  // open, and the answer about the repository being left — read with the new
+  // profile's token — sometimes landed last and stayed on screen.
   await config.activateProfile(id)
-  await forge.refreshStatus()
 }
 </script>
 

@@ -1,6 +1,6 @@
 import { invoke } from './useInvoke'
 import { computed, reactive } from 'vue'
-import type { ForgeKind } from '~/composables/useConfig'
+import { useConfig, type ForgeKind } from '~/composables/useConfig'
 import { forgetAvatars } from '~/composables/useAvatars'
 
 export interface RepoSlug {
@@ -231,11 +231,13 @@ export function useForge() {
     if (store.me?.avatar) forgetAvatars()
   }
 
-  /** The profile a lookup belongs to: its forge and host, since either changing
-      means a different account. */
+  /** The profile a lookup belongs to: the profile itself as well as its forge
+      and host, since two profiles can be two accounts on one host — keyed by
+      host alone, switching between them kept the first one's face and login. */
   function profileId() {
     if (!store.status || store.status.kind === 'none') return null
-    return `${store.status.kind}@${store.status.host}`
+    const active = useConfig().profile.value?.id ?? ''
+    return `${active}:${store.status.kind}@${store.status.host}`
   }
 
   async function loadReviews() {

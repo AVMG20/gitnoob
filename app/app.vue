@@ -225,6 +225,9 @@ watch(
     else {
       git.forget()
       review.close()
+      // Nothing to open, so nothing else will ask: the forge is still a
+      // different account from the one the menu is showing.
+      await forge.refreshStatus()
     }
   }
 )

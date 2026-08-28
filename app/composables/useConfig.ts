@@ -1,4 +1,4 @@
-import { invoke } from './useInvoke'
+import { aimAt, invoke } from './useInvoke'
 import { computed, reactive } from 'vue'
 
 export type ForgeKind = 'none' | 'github' | 'gitlab'
@@ -190,7 +190,19 @@ export function useConfig() {
       apply(await invoke<Config>('profile_delete', { id }))
       await refreshSecrets()
     },
+    /**
+     * Switches profile, and stops addressing calls to the repository being left.
+     *
+     * The backend clears its own open path on a switch, but every call from the
+     * window carries the repository it is about and the backend applies that
+     * before running the command — so the next call re-opened the old
+     * repository under the new profile's account. What came back was that
+     * repository's remote read against the other forge: an empty sidebar, or a
+     * 404 for a project that is not there. The window aims at nothing until
+     * whatever the new profile has open has actually been opened.
+     */
     async activateProfile(id: string) {
+      aimAt(null)
       apply(await invoke<Config>('profile_activate', { id }))
       await refreshSecrets()
     },
