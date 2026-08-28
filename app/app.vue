@@ -132,7 +132,9 @@ const rebase = useRebase()
  */
 const columns = computed(() => {
   const panel = `minmax(0, ${layout.panel}px)`
-  if (store.viewer || reviewOpen.value || rebase.store.open) return `minmax(0, 1fr) 5px ${panel}`
+  if (store.viewer || reviewOpen.value || rebase.store.open || store.stashView) {
+    return `minmax(0, 1fr) 5px ${panel}`
+  }
   return `minmax(0, ${layout.sidebar}px) 5px minmax(0, 1fr) 5px ${panel}`
 })
 
@@ -341,6 +343,9 @@ onUnmounted(() => {
         </template>
         <template v-else-if="rebase.store.open">
           <RebasePane />
+        </template>
+        <template v-else-if="store.stashView">
+          <StashPane />
         </template>
         <template v-else>
           <SideBar @open="openProject" @enter="enterSubmodule" />

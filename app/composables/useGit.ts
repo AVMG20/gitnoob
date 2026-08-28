@@ -392,6 +392,16 @@ export interface StashEntry {
   files: number
 }
 
+/** What a run over several stashes did. */
+export interface StashRun {
+  /** The ones that went on, oldest first. */
+  applied: string[]
+  /** The one that stopped the run, when one did. */
+  stopped: { message: string; reason: string } | null
+  /** Files the stash that stopped it left with both sides in them. */
+  conflicted: string[]
+}
+
 export interface HistoryEntry {
   id: number
   label: string
@@ -530,6 +540,14 @@ const fields = reactive({
   signing: null as SigningSetup | null,
   /** Whether this repository uses LFS, and whether the tool for it is here. */
   lfs: null as LfsStatus | null,
+  /**
+   * The stash being read in the content view, by commit id.
+   *
+   * By id rather than by position: applying or dropping one renumbers every
+   * entry below it, and a pane holding a number would quietly start showing
+   * somebody else's stash.
+   */
+  stashView: null as string | null,
   /**
    * The submodules stepped into to reach what is on screen, outermost first.
    *
@@ -752,6 +770,7 @@ function forget() {
   store.revealing = null
   store.viewer = null
   store.inside = []
+  store.stashView = null
   store.query = ''
 }
 
@@ -782,6 +801,7 @@ export function useGit() {
     store.divergedCheckout = null
     store.viewer = null
     store.resolving = null
+    store.stashView = null
     store.query = ''
     // Opening a project is leaving whatever submodule was being looked at.
     // Stepping into one passes `record` false and keeps the trail, which the
@@ -1034,11 +1054,21 @@ export function useGit() {
     return true
   }
 
-  /** Opens a stash's diff in the detail panel, reusing the commit view. */
+  /**
+   * Opens a stash: its diff in the detail panel, and the stash itself in the
+   * content view, the way a commit gets both.
+   */
   async function selectStash(index: number) {
     const oid = await guard('Read stash', () => invoke<string>('stash_oid', { index }))
-    if (oid) await select(oid)
+    if (!oid) return
+    store.stashView = oid
+    store.viewer = null
+    await select(oid)
   }
+
+  /** One commit's files and message, for a pane that owns its own reading. */
+  const commitDetail = (oid: string) =>
+    guard('Read commit', () => invoke<CommitDetail>('commit_detail', { oid }))
 
   const commitFileDiff = (oid: string, path: string) =>
     guard('Load diff', () => invoke<FileDiff>('commit_file_diff', { oid, path }))
@@ -1132,6 +1162,7 @@ export function useGit() {
     select,
     revealCommit,
     selectStash,
+    commitDetail,
     commitFileDiff,
     workingFileDiff,
     fileText,
@@ -1297,6 +1328,19 @@ export function useGit() {
     stashPush: (message?: string) => run<string>('Stash', 'stash_push', { message }),
     stashPop: (index: number) => run<string>('Stash pop', 'stash_pop', { index }),
     stashApply: (index: number) => run<string>('Stash apply', 'stash_apply', { index }),
+    /**
+     * Several at once, oldest first. `dropAfter` makes it a pop.
+     *
+     * Unlike the single ones this hands the outcome back rather than only a
+     * sentence: the caller has to be able to say which went on and which one
+     * stopped the run.
+     */
+    stashApplyMany: (indexes: number[], dropAfter = false) =>
+      run<StashRun>(
+        `${dropAfter ? 'Pop' : 'Apply'} ${indexes.length} stashes`,
+        'stash_apply_many',
+        { indexes, dropAfter }
+      ),
     stashDrop: (index: number) => run<string>('Stash drop', 'stash_drop', { index }),
     /** Gives a stash a new description, leaving it where it is in the list. */
     stashRename: (index: number, message: string) =>

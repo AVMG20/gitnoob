@@ -712,6 +712,17 @@ async fn stash_apply(index: usize, state: State<'_, AppState>) -> Result<String,
     work::stash_apply(&state, index)
 }
 
+/// Applies several stashes in one go, oldest first, dropping each that goes on
+/// cleanly when `drop_after` says to.
+#[tauri::command]
+async fn stash_apply_many(
+    indexes: Vec<usize>,
+    drop_after: Option<bool>,
+    state: State<'_, AppState>,
+) -> Result<work::StashRun, String> {
+    work::stash_apply_many(&state, indexes, drop_after.unwrap_or(false))
+}
+
 #[tauri::command]
 async fn stash_drop(index: usize, state: State<'_, AppState>) -> Result<String, String> {
     work::stash_drop(&state, index)
@@ -1852,6 +1863,7 @@ pub fn run() {
             stash_pop,
             stash_list,
             stash_apply,
+            stash_apply_many,
             stash_drop,
             stash_rename,
             delete_untracked,

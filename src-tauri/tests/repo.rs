@@ -4350,3 +4350,128 @@ fn no_lines_at_all_still_stages_the_whole_hunk() {
     assert!(sandbox.git(&["diff", "--cached"]).contains("+TWO"));
     assert!(sandbox.git(&["diff"]).trim().is_empty());
 }
+
+// --- applying several stashes at once ----------------------------------------
+
+/// Three stashes, each touching a file of its own, so they can all go on
+/// together. Made newest-last, so `stash@{0}` is the third.
+fn three_stashes(sandbox: &Sandbox) {
+    sandbox.commit("base.txt", "base\n", "First");
+    for name in ["one", "two", "three"] {
+        sandbox.write(&format!("{name}.txt"), &format!("{name}\n"));
+        sandbox.git(&["add", "-A"]);
+        sandbox.git(&["stash", "push", "-q", "-m", name]);
+    }
+}
+
+#[test]
+fn several_stashes_go_on_oldest_first_and_stay_in_the_list() {
+    let sandbox = Sandbox::new("stash-many");
+    three_stashes(&sandbox);
+
+    let state = sandbox.state();
+    let run = gitnoob_lib::work::stash_apply_many(&state, vec![0, 1, 2], false).unwrap();
+
+    assert_eq!(run.applied, vec!["one", "two", "three"], "oldest first");
+    assert!(run.stopped.is_none());
+    for name in ["one", "two", "three"] {
+        assert!(sandbox.root.join(format!("{name}.txt")).exists(), "{name} went on");
+    }
+    // Applying keeps them.
+    assert_eq!(sandbox.git(&["stash", "list"]).lines().count(), 3);
+}
+
+#[test]
+fn popping_several_takes_each_one_off_the_list() {
+    let sandbox = Sandbox::new("stash-pop-many");
+    three_stashes(&sandbox);
+
+    let state = sandbox.state();
+    let run = gitnoob_lib::work::stash_apply_many(&state, vec![0, 1, 2], true).unwrap();
+
+    assert_eq!(run.applied.len(), 3);
+    assert!(run.stopped.is_none());
+    assert_eq!(
+        sandbox.git(&["stash", "list"]).trim(),
+        "",
+        "every one of them was dropped"
+    );
+}
+
+#[test]
+fn popping_some_of_them_drops_those_and_leaves_the_rest() {
+    let sandbox = Sandbox::new("stash-pop-some");
+    three_stashes(&sandbox);
+
+    // The oldest and the newest; `two` is left alone. Positions renumber as
+    // the first drop lands, which is the trap this is here for.
+    let state = sandbox.state();
+    let run = gitnoob_lib::work::stash_apply_many(&state, vec![0, 2], true).unwrap();
+
+    assert_eq!(run.applied, vec!["one", "three"]);
+    let left = sandbox.git(&["stash", "list"]);
+    assert_eq!(left.lines().count(), 1);
+    assert!(left.contains("two"), "the one not picked is still there: {left}");
+    assert!(sandbox.root.join("one.txt").exists());
+    assert!(sandbox.root.join("three.txt").exists());
+    assert!(!sandbox.root.join("two.txt").exists());
+}
+
+#[test]
+fn uncommitted_work_is_not_in_the_way_of_a_stash_going_on() {
+    let sandbox = Sandbox::new("stash-over-dirty");
+    three_stashes(&sandbox);
+    // Something already changed in the working tree, on a file no stash touches.
+    sandbox.write("base.txt", "base, and edited\n");
+
+    let state = sandbox.state();
+    let run = gitnoob_lib::work::stash_apply_many(&state, vec![0, 1], false).unwrap();
+
+    assert_eq!(run.applied.len(), 2);
+    assert!(run.stopped.is_none());
+    assert_eq!(
+        std::fs::read_to_string(sandbox.root.join("base.txt")).unwrap(),
+        "base, and edited\n",
+        "the edit is still there"
+    );
+}
+
+#[test]
+fn a_stash_that_collides_stops_the_run_and_says_which_one() {
+    let sandbox = Sandbox::new("stash-collide");
+    sandbox.commit("a.txt", "one\n", "First");
+
+    // Two stashes that both rewrite the same line: the second cannot go on
+    // over the first.
+    sandbox.write("a.txt", "from the first stash\n");
+    sandbox.git(&["stash", "push", "-q", "-m", "first"]);
+    sandbox.write("a.txt", "from the second stash\n");
+    sandbox.git(&["stash", "push", "-q", "-m", "second"]);
+
+    let state = sandbox.state();
+    let run = gitnoob_lib::work::stash_apply_many(&state, vec![0, 1], true).unwrap();
+
+    assert_eq!(run.applied, vec!["first"], "the older one went on");
+    let stopped = run.stopped.expect("the second should have stopped it");
+    assert_eq!(stopped.message, "second");
+    assert!(!stopped.reason.is_empty(), "git said why");
+
+    // The one that stopped it is still in the list: nothing is dropped that
+    // did not go on.
+    let left = sandbox.git(&["stash", "list"]);
+    assert!(left.contains("second"), "{left}");
+    assert!(!left.contains("first"), "{left}");
+}
+
+#[test]
+fn picking_a_stash_that_is_not_there_is_refused_before_anything_happens() {
+    let sandbox = Sandbox::new("stash-missing");
+    three_stashes(&sandbox);
+
+    let state = sandbox.state();
+    let refused = gitnoob_lib::work::stash_apply_many(&state, vec![0, 9], true);
+    assert!(refused.unwrap_err().contains("no stash at position 9"));
+    // Nothing was applied, and nothing dropped.
+    assert_eq!(sandbox.git(&["stash", "list"]).lines().count(), 3);
+    assert!(!sandbox.root.join("three.txt").exists());
+}

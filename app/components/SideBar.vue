@@ -9,9 +9,9 @@ import {
   Cloud,
   Copy,
   Download,
+  ExternalLink,
   Eye,
   EyeOff,
-  ExternalLink,
   Folder,
   FolderGit2,
   FolderOpen,
@@ -28,13 +28,15 @@ import {
   Search,
   Tag,
   Trash2,
-  Upload
+  Upload,
+  X
 } from 'lucide-vue-next'
 import {
   copyText,
   fullTime,
   relativeTime,
   useGit,
+  type StashEntry,
   type Submodule,
   type Tag as TagRef,
   type Worktree
@@ -959,7 +961,121 @@ function tagMenu(event: MouseEvent, name: string, oid: string) {
   )
 }
 
+/**
+ * Stashes picked out for acting on together, by commit id.
+ *
+ * By id because acting on one renumbers the rest: a set of positions would
+ * name different stashes the moment the first one is dropped.
+ */
+const pickedStashes = ref(new Set<string>())
+
+/** The picked ones that are still in the list, newest first. */
+const picked = computed(() =>
+  store.stashes.filter((one) => pickedStashes.value.has(one.oid))
+)
+
+// Anything that changes the list leaves the picks naming stashes that may be
+// gone; what survives is kept, the rest goes.
+watch(
+  () => store.stashes.map((one) => one.oid).join(),
+  () => {
+    const alive = new Set(store.stashes.map((one) => one.oid))
+    pickedStashes.value = new Set([...pickedStashes.value].filter((oid) => alive.has(oid)))
+  }
+)
+
+/** The last one clicked, for shift to reach back to. */
+const stashAnchor = ref<string | null>(null)
+
+/**
+ * Clicking one opens it. Ctrl or ⌘ adds it to a set, shift takes the run
+ * between it and the last one — the same three gestures every list uses.
+ */
+function onStashClick(event: MouseEvent, stash: StashEntry) {
+  if (event.shiftKey && stashAnchor.value) {
+    const list = store.stashes
+    const from = list.findIndex((one) => one.oid === stashAnchor.value)
+    const to = list.findIndex((one) => one.oid === stash.oid)
+    if (from >= 0 && to >= 0) {
+      const [first, last] = from <= to ? [from, to] : [to, from]
+      const next = new Set(pickedStashes.value)
+      for (const one of list.slice(first, last + 1)) next.add(one.oid)
+      pickedStashes.value = next
+      return
+    }
+  }
+  if (event.ctrlKey || event.metaKey) {
+    const next = new Set(pickedStashes.value)
+    if (next.has(stash.oid)) next.delete(stash.oid)
+    else next.add(stash.oid)
+    pickedStashes.value = next
+    stashAnchor.value = stash.oid
+    return
+  }
+  pickedStashes.value = new Set()
+  stashAnchor.value = stash.oid
+  void git.selectStash(stash.index)
+}
+
+/**
+ * Puts several on, oldest first, and says what happened to each.
+ *
+ * The report is the point: a run that stopped half way is the case worth
+ * being told about, and "3 stashes applied" over a run that put two on is a
+ * lie the log would carry.
+ */
+async function applyPicked(drop: boolean) {
+  const indexes = picked.value.map((one) => one.index)
+  if (!indexes.length) return
+  const run = await git.stashApplyMany(indexes, drop)
+  if (!run) return
+  const verb = drop ? 'Popped' : 'Applied'
+  if (run.applied.length) git.note(`${verb} ${run.applied.join(', ')}`)
+  if (run.stopped) {
+    const files = run.conflicted.length
+      ? ` ${run.conflicted.length} ${run.conflicted.length === 1 ? 'file' : 'files'} conflicted.`
+      : ''
+    git.note(
+      `Stopped at "${run.stopped.message}" — it does not go on over what is already here.${files} ${run.stopped.reason}`,
+      'error'
+    )
+  }
+  if (!run.stopped) pickedStashes.value = new Set()
+}
+
 function stashMenu(event: MouseEvent, index: number, message: string) {
+  // Right-clicking one that is not in the picked set is about that one.
+  const many = picked.value.length > 1 && picked.value.some((one) => one.index === index)
+  if (many) {
+    const count = picked.value.length
+    menu.show(
+      event,
+      [
+        {
+          label: `Apply ${count} stashes and keep them`,
+          icon: Archive,
+          hint: 'oldest first',
+          action: () => void applyPicked(false)
+        },
+        {
+          label: `Pop ${count} stashes`,
+          icon: Archive,
+          hint: 'applies each, then removes it',
+          action: () => void applyPicked(true)
+        },
+        { separator: true, label: '' },
+        {
+          label: 'Clear the selection',
+          icon: X,
+          action: () => {
+            pickedStashes.value = new Set()
+          }
+        }
+      ],
+      `${count} stashes`
+    )
+    return
+  }
   menu.show(
     event,
     [
@@ -1695,9 +1811,10 @@ async function removeSubmodule(one: Submodule) {
           v-for="stash in stashes"
           :key="stash.index"
           class="row stash"
+          :class="{ on: store.stashView === stash.oid, ticked: pickedStashes.has(stash.oid) }"
           :title="`${stash.files} ${stash.files === 1 ? 'file' : 'files'} · ${stash.branch ?? ''}`"
           draggable="true"
-          @click="git.selectStash(stash.index)"
+          @click="onStashClick($event, stash)"
           @dblclick="git.stashPop(stash.index)"
           @contextmenu="stashMenu($event, stash.index, stash.message)"
           @dragstart="
@@ -1715,6 +1832,13 @@ async function removeSubmodule(one: Submodule) {
           </span>
         </div>
         <p v-if="!stashes.length" class="none faint">Nothing stashed.</p>
+        <!-- What ⌘-clicking has gathered, and the two things to do with it. -->
+        <div v-if="picked.length > 1" class="picked-bar">
+          <span class="faint">{{ picked.length }} picked</span>
+          <button class="pick-btn" :disabled="store.busy" @click="applyPicked(false)">Apply</button>
+          <button class="pick-btn" :disabled="store.busy" @click="applyPicked(true)">Pop</button>
+          <button class="pick-btn ghost" @click="pickedStashes = new Set()">Clear</button>
+        </div>
       </div>
     </div>
 
@@ -2052,6 +2176,45 @@ async function removeSubmodule(one: Submodule) {
 
 .glyph.pr {
   color: var(--green);
+}
+
+/* A stash gathered up with the others, as opposed to the one being read. */
+.row.ticked {
+  background: color-mix(in srgb, var(--accent) 12%, transparent);
+  box-shadow: inset 2px 0 0 var(--accent);
+}
+
+.picked-bar {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin: 4px 8px 0;
+  padding: 5px 8px;
+  border-radius: var(--radius-sm);
+  background: var(--bg-raised);
+  border: 1px solid var(--line-soft);
+  font-size: 11px;
+}
+
+.pick-btn {
+  padding: 1px 7px;
+  border-radius: 4px;
+  font-size: 11px;
+  font-weight: 600;
+  background: var(--accent);
+  color: var(--on-accent);
+}
+
+.pick-btn:disabled {
+  opacity: 0.4;
+  cursor: default;
+}
+
+.pick-btn.ghost {
+  background: none;
+  color: var(--text-dim);
+  border: 1px solid var(--line);
+  font-weight: 400;
 }
 
 /* A submodule says where it stands in its own colour: nothing when it is

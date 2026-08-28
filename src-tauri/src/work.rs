@@ -524,6 +524,103 @@ pub fn stash_drop(state: &AppState, index: usize) -> Result<String, String> {
     Ok(format!("Dropped {name}"))
 }
 
+/// What a run over several stashes did.
+#[derive(Serialize, Debug)]
+pub struct StashRun {
+    /// The ones that went on, oldest first, as they went on.
+    pub applied: Vec<String>,
+    /// The one that stopped the run, when one did.
+    pub stopped: Option<StashStop>,
+    /// Files left conflicted by the stash that stopped it.
+    pub conflicted: Vec<String>,
+}
+
+#[derive(Serialize, Debug)]
+pub struct StashStop {
+    pub message: String,
+    /// Git's own words about why it would not go on.
+    pub reason: String,
+}
+
+/// Applies several stashes one after another, and optionally drops each one
+/// that went on cleanly.
+///
+/// Oldest first, so the newest ends up on top — which is the order they were
+/// made in and so the order they were meant to be replayed in. Uncommitted
+/// work is not in the way of this: `git stash apply` merges into the working
+/// tree, and only stops when two changes actually meet.
+///
+/// The whole list is resolved to commit ids before anything is applied.
+/// Dropping renumbers every entry below it, so acting on positions read at the
+/// start would act on the wrong stashes from the second one onwards.
+pub fn stash_apply_many(
+    state: &AppState,
+    indexes: Vec<usize>,
+    drop_after: bool,
+) -> Result<StashRun, String> {
+    let root = state.path()?;
+    let listed = stash_list(state)?;
+
+    let mut picked: Vec<(usize, String, String)> = Vec::new();
+    for index in indexes {
+        let found = listed
+            .iter()
+            .find(|entry| entry.index == index)
+            .ok_or_else(|| format!("There is no stash at position {index}"))?;
+        picked.push((index, found.oid.clone(), found.message.clone()));
+    }
+    if picked.is_empty() {
+        return Err("No stashes were picked".to_string());
+    }
+    // Highest index first: that is the oldest, and it goes on first.
+    picked.sort_by(|a, b| b.0.cmp(&a.0));
+
+    let mut run = StashRun {
+        applied: Vec::new(),
+        stopped: None,
+        conflicted: Vec::new(),
+    };
+
+    for (_, oid, message) in picked {
+        let out = git_cmd::run(&root, &["stash", "apply", &oid])?;
+        if !out.ok {
+            let reason = if out.stderr.trim().is_empty() {
+                out.stdout.trim().to_string()
+            } else {
+                out.stderr.trim().to_string()
+            };
+            run.stopped = Some(StashStop { message, reason });
+            run.conflicted = unmerged_paths(&root);
+            break;
+        }
+        run.applied.push(message);
+        if drop_after {
+            // Re-resolved from the commit id: every drop renumbers the rest.
+            if let Some(at) = journal::stash_index(state, &oid) {
+                git_cmd::run_checked(&root, &["stash", "drop", &format!("stash@{{{at}}}")])?;
+            }
+        }
+    }
+
+    Ok(run)
+}
+
+/// The files a stopped apply left with both sides in them.
+fn unmerged_paths(root: &std::path::Path) -> Vec<String> {
+    let Ok(out) = git_cmd::run(root, &["diff", "--name-only", "--diff-filter=U"]) else {
+        return Vec::new();
+    };
+    if !out.ok {
+        return Vec::new();
+    }
+    out.stdout
+        .lines()
+        .map(str::trim)
+        .filter(|line| !line.is_empty())
+        .map(str::to_string)
+        .collect()
+}
+
 /// Turns a stash into a branch, which is the safe way out of a stash that no
 /// longer applies cleanly to the current branch.
 pub fn stash_branch(state: &AppState, index: usize, name: &str) -> Result<String, String> {
