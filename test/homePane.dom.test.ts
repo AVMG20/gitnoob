@@ -147,8 +147,9 @@ describe('the home tab', () => {
     await flushPromises()
     expect(asked.mock.calls.filter(([cmd]) => cmd === 'home_summary')).toHaveLength(1)
 
-    // Asking again is what the refresh button is for.
-    await second.find('.actions .btn').trigger('click')
+    // Asking again is what the refresh button is for. Named rather than taken
+    // as the first button on the page: settings and the profile sit above it.
+    await second.find('[title="Read everything again"]').trigger('click')
     await flushPromises()
     expect(asked.mock.calls.filter(([cmd]) => cmd === 'home_summary')).toHaveLength(2)
   })
