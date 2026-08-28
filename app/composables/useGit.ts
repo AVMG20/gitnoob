@@ -82,6 +82,25 @@ export interface CheckoutOutcome {
   diverged: Diverged | null
 }
 
+/** Where a submodule stands, from the mark `git submodule status` prints. */
+export type SubmoduleState = 'ready' | 'absent' | 'moved' | 'conflicted'
+
+/** One repository kept inside this one. */
+export interface Submodule {
+  /** The name in `.gitmodules`, which is not always the path. */
+  name: string
+  path: string
+  /** The same place, absolute, so it can be opened as a repository of its own. */
+  abs: string
+  url: string | null
+  branch: string | null
+  oid: string
+  short: string
+  /** What `git describe` made of the pinned commit, when it made anything. */
+  described: string | null
+  state: SubmoduleState
+}
+
 /** One folder this repository is checked out into. */
 export interface Worktree {
   path: string
@@ -449,6 +468,8 @@ const fields = reactive({
   status: null as WorkingStatus | null,
   /** Every folder the repository is checked out into; one entry is this one. */
   worktrees: [] as Worktree[],
+  /** Every repository kept inside this one. Empty for almost every project. */
+  submodules: [] as Submodule[],
   rows: [] as GraphRow[],
   hasMore: false,
   limit: COMMIT_PAGE,
@@ -531,6 +552,7 @@ interface Snapshot {
   trunk: Trunk
   status: WorkingStatus | null
   worktrees: Worktree[]
+  submodules: Submodule[]
   rows: GraphRow[]
   hasMore: boolean
   limit: number
@@ -564,6 +586,7 @@ function clearData() {
   store.trunk = { name: null, chosen: false }
   store.status = null
   store.worktrees = []
+  store.submodules = []
   store.rows = []
   store.hasMore = false
   store.limit = pageSize()
@@ -578,6 +601,7 @@ function paint(snapshot: Snapshot) {
   store.trunk = snapshot.trunk
   store.status = snapshot.status
   store.worktrees = snapshot.worktrees
+  store.submodules = snapshot.submodules
   store.rows = snapshot.rows
   store.hasMore = snapshot.hasMore
   store.limit = snapshot.limit
@@ -738,12 +762,14 @@ export function useGit() {
     if (!store.repo) return
     const path = store.repo.path
     const limit = store.limit
-    const [info, refs, trunk, status, worktrees, page, stashes, history, progress] = await Promise.all([
+    const [info, refs, trunk, status, worktrees, submodules, page, stashes, history, progress] =
+      await Promise.all([
       part('the repository', invoke<RepoInfo>('repo_info'), store.repo),
       part('the branches', invoke<RefTree>('ref_tree'), null),
       part('the main branch', invoke<Trunk>('trunk_branch'), store.trunk),
       part('the working tree', invoke<WorkingStatus>('working_status'), null),
       part('the worktrees', invoke<Worktree[]>('worktree_list'), [] as Worktree[]),
+      part('the submodules', invoke<Submodule[]>('submodule_list'), [] as Submodule[]),
       part(
         'the history',
         invoke<{ rows: GraphRow[]; has_more: boolean }>('commit_graph', { limit }),
@@ -775,6 +801,7 @@ export function useGit() {
     if (trunk) store.trunk = settle('trunk', trunk, store.trunk)
     if (status) store.status = settle('status', status, store.status)
     store.worktrees = settle('worktrees', worktrees ?? [], store.worktrees)
+    store.submodules = settle('submodules', submodules ?? [], store.submodules)
     if (page) {
       store.rows = settle('rows', page.rows, store.rows)
       store.hasMore = page.has_more
@@ -789,6 +816,7 @@ export function useGit() {
       trunk: store.trunk,
       status: store.status,
       worktrees: store.worktrees,
+      submodules: store.submodules,
       rows: store.rows,
       hasMore: store.hasMore,
       limit,
@@ -1004,6 +1032,25 @@ export function useGit() {
       run<string>('Add worktree', 'worktree_add', { path, branch, track }),
     worktreeRemove: (path: string, force = false) =>
       run<string>('Remove worktree', 'worktree_remove', { path, force }),
+    /**
+     * Submodule work. Every one of these ends in a refresh, because a
+     * submodule that has just been cloned or emptied changes the parent's
+     * working tree as surely as a checkout does.
+     */
+    submoduleUpdate: (path?: string, recursive = false) =>
+      run<string>(
+        path ? `Update ${path}` : 'Update submodules',
+        'submodule_update',
+        { path: path ?? null, recursive }
+      ),
+    submoduleSync: (path?: string) =>
+      run<string>('Sync submodule URLs', 'submodule_sync', { path: path ?? null }),
+    submoduleAdd: (url: string, path: string) =>
+      run<string>('Add submodule', 'submodule_add', { url, path }),
+    submoduleDeinit: (path: string, force = false) =>
+      run<string>('Empty submodule', 'submodule_deinit', { path, force }),
+    submoduleRemove: (path: string) =>
+      run<string>('Remove submodule', 'submodule_remove', { path }),
     /**
      * Checks out the branch a review was opened from, whatever it takes.
      *

@@ -75,7 +75,12 @@ fn is_query(args: &[&str]) -> bool {
         ["branch", rest @ ..] => rest
             .iter()
             .any(|arg| arg.starts_with("--format") || *arg == "--list"),
-        ["stash", "list", ..] | ["stash", "show", ..] | ["config", "--get", ..] => true,
+        ["stash", "list", ..] | ["stash", "show", ..] => true,
+        ["submodule", "status", ..] => true,
+        // Every way of asking config a question is spelled `--get`-something,
+        // and the file being asked may come first: `config --file .gitmodules
+        // --get-regexp`. Anything without one of those is setting a value.
+        ["config", rest @ ..] => rest.iter().any(|arg| arg.starts_with("--get")),
         _ => false,
     }
 }
@@ -362,6 +367,17 @@ mod tests {
         assert!(is_query(&["branch", "--format=%(refname)"]));
         assert!(is_query(&["stash", "list"]));
         assert!(is_query(&["stash", "show", "--name-only", "stash@{0}"]));
+        assert!(is_query(&["submodule", "status"]));
+        assert!(is_query(&["config", "--get", "user.name"]));
+        assert!(is_query(&[
+            "config",
+            "--file",
+            ".gitmodules",
+            "--get-regexp",
+            "^submodule\\."
+        ]));
+        assert!(!is_query(&["config", "user.name", "Ramon"]));
+        assert!(!is_query(&["submodule", "update", "--init"]));
         assert!(!is_query(&["commit", "-m", "x"]));
         assert!(!is_query(&["branch", "-d", "old"]));
         assert!(!is_query(&["stash", "push"]));

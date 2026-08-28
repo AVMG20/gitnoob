@@ -21,8 +21,10 @@ import {
   HardDrive,
   Hash,
   Milestone,
+  Package,
   Pencil,
   Plus,
+  RefreshCw,
   Search,
   Tag,
   Trash2,
@@ -33,6 +35,7 @@ import {
   fullTime,
   relativeTime,
   useGit,
+  type Submodule,
   type Tag as TagRef,
   type Worktree
 } from '~/composables/useGit'
@@ -66,11 +69,20 @@ function readSections() {
       remotes: saved.remotes !== false,
       tags: saved.tags === true,
       worktrees: saved.worktrees !== false,
+      submodules: saved.submodules !== false,
       stashes: saved.stashes !== false,
       reviews: saved.reviews !== false
     }
   } catch {
-    return { locals: true, remotes: true, tags: false, worktrees: true, stashes: true, reviews: true }
+    return {
+      locals: true,
+      remotes: true,
+      tags: false,
+      worktrees: true,
+      submodules: true,
+      stashes: true,
+      reviews: true
+    }
   }
 }
 
@@ -213,7 +225,7 @@ function shelve<T extends { name: string }>(
 
 /** The sections that can be dragged. Stashes is not one: it is last, and takes
     whatever the others leave. */
-type Section = 'locals' | 'remotes' | 'reviews' | 'tags' | 'worktrees'
+type Section = 'locals' | 'remotes' | 'reviews' | 'tags' | 'worktrees' | 'submodules'
 
 const SIZES_KEY = 'gitnoob:sidebar-sizes'
 
@@ -1120,6 +1132,162 @@ async function removeWorktree(tree: Worktree, force: boolean) {
   const said = await git.worktreeRemove(tree.path, force)
   if (said !== null) await config.closeProject(tree.path)
 }
+
+// --- submodules
+
+/** Set while the add-a-submodule dialog is open. */
+const addingSubmodule = ref(false)
+
+const submodules = computed(() =>
+  store.submodules.filter((one) => match(`${one.path} ${one.name} ${one.url ?? ''}`))
+)
+
+/** How many are not sitting where this repository says they should. */
+const submodulesAdrift = computed(
+  () => store.submodules.filter((one) => one.state !== 'ready').length
+)
+
+/** The second line of the row: where it stands, in as few words as it takes. */
+function submoduleMeta(one: Submodule) {
+  if (one.state === 'absent') return 'not cloned'
+  if (one.state === 'conflicted') return 'conflicted'
+  const at = one.described ?? one.short
+  return one.state === 'moved' ? `${at} · moved` : at
+}
+
+function describeSubmodule(one: Submodule) {
+  const lines = [one.url ?? 'No address in .gitmodules']
+  if (one.branch) lines.push(`Follows ${one.branch}`)
+  if (one.state === 'absent') {
+    lines.push('Not cloned yet. Click to fetch it.')
+  } else {
+    if (one.state === 'moved') {
+      lines.push(`Checked out somewhere other than ${one.short}, which is what this repository records.`)
+    }
+    if (one.state === 'conflicted') {
+      lines.push('A merge left two answers for which commit this should be at.')
+    }
+    lines.push('Click to open it as a tab.')
+  }
+  return lines.join('\n')
+}
+
+/** A cloned one opens as its own tab; one that is not there yet is fetched. */
+function openSubmodule(one: Submodule) {
+  if (one.state === 'absent') return void git.submoduleUpdate(one.path)
+  emit('open', one.abs)
+}
+
+function submoduleMenu(event: MouseEvent, one: Submodule) {
+  menu.show(
+    event,
+    [
+      {
+        label: 'Open as a tab',
+        icon: FolderOpen,
+        disabled: one.state === 'absent',
+        hint: one.state === 'absent' ? 'not cloned yet' : '',
+        action: () => emit('open', one.abs)
+      },
+      {
+        label: one.state === 'absent' ? 'Clone it' : 'Move to the recorded commit',
+        icon: Download,
+        action: () => void git.submoduleUpdate(one.path)
+      },
+      {
+        label: 'Move it, and its own submodules',
+        icon: Download,
+        action: () => void git.submoduleUpdate(one.path, true)
+      },
+      {
+        label: 'Take the address from .gitmodules',
+        icon: RefreshCw,
+        hint: 'after the remote moved',
+        action: () => void git.submoduleSync(one.path)
+      },
+      { separator: true, label: '' },
+      {
+        label: git.revealLabel,
+        icon: Folder,
+        disabled: one.state === 'absent',
+        action: () => {
+          void git.reveal(one.abs)
+        }
+      },
+      {
+        label: 'Copy path',
+        icon: Copy,
+        action: () => {
+          void copyText(one.abs, 'Path')
+        }
+      },
+      {
+        label: 'Copy address',
+        icon: Copy,
+        disabled: !one.url,
+        action: () => {
+          if (one.url) void copyText(one.url, 'Address')
+        }
+      },
+      { separator: true, label: '' },
+      {
+        // Plain first: git refuses to empty one holding work, which is the
+        // safety this row leans on. The forced one is for when that refusal
+        // has been read and meant nothing.
+        label: 'Empty its folder',
+        icon: Trash2,
+        danger: true,
+        disabled: one.state === 'absent',
+        hint: one.state === 'absent' ? 'already empty' : 'it stays in .gitmodules',
+        action: () => void git.submoduleDeinit(one.path)
+      },
+      {
+        label: 'Empty it even with changes…',
+        icon: Trash2,
+        danger: true,
+        disabled: one.state === 'absent',
+        action: () => {
+          prompt.value = {
+            title: `Empty ${one.path} and its changes?`,
+            label: 'Type the path to confirm',
+            confirm: 'Empty it',
+            danger: true,
+            hint: 'Uncommitted work inside it is deleted. Anything committed and pushed is safe.',
+            run: (value) => {
+              if (value === one.path) void git.submoduleDeinit(one.path, true)
+              else git.note('Path did not match; nothing was emptied', 'error')
+            }
+          }
+        }
+      },
+      {
+        label: 'Remove it altogether…',
+        icon: Trash2,
+        danger: true,
+        action: () => {
+          prompt.value = {
+            title: `Remove ${one.path}?`,
+            label: 'Type the path to confirm',
+            confirm: 'Remove it',
+            danger: true,
+            hint: 'Out of the folder, out of the index and out of .gitmodules. Commit afterwards to record it.',
+            run: (value) => {
+              if (value === one.path) void removeSubmodule(one)
+              else git.note('Path did not match; nothing was removed', 'error')
+            }
+          }
+        }
+      }
+    ],
+    one.path
+  )
+}
+
+/** Removes it, and closes the tab that was showing it. */
+async function removeSubmodule(one: Submodule) {
+  const said = await git.submoduleRemove(one.path)
+  if (said !== null) await config.closeProject(one.abs)
+}
 </script>
 
 <template>
@@ -1449,6 +1617,58 @@ async function removeWorktree(tree: Worktree, force: boolean) {
         />
       </template>
 
+      <!-- Submodules: the repositories kept inside this one. Shut by default
+           and only here at all once the repository declares some, because
+           nearly none do. -->
+      <template v-if="store.submodules.length">
+        <div class="head-row">
+          <button class="section-title toggle" @click="open.submodules = !open.submodules">
+            <ChevronRight :size="12" class="chev" :class="{ down: open.submodules }" />
+            <Package :size="12" class="mark" />
+            Submodules
+            <span class="count" :class="{ adrift: submodulesAdrift }">
+              {{ submodules.length }}
+            </span>
+          </button>
+          <button
+            class="head-action"
+            title="Fetch every submodule and move it to the commit this repository records"
+            :disabled="store.busy"
+            @click="git.submoduleUpdate()"
+          >
+            <Download :size="13" />
+          </button>
+          <button class="head-action" title="Add a submodule" @click="addingSubmodule = true">
+            <Plus :size="13" />
+          </button>
+        </div>
+        <div v-if="open.submodules" class="group" :style="sizeOf('submodules')">
+          <div
+            v-for="one in submodules"
+            :key="one.path"
+            class="row stash"
+            :class="{ dim: one.state === 'absent' }"
+            :title="describeSubmodule(one)"
+            @click="openSubmodule(one)"
+            @contextmenu="submoduleMenu($event, one)"
+          >
+            <Package :size="13" class="glyph" :class="one.state" />
+            <span class="names">
+              <MidTruncate class="name" :text="one.path" />
+              <span class="faint meta" :class="one.state">{{ submoduleMeta(one) }}</span>
+            </span>
+          </div>
+          <p v-if="!submodules.length" class="none faint">Nothing matches.</p>
+        </div>
+        <div
+          v-if="open.submodules"
+          class="grip"
+          title="Drag to resize · double-click to reset"
+          @pointerdown="grab($event, 'submodules')"
+          @dblclick="resetSize('submodules')"
+        />
+      </template>
+
       <!-- Stashes -->
       <button class="section-title toggle" @click="open.stashes = !open.stashes">
         <ChevronRight :size="12" class="chev" :class="{ down: open.stashes }" />
@@ -1486,6 +1706,8 @@ async function removeWorktree(tree: Worktree, force: boolean) {
         <p v-if="!stashes.length" class="none faint">Nothing stashed.</p>
       </div>
     </div>
+
+    <SubmoduleDialog v-if="addingSubmodule" @close="addingSubmodule = false" />
 
     <PromptDialog
       v-if="prompt"
@@ -1819,6 +2041,28 @@ async function removeWorktree(tree: Worktree, force: boolean) {
 
 .glyph.pr {
   color: var(--green);
+}
+
+/* A submodule says where it stands in its own colour: nothing when it is
+   where the repository put it, and the warning colours when it is not. */
+.glyph.moved,
+.meta.moved {
+  color: var(--amber);
+}
+
+.glyph.conflicted,
+.meta.conflicted {
+  color: var(--red);
+}
+
+.glyph.absent {
+  opacity: 0.55;
+}
+
+/* The heading's count turns amber while any of them is adrift, so a collapsed
+   section still says there is something to do. */
+.count.adrift {
+  color: var(--amber);
 }
 
 .name {

@@ -12,6 +12,7 @@ pub mod refs;
 pub mod remote;
 pub mod review;
 pub mod ssh;
+pub mod submodule;
 pub mod state;
 pub mod watch;
 pub mod work;
@@ -315,6 +316,63 @@ async fn worktree_remove(
 #[tauri::command]
 fn add_to_gitignore(pattern: String, state: State<'_, AppState>) -> Result<String, String> {
     refs::add_to_gitignore(&state, &pattern)
+}
+
+// --- submodules --------------------------------------------------------------
+
+/// Every repository kept inside this one.
+#[tauri::command]
+async fn submodule_list(state: State<'_, AppState>) -> Result<Vec<submodule::Submodule>, String> {
+    submodule::list(&state)
+}
+
+/// Clones what is missing and moves each one onto the commit this repository
+/// records. Without a path, all of them.
+#[tauri::command]
+async fn submodule_update(
+    path: Option<String>,
+    recursive: Option<bool>,
+    state: State<'_, AppState>,
+) -> Result<String, String> {
+    submodule::update(&state, path.as_deref(), recursive.unwrap_or(false))
+}
+
+/// Copies the URLs in `.gitmodules` over the ones each was cloned with.
+#[tauri::command]
+async fn submodule_sync(
+    path: Option<String>,
+    state: State<'_, AppState>,
+) -> Result<String, String> {
+    submodule::sync(&state, path.as_deref())
+}
+
+/// Adds a repository as a submodule, cloning it into `path`.
+#[tauri::command]
+async fn submodule_add(
+    url: String,
+    path: String,
+    state: State<'_, AppState>,
+) -> Result<String, String> {
+    submodule::add(&state, &url, &path)
+}
+
+/// Empties a submodule's folder while leaving it declared.
+#[tauri::command]
+async fn submodule_deinit(
+    path: String,
+    force: Option<bool>,
+    state: State<'_, AppState>,
+) -> Result<String, String> {
+    submodule::deinit(&state, &path, force.unwrap_or(false))
+}
+
+/// Takes a submodule out of the working tree, the index and `.gitmodules`.
+#[tauri::command]
+async fn submodule_remove(
+    path: String,
+    state: State<'_, AppState>,
+) -> Result<String, String> {
+    submodule::remove(&state, &path)
 }
 
 /// A git command typed into the log's prompt, run in the open repository.
@@ -1569,6 +1627,12 @@ pub fn run() {
             worktree_remove,
             add_to_gitignore,
             run_git,
+            submodule_list,
+            submodule_update,
+            submodule_sync,
+            submodule_add,
+            submodule_deinit,
+            submodule_remove,
             remotes,
             remote_url,
             remote_add,
