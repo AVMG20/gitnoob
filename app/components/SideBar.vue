@@ -736,42 +736,49 @@ function localMenu(event: MouseEvent, name: string, upstream: string | null) {
           : 'a second folder on this repository',
         action: () => promptWorktree(name)
       },
-      { separator: true, label: '' },
       // All three move history between two branches, in different directions,
       // and "merge" alone does not say which way. Name both branches and say
       // which one ends up changed. The second direction is the one git makes
       // awkward — it merges into where you stand and nowhere else — so it is
       // offered here and the switching is done out of sight.
-      {
-        label: `Merge ${name} into ${head.value}`,
-        icon: GitMerge,
-        hint: '',
-        disabled: isHead,
-        action: async () => {
-          const outcome = await git.merge(name, false)
-          if (outcome?.conflicts.length) store.resolving = outcome.conflicts[0] ?? null
-        }
-      },
-      {
-        label: `Merge ${head.value} into ${name}`,
-        icon: GitMerge,
-        hint: '',
-        disabled: isHead,
-        action: async () => {
-          const outcome = await git.mergeInto(head.value, name, false)
-          if (outcome?.conflicts.length) store.resolving = outcome.conflicts[0] ?? null
-        }
-      },
-      {
-        label: `Rebase ${head.value} onto ${name}`,
-        icon: GitBranch,
-        hint: 'rewrites history',
-        disabled: isHead,
-        action: async () => {
-          const outcome = await git.rebase(name)
-          if (outcome?.conflicts.length) store.resolving = outcome.conflicts[0] ?? null
-        }
-      },
+      //
+      // Left out entirely on the branch you are standing on, rather than shown
+      // greyed: "Merge tickets into tickets" is not an action that was refused,
+      // it is a sentence that means nothing. The rows below it stay and are
+      // greyed, because checking out or deleting the branch you are on are
+      // things you might well have meant.
+      ...(isHead
+        ? []
+        : [
+            { separator: true, label: '' },
+            {
+              label: `Merge ${name} into ${head.value}`,
+              icon: GitMerge,
+              hint: '',
+              action: async () => {
+                const outcome = await git.merge(name, false)
+                if (outcome?.conflicts.length) store.resolving = outcome.conflicts[0] ?? null
+              }
+            },
+            {
+              label: `Merge ${head.value} into ${name}`,
+              icon: GitMerge,
+              hint: '',
+              action: async () => {
+                const outcome = await git.mergeInto(head.value, name, false)
+                if (outcome?.conflicts.length) store.resolving = outcome.conflicts[0] ?? null
+              }
+            },
+            {
+              label: `Rebase ${head.value} onto ${name}`,
+              icon: GitBranch,
+              hint: 'rewrites history',
+              action: async () => {
+                const outcome = await git.rebase(name)
+                if (outcome?.conflicts.length) store.resolving = outcome.conflicts[0] ?? null
+              }
+            }
+          ]),
       { separator: true, label: '' },
       {
         // What "is this safe to delete?" gets measured against. Guessed as main
