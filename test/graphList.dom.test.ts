@@ -229,3 +229,110 @@ describe('dropping a branch on a commit', () => {
     expect(git.store.log[0]?.text).toContain('Finish or abort')
   })
 })
+
+/**
+ * When a reset asks, and when it just gets on with it.
+ *
+ * A reset moves a branch; the commits it takes off are a keystroke away in
+ * undo. The only thing it can really destroy is work that is in no commit at
+ * all, which is what a hard one writes over — so that is the only thing worth
+ * a question.
+ */
+describe('resetting from the commit menu', () => {
+  /** Right-clicks the second row and picks Reset › `mode`. */
+  async function reset(mode: 'Soft' | 'Mixed' | 'Hard') {
+    const wrapper = mount(Host)
+    await flushPromises()
+    await wrapper.findAll('.row')[1]!.trigger('contextmenu')
+    await flushPromises()
+
+    const parent = wrapper
+      .findAll('.menu .item')
+      .find((one) => one.text().startsWith('Reset'))!
+    await parent.trigger('click')
+    await flushPromises()
+
+    const child = wrapper
+      .findAll('.menu .item')
+      .find((one) => one.text().trim().startsWith(mode))!
+    asked.mockClear()
+    await child.trigger('click')
+    await flushPromises()
+    return asked.mock.calls.map(([cmd, args]) => ({ cmd, args }))
+  }
+
+  beforeEach(() => {
+    asked.mockImplementation(async (cmd: string) =>
+      cmd === 'reset' ? 'Branch moved to bbbbbbb' : null
+    )
+    git.store.progress = null
+    git.store.log = []
+  })
+
+  it('asks nothing for a hard reset with nothing uncommitted', async () => {
+    git.store.status = { staged: [], unstaged: [], conflicted: [] }
+    const calls = await reset('Hard')
+
+    expect(calls.find((call) => call.cmd === 'reset')?.args).toMatchObject({ mode: 'hard' })
+    // Files changed on disk with neither list moving, so it says what it did.
+    expect(git.store.log[0]?.text).toContain('Undo puts it back')
+  })
+
+  it('asks nothing for untracked files either — a hard reset leaves them alone', async () => {
+    git.store.status = {
+      staged: [],
+      unstaged: [{ path: 'notes.md', kind: 'untracked' }],
+      conflicted: []
+    }
+    const calls = await reset('Hard')
+    expect(calls.some((call) => call.cmd === 'reset')).toBe(true)
+  })
+
+  it('asks when there is uncommitted work a hard reset would write over', async () => {
+    git.store.status = {
+      staged: [],
+      unstaged: [{ path: 'app/app.vue', kind: 'modified' }],
+      conflicted: []
+    }
+    const calls = await reset('Hard')
+
+    // The dialog reads the preview; nothing is reset until it is answered.
+    expect(calls.some((call) => call.cmd === 'reset')).toBe(false)
+  })
+
+  it('asks while a rebase is running, whatever the tree looks like', async () => {
+    git.store.status = { staged: [], unstaged: [], conflicted: [] }
+    git.store.progress = {
+      merging: false,
+      rebasing: true,
+      cherry_picking: false,
+      reverting: false,
+      restoring: false,
+      applied_stash: null,
+      prepared: null
+    }
+    const calls = await reset('Hard')
+    git.store.progress = null
+    expect(calls.some((call) => call.cmd === 'reset')).toBe(false)
+  })
+
+  it('asks on a detached HEAD, where there is no branch to bring back', async () => {
+    git.store.status = { staged: [], unstaged: [], conflicted: [] }
+    git.store.repo = { ...git.store.repo!, detached: true } as never
+    const calls = await reset('Hard')
+    git.store.repo = { ...git.store.repo!, detached: false } as never
+    expect(calls.some((call) => call.cmd === 'reset')).toBe(false)
+  })
+
+  it('still says nothing about a soft one, which changes no file', async () => {
+    git.store.status = {
+      staged: [],
+      unstaged: [{ path: 'app/app.vue', kind: 'modified' }],
+      conflicted: []
+    }
+    const calls = await reset('Soft')
+
+    expect(calls.find((call) => call.cmd === 'reset')?.args).toMatchObject({ mode: 'soft' })
+    expect(git.store.log).toHaveLength(0)
+  })
+})

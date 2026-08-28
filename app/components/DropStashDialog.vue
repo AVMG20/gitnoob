@@ -31,9 +31,8 @@ async function drop() {
         <strong>{{ stash.message }}</strong>
       </p>
       <p class="line dim">
-        {{ stash.files }} {{ stash.files === 1 ? 'file' : 'files' }}{{
-          stash.branch ? `, stashed on ${stash.branch}` : ''
-        }}. The changes in it are thrown away and there is no undo.
+        {{ stash.files }} {{ stash.files === 1 ? 'file' : 'files' }}, gone for good. Apply it first
+        to keep the changes.
       </p>
     </template>
     <p v-else class="line dim">That stash is no longer on the list.</p>

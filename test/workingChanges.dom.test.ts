@@ -138,7 +138,8 @@ describe('the working tree panel', () => {
     await items.find((one) => one.text().includes('Throw the conflict away'))!.trigger('click')
     await flushPromises()
     expect(calls.some((call) => call.cmd === 'conflict_discard')).toBe(false)
-    expect(wrapper.text()).toContain('no undo')
+    // The warning is one short line now: what it costs, and nothing else.
+    expect(wrapper.text()).toContain('gone for good')
 
     await wrapper
       .findAll('button')

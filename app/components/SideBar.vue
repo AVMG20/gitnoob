@@ -114,14 +114,6 @@ const prompt = ref<{
   danger?: boolean
   run: (value: string) => void
 } | null>(null)
-/** A question that only wants a yes: no name to type back, just the button. */
-const confirming = ref<{
-  title: string
-  hint?: string
-  confirm: string
-  danger?: boolean
-  run: () => void
-} | null>(null)
 
 const match = (name: string) =>
   !filter.value.trim() || name.toLowerCase().includes(filter.value.trim().toLowerCase())
@@ -930,6 +922,19 @@ function remoteMenu(event: MouseEvent, remote: string, name: string) {
   )
 }
 
+/**
+ * Takes a remote off, and says what it was.
+ *
+ * Adding it back restores the tracking branches, so the only thing worth
+ * keeping is the address — read before the remote goes, and written into the
+ * log where it can be copied back out.
+ */
+async function removeRemote(remote: string) {
+  const url = await git.remoteUrl(remote).catch(() => null)
+  const said = await git.remoteRemove(remote)
+  if (said !== null && url) git.note(`Removed ${remote} — it was ${url}`)
+}
+
 /** The remote itself, rather than one of its branches. */
 function remoteHeaderMenu(event: MouseEvent, remote: string) {
   menu.show(
@@ -972,16 +977,10 @@ function remoteHeaderMenu(event: MouseEvent, remote: string) {
         icon: Trash2,
         danger: true,
         action: () => {
-          // Nothing on the other side is touched and nothing local is lost, so
-          // this only wants a yes: adding the remote back brings the tracking
-          // branches with it.
-          confirming.value = {
-            title: `Remove remote ${remote}?`,
-            confirm: 'Remove remote',
-            danger: true,
-            hint: 'Removes the remote and its remote-tracking branches. Local branches and their commits stay; adding the remote back restores the tracking branches.',
-            run: () => void git.remoteRemove(remote)
-          }
+          // Nothing on the other side is touched and no commit is lost, so it
+          // does not ask. The address goes in the log, which is what putting
+          // the remote back needs.
+          void removeRemote(remote)
         }
       }
     ],
@@ -1914,21 +1913,6 @@ async function removeSubmodule(one: Submodule) {
         (value) => {
           prompt?.run(value)
           prompt = null
-        }
-      "
-    />
-
-    <ConfirmDialog
-      v-if="confirming"
-      :title="confirming.title"
-      :hint="confirming.hint"
-      :confirm="confirming.confirm"
-      :danger="confirming.danger"
-      @close="confirming = null"
-      @confirm="
-        () => {
-          confirming?.run()
-          confirming = null
         }
       "
     />

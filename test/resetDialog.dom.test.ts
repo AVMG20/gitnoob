@@ -107,7 +107,7 @@ describe('the reset dialog', () => {
     const wrapper = show()
     await flushPromises()
 
-    expect(wrapper.find('.block-head').text()).toContain('1 commit would leave tickets')
+    expect(wrapper.find('.block-head').text()).toContain('1 commit leaves tickets')
     expect(wrapper.find('.block-head').text()).toContain('Undo brings them back')
     expect(wrapper.findAll('.commits li')).toHaveLength(1)
   })
@@ -116,6 +116,6 @@ describe('the reset dialog', () => {
     answering(preview({ diverges: true }))
     const wrapper = show()
     await flushPromises()
-    expect(wrapper.find('.note').text()).toContain('not an ancestor of tickets')
+    expect(wrapper.find('.note').text()).toContain('not on tickets')
   })
 })

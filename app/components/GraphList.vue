@@ -556,27 +556,50 @@ function onKey(event: KeyboardEvent) {
 }
 
 /**
+ * What a hard reset would write over: everything staged, and the tracked files
+ * changed but not staged.
+ *
+ * Untracked files are not in it. `git reset --hard` leaves them exactly where
+ * they are, so counting them made the question sound like it was about work
+ * that was never at risk.
+ */
+const atRisk = computed(() => {
+  const staged = store.status?.staged.length ?? 0
+  const changed = (store.status?.unstaged ?? []).filter(
+    (entry) => entry.kind !== 'untracked'
+  ).length
+  return staged + changed
+})
+
+/**
  * Moves the branch, asking first only where there is something to lose.
  *
- * A soft or mixed reset keeps every change that is not in a commit — the files
- * on disk come out of it untouched, and the commits it takes off the branch are
- * a keystroke away in undo. A dialog in front of that is a page of reading to
- * confirm something harmless, and reading it every time is how people learn to
- * click through the one that matters.
+ * A reset moves a branch. The commits it takes off are not deleted — undo puts
+ * the branch back in a keystroke, and git keeps them reachable long after
+ * that — so the only thing a reset can really destroy is work that is not in a
+ * commit at all, which is what a hard one writes over. With none of that on
+ * disk there is nothing to warn about, whichever mode was picked, and a dialog
+ * in front of it is a page of reading to confirm something reversible. Reading
+ * that every time is how people learn to click through the one that matters.
  *
- * A hard reset is the one that matters: it writes over the working tree. That
- * still opens the dialog, which names what would go.
+ * Two cases still ask, because the reset is not the whole of what they undo:
+ * one that takes a running merge or rebase apart, and one on a detached HEAD,
+ * where there is no branch to bring back.
  */
 async function openReset(oid: string, mode: ResetMode) {
-  if (mode === 'hard') {
+  const asking =
+    mode === 'hard' && (atRisk.value > 0 || isRunning(store.progress) || !!store.repo?.detached)
+  if (asking) {
     resetTarget.value = oid
     return
   }
-  // Nothing is said about one that worked: the branch chip lands on the row
-  // that was reset to and the changes it took off the branch appear in the
-  // working list, both in the window the click was made in. A failure has
-  // already put up its own notice.
-  await git.reset(oid, mode)
+  // A soft or mixed one says nothing when it works: the branch chip lands on
+  // the row that was reset to and what came off it appears in the working
+  // list, both in the window the click was made in. A hard one changes files
+  // on disk without either list moving, so that one says what it did — and
+  // what undoes it.
+  const said = await git.reset(oid, mode)
+  if (said !== null && mode === 'hard') git.note(`${said}. Undo puts it back.`)
 }
 
 // --- ref chips

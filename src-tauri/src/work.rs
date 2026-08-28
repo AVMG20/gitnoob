@@ -1179,6 +1179,10 @@ pub struct ResetPreview {
     pub dropped: Vec<crate::remote::CommitSummary>,
     /// True when the branch is not an ancestor, i.e. this moves sideways.
     pub diverges: bool,
+    /// Files a hard reset would write over. Everything staged counts — a file
+    /// added to the index but not to a commit is taken away with the rest —
+    /// but untracked files do not: `git reset --hard` leaves them where they
+    /// are, so counting them warned about work that was never at risk.
     pub staged_files: usize,
     pub unstaged_files: usize,
 }
@@ -1235,7 +1239,11 @@ pub fn reset_preview(state: &AppState, oid: &str) -> Result<ResetPreview, String
         dropped,
         diverges,
         staged_files: status.staged.len(),
-        unstaged_files: status.unstaged.len(),
+        unstaged_files: status
+            .unstaged
+            .iter()
+            .filter(|entry| entry.kind != "untracked")
+            .count(),
     })
 }
 

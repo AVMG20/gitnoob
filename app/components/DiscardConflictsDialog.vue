@@ -30,9 +30,8 @@ async function discard() {
     @close="emit('close')"
   >
     <p class="line">
-      {{ one ? 'The file goes' : 'The files go' }} back to what
-      {{ store.repo?.head ? `${store.repo.head} already had` : 'the branch already had' }}. What the
-      other side was bringing in is thrown away, and there is no undo.
+      Back to what {{ store.repo?.head ?? 'the branch' }} had. The other side's version is gone for
+      good.
     </p>
     <ul class="paths mono">
       <li v-for="path in props.paths.slice(0, 8)" :key="path" class="truncate">{{ path }}</li>

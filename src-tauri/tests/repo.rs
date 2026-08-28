@@ -1610,6 +1610,70 @@ fn undo_and_redo_a_commit() {
 }
 
 #[test]
+fn undo_and_redo_a_hard_reset() {
+    let sandbox = Sandbox::new("undohard");
+    sandbox.commit("a.txt", "one\n", "First");
+    let base = sandbox.git(&["rev-parse", "HEAD"]).trim().to_string();
+    sandbox.commit("a.txt", "one\ntwo\n", "Second");
+    let tip = sandbox.git(&["rev-parse", "HEAD"]).trim().to_string();
+
+    let state = sandbox.state();
+    gitnoob_lib::work::reset(&state, &base, gitnoob_lib::work::ResetMode::Hard).unwrap();
+    assert_eq!(sandbox.git(&["rev-parse", "HEAD"]).trim(), base);
+    assert_eq!(
+        std::fs::read_to_string(sandbox.root.join("a.txt")).unwrap(),
+        "one\n"
+    );
+
+    // The branch and the files both come back: a hard reset is recorded as one
+    // that has to put the working tree back, not only the pointer.
+    gitnoob_lib::journal::undo(&state).unwrap();
+    assert_eq!(sandbox.git(&["rev-parse", "HEAD"]).trim(), tip);
+    assert_eq!(
+        std::fs::read_to_string(sandbox.root.join("a.txt")).unwrap(),
+        "one\ntwo\n"
+    );
+
+    gitnoob_lib::journal::redo(&state).unwrap();
+    assert_eq!(sandbox.git(&["rev-parse", "HEAD"]).trim(), base);
+    assert_eq!(
+        std::fs::read_to_string(sandbox.root.join("a.txt")).unwrap(),
+        "one\n"
+    );
+}
+
+/// What the window counts before deciding whether to ask about a hard reset.
+///
+/// `git reset --hard` leaves untracked files exactly where they are, so a
+/// repository whose only "changes" are untracked has nothing at risk and gets
+/// no question.
+#[test]
+fn a_reset_preview_counts_only_what_a_hard_reset_would_write_over() {
+    let sandbox = Sandbox::new("resetcount");
+    sandbox.commit("a.txt", "one\n", "First");
+    sandbox.commit("a.txt", "one\ntwo\n", "Second");
+    let base = sandbox.git(&["rev-parse", "HEAD^"]).trim().to_string();
+    let state = sandbox.state();
+
+    sandbox.write("new.txt", "untracked\n");
+    let preview = gitnoob_lib::work::reset_preview(&state, &base).unwrap();
+    assert_eq!(preview.staged_files, 0);
+    assert_eq!(preview.unstaged_files, 0);
+    assert_eq!(preview.dropped.len(), 1);
+
+    // A tracked file edited is at risk, and is counted.
+    sandbox.write("a.txt", "one\ntwo\nthree\n");
+    let preview = gitnoob_lib::work::reset_preview(&state, &base).unwrap();
+    assert_eq!(preview.unstaged_files, 1);
+
+    // So is a new file that has been staged: a hard reset takes it away with
+    // the rest of the index.
+    gitnoob_lib::work::stage(&state, &["new.txt".to_string()]).unwrap();
+    let preview = gitnoob_lib::work::reset_preview(&state, &base).unwrap();
+    assert_eq!(preview.staged_files, 1);
+}
+
+#[test]
 fn undo_of_an_amend_restores_the_original_commit() {
     let sandbox = Sandbox::new("undoamend");
     sandbox.commit("a.txt", "one\n", "Original message");

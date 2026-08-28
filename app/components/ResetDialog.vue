@@ -53,11 +53,10 @@ onMounted(async () => {
         <span class="mono">{{ preview.short }}</span>
         <span class="truncate">{{ preview.summary }}</span>
       </p>
-      <p class="what dim">Your files are rewritten to match that commit.</p>
 
       <div v-if="dropped.length" class="block">
         <div class="block-head">
-          {{ dropped.length }} {{ dropped.length === 1 ? 'commit' : 'commits' }} would leave
+          {{ dropped.length }} {{ dropped.length === 1 ? 'commit leaves' : 'commits leave' }}
           {{ preview.branch }}. Undo brings them back.
         </div>
         <ul class="commits">
@@ -71,16 +70,15 @@ onMounted(async () => {
 
       <p v-if="preview.diverges" class="note">
         <TriangleAlert :size="13" />
-        That commit is not an ancestor of {{ preview.branch }}, so this moves the branch sideways
-        rather than rewinding it.
+        Sideways, not back: that commit is not on {{ preview.branch }}.
       </p>
 
       <!-- The one thing said about uncommitted work, and it is the tick: saying
            it in a banner above as well was the same sentence twice. -->
       <label v-if="dirty" class="ack">
         <input v-model="acknowledged" type="checkbox" />
-        Throw away {{ dirty }} uncommitted {{ dirty === 1 ? 'change' : 'changes' }}. Stash first if
-        you might want them.
+        Throw away {{ dirty }} uncommitted {{ dirty === 1 ? 'change' : 'changes' }}. Stash to keep
+        them.
       </label>
     </template>
 
