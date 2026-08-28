@@ -1,9 +1,16 @@
 <script setup lang="ts">
 import { computed, nextTick, onBeforeUnmount, onMounted, onUnmounted, ref, watch } from 'vue'
-import { Check, Copy, FolderOpen, Minus, Undo2, X } from 'lucide-vue-next'
-import { copyText, useGit, type FileDiff } from '~/composables/useGit'
+import { Check, Copy, FolderOpen, History, Minus, Undo2, X } from 'lucide-vue-next'
+import {
+  copyText,
+  relativeTime,
+  useGit,
+  type BlameRun,
+  type FileDiff
+} from '~/composables/useGit'
+import { useContextMenu } from '~/composables/useContextMenu'
 import { labelFor } from '~/composables/useHighlight'
-import { diffMode } from '~/composables/useDiffMode'
+import { diffMode, type DiffMode } from '~/composables/useDiffMode'
 import { stepFile, useFileView, walkOrder, type FileStep } from '~/composables/useFileView'
 import {
   CODE_ROW,
@@ -14,7 +21,11 @@ import {
   patchMarks
 } from '~/composables/useCode'
 
+/** The order Tab walks the views in. */
+const MODES: DiffMode[] = ['diff', 'file', 'blame']
+
 const git = useGit()
+const menu = useContextMenu()
 const store = git.store
 const view = useFileView()
 
@@ -96,6 +107,7 @@ async function load(settle = true) {
   if (target.value !== current) return
   diff.value = fresh
   await loadText()
+  await loadBlame()
   loading.value = false
   if (settle) await toFirstChange()
 }
@@ -154,8 +166,71 @@ async function loadText() {
   }
 }
 
+/**
+ * The file's own history, in the menu the rest of the app uses for lists.
+ *
+ * A commit here opens this file as it stood at that commit, which is the
+ * question being asked — "what did this look like then" — rather than opening
+ * the commit and hunting for the file in it. `--follow` means the list carries
+ * on past a rename, and those are the entries you cannot find any other way.
+ */
+async function showHistory(event: MouseEvent) {
+  const current = target.value
+  if (!current) return
+  const found = await git.fileHistory(current.path, HISTORY_SHOWN + 1)
+  if (!found?.length) {
+    git.note(`No commits touch ${current.path} yet`)
+    return
+  }
+  const items = found.slice(0, HISTORY_SHOWN).map((one) => ({
+    label: one.summary || one.short,
+    hint: `${one.short} · ${relativeTime(one.time)}`,
+    action: () => {
+      store.viewer = { path: current.path, commit: one.oid }
+    }
+  }))
+  if (found.length > HISTORY_SHOWN) {
+    items.push({
+      label: `…and older still`,
+      hint: 'search the commit list',
+      action: () => undefined
+    })
+  }
+  menu.show(event, items, current.path)
+}
+
+/** How many commits the menu will hold before it stops being a menu. */
+const HISTORY_SHOWN = 30
+
+// --- who touched what
+//
+// Read only while the blame view is on screen, and again when the file or the
+// commit under it changes. It is a walk of the file's history, which is not a
+// thing to do for a view nobody opened.
+const blame = ref<BlameRun[]>([])
+const blaming = ref(false)
+const blameError = ref<string | null>(null)
+
+async function loadBlame() {
+  const current = target.value
+  if (!current || diffMode.mode !== 'blame') return
+  blaming.value = true
+  blameError.value = null
+  try {
+    const found = await git.blameFile(current.path, current.commit)
+    // A slower answer for a file that is no longer open is not this file's.
+    if (target.value?.path === current.path) blame.value = found
+  } catch (error) {
+    blame.value = []
+    blameError.value = String(error)
+  } finally {
+    blaming.value = false
+  }
+}
+
 watch(() => diffMode.mode, async () => {
   await loadText()
+  await loadBlame()
   await toFirstChange()
 })
 
@@ -238,7 +313,11 @@ function onKey(event: KeyboardEvent) {
   // "next field", and wherever a modifier makes it mean something else.
   if (event.key === 'Tab') {
     event.preventDefault()
-    diffMode.mode = diffMode.mode === 'file' ? 'diff' : 'file'
+    // Round the three in order, backwards with shift: the same key that used
+    // to swap two views now walks them, rather than stranding the third.
+    const at = MODES.indexOf(diffMode.mode)
+    const step = event.shiftKey ? -1 : 1
+    diffMode.mode = MODES[(at + step + MODES.length) % MODES.length]!
     return
   }
   // The same two keys the commit list uses, and free while the viewer is open:
@@ -351,6 +430,14 @@ onUnmounted(() => window.removeEventListener('keydown', onKey))
         >
           File
         </button>
+        <button
+          class="seg"
+          :class="{ on: diffMode.mode === 'blame' }"
+          title="The whole file, with the commit that last touched each line (Tab)"
+          @click="diffMode.mode = 'blame'"
+        >
+          Blame
+        </button>
       </span>
 
       <!-- Discard left, stage right, matching the hunk buttons in the diff
@@ -377,6 +464,9 @@ onUnmounted(() => window.removeEventListener('keydown', onKey))
         </button>
       </template>
 
+      <button class="btn" title="Every commit that touched this file" @click="showHistory">
+        <History :size="14" />
+      </button>
       <button class="btn" title="Copy path" @click="copyText(target.path, 'Path')">
         <Copy :size="14" />
       </button>
@@ -390,8 +480,18 @@ onUnmounted(() => window.removeEventListener('keydown', onKey))
 
     <div class="pane">
       <div ref="body" class="body">
+        <BlameView
+          v-if="diffMode.mode === 'blame'"
+          :diff="diff"
+          :text="text"
+          :runs="blame"
+          :loading="loading || blaming"
+          :error="textError ?? blameError"
+          :top="top"
+          :view="boxHeight"
+        />
         <FileView
-          v-if="diffMode.mode === 'file'"
+          v-else-if="diffMode.mode === 'file'"
           :diff="diff"
           :text="text"
           :loading="loading"

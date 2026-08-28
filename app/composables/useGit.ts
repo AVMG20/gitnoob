@@ -82,6 +82,31 @@ export interface CheckoutOutcome {
   diverged: Diverged | null
 }
 
+/** One run of consecutive lines that came in with the same commit. */
+export interface BlameRun {
+  oid: string
+  short: string
+  summary: string
+  author: string
+  email: string
+  time: number
+  /** The first line of the run, counting from one. */
+  start: number
+  lines: number
+  /** Work that is not committed yet, which blame cannot answer for. */
+  uncommitted: boolean
+}
+
+/** One commit in a file's own history. */
+export interface FileCommit {
+  oid: string
+  short: string
+  author: string
+  email: string
+  time: number
+  summary: string
+}
+
 /** What git made of a commit's signature. */
 export type SignatureVerdict = 'good' | 'untrusted' | 'bad' | 'unchecked' | 'none'
 
@@ -1001,6 +1026,17 @@ export function useGit() {
    * was not signed", and a repository where nothing is signed should not put
    * a line in the log every time a row is clicked.
    */
+  /**
+   * Who last touched each line. Unguarded: a file with no history yet is an
+   * ordinary answer, said where the file would have been.
+   */
+  const blameFile = (path: string, commit?: string | null) =>
+    invoke<BlameRun[]>('blame_file', { path, commit: commit ?? null })
+
+  /** Every commit that touched a file, newest first, across renames. */
+  const fileHistory = (path: string, limit = 200) =>
+    guard('File history', () => invoke<FileCommit[]>('file_history', { path, limit }))
+
   const commitSignature = (oid: string) =>
     invoke<CommitSignature>('commit_signature', { oid }).catch(() => null)
 
@@ -1111,6 +1147,8 @@ export function useGit() {
      * working tree as surely as a checkout does.
      */
     commitSignature,
+    blameFile,
+    fileHistory,
     submoduleUpdate: (path?: string, recursive = false) =>
       run<string>(
         path ? `Update ${path}` : 'Update submodules',

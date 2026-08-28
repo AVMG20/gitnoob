@@ -1,5 +1,6 @@
 pub mod ai;
 pub mod avatar;
+pub mod blame;
 pub mod config;
 pub mod conflict;
 pub mod create;
@@ -318,6 +319,28 @@ async fn worktree_remove(
 #[tauri::command]
 fn add_to_gitignore(pattern: String, state: State<'_, AppState>) -> Result<String, String> {
     refs::add_to_gitignore(&state, &pattern)
+}
+
+// --- blame and file history --------------------------------------------------
+
+/// Who last touched each line of a file, as runs of consecutive lines.
+#[tauri::command]
+async fn blame_file(
+    path: String,
+    commit: Option<String>,
+    state: State<'_, AppState>,
+) -> Result<Vec<blame::BlameRun>, String> {
+    blame::of(&state, &path, commit.as_deref())
+}
+
+/// Every commit that touched a file, newest first, across renames.
+#[tauri::command]
+async fn file_history(
+    path: String,
+    limit: Option<usize>,
+    state: State<'_, AppState>,
+) -> Result<Vec<blame::FileCommit>, String> {
+    blame::history(&state, &path, limit.unwrap_or(200))
 }
 
 // --- signatures --------------------------------------------------------------
@@ -1710,6 +1733,8 @@ pub fn run() {
             worktree_remove,
             add_to_gitignore,
             run_git,
+            blame_file,
+            file_history,
             signature_marks,
             commit_signature,
             signing_setup,
