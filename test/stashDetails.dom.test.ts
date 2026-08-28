@@ -60,41 +60,25 @@ const show = async () => {
 describe('a stash selected like any other commit', () => {
   it('says it is one, and where it was made', async () => {
     const wrapper = await show()
-    expect(wrapper.find('.stash-strip').text()).toContain('A stash, made on main')
+    expect(wrapper.find('.stash-note').text()).toContain('A stash, made on main')
   })
 
-  it('offers the four things you can do with it', async () => {
+  it('points at the bar rather than offering the same buttons twice', async () => {
     const wrapper = await show()
-    const labels = wrapper.findAll('.stash-strip .tiny').map((b) => b.text())
-    expect(labels).toEqual(['Apply', 'Pop', 'Branch', 'Drop'])
+    expect(wrapper.find('.stash-note').text()).toContain('from the bar above')
+    expect(wrapper.find('.stash-note button').exists()).toBe(false)
   })
 
-  it('applies and pops by the position it is at', async () => {
+  it('still counts what the stash holds, the way a commit does', async () => {
     const wrapper = await show()
-    await wrapper.findAll('.stash-strip .tiny')[0]!.trigger('click')
-    await flushPromises()
-    expect(calls.find((c) => c.cmd === 'stash_apply')?.args).toEqual({ index: 0 })
-
-    await wrapper.findAll('.stash-strip .tiny')[1]!.trigger('click')
-    await flushPromises()
-    expect(calls.find((c) => c.cmd === 'stash_pop')?.args).toEqual({ index: 0 })
-  })
-
-  it('takes a name before turning one into a branch', async () => {
-    const wrapper = await show()
-    await wrapper.findAll('.stash-strip .tiny')[2]!.trigger('click')
-    await wrapper.find('.stash-strip input').setValue('rescue/the-idea')
-    await wrapper.find('.stash-strip .primary').trigger('click')
-    await flushPromises()
-    expect(calls.find((c) => c.cmd === 'stash_branch')?.args).toEqual({
-      index: 0,
-      name: 'rescue/the-idea'
-    })
+    expect(wrapper.text()).toContain('1 file')
+    expect(wrapper.text()).toContain('+4')
+    expect(wrapper.text()).toContain('−1')
   })
 
   it('says nothing of the sort for an ordinary commit', async () => {
     git.store.detail = { ...DETAIL, oid: 'c1' }
     const wrapper = await show()
-    expect(wrapper.find('.stash-strip').exists()).toBe(false)
+    expect(wrapper.find('.stash-note').exists()).toBe(false)
   })
 })

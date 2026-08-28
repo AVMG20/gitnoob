@@ -1,19 +1,20 @@
 <script setup lang="ts">
 import { computed, ref, watch } from 'vue'
 import {
+  Archive,
   ArrowDown,
   ArrowDownToLine,
   ArrowUp,
   ArrowUpFromLine,
-  Archive,
+  ChevronRight,
   Download,
   GitBranchPlus,
   History,
-  ChevronRight,
   Package,
-  RefreshCw,
   Redo2,
+  RefreshCw,
   Settings,
+  Trash2,
   TriangleAlert,
   Undo2,
   X
@@ -45,6 +46,43 @@ const updateOffered = computed(() =>
 
 const showBranch = ref(false)
 const showHistory = ref(false)
+
+/**
+ * The stash the selected row is, when it is one.
+ *
+ * Read off the selection rather than the loaded detail, so the bar changes in
+ * the same frame as the click rather than a round trip later.
+ */
+const stash = computed(
+  () => store.stashes.find((one) => one.oid === store.selected) ?? null
+)
+
+/** Naming the branch a stash becomes; null when nothing is being named. */
+const naming = ref(false)
+
+async function stashAction(what: 'apply' | 'pop' | 'drop') {
+  const one = stash.value
+  if (!one) return
+  const said =
+    what === 'apply'
+      ? await git.stashApply(one.index)
+      : what === 'pop'
+        ? await git.stashPop(one.index)
+        : await git.stashDrop(one.index)
+  if (said !== null) git.note(said)
+}
+
+function branchFromStash() {
+  naming.value = true
+}
+
+async function makeStashBranch(name: string) {
+  const one = stash.value
+  naming.value = false
+  if (!one || !name.trim()) return
+  const said = await git.stashBranch(one.index, name.trim())
+  if (said !== null) git.note(said)
+}
 
 const head = computed(() => store.refs?.locals.find((b) => b.is_head) ?? null)
 
@@ -223,7 +261,56 @@ async function reconcile(rebase: boolean) {
       </span>
     </div>
 
-    <div class="actions">
+    <!-- What the bar offers follows what is selected. A stash is the one kind
+         of row whose actions are nothing like a commit's, so while one is
+         picked the bar is about the stash. Fetch, pull and push keep their
+         keys — this component is still mounted, only its buttons change. -->
+    <div v-if="stash" class="actions stash-actions">
+      <span class="what">
+        <Archive :size="13" />
+        <span class="truncate">{{ stash.message }}</span>
+      </span>
+
+      <span class="sep" />
+
+      <button
+        class="btn"
+        :disabled="store.busy"
+        title="Put these changes back and keep the stash"
+        @click="stashAction('apply')"
+      >
+        <ArrowDownToLine :size="14" /> Apply
+      </button>
+      <button
+        class="btn strong"
+        :disabled="store.busy"
+        title="Put these changes back and take the stash off the list"
+        @click="stashAction('pop')"
+      >
+        <ArrowDownToLine :size="14" /> Pop
+      </button>
+      <button
+        class="btn"
+        :disabled="store.busy"
+        title="Start a branch from it, for a stash that will not go on here"
+        @click="branchFromStash"
+      >
+        <GitBranchPlus :size="14" /> Branch from it
+      </button>
+
+      <span class="sep" />
+
+      <button
+        class="btn danger-text"
+        :disabled="store.busy"
+        title="Throw the stash away"
+        @click="stashAction('drop')"
+      >
+        <Trash2 :size="14" /> Drop
+      </button>
+    </div>
+
+    <div v-else class="actions">
       <button class="btn" :disabled="store.busy" title="Fetch all remotes" @click="git.fetch()">
         <RefreshCw :size="14" /> Fetch
       </button>
@@ -460,6 +547,15 @@ async function reconcile(rebase: boolean) {
 
     <HistoryMenu v-if="showHistory" @close="showHistory = false" />
     <BranchDialog v-if="showBranch" @close="showBranch = false" />
+    <PromptDialog
+      v-if="naming"
+      title="Branch from stash"
+      label="Branch name"
+      confirm="Create branch"
+      hint="Applies the stash onto a new branch and takes it off the list."
+      @close="naming = false"
+      @submit="makeStashBranch"
+    />
   </header>
 </template>
 
@@ -677,5 +773,50 @@ async function reconcile(rebase: boolean) {
   background: var(--red);
   color: #fff;
   font-weight: 600;
+}
+
+/* --- the bar while a stash is picked */
+
+/* Tinted as a whole, so it is plain at a glance that the bar is about
+   something other than the repository. */
+.stash-actions {
+  padding: 2px 8px;
+  border-radius: 999px;
+  background: var(--warning-bg);
+  border: 1px solid var(--warning-line);
+}
+
+.stash-actions .what {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  max-width: 240px;
+  min-width: 0;
+  padding-left: 4px;
+  font-size: 12px;
+  color: var(--amber-soft);
+}
+
+.stash-actions .btn {
+  color: var(--amber-soft);
+}
+
+.stash-actions .btn:hover:not(:disabled) {
+  background: color-mix(in srgb, var(--amber) 18%, transparent);
+  color: var(--amber-soft);
+}
+
+.stash-actions .strong {
+  font-weight: 600;
+  color: var(--text);
+}
+
+.stash-actions .danger-text {
+  color: var(--red-soft);
+}
+
+.stash-actions .danger-text:hover:not(:disabled) {
+  background: var(--danger-bg);
+  color: var(--red-soft);
 }
 </style>
