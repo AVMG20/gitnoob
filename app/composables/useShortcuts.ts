@@ -60,7 +60,7 @@ export const SHORTCUTS: Shortcut[] = [
   { id: 'graph.clearsearch', keys: 'Escape', label: 'Close the search box', where: 'The commit list', group: 'The commit list' },
 
   // Changes and diffs
-  { id: 'diff.mode', keys: 'Tab', label: 'Flip between the patch and the whole file', where: 'An open file', group: 'Changes and diffs', note: 'Blame is a column of the file view, on the line numbers’ right-click menu.' },
+  { id: 'diff.mode', keys: 'Tab', label: 'Show the whole file, or only the lines that changed', where: 'An open file', group: 'Changes and diffs', note: 'Blame is a column of the file view, on the line numbers’ right-click menu.' },
   { id: 'viewer.move', keys: 'ArrowUp/ArrowDown', label: 'Move to the file before or after this one', where: 'An open file', group: 'Changes and diffs', note: 'Walks the panel beside it, in the order it lists them.' },
   { id: 'viewer.close', keys: 'Escape', label: 'Close the file', where: 'An open file', group: 'Changes and diffs' },
   { id: 'conflict.move', keys: 'ArrowUp/ArrowDown', label: 'Move to the conflict before or after this one', where: 'The conflict resolver', group: 'Changes and diffs' },

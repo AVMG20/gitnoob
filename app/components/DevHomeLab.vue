@@ -35,12 +35,14 @@ const CARDS = [
   { branch: 'main', ahead: 0, behind: 3, dirty: 0, days: 0 },
   { branch: 'feature/odds', ahead: 2, behind: 0, dirty: 3, days: 1 },
   { branch: 'main', ahead: 0, behind: 0, dirty: 0, days: 3 },
-  { branch: 'staging', ahead: 0, behind: 12, dirty: 0, days: 8 },
+  // A folder that has been moved or deleted since it was last opened, so the
+  // page can be looked at with something actually wrong on it.
+  { branch: '', ahead: 0, behind: 0, dirty: 0, days: 8, gone: true },
   { branch: 'main', ahead: 0, behind: 1, dirty: 0, days: 9 },
   { branch: 'main', ahead: 0, behind: 0, dirty: 0, days: 15 },
   { branch: 'main', ahead: 1, behind: 0, dirty: 0, days: 24 },
   { branch: 'main', ahead: 0, behind: 0, dirty: 1, days: 40 }
-]
+] as { branch: string; ahead: number; behind: number; dirty: number; days: number; gone?: boolean }[]
 
 /** A fixed seed, so the page looks the same every time it is opened. */
 function random(seed: number) {
@@ -76,7 +78,7 @@ function summary() {
       behind: CARDS[at]!.behind,
       dirty: CARDS[at]!.dirty,
       last_commit: now - CARDS[at]!.days * 86_400 - 3600,
-      exists: true
+      exists: !CARDS[at]!.gone
     })),
     stats: {
       days,
