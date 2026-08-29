@@ -61,14 +61,11 @@ open as tabs.
 **Conflicts, by checkbox.** Theirs, yours, and the result — tick what you want
 from each side. No markers to hand-delete.
 
-<img src="docs/screenshots/conflicts.png" alt="The conflict resolver: ours and theirs side by side, with the result that will be written below them" width="900" />
 
 **Pull requests in the app.** GitHub and GitLab: the conversation, the checks,
 line comments, and one merge button that says what it will do.
 
 <img src="docs/screenshots/review.png" alt="A pull request open in gitnoob: its description, the reviewers and labels beside it, and the merge button" width="900" />
-
-<img src="docs/screenshots/review-files.png" alt="The files of a pull request, with a comment thread standing on a line of the diff" width="900" />
 
 **It won't lose your work.** Your changes ride across branch switches. Undo and
 redo. Reset shows what goes. Force-push names the commits it would drop, and
