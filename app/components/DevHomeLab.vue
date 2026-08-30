@@ -97,13 +97,27 @@ function summary() {
   }
 }
 
+/**
+ * How long the read is held back, from `&slow=1200` on the address.
+ *
+ * The outline the page draws while it waits is the hardest part of it to look
+ * at, because on a real machine it is gone in under a second. Off by default:
+ * everything else here wants the answers straight away.
+ */
+const HOLD = Number(new URLSearchParams(location.search).get('slow') ?? 0)
+
+const wait = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms))
+
 /** Answers the commands this page sends; everything else is empty. */
 function install() {
   const internals = ((window as unknown as Record<string, unknown>).__TAURI_INTERNALS__ ??=
     {}) as Record<string, unknown>
   let answer = summary()
   internals.invoke = async (cmd: string, args?: Record<string, unknown>) => {
-    if (cmd === 'home_summary') return answer
+    if (cmd === 'home_summary') {
+      if (HOLD) await wait(HOLD)
+      return answer
+    }
     if (cmd === 'project_forget') {
       const path = String(args?.path ?? '')
       answer = { ...answer, repos: answer.repos.filter((one) => one.path !== path) }

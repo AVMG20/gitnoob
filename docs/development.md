@@ -25,12 +25,14 @@ and with no dev server there is nothing to show. Only a release build serves
 `npm run dev` alone serves the frontend in a browser, where every backend call
 fails because `invoke` needs the Tauri host. It is still useful for checking
 layout, and the labs there draw a page against fixtures rather than against a
-repository — `?lab=review` the review page, `?lab=conflict` the resolver, and
-`?lab=squash` the commit graph, the working-tree panel and the sidebar together,
-which is where squashing, a moved file and the branch menus can be looked at
-without arranging a repository into that state first. `&settings=ai` on that one
-opens the settings on a section. All three are compiled out of anything built
-for release. `GITUI_DEVTOOLS=1` opens the web inspector; debug builds only.
+repository — `?lab=review` the review page, `?lab=conflict` the resolver,
+`?lab=home` the home tab, and `?lab=squash` the commit graph, the working-tree
+panel and the sidebar together, which is where squashing, a moved file and the
+branch menus can be looked at without arranging a repository into that state
+first. `&settings=ai` on that one opens the settings on a section;
+`&slow=1200` on the home lab holds the read back that many milliseconds, which
+is the only way to look at the outline the page draws while it waits. All four
+are compiled out of anything built for release. `GITUI_DEVTOOLS=1` opens the web inspector; debug builds only.
 
 ### Platform build dependencies
 

@@ -42,6 +42,40 @@ const config = useConfig()
 const filter = ref('')
 const stats = computed(() => home.stats.value)
 
+/**
+ * Nothing has been read yet.
+ *
+ * Everything on this page comes out of one command, so until it lands there is
+ * not a true word to put on the screen — and the page has been drawing the
+ * false ones: no repositories, no year, nothing waiting. True the moment the
+ * component exists rather than once the request is out, because the first
+ * paint happens before `onMounted` and that paint is the one that pops.
+ */
+const blank = computed(() => !home.store.summary && !home.store.error)
+
+/**
+ * The widths of the bars the outline is drawn with.
+ *
+ * Written down rather than picked at random: a placeholder that comes out a
+ * different shape on every paint is a thing to watch instead of a thing to
+ * wait through. Uneven, though — a stack of identical bars reads as a list of
+ * one thing repeated, and what is coming is a list of names.
+ */
+const GHOST_FACTS = [104, 88, 74, 132]
+const GHOST_ROWS = [
+  { name: 96, path: 172 },
+  { name: 132, path: 208 },
+  { name: 78, path: 148 },
+  { name: 118, path: 190 },
+  { name: 90, path: 162 },
+  { name: 126, path: 178 }
+]
+const GHOST_LOOK = [
+  { main: 176, where: 84 },
+  { main: 138, where: 66 },
+  { main: 198, where: 92 }
+]
+
 const shown = computed(() => {
   const words = filter.value.toLowerCase().split(/\s+/).filter(Boolean)
   return home.repos.value.filter((one) =>
@@ -106,9 +140,21 @@ const lines = computed(() => {
   return { added: `+${short(found.added)}`, removed: `−${short(found.removed)}` }
 })
 
-/** The last 53 weeks as columns of seven, which is how the grid is drawn. */
+/** A year of quiet days, for the paint before the real one. */
+const BLANK_YEAR: number[][] = Array.from({ length: 53 }, () => Array(7).fill(0) as number[])
+
+/**
+ * The last 53 weeks as columns of seven, which is how the grid is drawn.
+ *
+ * Blank ones until the read lands. The band is the tallest thing above the
+ * two lists, so a page that draws itself without it and then puts it in has
+ * moved everything you were reading down by an inch — and an empty year and a
+ * year of quiet days are the same picture anyway, which is what makes this an
+ * outline rather than a stand-in for one.
+ */
 const weeks = computed(() => {
   const days = stats.value?.days ?? []
+  if (!days.length) return blank.value ? BLANK_YEAR : []
   const out: number[][] = []
   for (let at = 0; at < days.length; at += 7) out.push(days.slice(at, at + 7))
   return out
@@ -143,7 +189,9 @@ const WHEN = new Intl.DateTimeFormat(undefined, {
 function overDay(event: MouseEvent, index: number) {
   const card = yearCard.value
   const square = event.currentTarget as HTMLElement | null
-  if (!card || !square) return
+  // Nothing read yet means the grid is an outline, and an outline has no days
+  // in it to say anything about.
+  if (!card || !square || !stats.value) return
   const count = stats.value?.days[index] ?? 0
   const here = square.getBoundingClientRect()
   const around = card.getBoundingClientRect()
@@ -345,18 +393,21 @@ function choose(repo: RepoCard) {
         <div class="titles">
           <h1>{{ greeting }}{{ who ? `, ${who}` : '' }}</h1>
           <p class="sub">
-            {{ home.repos.value.length }}
-            {{ home.repos.value.length === 1 ? 'repository' : 'repositories' }}
-            <template v-if="open.size"> · {{ open.size }} open</template>
-            <!-- Said as the thing it counts. "Waiting" left you to guess what
-                 was waiting and for what; a loose end is a change nobody has
-                 committed or a commit nobody has pushed, which is what the list
-                 below is made of. -->
-            <template v-if="attention.length">
-              ·
-              <span class="sub-flag">
-                {{ attention.length }} loose {{ attention.length === 1 ? 'end' : 'ends' }}
-              </span>
+            <span v-if="blank" class="ghost sub-ghost" aria-hidden="true" />
+            <template v-else>
+              {{ home.repos.value.length }}
+              {{ home.repos.value.length === 1 ? 'repository' : 'repositories' }}
+              <template v-if="open.size"> · {{ open.size }} open</template>
+              <!-- Said as the thing it counts. "Waiting" left you to guess what
+                   was waiting and for what; a loose end is a change nobody has
+                   committed or a commit nobody has pushed, which is what the
+                   list below is made of. -->
+              <template v-if="attention.length">
+                ·
+                <span class="sub-flag">
+                  {{ attention.length }} loose {{ attention.length === 1 ? 'end' : 'ends' }}
+                </span>
+              </template>
             </template>
           </p>
         </div>
@@ -385,8 +436,18 @@ function choose(repo: RepoCard) {
       <p v-if="home.store.error" class="oops">{{ home.store.error }}</p>
 
       <!-- The week, read as a sentence. Every figure is a fact about the same
-           seven days, so they belong in one line and not in four boxes. -->
-      <p v-if="summary" class="summary">
+           seven days, so they belong in one line and not in four boxes. Its
+           outline keeps the line and the rule under it, so the year below does
+           not step up and back down again. -->
+      <p v-if="blank" class="summary waiting" aria-hidden="true">
+        <span
+          v-for="width in GHOST_FACTS"
+          :key="width"
+          class="ghost"
+          :style="{ width: `${width}px` }"
+        />
+      </p>
+      <p v-else-if="summary" class="summary">
         <template v-for="(fact, at) in summary" :key="fact.label">
           <span v-if="at" class="dot">·</span>
           <span class="fact">
@@ -412,7 +473,13 @@ function choose(repo: RepoCard) {
            subject at a longer range: how it has been going. What is waiting
            and where the projects are follow, close enough to the top of the
            page to be reached without a scroll on a laptop. -->
-      <section v-if="weeks.length" ref="yearCard" class="year" @mouseleave="bubble = null">
+      <section
+        v-if="weeks.length"
+        ref="yearCard"
+        class="year"
+        :class="{ waiting: blank }"
+        @mouseleave="bubble = null"
+      >
         <div class="head">
           <span class="head-title">A year of commits, across everything</span>
           <span v-if="home.store.summary?.author" class="head-note mono">
@@ -458,19 +525,36 @@ function choose(repo: RepoCard) {
         <section class="projects">
           <div class="head">
             <span class="head-title">Projects</span>
-            <span class="count">{{ shown.length }}</span>
+            <span v-if="!blank" class="count">{{ shown.length }}</span>
             <label class="find">
               <Search :size="12" />
               <input v-model="filter" type="text" placeholder="Filter" />
             </label>
           </div>
 
-          <p v-if="home.store.loading && !shown.length" class="empty">Reading your repositories…</p>
+          <!-- Half a dozen rows in outline, which is about what a window has
+               open by the time this page is worth looking at. It said
+               "Reading your repositories…" instead, which is one line where
+               ten are coming: the card grew to ten times its height a moment
+               later and took the rest of the page with it. -->
+          <ul v-if="blank" class="rows" aria-hidden="true">
+            <li v-for="(row, at) in GHOST_ROWS" :key="at" class="ghost-row">
+              <span class="ghost mark-ghost" />
+              <span class="about">
+                <span class="ghost" :style="{ width: `${row.name}px` }" />
+                <span class="ghost path-ghost" :style="{ width: `${row.path}px` }" />
+              </span>
+              <span />
+              <span class="ghost when-ghost" />
+              <span class="drop-space" />
+            </li>
+          </ul>
+
           <p v-else-if="!shown.length" class="empty">
             {{ filter ? 'Nothing matches.' : 'Nothing opened yet — Open or Clone one.' }}
           </p>
 
-          <ul class="rows">
+          <ul v-else class="rows">
             <li
               v-for="repo in shown"
               :key="repo.path"
@@ -534,7 +618,18 @@ function choose(repo: RepoCard) {
               <span class="head-title">Needs a look</span>
               <span v-if="attention.length" class="count">{{ attention.length }}</span>
             </div>
-            <ul class="rows">
+            <!-- Nothing read is not the same as nothing waiting, and the card
+                 was saying the second while it meant the first. -->
+            <ul v-if="blank" class="rows" aria-hidden="true">
+              <li v-for="(line, at) in GHOST_LOOK" :key="at" class="ghost-line">
+                <span class="ghost ghost-icon" />
+                <span class="ghost-body">
+                  <span class="ghost" :style="{ width: `${line.main}px` }" />
+                  <span class="ghost path-ghost" :style="{ width: `${line.where}px` }" />
+                </span>
+              </li>
+            </ul>
+            <ul v-else class="rows">
               <li v-for="one in waiting" :key="`${one.path}${one.text}`" class="line">
                 <component :is="ICONS[one.kind]" :size="13" class="line-icon" :class="one.kind" />
                 <span class="line-body">
@@ -579,7 +674,10 @@ function choose(repo: RepoCard) {
       </div>
 
 
-      <footer v-if="fun" class="footnote">{{ fun }}</footer>
+      <footer v-if="blank" class="footnote" aria-hidden="true">
+        <span class="ghost" style="width: 232px" />
+      </footer>
+      <footer v-else-if="fun" class="footnote">{{ fun }}</footer>
     </div>
   </div>
 </template>
@@ -1213,6 +1311,120 @@ h1 {
   position: absolute;
   font-size: 10.5px;
   color: var(--text-faint);
+}
+
+/*
+ * The page in outline, while the one command behind it is still running.
+ *
+ * Home is read in a single call, so before it lands there is nothing true to
+ * put on the screen — and what was there instead was a page that started
+ * almost empty and grew by a screenful in one frame: the year appearing above
+ * whatever you were about to click, the project list going from one line of
+ * apology to ten rows. Drawn as bars in the shape of the real thing, the page
+ * arrives at close to its finished height on the first paint and then simply
+ * fills in.
+ *
+ * Only ever on the first visit. Coming back to the tab has last minute's
+ * answer on screen already, and replacing something true with a row of grey
+ * bars to say it is being checked is a step backwards.
+ */
+.ghost {
+  display: inline-block;
+  height: 10px;
+  border-radius: 4px;
+  background: var(--bg-raised);
+  animation: breathe 1.5s ease-in-out infinite;
+}
+
+/* Slow, and never all the way out. A placeholder that flashes is louder than
+   the page it is standing in for, and it is on screen for half a second. */
+@keyframes breathe {
+  0%,
+  100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.45;
+  }
+}
+
+.sub-ghost {
+  width: 164px;
+  margin-top: 3px;
+}
+
+/* The line the figures make is taller than a bar: 15px numerals with a 12.5px
+   label on a shared baseline beside them. Padded out to the same, so the year
+   under it does not step up an inch when the numbers land. */
+.summary.waiting .ghost {
+  height: 13px;
+  margin: 6px 0;
+}
+
+/* The same five columns as a real row, so a name landing in one does not
+   shunt the row under it. */
+.ghost-row {
+  display: grid;
+  grid-template-columns: 22px minmax(0, 1fr) auto 84px 18px;
+  align-items: center;
+  gap: 11px;
+  padding: 8px;
+  margin: 0 -8px;
+}
+
+.ghost-row .about {
+  gap: 5px;
+}
+
+.mark-ghost {
+  width: 22px;
+  height: 22px;
+  border-radius: var(--radius-sm);
+}
+
+/* The second line of a row is a path or a place, set smaller than the first. */
+.path-ghost {
+  height: 8px;
+}
+
+.when-ghost {
+  width: 48px;
+  justify-self: end;
+}
+
+/* What `.line` is, without the words: the rules between the rows are part of
+   the shape of the card. */
+.ghost-line {
+  display: flex;
+  align-items: flex-start;
+  gap: 9px;
+  padding: 8px 0;
+  border-top: 1px solid var(--line-soft);
+}
+
+.ghost-line:first-child {
+  border-top: none;
+}
+
+.ghost-icon {
+  flex: none;
+  width: 13px;
+  height: 13px;
+  margin-top: 1px;
+  border-radius: 3px;
+}
+
+.ghost-body {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  min-width: 0;
+}
+
+/* The year needs no bars: a grid of empty days is already the shape of the
+   one that is coming. It only has to say it is not the answer yet. */
+.year.waiting .grid {
+  animation: breathe 1.5s ease-in-out infinite;
 }
 
 /* Held to the bottom of the page rather than following the tips up and down
