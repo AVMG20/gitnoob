@@ -419,6 +419,19 @@ const reviews = computed(() =>
 )
 
 /**
+ * Whether the pull requests section is on the pane at all.
+ *
+ * A profile with no token cannot fetch a single one, so the section was a
+ * heading, a count of nothing and a line telling you to go to Settings —
+ * three rows of a pane that never has enough of them. A token with no remote
+ * on that forge is a different thing and keeps its place: there the section
+ * has something to say about this repository.
+ */
+const showReviews = computed(
+  () => !!forge.store.status && forge.store.status.kind !== 'none' && forge.store.status.has_token
+)
+
+/**
  * How a review's branch reads when it belongs to somebody else: `them:fix-typo`
  * is how the forges write it, and the bare name would be a lie — there is no
  * `fix-typo` here, and there may well be a different one.
@@ -1647,7 +1660,7 @@ async function removeSubmodule(one: Submodule) {
       />
 
       <!-- Pull requests -->
-      <template v-if="forge.store.status && forge.store.status.kind !== 'none'">
+      <template v-if="showReviews">
         <div class="head-row">
           <button class="section-title toggle" @click="open.reviews = !open.reviews">
             <ChevronRight :size="12" class="chev" :class="{ down: open.reviews }" />
@@ -1708,13 +1721,7 @@ async function removeSubmodule(one: Submodule) {
               <ExternalLink :size="12" />
             </button>
           </div>
-          <p v-if="!forge.usable.value" class="none faint">
-            {{
-              forge.store.status?.has_token
-                ? 'No remote on this forge to read.'
-                : 'Add an access token to this profile in Settings to see them.'
-            }}
-          </p>
+          <p v-if="!forge.usable.value" class="none faint">No remote on this forge to read.</p>
           <p v-else-if="forge.store.error" class="err">{{ forge.store.error }}</p>
           <p v-else-if="!reviews.length" class="none faint">
             {{ forge.store.loading ? 'Loading…' : 'Nothing open.' }}

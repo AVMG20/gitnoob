@@ -803,7 +803,10 @@ mod tests {
     fn a_root_path_keeps_its_separator() {
         assert_eq!(super::trim_separator("C:/"), "C:/");
         assert_eq!(super::trim_separator("/"), "/");
-        assert_eq!(super::trim_separator("/home/arno/repo/"), "/home/arno/repo");
+        assert_eq!(
+            super::trim_separator("/home/robin/repo/"),
+            "/home/robin/repo"
+        );
     }
 
     /// An active project that de-duplication removed cannot be restored.

@@ -17,16 +17,16 @@ const config = useConfig()
 const ready = ref(false)
 
 const PROJECTS = [
-  ['gitui', '/Users/arno/tools/gitui'],
-  ['sanitairkamer-rma-admin', '/Users/arno/sites/sanitairkamer-rma-admin'],
-  ['asana', '/Users/arno/tools/asana'],
-  ['nuxtpolymarket', '/Users/arno/tools/nuxtpolymarket'],
-  ['proforto', '/Users/arno/sites/proforto'],
-  ['de-wit-schijndel', '/Users/arno/sites/de-wit-schijndel'],
-  ['sanitairkamer', '/Users/arno/sites/sanitairkamer'],
-  ['bigbridge-api', '/Users/arno/sites/bigbridge-api'],
-  ['magento-toolbox', '/Users/arno/tools/magento-toolbox'],
-  ['dotfiles', '/Users/arno/dotfiles']
+  ['gitui', '/Users/robin/tools/gitui'],
+  ['storefront-returns-admin', '/Users/robin/sites/storefront-returns-admin'],
+  ['tracker', '/Users/robin/tools/tracker'],
+  ['marketwatch', '/Users/robin/tools/marketwatch'],
+  ['fieldwork', '/Users/robin/sites/fieldwork'],
+  ['harbour-lights', '/Users/robin/sites/harbour-lights'],
+  ['storefront', '/Users/robin/sites/storefront'],
+  ['northwind-api', '/Users/robin/sites/northwind-api'],
+  ['catalog-toolbox', '/Users/robin/tools/catalog-toolbox'],
+  ['dotfiles', '/Users/robin/dotfiles']
 ] as const
 
 const CARDS = [
@@ -93,9 +93,20 @@ function summary() {
       favourite_word: 'fix',
       favourite_count: 214
     },
-    author: 'arno@bigbridge.nl'
+    author: 'robin@example.com'
   }
 }
+
+/**
+ * How long the read is held back, from `&slow=1200` on the address.
+ *
+ * The outline the page draws while it waits is the hardest part of it to look
+ * at, because on a real machine it is gone in under a second. Off by default:
+ * everything else here wants the answers straight away.
+ */
+const HOLD = Number(new URLSearchParams(location.search).get('slow') ?? 0)
+
+const wait = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms))
 
 /** Answers the commands this page sends; everything else is empty. */
 function install() {
@@ -103,7 +114,10 @@ function install() {
     {}) as Record<string, unknown>
   let answer = summary()
   internals.invoke = async (cmd: string, args?: Record<string, unknown>) => {
-    if (cmd === 'home_summary') return answer
+    if (cmd === 'home_summary') {
+      if (HOLD) await wait(HOLD)
+      return answer
+    }
     if (cmd === 'project_forget') {
       const path = String(args?.path ?? '')
       answer = { ...answer, repos: answer.repos.filter((one) => one.path !== path) }
@@ -120,8 +134,8 @@ function install() {
             name: 'Work',
             forge: 'none',
             host: '',
-            git_name: 'Arno Visker',
-            git_email: 'arno@bigbridge.nl',
+            git_name: 'Robin Vale',
+            git_email: 'robin@example.com',
             ssh_key: null,
             signing_key: null,
             signing_format: null,

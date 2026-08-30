@@ -34,7 +34,7 @@ function summary(over: Partial<HomeSummary> = {}): HomeSummary {
       favourite_word: 'fix',
       favourite_count: 30
     },
-    author: 'arno@example.com',
+    author: 'robin@example.com',
     ...over
   }
 }
@@ -56,8 +56,8 @@ beforeEach(async () => {
             name: 'Work',
             forge: 'none',
             host: '',
-            git_name: 'Arno Visker',
-            git_email: 'arno@example.com',
+            git_name: 'Robin Vale',
+            git_email: 'robin@example.com',
             ssh_key: null,
             signing_key: null,
             signing_format: null,
@@ -73,6 +73,10 @@ beforeEach(async () => {
     return null
   })
   await config.load()
+  // The store outlives a mount, so a test that wants the first paint has to
+  // start from one: `stale` only says the answer is old, not that there is none.
+  home.store.summary = null
+  home.store.error = null
   home.stale()
 })
 
@@ -152,6 +156,84 @@ describe('the home tab', () => {
     await second.find('[title="Read everything again"]').trigger('click')
     await flushPromises()
     expect(asked.mock.calls.filter(([cmd]) => cmd === 'home_summary')).toHaveLength(2)
+  })
+})
+
+/**
+ * Everything on the page comes out of one command, and the page used to spend
+ * the wait saying things that were not true yet — no repositories, no year,
+ * nothing waiting — and then grow by a screenful in a single frame. Drawn in
+ * outline it arrives at close to its finished height and fills in.
+ */
+describe('the first paint', () => {
+  it('draws the lists in outline before the read lands', () => {
+    // Deliberately not flushed: this is the paint that happens while the one
+    // command behind the page is still out.
+    const wrapper = show()
+
+    expect(wrapper.findAll('.ghost-row')).toHaveLength(6)
+    expect(wrapper.findAll('.ghost-line')).toHaveLength(3)
+    // None of the words it cannot know yet.
+    expect(wrapper.text()).not.toContain('0 repositories')
+    expect(wrapper.text()).not.toContain('Nothing waiting')
+    expect(wrapper.text()).not.toContain('Nothing opened yet')
+  })
+
+  /**
+   * The band is the tallest thing above the two lists. Drawn only once the
+   * days arrived, it appeared on top of whatever you were about to click.
+   */
+  it('holds the year open as a grid of quiet days', () => {
+    const wrapper = show()
+
+    expect(wrapper.findAll('.week')).toHaveLength(53)
+    expect(wrapper.findAll('.cell')).toHaveLength(371)
+    expect(wrapper.findAll('.cell.l1, .cell.l2, .cell.l3, .cell.l4')).toHaveLength(0)
+  })
+
+  it('has nothing to say about a day in an outline', async () => {
+    const wrapper = show()
+
+    await wrapper.findAll('.cell')[0]!.trigger('mouseenter')
+    expect(wrapper.find('.bubble').exists()).toBe(false)
+  })
+
+  it('puts the real thing in its place once it lands', async () => {
+    const wrapper = show()
+    await flushPromises()
+
+    expect(wrapper.findAll('.ghost-row')).toHaveLength(0)
+    expect(wrapper.findAll('.ghost-line')).toHaveLength(0)
+    expect(wrapper.findAll('.row')).toHaveLength(3)
+    expect(wrapper.text()).toContain('3 repositories')
+  })
+
+  /**
+   * Coming back to the tab has last minute's answer on screen already.
+   * Replacing something true with a row of grey bars to say it is being
+   * checked again is a step backwards.
+   */
+  it('leaves what is on screen alone while it is being read again', async () => {
+    const wrapper = show()
+    await flushPromises()
+
+    // Held open, so the refresh is still out while the page is looked at.
+    let settle = () => {}
+    asked.mockImplementationOnce(async () => {
+      await new Promise<void>((resolve) => {
+        settle = resolve
+      })
+      return summary()
+    })
+
+    await wrapper.find('[title="Read everything again"]').trigger('click')
+    expect(home.store.loading).toBe(true)
+    expect(wrapper.findAll('.ghost-row')).toHaveLength(0)
+    expect(wrapper.findAll('.row')).toHaveLength(3)
+
+    settle()
+    await flushPromises()
+    expect(wrapper.findAll('.row')).toHaveLength(3)
   })
 })
 

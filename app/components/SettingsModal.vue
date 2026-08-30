@@ -572,7 +572,7 @@ onMounted(async () => {
             <div class="two">
               <label class="field">
                 <span class="label">Commit name</span>
-                <input v-model="editing.git_name" type="text" placeholder="Arno Visker" />
+                <input v-model="editing.git_name" type="text" placeholder="Robin Vale" />
               </label>
               <label class="field">
                 <span class="label">Commit email</span>

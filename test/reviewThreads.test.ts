@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest'
 import { foldThreads, threadKey } from '../app/composables/reviewThreads'
 import type { RComment } from '../app/composables/useReview'
 
-const who = { login: 'arno', name: 'Arno', avatar: null }
+const who = { login: 'robin', name: 'Robin', avatar: null }
 
 function comment(over: Partial<RComment>): RComment {
   return {
