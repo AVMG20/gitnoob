@@ -17,7 +17,7 @@ const row = (oid: string, summary: string): GraphRow => ({
   oid,
   short: oid.slice(0, 7),
   summary,
-  author: 'Arno Visker',
+  author: 'Robin Vale',
   email: 'a@b.c',
   time: Math.floor(Date.now() / 1000) - 60,
   parents: [],
@@ -38,7 +38,7 @@ const Host = {
 beforeEach(() => {
   asked.mockReset()
   asked.mockImplementation(async () => null)
-  git.store.repo = { path: '/repo', name: 'repo', head: 'main', detached: false, author: 'Arno Visker' } as never
+  git.store.repo = { path: '/repo', name: 'repo', head: 'main', detached: false, author: 'Robin Vale' } as never
   git.store.rows = [row('aaaaaaa1', 'Show the inherited email subject'), row('bbbbbbb2', 'Merged into staging')]
   git.store.status = {
     staged: [{ path: 'a.ts', kind: 'modified' }],

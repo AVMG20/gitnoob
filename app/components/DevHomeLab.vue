@@ -17,16 +17,16 @@ const config = useConfig()
 const ready = ref(false)
 
 const PROJECTS = [
-  ['gitui', '/Users/arno/tools/gitui'],
-  ['sanitairkamer-rma-admin', '/Users/arno/sites/sanitairkamer-rma-admin'],
-  ['asana', '/Users/arno/tools/asana'],
-  ['nuxtpolymarket', '/Users/arno/tools/nuxtpolymarket'],
-  ['proforto', '/Users/arno/sites/proforto'],
-  ['de-wit-schijndel', '/Users/arno/sites/de-wit-schijndel'],
-  ['sanitairkamer', '/Users/arno/sites/sanitairkamer'],
-  ['bigbridge-api', '/Users/arno/sites/bigbridge-api'],
-  ['magento-toolbox', '/Users/arno/tools/magento-toolbox'],
-  ['dotfiles', '/Users/arno/dotfiles']
+  ['gitui', '/Users/robin/tools/gitui'],
+  ['storefront-returns-admin', '/Users/robin/sites/storefront-returns-admin'],
+  ['tracker', '/Users/robin/tools/tracker'],
+  ['marketwatch', '/Users/robin/tools/marketwatch'],
+  ['fieldwork', '/Users/robin/sites/fieldwork'],
+  ['harbour-lights', '/Users/robin/sites/harbour-lights'],
+  ['storefront', '/Users/robin/sites/storefront'],
+  ['northwind-api', '/Users/robin/sites/northwind-api'],
+  ['catalog-toolbox', '/Users/robin/tools/catalog-toolbox'],
+  ['dotfiles', '/Users/robin/dotfiles']
 ] as const
 
 const CARDS = [
@@ -93,7 +93,7 @@ function summary() {
       favourite_word: 'fix',
       favourite_count: 214
     },
-    author: 'arno@bigbridge.nl'
+    author: 'robin@example.com'
   }
 }
 
@@ -134,8 +134,8 @@ function install() {
             name: 'Work',
             forge: 'none',
             host: '',
-            git_name: 'Arno Visker',
-            git_email: 'arno@bigbridge.nl',
+            git_name: 'Robin Vale',
+            git_email: 'robin@example.com',
             ssh_key: null,
             signing_key: null,
             signing_format: null,

@@ -1997,21 +1997,21 @@ mod tests {
         };
 
         expect(
-            "git@github.com:arno/gitnoob.git",
+            "git@github.com:robin/gitnoob.git",
             "github.com",
-            "arno",
+            "robin",
             "gitnoob",
         );
         expect(
-            "https://github.com/arno/gitnoob.git",
+            "https://github.com/robin/gitnoob.git",
             "github.com",
-            "arno",
+            "robin",
             "gitnoob",
         );
         expect(
-            "https://github.com/arno/gitnoob",
+            "https://github.com/robin/gitnoob",
             "github.com",
-            "arno",
+            "robin",
             "gitnoob",
         );
         expect(
@@ -2021,8 +2021,8 @@ mod tests {
             "app",
         );
         expect(
-            "git@gitlab.bigbridge.nl:team/deep/nest/app.git",
-            "gitlab.bigbridge.nl",
+            "git@gitlab.example.com:team/deep/nest/app.git",
+            "gitlab.example.com",
             "team/deep/nest",
             "app",
         );
@@ -2033,9 +2033,9 @@ mod tests {
             "app",
         );
         expect(
-            "https://user:token@github.com/arno/gitnoob.git",
+            "https://user:token@github.com/robin/gitnoob.git",
             "github.com",
-            "arno",
+            "robin",
             "gitnoob",
         );
 
@@ -2070,20 +2070,20 @@ mod tests {
     fn reads_a_person_from_either_forge() {
         // GitHub: a login and nothing else.
         let (read, picture) = read_person(&serde_json::json!({
-            "login": "arno",
+            "login": "robin",
             "avatar_url": "https://example.test/a.png"
         }));
-        assert_eq!(read.login, "arno");
-        assert_eq!(read.name, "arno", "with no real name the login stands in");
+        assert_eq!(read.login, "robin");
+        assert_eq!(read.name, "robin", "with no real name the login stands in");
         assert_eq!(picture, "https://example.test/a.png");
 
         // GitLab: a username and a display name.
         let (read, _) = read_person(&serde_json::json!({
-            "username": "arno",
-            "name": "Arno Visker"
+            "username": "robin",
+            "name": "Robin Vale"
         }));
-        assert_eq!(read.login, "arno");
-        assert_eq!(read.name, "Arno Visker");
+        assert_eq!(read.login, "robin");
+        assert_eq!(read.name, "Robin Vale");
 
         // Anybody the forge lists without an account name is not somebody to
         // show, and there is no picture to go looking for either.
@@ -2103,8 +2103,8 @@ mod tests {
             "https://github.acme.dev/api/v3"
         );
         assert_eq!(
-            api_base(ForgeKind::GitLab, "gitlab.bigbridge.nl"),
-            "https://gitlab.bigbridge.nl/api/v4"
+            api_base(ForgeKind::GitLab, "gitlab.example.com"),
+            "https://gitlab.example.com/api/v4"
         );
     }
 
@@ -2117,7 +2117,7 @@ mod tests {
     fn reads_github_diff_comments_with_their_anchor() {
         // The modern shape: a named side and a line on it.
         let modern = github_diff_comment(&serde_json::json!({
-            "id": 7, "user": { "login": "arno" },
+            "id": 7, "user": { "login": "robin" },
             "body": "looks off", "created_at": "2026-01-02T03:04:05Z",
             "path": "app/main.rs", "side": "RIGHT", "line": 42
         }));
@@ -2128,7 +2128,7 @@ mod tests {
 
         // LEFT is the old half of the diff, whatever its line.
         let left = github_diff_comment(&serde_json::json!({
-            "id": 8, "user": { "login": "arno" }, "body": "",
+            "id": 8, "user": { "login": "robin" }, "body": "",
             "path": "a", "side": "LEFT", "line": 3
         }));
         assert_eq!(left.side.as_deref(), Some("old"));
@@ -2136,7 +2136,7 @@ mod tests {
         // An older answer names no side; a comment with only an original line
         // was written against one that has since gone.
         let legacy = github_diff_comment(&serde_json::json!({
-            "id": 9, "user": { "login": "arno" }, "body": "",
+            "id": 9, "user": { "login": "robin" }, "body": "",
             "path": "a", "original_line": 5
         }));
         assert_eq!(legacy.side.as_deref(), Some("old"));
@@ -2154,18 +2154,18 @@ mod tests {
     fn reads_gitlab_notes_and_leaves_system_ones() {
         // A conversation note: no position, no path.
         let talk = gitlab_note(&serde_json::json!({
-            "id": 1, "author": { "username": "arno", "name": "Arno" },
+            "id": 1, "author": { "username": "robin", "name": "Robin" },
             "body": "hello", "system": false,
             "discussion_id": "abc"
         }))
         .expect("kept");
         assert_eq!(talk.kind, "issue");
         assert_eq!(talk.path, None);
-        assert_eq!(talk.author.name, "Arno");
+        assert_eq!(talk.author.name, "Robin");
 
         // A diff-anchored one lands on the side its line says.
         let diff = gitlab_note(&serde_json::json!({
-            "id": 2, "author": { "username": "arno" },
+            "id": 2, "author": { "username": "robin" },
             "body": "here?", "position": {
                 "new_path": "src/a.ts", "old_path": "src/a.ts",
                 "new_line": 12
@@ -2179,7 +2179,7 @@ mod tests {
 
         // A deletion answered from the old side alone.
         let old_side = gitlab_note(&serde_json::json!({
-            "id": 3, "author": { "username": "arno" },
+            "id": 3, "author": { "username": "robin" },
             "body": "gone", "position": {
                 "new_path": "f", "old_path": "f", "old_line": 4
             }
@@ -2395,7 +2395,7 @@ mod tests {
     fn reads_whether_a_thread_is_settled() {
         // GitLab says so on the note itself, along with the discussion it is in.
         let note = gitlab_note(&serde_json::json!({
-            "id": 5, "author": { "username": "arno" }, "body": "still?",
+            "id": 5, "author": { "username": "robin" }, "body": "still?",
             "discussion_id": "d9", "resolvable": true, "resolved": true,
             "position": { "new_path": "a.ts", "old_path": "a.ts", "new_line": 2, "outdated": true }
         }))
@@ -2407,20 +2407,20 @@ mod tests {
 
         // A conversation note is not a thread anybody settles.
         let talk = gitlab_note(&serde_json::json!({
-            "id": 6, "author": { "username": "arno" }, "body": "hi", "discussion_id": "d1"
+            "id": 6, "author": { "username": "robin" }, "body": "hi", "discussion_id": "d1"
         }))
         .expect("kept");
         assert!(!talk.resolvable);
 
         // GitHub leaves both to the GraphQL pass, and a live line is not old.
         let fresh = github_diff_comment(&serde_json::json!({
-            "id": 7, "user": { "login": "arno" }, "body": "",
+            "id": 7, "user": { "login": "robin" }, "body": "",
             "path": "a", "side": "RIGHT", "line": 4
         }));
         assert!(!fresh.resolvable);
         assert!(!fresh.outdated);
         let gone = github_diff_comment(&serde_json::json!({
-            "id": 8, "user": { "login": "arno" }, "body": "",
+            "id": 8, "user": { "login": "robin" }, "body": "",
             "path": "a", "original_line": 4
         }));
         assert!(gone.outdated, "no line left to stand on");

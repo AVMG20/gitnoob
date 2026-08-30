@@ -73,11 +73,11 @@ describe('renderMarkdown', () => {
   })
 
   it('marks emphasis, deletions, mentions and references', () => {
-    const html = renderMarkdown('**bold** and *em* and ~~gone~~\n@arno see #36')
+    const html = renderMarkdown('**bold** and *em* and ~~gone~~\n@robin see #36')
     expect(html).toContain('<strong>bold</strong>')
     expect(html).toContain('<em>em</em>')
     expect(html).toContain('<s>gone</s>')
-    expect(html).toContain('<span class="mention">@arno</span>')
+    expect(html).toContain('<span class="mention">@robin</span>')
     expect(html).toContain('<span class="ref">#36</span>')
   })
 
@@ -91,8 +91,8 @@ describe('renderMarkdown', () => {
   })
 
   it('leaves a mention alone inside code, inside a link and inside a url', () => {
-    expect(renderMarkdown('`@arno`')).not.toContain('class="mention"')
-    expect(renderMarkdown('[@arno](https://example.com/arno)')).not.toContain('class="mention"')
+    expect(renderMarkdown('`@robin`')).not.toContain('class="mention"')
+    expect(renderMarkdown('[@robin](https://example.com/robin)')).not.toContain('class="mention"')
     expect(renderMarkdown('https://example.com/x#36')).not.toContain('class="ref"')
     // `#` in front of anything but a number is a heading mark or a fragment,
     // never a request number.

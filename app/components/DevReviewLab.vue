@@ -88,13 +88,13 @@ onMounted(() => {
     kind: 'github',
     host: 'github.com',
     has_token: true,
-    user: 'arno',
-    slug: { host: 'github.com', owner: 'bigbridge', name: 'nuxtpolymarket' },
+    user: 'robin',
+    slug: { host: 'github.com', owner: 'northwind', name: 'marketwatch' },
     error: null
   }
-  forge.store.me = { login: 'arno', id: 1, avatar: null }
+  forge.store.me = { login: 'robin', id: 1, avatar: null }
   forge.store.members = [
-    { id: 1, login: 'arno', name: 'Arno Visker' },
+    { id: 1, login: 'robin', name: 'Robin Vale' },
     { id: 2, login: 'nadia', name: 'Nadia Petrova' },
     { id: 3, login: 'kai', name: 'Kai Moens' }
   ]
@@ -107,7 +107,7 @@ onMounted(() => {
     draft: false,
     source_branch: 'feature/review-page',
     target_branch: 'main',
-    url: 'https://github.com/bigbridge/nuxtpolymarket/pull/68',
+    url: 'https://github.com/northwind/marketwatch/pull/68',
     updated_at: ago(4),
     is_current: false,
     head_sha: 'f'.repeat(40),
@@ -174,7 +174,7 @@ onMounted(() => {
     state: 'open',
     draft: false,
     author: who('kai', 'Kai Moens'),
-    assignees: [who('arno', 'Arno Visker')],
+    assignees: [who('robin', 'Robin Vale')],
     reviewers: [who('nadia', 'Nadia Petrova'), who('sam', 'Sam Okafor')],
     labels: [
       { name: 'enhancement', color: '#a2eeef' },
@@ -260,7 +260,7 @@ onMounted(() => {
     },
     {
       id: 5,
-      author: who('arno', 'Arno Visker'),
+      author: who('robin', 'Robin Vale'),
       body: 'This one is settled — the flat `.values()` is fine.',
       created_at: ago(12),
       updated_at: ago(12),
@@ -292,7 +292,7 @@ onMounted(() => {
   store.commits = [
     { sha: 'f'.repeat(40), message: 'Give the review page a header with a shape', author: 'Kai Moens', created_at: ago(50) },
     { sha: 'e'.repeat(40), message: 'Read diff threads in the conversation too', author: 'Kai Moens', created_at: ago(40) },
-    { sha: 'd'.repeat(40), message: 'Ask the forge how the review stands', author: 'Arno Visker', created_at: ago(9) }
+    { sha: 'd'.repeat(40), message: 'Ask the forge how the review stands', author: 'Robin Vale', created_at: ago(9) }
   ]
 
   store.status = {

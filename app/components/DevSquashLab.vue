@@ -22,7 +22,7 @@ import { useConfig } from '~/composables/useConfig'
 const git = useGit()
 const config = useConfig()
 
-const author = 'Arno Visker'
+const author = 'Robin Vale'
 const now = Math.floor(Date.now() / 1000)
 
 function commit(oid: string, summary: string, ago: number, over: Partial<GraphRow> = {}): GraphRow {
@@ -31,7 +31,7 @@ function commit(oid: string, summary: string, ago: number, over: Partial<GraphRo
     short: oid.slice(0, 7),
     summary,
     author,
-    email: 'arno@example.com',
+    email: 'robin@example.com',
     time: now - ago,
     parents: [],
     lane: 0,

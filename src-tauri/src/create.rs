@@ -176,9 +176,9 @@ mod tests {
 
         // A path on this machine is a path, not an address: the colon after a
         // drive letter separates nothing.
-        assert_eq!(folder_name("C:\\Users\\arno\\src\\widget"), "widget");
-        assert_eq!(folder_name("C:/Users/arno/src/widget/"), "widget");
-        assert_eq!(folder_name("/home/arno/src/widget"), "widget");
+        assert_eq!(folder_name("C:\\Users\\robin\\src\\widget"), "widget");
+        assert_eq!(folder_name("C:/Users/robin/src/widget/"), "widget");
+        assert_eq!(folder_name("/home/robin/src/widget"), "widget");
         assert_eq!(folder_name("../widget"), "widget");
         assert_eq!(folder_name("file:///C:/src/widget.git"), "widget");
     }

@@ -34,7 +34,7 @@ function summary(over: Partial<HomeSummary> = {}): HomeSummary {
       favourite_word: 'fix',
       favourite_count: 30
     },
-    author: 'arno@example.com',
+    author: 'robin@example.com',
     ...over
   }
 }
@@ -56,8 +56,8 @@ beforeEach(async () => {
             name: 'Work',
             forge: 'none',
             host: '',
-            git_name: 'Arno Visker',
-            git_email: 'arno@example.com',
+            git_name: 'Robin Vale',
+            git_email: 'robin@example.com',
             ssh_key: null,
             signing_key: null,
             signing_format: null,

@@ -22,7 +22,7 @@ const preview = (over: Partial<ResetPreview> = {}): ResetPreview => ({
       oid: 'b'.repeat(40),
       short: 'bbbbbbb',
       summary: 'Half a refactor',
-      author: 'Arno Visker',
+      author: 'Robin Vale',
       time: Math.floor(Date.now() / 1000) - 600
     } as never
   ],

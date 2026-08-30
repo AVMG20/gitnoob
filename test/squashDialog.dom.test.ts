@@ -19,7 +19,7 @@ const folded = (over: Partial<Folded> = {}): Folded => ({
   short: 'aaaaaaa',
   summary: 'Add the parser',
   message: 'Add the parser',
-  author: 'Arno Visker',
+  author: 'Robin Vale',
   time: Math.floor(Date.now() / 1000) - 3600,
   pushed: false,
   ...over

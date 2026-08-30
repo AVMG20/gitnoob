@@ -42,7 +42,7 @@ let reviewState = 'open'
 let draft = false
 let labels = [{ name: 'enhancement', color: '#a2eeef' }]
 let assignees: { login: string; name: string; avatar: string | null }[] = []
-let reviewers = [who('arno', 'Arno Visker')]
+let reviewers = [who('robin', 'Robin Vale')]
 let status: ReviewStatus
 let resolved: Record<string, boolean> = {}
 let calls: { cmd: string; args: Record<string, unknown> }[] = []
@@ -146,7 +146,7 @@ vi.mock('@tauri-apps/api/core', () => ({
         ]
       case 'forge_post_comment':
         comments.push(
-          remark({ id: 1000 + comments.length, author: who('arno', 'Arno Visker'), body: String(args.body) })
+          remark({ id: 1000 + comments.length, author: who('robin', 'Robin Vale'), body: String(args.body) })
         )
         return null
       case 'forge_reply_comment': {
@@ -154,7 +154,7 @@ vi.mock('@tauri-apps/api/core', () => ({
         comments.push(
           remark({
             id: 1000 + comments.length,
-            author: who('arno', 'Arno Visker'),
+            author: who('robin', 'Robin Vale'),
             body: String(args.body),
             kind: parent?.kind ?? 'issue',
             path: parent?.path ?? null,
@@ -169,7 +169,7 @@ vi.mock('@tauri-apps/api/core', () => ({
         comments.push(
           remark({
             id: 1000 + comments.length,
-            author: who('arno', 'Arno Visker'),
+            author: who('robin', 'Robin Vale'),
             body: String(args.body),
             kind: 'diff',
             path: String(args.path),
@@ -187,7 +187,7 @@ vi.mock('@tauri-apps/api/core', () => ({
         comments.push(
           remark({
             id: 1000 + comments.length,
-            author: who('arno', 'Arno Visker'),
+            author: who('robin', 'Robin Vale'),
             body: String(args.body || 'Approved.')
           })
         )
@@ -196,7 +196,7 @@ vi.mock('@tauri-apps/api/core', () => ({
           verdicts: [
             ...status.verdicts,
             {
-              author: who('arno', 'Arno Visker'),
+              author: who('robin', 'Robin Vale'),
               state: args.event === 'approve' ? 'approved' : 'changes_requested',
               submitted_at: now,
               body: String(args.body ?? '')
@@ -243,7 +243,7 @@ beforeEach(() => {
   resolved = {}
   labels = [{ name: 'enhancement', color: '#a2eeef' }]
   assignees = []
-  reviewers = [who('arno', 'Arno Visker')]
+  reviewers = [who('robin', 'Robin Vale')]
   status = {
     checks: [
       { name: 'build', state: 'success', description: '', url: 'https://ci.test/1' },
@@ -274,7 +274,7 @@ beforeEach(() => {
     }),
     remark({
       id: 13,
-      author: who('arno', 'Arno Visker'),
+      author: who('robin', 'Robin Vale'),
       body: 'Because `b` is next.',
       kind: 'diff',
       path: 'src/review/pane.ts',
@@ -292,15 +292,15 @@ beforeEach(() => {
     kind: 'github',
     host: 'github.com',
     has_token: true,
-    user: 'arno',
+    user: 'robin',
     slug: { host: 'github.com', owner: 'me', name: 'repo' },
     error: null
   }
-  forge.store.me = { login: 'arno', id: 1, avatar: null }
+  forge.store.me = { login: 'robin', id: 1, avatar: null }
   forge.store.details = {}
   forge.store.detailsFor = null
   forge.store.members = [
-    { id: 1, login: 'arno', name: 'Arno Visker' },
+    { id: 1, login: 'robin', name: 'Robin Vale' },
     { id: 2, login: 'nadia', name: 'Nadia Petrova' }
   ]
   forge.store.membersFor = 'github@github.com/me/repo'
@@ -827,7 +827,7 @@ describe('the review sidebar', () => {
     const wrapper = await open()
     const sidebar = wrapper.find('[data-testid="review-sidebar"]')
     // The one asked, and the one who answered without being asked.
-    expect(sidebar.text()).toContain('Arno Visker')
+    expect(sidebar.text()).toContain('Robin Vale')
     expect(sidebar.text()).toContain('Nadia Petrova')
     expect(sidebar.text()).toContain('waiting')
   })
