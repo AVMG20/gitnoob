@@ -1096,7 +1096,7 @@ fn a_first_push_sets_the_upstream_and_lands_on_the_remote() {
     let bare = bare_origin(&sandbox, "push-first");
     let state = sandbox.state();
 
-    let out = remote::push(&state, "origin", "main", false, true).unwrap();
+    let out = remote::push(&state, "origin", "main", false, true, None).unwrap();
     assert!(out.ok, "push failed: {}", out.stderr);
     // The command is the log's teaching, so it has to read the way it would be
     // typed — and it must never carry a bare --force.
@@ -1125,7 +1125,7 @@ fn a_push_that_would_rewrite_history_is_refused_without_force() {
     let bare = bare_origin(&sandbox, "push-refused");
     let state = sandbox.state();
     assert!(
-        remote::push(&state, "origin", "main", false, true)
+        remote::push(&state, "origin", "main", false, true, None)
             .unwrap()
             .ok
     );
@@ -1135,7 +1135,7 @@ fn a_push_that_would_rewrite_history_is_refused_without_force() {
     sandbox.git(&["reset", "-q", "--hard", "HEAD~1"]);
     sandbox.commit("a.txt", "different\n", "Rewritten");
 
-    let refused = remote::push(&state, "origin", "main", false, false).unwrap();
+    let refused = remote::push(&state, "origin", "main", false, false, None).unwrap();
     assert!(!refused.ok, "a non-fast-forward push should be refused");
     assert_eq!(
         remote_tip(&bare, "main"),
@@ -1152,7 +1152,7 @@ fn a_force_push_uses_a_lease_and_takes_the_branch_back() {
     let bare = bare_origin(&sandbox, "push-force");
     let state = sandbox.state();
     assert!(
-        remote::push(&state, "origin", "main", false, true)
+        remote::push(&state, "origin", "main", false, true, None)
             .unwrap()
             .ok
     );
@@ -1160,7 +1160,7 @@ fn a_force_push_uses_a_lease_and_takes_the_branch_back() {
     sandbox.git(&["reset", "-q", "--hard", "HEAD~1"]);
     sandbox.commit("a.txt", "different\n", "Rewritten");
 
-    let forced = remote::push(&state, "origin", "main", true, false).unwrap();
+    let forced = remote::push(&state, "origin", "main", true, false, None).unwrap();
     assert!(forced.ok, "force push failed: {}", forced.stderr);
     assert!(
         forced.argv.contains(&"--force-with-lease".to_string()),
@@ -1186,7 +1186,7 @@ fn a_force_push_is_refused_when_the_remote_moved_behind_our_back() {
     let bare = bare_origin(&sandbox, "push-lease");
     let state = sandbox.state();
     assert!(
-        remote::push(&state, "origin", "main", false, true)
+        remote::push(&state, "origin", "main", false, true, None)
             .unwrap()
             .ok
     );
@@ -1213,7 +1213,7 @@ fn a_force_push_is_refused_when_the_remote_moved_behind_our_back() {
     let theirs_tip = remote_tip(&bare, "main").unwrap();
 
     sandbox.commit("a.txt", "ours\n", "Our commit");
-    let refused = remote::push(&state, "origin", "main", true, false).unwrap();
+    let refused = remote::push(&state, "origin", "main", true, false, None).unwrap();
     assert!(
         !refused.ok,
         "the lease should refuse a force push over a remote we have not seen"
@@ -2494,13 +2494,9 @@ fn pull_stashes_local_work_and_puts_it_back() {
     // Local edit that would make a plain pull refuse.
     sandbox.write("a.txt", "one\nlocal edit\n");
     let state = sandbox.state();
-    let output = remote::pull(&state, false).unwrap();
+    let output = remote::pull(&state, Some(false)).unwrap();
 
-    assert!(
-        output.ok,
-        "pull failed: {} {}",
-        output.stdout, output.stderr
-    );
+    assert!(output.ok, "pull failed: {}", output.message);
     // Both the remote commit and the local edit are present.
     assert!(sandbox.root.join("remote-side.txt").exists());
     assert_eq!(
@@ -3997,8 +3993,8 @@ fn pulling_another_branch_never_touches_the_working_tree() {
     sandbox.git(&["add", "mine.txt"]);
 
     let state = sandbox.state();
-    let out = remote::pull_branch(&state, "topic", false).unwrap();
-    assert!(out.ok, "unexpected: {} {}", out.stdout, out.stderr);
+    let out = remote::pull_branch(&state, "topic", Some(false)).unwrap();
+    assert!(out.ok, "unexpected: {}", out.message);
 
     // topic moved, and nothing else did.
     assert_eq!(
@@ -4053,8 +4049,8 @@ fn pulling_a_diverged_branch_visits_it_and_comes_back() {
     sandbox.write("mine.txt", "half-finished\n");
 
     let state = sandbox.state();
-    let out = remote::pull_branch(&state, "topic", false).unwrap();
-    assert!(out.ok, "unexpected: {} {}", out.stdout, out.stderr);
+    let out = remote::pull_branch(&state, "topic", Some(false)).unwrap();
+    assert!(out.ok, "unexpected: {}", out.message);
 
     // Back where we started, with the work in progress back in place.
     assert_eq!(refs::describe(&state).unwrap().head, "main");
@@ -4096,12 +4092,16 @@ fn a_pull_that_cannot_merge_leaves_everything_as_it_was() {
     sandbox.write("mine.txt", "half-finished\n");
 
     let state = sandbox.state();
-    let out = remote::pull_branch(&state, "topic", false).unwrap();
+    let out = remote::pull_branch(&state, "topic", Some(false)).unwrap();
     assert!(!out.ok, "the merge cannot succeed");
     assert!(
-        out.stderr.contains("left as it was"),
+        out.message.contains("left as it was"),
         "should say so plainly: {}",
-        out.stderr
+        out.message
+    );
+    assert!(
+        out.conflicts.is_empty(),
+        "nothing to resolve: the merge was abandoned before we came home"
     );
 
     // The point of the exercise: we are home, nothing is half-merged, and the
@@ -4129,7 +4129,7 @@ fn pulling_a_branch_with_no_upstream_says_so() {
     let sandbox = Sandbox::new("pullnoupstream");
     sandbox.commit("a.txt", "one\n", "Base");
     sandbox.git(&["branch", "orphan"]);
-    let error = remote::pull_branch(&sandbox.state(), "orphan", false).unwrap_err();
+    let error = remote::pull_branch(&sandbox.state(), "orphan", Some(false)).unwrap_err();
     assert!(error.contains("not tracking"), "unexpected: {error}");
 }
 
@@ -4342,16 +4342,16 @@ fn pulling_a_diverged_branch_does_not_ask_how_to_reconcile() {
     // Git refuses a bare `git pull` across a divergence unless `pull.rebase` is
     // configured. Nobody opening this app has configured it.
     let state = sandbox.state();
-    let out = remote::pull(&state, false).unwrap();
+    let out = remote::pull(&state, None).unwrap();
     assert!(
         out.ok,
         "a merging pull should not need `pull.rebase` set: {}",
-        out.stderr
+        out.message
     );
     assert!(
-        !out.stderr.contains("reconcile divergent"),
+        !out.message.contains("reconcile divergent"),
         "git should not be left to ask: {}",
-        out.stderr
+        out.message
     );
 }
 
@@ -4645,33 +4645,47 @@ fn merging_into_the_branch_you_are_on_is_an_ordinary_merge() {
     );
 }
 
+/// A merge made on a visit to another branch that runs into conflicts is
+/// abandoned there and then. Leaving the user on a branch they did not ask to
+/// be on, mid-merge, with their own changes hidden in a stash, is the surprise
+/// the whole trip exists to avoid; the message says where to do it instead.
 #[test]
-fn a_conflicting_merge_leaves_you_on_the_branch_that_needs_resolving() {
+fn a_conflicting_merge_into_another_branch_is_abandoned_and_you_come_home() {
     let sandbox = Sandbox::new("stuck");
     sandbox.commit("a.txt", "base\n", "First");
     sandbox.git(&["checkout", "-q", "-b", "side"]);
     sandbox.commit("a.txt", "their version\n", "On side");
     sandbox.git(&["checkout", "-q", "main"]);
     sandbox.commit("a.txt", "our version\n", "On main");
+    sandbox.write("notes.txt", "half-finished\n");
 
     let state = sandbox.state();
     let outcome = remote::merge_into(&state, "main", "side", false).unwrap();
 
     assert!(!outcome.ok);
-    assert_eq!(outcome.conflicts, vec!["a.txt".to_string()]);
-    assert_eq!(
-        current(&state),
-        "side",
-        "a half-done merge cannot be carried off the branch"
+    assert!(
+        outcome.conflicts.is_empty(),
+        "nothing to resolve: the merge was abandoned before we came home"
     );
     assert!(
-        outcome.message.contains("Resolve it here"),
+        outcome.message.contains("would conflict in a.txt")
+            && outcome.message.contains("side was left as it was"),
         "{}",
         outcome.message
     );
-
-    // And the way out is the one the resolver offers.
-    remote::abort_merge(&state).unwrap();
+    assert_eq!(current(&state), "main");
+    assert!(!remote::in_progress(&state).unwrap().merging);
+    assert_eq!(
+        sandbox.git(&["log", "-1", "--format=%s", "side"]).trim(),
+        "On side",
+        "side must be exactly as it was"
+    );
+    assert_eq!(
+        std::fs::read_to_string(sandbox.root.join("notes.txt")).unwrap(),
+        "half-finished\n",
+        "the open work is back where it was"
+    );
+    assert!(sandbox.git(&["stash", "list"]).trim().is_empty());
 }
 
 #[test]
@@ -6167,4 +6181,348 @@ fn picking_a_stash_that_is_not_there_is_refused_before_anything_happens() {
     // Nothing was applied, and nothing dropped.
     assert_eq!(sandbox.git(&["stash", "list"]).lines().count(), 3);
     assert!(!sandbox.root.join("three.txt").exists());
+}
+
+// --- undo keeps uncommitted work ---------------------------------------------
+
+/// The undo of any step that moves the working tree used to be `reset --hard`,
+/// which takes every open change with it — an afternoon's edits in a file the
+/// merge never touched, gone on one click.
+#[test]
+fn undoing_a_merge_keeps_uncommitted_work_in_other_files() {
+    let sandbox = Sandbox::new("undokeep");
+    sandbox.commit("a.txt", "one\n", "Base");
+    sandbox.commit("b.txt", "b\n", "Add b");
+    sandbox.git(&["checkout", "-q", "-b", "topic"]);
+    sandbox.commit("t.txt", "topic\n", "Topic");
+    sandbox.git(&["checkout", "-q", "main"]);
+    let before = sandbox.git(&["rev-parse", "HEAD"]).trim().to_string();
+    sandbox.write("b.txt", "an afternoon of edits\n");
+
+    let state = sandbox.state();
+    let outcome = remote::merge(&state, "topic", true).unwrap();
+    assert!(outcome.ok, "{}", outcome.message);
+    assert_eq!(
+        std::fs::read_to_string(sandbox.root.join("b.txt")).unwrap(),
+        "an afternoon of edits\n",
+        "the merge carried the edit through"
+    );
+
+    journal::undo(&state).unwrap();
+
+    assert_eq!(sandbox.git(&["rev-parse", "HEAD"]).trim(), before);
+    assert!(!sandbox.root.join("t.txt").exists(), "the merge is undone");
+    assert_eq!(
+        std::fs::read_to_string(sandbox.root.join("b.txt")).unwrap(),
+        "an afternoon of edits\n",
+        "undo must never take uncommitted work with it"
+    );
+    assert!(sandbox.git(&["stash", "list"]).trim().is_empty());
+}
+
+/// Sets up a fast-forward pull of `a.txt`'s last line, followed by an
+/// uncommitted edit to its first line: the file the step changed is the file
+/// with the open work, which is the one case `reset --keep` refuses.
+fn edited_after_the_step(tag: &str) -> (Sandbox, AppState, String) {
+    let sandbox = Sandbox::new(tag);
+    sandbox.commit("a.txt", "one\ntwo\nthree\n", "Base");
+    sandbox.git(&["checkout", "-q", "-b", "topic"]);
+    sandbox.commit("a.txt", "one\ntwo\nTHREE\n", "Topic");
+    sandbox.git(&["checkout", "-q", "main"]);
+    let before = sandbox.git(&["rev-parse", "HEAD"]).trim().to_string();
+    // One state throughout: the undo stack lives in it, as in a running window.
+    let state = sandbox.state();
+    assert!(remote::merge(&state, "topic", false).unwrap().ok);
+    sandbox.write("a.txt", "ONE\ntwo\nTHREE\n");
+    (sandbox, state, before)
+}
+
+#[test]
+fn undoing_over_an_edit_in_a_file_the_step_changed_carries_the_edit() {
+    let (sandbox, state, before) = edited_after_the_step("undocarry");
+
+    let said = journal::undo(&state).unwrap();
+
+    assert_eq!(sandbox.git(&["rev-parse", "HEAD"]).trim(), before);
+    assert_eq!(
+        std::fs::read_to_string(sandbox.root.join("a.txt")).unwrap(),
+        "ONE\ntwo\nthree\n",
+        "the merge's line is gone and the edit is still here"
+    );
+    assert!(said.contains("put back"), "{said}");
+    assert!(sandbox.git(&["stash", "list"]).trim().is_empty());
+}
+
+#[test]
+fn undoing_over_an_edit_in_the_way_with_auto_stash_off_refuses_and_keeps_it() {
+    let (sandbox, state, before) = edited_after_the_step("undorefuse");
+    state
+        .update_config(|config| config.global.auto_stash = false)
+        .unwrap();
+
+    let refused = journal::undo(&state).unwrap_err();
+
+    assert!(refused.contains("Commit or stash"), "{refused}");
+    assert_ne!(sandbox.git(&["rev-parse", "HEAD"]).trim(), before);
+    assert_eq!(
+        std::fs::read_to_string(sandbox.root.join("a.txt")).unwrap(),
+        "ONE\ntwo\nTHREE\n",
+        "refusing means touching nothing"
+    );
+    // Still there to undo once the edit is dealt with.
+    assert_eq!(journal::stacks(&state).undo.len(), 1);
+}
+
+// --- pull ----------------------------------------------------------------
+
+#[test]
+fn a_pull_follows_the_users_pull_rebase_setting() {
+    let sandbox = Sandbox::new("pull-config");
+    sandbox.commit("a.txt", "one\n", "One");
+    let bare = with_origin(&sandbox, "pull-config");
+    sandbox.git(&["push", "-q", "-u", "origin", "main"]);
+    commit_on_remote(&sandbox, &bare, "main", "remote.txt", "from the remote\n");
+    sandbox.commit("local.txt", "from here\n", "Local work");
+    sandbox.git(&["fetch", "-q", "origin"]);
+    sandbox.git(&["config", "pull.rebase", "true"]);
+
+    let state = sandbox.state();
+    let out = remote::pull(&state, None).unwrap();
+
+    assert!(out.ok, "{}", out.message);
+    assert_eq!(
+        sandbox
+            .git(&["rev-list", "--count", "--merges", "HEAD"])
+            .trim(),
+        "0",
+        "pull.rebase=true means no merge commit"
+    );
+    assert_eq!(
+        sandbox.git(&["log", "-1", "--format=%s"]).trim(),
+        "Local work",
+        "our commit was replayed on top"
+    );
+    let _ = std::fs::remove_dir_all(&bare);
+}
+
+/// A pull whose carried work will not fit back on the pulled branch leaves
+/// the files conflicted with nothing running — the shape git's `--autostash`
+/// leaves — and undo takes the pull back and puts the work where it was.
+#[test]
+fn a_pull_whose_work_does_not_fit_back_is_undone_as_one_step() {
+    let sandbox = Sandbox::new("pull-refit");
+    sandbox.commit("a.txt", "one\n", "One");
+    let bare = with_origin(&sandbox, "pull-refit");
+    sandbox.git(&["push", "-q", "-u", "origin", "main"]);
+    let before = sandbox.git(&["rev-parse", "HEAD"]).trim().to_string();
+    commit_on_remote(&sandbox, &bare, "main", "a.txt", "theirs\n");
+    sandbox.git(&["fetch", "-q", "origin"]);
+    sandbox.write("a.txt", "mine\n");
+
+    let state = sandbox.state();
+    let out = remote::pull(&state, Some(false)).unwrap();
+
+    assert!(!out.ok);
+    assert_eq!(out.conflicts, vec!["a.txt".to_string()]);
+    assert_ne!(
+        sandbox.git(&["rev-parse", "HEAD"]).trim(),
+        before,
+        "the pull itself went through"
+    );
+    let progress = remote::in_progress(&state).unwrap();
+    assert!(
+        !progress.merging && progress.restoring,
+        "a carried stash that did not fit"
+    );
+
+    let said = journal::undo(&state).unwrap();
+
+    assert!(
+        said.contains("Pull") && said.contains("your changes are back"),
+        "{said}"
+    );
+    assert_eq!(sandbox.git(&["rev-parse", "HEAD"]).trim(), before);
+    assert_eq!(
+        std::fs::read_to_string(sandbox.root.join("a.txt")).unwrap(),
+        "mine\n"
+    );
+    assert!(conflict::list(&state).unwrap().is_empty());
+    assert!(sandbox.git(&["stash", "list"]).trim().is_empty());
+    assert_eq!(
+        journal::stacks(&state).redo.len(),
+        1,
+        "the pull can be redone"
+    );
+    let _ = std::fs::remove_dir_all(&bare);
+}
+
+// --- force push ------------------------------------------------------------
+
+/// The lease can be pinned to the commit the preview showed. A fetch landing
+/// between preview and push — the app fetches on a timer — moves the
+/// remote-tracking ref a bare lease trusts, and would let the push discard
+/// commits the user never saw listed.
+#[test]
+fn a_force_push_leased_on_what_the_preview_showed_is_refused_once_that_moves() {
+    let sandbox = Sandbox::new("push-pinned");
+    sandbox.commit("a.txt", "one\n", "Base");
+    let bare = bare_origin(&sandbox, "push-pinned");
+    let state = sandbox.state();
+    assert!(
+        remote::push(&state, "origin", "main", false, true, None)
+            .unwrap()
+            .ok
+    );
+    let seen = remote::push_preview(&state, None, false)
+        .unwrap()
+        .upstream_oid
+        .expect("the upstream is known once pushed");
+
+    // Somebody else pushes, and this time we do fetch: a bare lease would now
+    // let the force push through.
+    let theirs = scratch("push-pinned-other");
+    let clone = theirs.join("clone");
+    git_at(
+        &theirs,
+        &[
+            "clone",
+            "-q",
+            bare.to_string_lossy().as_ref(),
+            clone.to_string_lossy().as_ref(),
+        ],
+    );
+    git_at(&clone, &["config", "user.name", "Other"]);
+    git_at(&clone, &["config", "user.email", "other@example.com"]);
+    git_at(&clone, &["config", "commit.gpgsign", "false"]);
+    std::fs::write(clone.join("b.txt"), "theirs\n").unwrap();
+    git_at(&clone, &["add", "--all"]);
+    git_at(&clone, &["commit", "-q", "-m", "Their commit"]);
+    git_at(&clone, &["push", "-q", "origin", "main"]);
+    let theirs_tip = remote_tip(&bare, "main").unwrap();
+    sandbox.git(&["fetch", "-q", "origin"]);
+
+    sandbox.commit("a.txt", "ours\n", "Our commit");
+    let refused = remote::push(&state, "origin", "main", true, false, Some(&seen)).unwrap();
+    assert!(
+        !refused.ok,
+        "the push may replace only what the user was shown"
+    );
+    assert!(
+        refused
+            .argv
+            .iter()
+            .any(|arg| arg.starts_with("--force-with-lease=")),
+        "{:?}",
+        refused.argv
+    );
+    assert_eq!(remote_tip(&bare, "main"), Some(theirs_tip.clone()));
+
+    // Shown their commit, the user may replace it.
+    let allowed = remote::push(&state, "origin", "main", true, false, Some(&theirs_tip)).unwrap();
+    assert!(allowed.ok, "{}", allowed.stderr);
+}
+
+// --- carrying work ---------------------------------------------------------
+
+#[test]
+fn restoring_auto_stashed_work_keeps_what_was_staged_staged() {
+    let sandbox = Sandbox::new("restoreindex");
+    sandbox.commit("f.txt", LINES, "Base");
+    sandbox.write("f.txt", &LINES.replace("one\n", "ONE-staged\n"));
+    sandbox.git(&["add", "f.txt"]);
+    sandbox.write(
+        "f.txt",
+        &LINES
+            .replace("one\n", "ONE-staged\n")
+            .replace("three", "THREE-unstaged"),
+    );
+    sandbox.write("new.txt", "untracked\n");
+    let state = sandbox.state();
+
+    let held = work::stash_before(&state, "testing").unwrap();
+    assert!(held.stashed);
+    assert!(sandbox.git(&["status", "--porcelain"]).trim().is_empty());
+    work::restore_after(&state, held).unwrap();
+
+    let status = sandbox.git(&["status", "--porcelain"]);
+    assert!(status.contains("MM f.txt"), "{status}");
+    assert!(status.contains("?? new.txt"), "{status}");
+}
+
+/// A trial apply that stops on a conflict has already written the stash's
+/// untracked files. Rolling back has to take those off again, or the pop that
+/// puts everything back refuses over files that "already exist" and the work
+/// is left in a second copy on the stash list.
+#[test]
+fn a_carried_switch_that_conflicts_puts_untracked_files_back_too() {
+    let sandbox = carry_sandbox("carryuntracked");
+    sandbox.write("f.txt", &LINES.replace("eight", "EIGHT-mine"));
+    sandbox.write("new.txt", "untracked\n");
+    let state = sandbox.state();
+
+    let refused = refs::checkout(&state, "other").unwrap_err();
+
+    assert!(refused.contains("Cannot switch to other"), "{refused}");
+    assert_eq!(refs::describe(&state).unwrap().head, "main");
+    assert!(std::fs::read_to_string(sandbox.root.join("f.txt"))
+        .unwrap()
+        .contains("EIGHT-mine"));
+    assert_eq!(
+        std::fs::read_to_string(sandbox.root.join("new.txt")).unwrap(),
+        "untracked\n"
+    );
+    assert!(
+        sandbox.git(&["stash", "list"]).trim().is_empty(),
+        "put back, not left in a stash"
+    );
+}
+
+// --- cherry-pick -----------------------------------------------------------
+
+/// A merge commit, and a branch off the base to pick it onto.
+fn with_a_merge(tag: &str) -> (Sandbox, String, String) {
+    let sandbox = Sandbox::new(tag);
+    sandbox.commit("a.txt", "one\n", "Base");
+    let base = sandbox.git(&["rev-parse", "HEAD"]).trim().to_string();
+    sandbox.git(&["checkout", "-q", "-b", "feature"]);
+    sandbox.commit("b.txt", "feature\n", "Feature");
+    sandbox.git(&["checkout", "-q", "main"]);
+    sandbox.commit("c.txt", "main\n", "Main work");
+    let plain = sandbox.git(&["rev-parse", "HEAD"]).trim().to_string();
+    sandbox.git(&["merge", "-q", "--no-ff", "-m", "Merge feature", "feature"]);
+    let merge = sandbox.git(&["rev-parse", "HEAD"]).trim().to_string();
+    sandbox.git(&["checkout", "-q", "-b", "release", &base]);
+    (sandbox, merge, plain)
+}
+
+#[test]
+fn cherry_picking_a_merge_commit_takes_what_it_brought_in() {
+    let (sandbox, merge, _) = with_a_merge("pickmerge");
+    let state = sandbox.state();
+
+    work::cherry_pick(&state, &[merge], Default::default()).unwrap();
+
+    assert!(
+        sandbox.root.join("b.txt").exists(),
+        "the merged branch's file"
+    );
+    assert!(
+        !sandbox.root.join("c.txt").exists(),
+        "not the mainline's own work"
+    );
+    assert_eq!(
+        sandbox.git(&["log", "-1", "--format=%s"]).trim(),
+        "Merge feature"
+    );
+}
+
+#[test]
+fn a_pick_mixing_merges_and_ordinary_commits_is_refused() {
+    let (sandbox, merge, plain) = with_a_merge("pickmixed");
+    let state = sandbox.state();
+
+    let error = work::cherry_pick(&state, &[plain, merge], Default::default()).unwrap_err();
+
+    assert!(error.contains("separately"), "{error}");
+    assert_eq!(sandbox.git(&["log", "-1", "--format=%s"]).trim(), "Base");
 }

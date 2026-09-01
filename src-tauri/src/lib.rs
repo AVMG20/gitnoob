@@ -547,6 +547,14 @@ async fn run_git(
     .map_err(|e| format!("git did not finish: {e}"))?
 }
 
+/// The remote a new branch should go to: the one the checked out branch
+/// tracks, else `origin`, else the first configured. A fork added to look at a
+/// review is never it.
+#[tauri::command]
+fn primary_remote(state: State<'_, AppState>) -> Option<String> {
+    remote::primary(&state)
+}
+
 #[tauri::command]
 fn remotes(state: State<'_, AppState>) -> Result<Vec<String>, String> {
     remote::remotes(&state)
@@ -873,8 +881,8 @@ async fn fetch(
 async fn pull(
     rebase: Option<bool>,
     state: State<'_, AppState>,
-) -> Result<git_cmd::CmdOutput, String> {
-    remote::pull(&state, rebase.unwrap_or(false))
+) -> Result<remote::MergeOutcome, String> {
+    remote::pull(&state, rebase)
 }
 
 /// Brings any branch up to date, checked out or not.
@@ -883,8 +891,8 @@ async fn pull_branch(
     branch: String,
     rebase: Option<bool>,
     state: State<'_, AppState>,
-) -> Result<git_cmd::CmdOutput, String> {
-    remote::pull_branch(&state, &branch, rebase.unwrap_or(false))
+) -> Result<remote::MergeOutcome, String> {
+    remote::pull_branch(&state, &branch, rebase)
 }
 
 #[tauri::command]
@@ -902,6 +910,7 @@ async fn push(
     branch: String,
     force: Option<bool>,
     set_upstream: Option<bool>,
+    lease: Option<String>,
     state: State<'_, AppState>,
 ) -> Result<git_cmd::CmdOutput, String> {
     remote::push(
@@ -910,6 +919,7 @@ async fn push(
         &branch,
         force.unwrap_or(false),
         set_upstream.unwrap_or(false),
+        lease.as_deref(),
     )
 }
 
@@ -1886,6 +1896,7 @@ pub fn run() {
             submodule_deinit,
             submodule_remove,
             remotes,
+            primary_remote,
             remote_url,
             remote_add,
             remote_set_url,

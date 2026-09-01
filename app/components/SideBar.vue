@@ -605,7 +605,14 @@ async function onDropOnBranch(event: MouseEvent, target: string, targetIsRemote:
           icon: GitBranch,
           hint: target === head.value ? '' : 'checks out first',
           action: async () => {
-            if (target !== head.value) await git.checkout(target)
+            if (target !== head.value) {
+              await git.checkout(target)
+              // A switch that was refused has already said why; picking onto
+              // whatever branch is still checked out would put the commit on
+              // the wrong one.
+              const local = targetIsRemote ? target.slice(target.indexOf('/') + 1) : target
+              if (store.repo?.head !== local) return
+            }
             await git.cherryPick([payload.oid])
           }
         }

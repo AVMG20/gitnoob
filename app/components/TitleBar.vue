@@ -147,16 +147,24 @@ const blocked = computed(() => store.pushBlocked)
 const confirming = ref(false)
 const checkingForce = ref(false)
 const orphans = ref<CommitSummary[]>([])
+/** The upstream commit the force-push preview showed; the push leases on it. */
+const lease = ref<string | null>(null)
 
-/** Pull, and if that leaves the branch pushable, push straight away. */
+/**
+ * Pull the refused branch, and if that leaves it pushable, push straight away.
+ *
+ * The branch the push was for, not whichever one is checked out: a push from
+ * the sidebar can be refused for a branch you are not standing on, and the
+ * backend brings any branch up to date.
+ */
 async function pullThen(rebase: boolean) {
   // Read the target first: dismissing clears it.
   const target = blockedTarget()
   git.dismissPushBlock()
-  const ok = await git.pull(rebase)
-  if (!ok || !target) return
-  if (store.status?.conflicted.length) {
-    store.resolving = store.status.conflicted[0] ?? null
+  if (!target) return
+  const outcome = await git.pullBranch(target.branch, rebase)
+  if (!outcome?.ok) {
+    if (outcome?.conflicts.length) store.resolving = outcome.conflicts[0] ?? null
     return
   }
   await git.push(target.remote, target.branch, false, false)
@@ -164,14 +172,18 @@ async function pullThen(rebase: boolean) {
 
 /**
  * Asks before rewriting, and names what would go: the count comes from a fresh
- * preview rather than from whatever the last dialog happened to read.
+ * preview rather than from whatever the last dialog happened to read. The
+ * upstream commit that preview saw is what the push is then leased on, so
+ * what the user confirmed is exactly what the push may replace.
  */
 async function askForce() {
   confirming.value = true
   checkingForce.value = true
   orphans.value = []
+  lease.value = null
   const preview = await git.pushPreview(store.pushBlocked?.branch, true)
   orphans.value = preview?.will_orphan ?? []
+  lease.value = preview?.upstream_oid ?? null
   checkingForce.value = false
 }
 
@@ -179,7 +191,7 @@ async function forcePush() {
   const target = blockedTarget()
   if (!target) return
   confirming.value = false
-  await git.push(target.remote, target.branch, true, false)
+  await git.push(target.remote, target.branch, true, false, lease.value)
 }
 
 /** The push that was refused, captured before dismissing clears it. */
@@ -194,6 +206,7 @@ watch(
   () => {
     confirming.value = false
     orphans.value = []
+    lease.value = null
   }
 )
 
@@ -323,7 +336,7 @@ async function reconcile(rebase: boolean) {
       <button class="btn" :disabled="store.busy" title="Fetch all remotes" @click="git.fetch()">
         <RefreshCw :size="14" /> Fetch
       </button>
-      <button class="btn" :disabled="store.busy" title="Pull, stashing local work first" @click="git.pull()">
+      <button class="btn" :disabled="store.busy" title="Pull, carrying local work along" @click="git.pull()">
         <ArrowDownToLine :size="14" /> Pull
       </button>
       <button
@@ -516,7 +529,7 @@ async function reconcile(rebase: boolean) {
       <TriangleAlert :size="14" />
       <span v-if="store.progress?.restoring">
         {{ conflicts }} conflicted {{ conflicts === 1 ? 'file' : 'files' }}: your own changes did
-        not fit on this branch. They are still in the stash.
+        not fit back on. They are still in the stash.
       </span>
       <span v-else-if="store.progress?.applied_stash">
         {{ conflicts }} conflicted {{ conflicts === 1 ? 'file' : 'files' }}: the stash would not go
@@ -550,7 +563,7 @@ async function reconcile(rebase: boolean) {
         :disabled="store.busy"
         @click="git.undoRestore()"
       >
-        Undo the switch
+        Put it back
       </button>
       <button
         v-else-if="store.progress?.rebasing"

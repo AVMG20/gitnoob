@@ -33,10 +33,10 @@ onUnmounted(() => window.removeEventListener('keydown', onKey))
         v-if="store.progress?.restoring"
         class="btn"
         :disabled="store.busy"
-        title="Put the working tree back, return to the branch you came from, and restore your changes there"
+        title="Put the working tree back, undo the step that moved it, and restore your changes"
         @click="git.undoRestore()"
       >
-        Undo the switch
+        Put it back
       </button>
       <button
         v-else-if="store.progress?.rebasing"

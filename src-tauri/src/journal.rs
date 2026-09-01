@@ -149,6 +149,15 @@ pub fn stacks(state: &AppState) -> Stacks {
 }
 
 pub fn undo(state: &AppState) -> Result<String, String> {
+    // Work that would not go back on after the last step is that step's mess:
+    // conflicted files, nothing running, the carried stash still on the list.
+    // Undo takes the step and the mess back together, which is the only order
+    // that works — the step cannot be moved off from under an unmerged index.
+    if let Ok(root) = state.path() {
+        if crate::work::has_unmerged(&root) && crate::work::auto_stash_on_top(&root) {
+            return crate::work::undo_restore(state);
+        }
+    }
     let Some(mut entry) = state.journal(|journal| journal.take_undo()) else {
         return Err("Nothing to undo".to_string());
     };
@@ -163,6 +172,28 @@ pub fn undo(state: &AppState) -> Result<String, String> {
             Err(error)
         }
     }
+}
+
+/// Takes the newest step off the history if it is the one that left the
+/// branch where it stands, handing back where it came from and what it was.
+///
+/// For `undo_restore`, which puts a branch back by hand and has to keep the
+/// history true while it does: the step goes onto the redo stack the way any
+/// undone step does.
+pub fn take_step_standing_here(state: &AppState) -> Option<(String, String)> {
+    let head = head_oid(state)?;
+    let here = current_branch(state);
+    let entry = state.journal(|journal| journal.take_undo())?;
+    let fits = entry.mode == Mode::Hard
+        && entry.after.as_deref() == Some(head.as_str())
+        && entry.branch == here;
+    let Some(before) = entry.before.clone().filter(|_| fits) else {
+        state.journal(|journal| journal.put_undo(entry));
+        return None;
+    };
+    let label = entry.label.clone();
+    state.journal(|journal| journal.put_redo(entry));
+    Some((before, label))
 }
 
 pub fn redo(state: &AppState) -> Result<String, String> {
@@ -332,30 +363,90 @@ fn step(state: &AppState, entry: &mut Entry, direction: Direction) -> Result<Str
                     None => return Err("HEAD is detached; check out a branch first".to_string()),
                 }
             }
-            let flag = if entry.mode == Mode::Hard {
-                "--hard"
+            let note = if entry.mode == Mode::Hard {
+                let verb = match direction {
+                    Direction::Back => "undoing",
+                    Direction::Forward => "redoing",
+                };
+                move_keeping(state, &root, oid, &format!("{verb} {}", entry.label))?
             } else {
-                "--soft"
+                git_cmd::run_checked(&root, &["reset", "--soft", oid])?;
+                None
             };
-            git_cmd::run_checked(&root, &["reset", flag, oid])?;
-            Ok(match direction {
+            let mut said = match direction {
                 Direction::Back => {
                     let mut said = format!("Undid: {}", entry.label);
                     // Undoing moves the branch here; it cannot move the remote,
                     // which still has the commit. Left unsaid, the window simply
                     // reports the branch as behind — and pulling, the obvious
                     // thing to do about that, brings the undone commit back.
-                    if let Some(remote) = still_published(state, entry) {
-                        said.push_str(&format!(
-                            " — but {remote} still has it. Push to undo it there too; pull, and the commit comes back."
-                        ));
+                    // A pull is the one step that was never ours to publish:
+                    // undoing it only puts the branch behind again.
+                    if entry.kind != "pull" {
+                        if let Some(remote) = still_published(state, entry) {
+                            said.push_str(&format!(
+                                " — but {remote} still has it. Push to undo it there too; pull, and the commit comes back."
+                            ));
+                        }
                     }
                     said
                 }
                 Direction::Forward => format!("Redid: {}", entry.label),
-            })
+            };
+            if let Some(note) = note {
+                said = format!("{said}\n{note}");
+            }
+            Ok(said)
         }
     }
+}
+
+/// Moves the branch and the working tree to `oid` without losing uncommitted
+/// work.
+///
+/// `reset --hard` would take every open change with it, which turns the undo
+/// of a merge into the loss of an afternoon's edits in a file the merge never
+/// touched. `reset --keep` is the same move made carefully: files the step
+/// changed go back, files with uncommitted edits are left alone, and a file
+/// that is both makes git refuse rather than choose. That refusal is met the
+/// way every other step here meets open work — set it down, move on a clean
+/// tree, put it back — and only with auto-stash off is it passed on in words.
+///
+/// The note, when there is one, says what happened to the work.
+fn move_keeping(
+    state: &AppState,
+    root: &Path,
+    oid: &str,
+    reason: &str,
+) -> Result<Option<String>, String> {
+    match git_cmd::run_checked(root, &["reset", "--keep", oid]) {
+        Ok(_) => Ok(None),
+        Err(error) if refused_over_local_changes(&error) => {
+            if !state.config().global.auto_stash {
+                return Err(format!(
+                    "Your uncommitted changes are in the way of this step. Commit or stash them \
+                     first, or turn auto-stash on in settings.\n{error}"
+                ));
+            }
+            let held = crate::work::stash_before(state, reason)?;
+            let moved = git_cmd::run_checked(root, &["reset", "--keep", oid]);
+            let restored = crate::work::restore_after(state, held);
+            moved?;
+            // The step itself went through; how the work came back is a note
+            // on it, not a reason to pretend it did not happen.
+            Ok(match restored {
+                Ok(note) => note,
+                Err(note) => Some(note),
+            })
+        }
+        Err(error) => Err(error),
+    }
+}
+
+/// Whether `reset --keep` turned the move down over uncommitted work, as
+/// opposed to failing for some other reason.
+fn refused_over_local_changes(error: &str) -> bool {
+    error.contains("not uptodate") || error.contains("would be overwritten")
 }
 
 /// The upstream that still carries the commit an undo has just moved off, if

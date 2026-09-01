@@ -1036,17 +1036,55 @@ pub fn stash_before(state: &AppState, reason: &str) -> Result<Held, String> {
 
 /// Puts auto-stashed work back. A conflict here is reported, not swallowed: the
 /// changes are still in the stash and the user needs to know that.
+///
+/// `--index` puts back what was staged as staged, so a pull does not quietly
+/// unstage everything on the way through. When the index cannot be restored
+/// git gives up before touching the working tree — "conflicts in index. Try
+/// without --index." — and that one case is retried plain: the split is lost,
+/// the work is not, and the switch is not worth refusing over it.
 pub fn restore_after(state: &AppState, held: Held) -> Result<Option<String>, String> {
     if !held.stashed {
         return Ok(None);
     }
     let root = state.path()?;
-    match git_cmd::run_checked(&root, &["stash", "pop"]) {
+    match pop_top(&root) {
         Ok(_) => Ok(Some("Local changes were stashed and put back".to_string())),
         Err(error) => Err(format!(
             "Your changes are safe in the stash, but putting them back hit a problem: {error}"
         )),
     }
+}
+
+/// Whether a `stash list` line is a stash made to carry work across an
+/// operation: one of this app's own, or the one git's `--autostash` leaves on
+/// the list when it could not put the work back.
+pub fn is_auto_stash(line: &str) -> bool {
+    line.contains(AUTO_STASH) || line.trim().ends_with(": autostash")
+}
+
+/// Whether the top stash is such a carried-work stash.
+///
+/// `undo_restore` puts that stash back, so without it on top there is nothing
+/// to undo and offering the button only leads to a refusal.
+pub fn auto_stash_on_top(root: &Path) -> bool {
+    git_cmd::run_checked(root, &["stash", "list", "-1"])
+        .map(|out| is_auto_stash(&out))
+        .unwrap_or(false)
+}
+
+/// Pops the top stash, staged files staged where that can be done.
+///
+/// `--index` gives up before touching the working tree when the index cannot
+/// be restored — "conflicts in index. Try without --index." — and that one
+/// case is retried plain: the split is lost, the work is not.
+fn pop_top(root: &Path) -> Result<String, String> {
+    git_cmd::run_checked(root, &["stash", "pop", "--index"]).or_else(|error| {
+        if has_unmerged(root) {
+            Err(error)
+        } else {
+            git_cmd::run_checked(root, &["stash", "pop"])
+        }
+    })
 }
 
 /// Every path a stash entry touches, tracked or not.
@@ -1089,11 +1127,19 @@ fn stashed_on(message: &str) -> Option<&str> {
 /// user meant is: forget this, put me back where I was. The stash survives a
 /// conflicted pop untouched, which is what makes the reset safe — everything
 /// being thrown away here is still in it.
+///
+/// Where "back" is depends on what moved. After a switch it is the branch the
+/// work was taken from, named in the stash. After a pull, merge or rebase the
+/// branch is the same one but its commit has moved on, and the work can never
+/// fit on the new one — git's own `--autostash` leaves exactly this shape when
+/// it could not put the work back — so the step that moved it is taken back
+/// too, off the history like any other undo, and the work goes on where it
+/// came from.
 pub fn undo_restore(state: &AppState) -> Result<String, String> {
     let root = state.path()?;
     let list = git_cmd::run_checked(&root, &["stash", "list"])?;
     let top = list.lines().next().unwrap_or_default().to_string();
-    if !top.contains(AUTO_STASH) {
+    if !is_auto_stash(&top) {
         return Err(
             "The stash this would put back is not there any more, so undoing the switch would \
              throw the conflicted files away. Resolve them, or stash them, instead."
@@ -1121,25 +1167,39 @@ pub fn undo_restore(state: &AppState) -> Result<String, String> {
         ));
     }
 
+    enum Back {
+        Branch(String),
+        Step { before: String, label: String },
+        Here,
+    }
+    let home = stashed_on(&top).map(str::to_string);
+    let back = match (&home, crate::journal::current_branch(state)) {
+        (Some(home), Some(here)) if home != &here => Back::Branch(home.clone()),
+        _ => match crate::journal::take_step_standing_here(state) {
+            Some((before, label)) => Back::Step { before, label },
+            // Nothing on record moved the branch: put the work back here.
+            None => Back::Here,
+        },
+    };
+
     // Clears the half-applied pop: conflicted files, and whatever else came
     // out of the stash cleanly.
     git_cmd::run_checked(&root, &["reset", "--hard", "HEAD"])?;
-
-    let home = stashed_on(&top).map(str::to_string);
-    let moved = match (&home, crate::journal::current_branch(state)) {
-        (Some(home), Some(here)) if home != &here => {
-            git_cmd::run_checked(&root, &["checkout", home, "--"])?;
-            true
+    match &back {
+        Back::Branch(home) => {
+            git_cmd::run_checked(&root, &["switch", "--", home])?;
         }
-        // An older stash from before the branch was recorded, or a pull rather
-        // than a switch: there is nowhere else to go, so put the work back here.
-        _ => false,
-    };
+        Back::Step { before, .. } => {
+            git_cmd::run_checked(&root, &["reset", "--hard", before])?;
+        }
+        Back::Here => {}
+    }
 
-    git_cmd::run_checked(&root, &["stash", "pop"])?;
-    Ok(match (moved, home) {
-        (true, Some(branch)) => format!("Back on {branch}, with your changes"),
-        _ => "Your changes are back".to_string(),
+    pop_top(&root)?;
+    Ok(match back {
+        Back::Branch(branch) => format!("Back on {branch}, with your changes"),
+        Back::Step { label, .. } => format!("Undid: {label}, and your changes are back"),
+        Back::Here => "Your changes are back".to_string(),
     })
 }
 
@@ -1312,6 +1372,17 @@ pub fn cherry_pick(
     if options.record_origin {
         args.push("-x");
     }
+    // A merge commit has no single change of its own; git has to be told which
+    // parent counts as the line it was merged into, and refuses without. The
+    // first parent — the branch the merge landed on — is what picking a merge
+    // means nine times in ten. `-m` applies to the whole list, and git refuses
+    // it on an ordinary commit, so a list has to be one kind or the other.
+    let merges = ordered.iter().filter(|oid| is_merge(&root, oid)).count();
+    if merges == ordered.len() {
+        args.extend(["-m", "1"]);
+    } else if merges > 0 {
+        return Err("Cherry-pick merge commits separately from ordinary ones".to_string());
+    }
     args.extend(ordered.iter().map(String::as_str));
 
     let out = git_cmd::run(&root, &args)?;
@@ -1356,6 +1427,13 @@ pub fn cherry_pick(
     } else {
         format!("Cherry-picked {label}")
     })
+}
+
+/// Whether a commit has more than one parent.
+fn is_merge(root: &Path, oid: &str) -> bool {
+    git_cmd::run_checked(root, &["rev-list", "--parents", "-n", "1", oid])
+        .map(|line| line.split_whitespace().count() > 2)
+        .unwrap_or(false)
 }
 
 /// Sorts commits oldest first, by asking git who descends from whom.
