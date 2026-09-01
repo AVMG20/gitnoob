@@ -22,6 +22,10 @@ pub struct PushPreview {
     pub branch: String,
     pub remote: String,
     pub upstream: Option<String>,
+    /// Where the upstream stood when this was read. A force push pins its
+    /// lease to it, so what the user was shown is exactly what the push is
+    /// allowed to replace — not whatever a fetch in the meantime moved it to.
+    pub upstream_oid: Option<String>,
     /// True when the branch has no upstream yet and the push will create one.
     pub new_upstream: bool,
     pub ahead: usize,
@@ -34,7 +38,7 @@ pub struct PushPreview {
     pub will_push: Vec<CommitSummary>,
 }
 
-#[derive(Serialize)]
+#[derive(Serialize, Debug)]
 pub struct MergeOutcome {
     pub ok: bool,
     pub message: String,
@@ -51,30 +55,58 @@ pub fn fetch(state: &AppState, remote: Option<&str>) -> Result<CmdOutput, String
     git_cmd::run(&path, &args)
 }
 
-/// Pulls, stashing uncommitted work first so the pull is not refused, then
-/// putting it back.
-pub fn pull(state: &AppState, rebase: bool) -> Result<CmdOutput, String> {
+/// Which way a pull joins the two histories, as the flag `git pull` takes.
+///
+/// `None` leaves the choice to the user's own `pull.rebase`, the way a typed
+/// `git pull` would — except that a bare `git pull` on a diverged branch stops
+/// with "Need to specify how to reconcile divergent branches" when nothing is
+/// set, so the answer is always spelled out on the command line.
+fn reconcile_flag(state: &AppState, rebase: Option<bool>) -> String {
+    let configured = match rebase {
+        Some(true) => return "--rebase".to_string(),
+        Some(false) => return "--no-rebase".to_string(),
+        None => state
+            .path()
+            .ok()
+            .and_then(|root| git_cmd::run_checked(&root, &["config", "--get", "pull.rebase"]).ok())
+            .map(|value| value.trim().to_ascii_lowercase())
+            .unwrap_or_default(),
+    };
+    match configured.as_str() {
+        // `interactive` would open an editor there is no terminal for; the
+        // plain rebase is what it means once nobody is there to edit the plan.
+        "true" | "interactive" => "--rebase".to_string(),
+        "merges" => "--rebase=merges".to_string(),
+        _ => "--no-rebase".to_string(),
+    }
+}
+
+/// Pulls the checked out branch.
+///
+/// Uncommitted work rides along on git's own `--autostash`: set down before
+/// the pull and put back after it — and, when the pull stops on a conflict,
+/// put back by whichever of abort, continue or commit finishes it. Nothing is
+/// left sitting in the stash for the user to remember.
+pub fn pull(state: &AppState, rebase: Option<bool>) -> Result<MergeOutcome, String> {
     let path = state.path()?;
     let before = journal::head_oid(state);
     let branch = journal::current_branch(state);
+    let flag = reconcile_flag(state, rebase);
 
-    let held = work::stash_before(state, "pulling")?;
-    // Always say which reconciliation is meant. A bare `git pull` on a diverged
-    // branch stops with "Need to specify how to reconcile divergent branches"
-    // unless the user has set `pull.rebase` — and the caller has already asked
-    // them, so there is nothing left to be undecided about.
-    let mut args = vec!["pull"];
-    args.push(if rebase { "--rebase" } else { "--no-rebase" });
-    let mut output = git_cmd::run(&path, &args)?;
+    let out = git_cmd::run(
+        &path,
+        &[
+            "-c",
+            "merge.conflictStyle=diff3",
+            "pull",
+            "--autostash",
+            &flag,
+        ],
+    )?;
+    let moved = out.ok;
+    let outcome = settled(state, out);
 
-    match work::restore_after(state, held) {
-        Ok(Some(note)) => output.stdout = format!("{}\n{note}", output.stdout.trim()),
-        // The pull itself worked; say so, and say what happened to the stash.
-        Err(error) => output.stderr = format!("{}\n{error}", output.stderr.trim()),
-        Ok(None) => {}
-    }
-
-    if output.ok {
+    if moved {
         journal::record(
             state,
             "pull",
@@ -86,7 +118,33 @@ pub fn pull(state: &AppState, rebase: bool) -> Result<CmdOutput, String> {
             true,
         );
     }
-    Ok(output)
+    Ok(outcome)
+}
+
+/// What a merge-like command left behind: whether it went through, what it
+/// said, and which files it stopped on.
+///
+/// The conflicts are read from the index rather than from the exit code. A
+/// command can exit 0 and still leave conflicted files — an autostash that
+/// would not go back on cleanly is the usual case — and those are conflicts the
+/// resolver has to open on all the same.
+fn settled(state: &AppState, out: CmdOutput) -> MergeOutcome {
+    let conflicts = crate::conflict::list(state).unwrap_or_default();
+    MergeOutcome {
+        ok: out.ok && conflicts.is_empty(),
+        message: said(&out),
+        conflicts,
+    }
+}
+
+/// Everything git printed, stdout first, with nothing empty in between.
+fn said(out: &CmdOutput) -> String {
+    [out.stdout.trim(), out.stderr.trim()]
+        .iter()
+        .filter(|s| !s.is_empty())
+        .cloned()
+        .collect::<Vec<_>>()
+        .join("\n")
 }
 
 /// Brings a branch up to date with its upstream, whether or not it is the one
@@ -99,9 +157,13 @@ pub fn pull(state: &AppState, rebase: bool) -> Result<CmdOutput, String> {
 ///
 /// That only works while the update is a fast-forward. A branch that has moved
 /// on locally needs its commits replayed, and replaying them means having them
-/// in the working tree — so that case is reported rather than guessed at.
-pub fn pull_branch(state: &AppState, branch: &str, rebase: bool) -> Result<CmdOutput, String> {
-    // The branch you are on is an ordinary pull, stash dance and all.
+/// in the working tree — so that case is a [`visit`].
+pub fn pull_branch(
+    state: &AppState,
+    branch: &str,
+    rebase: Option<bool>,
+) -> Result<MergeOutcome, String> {
+    // The branch you are on is an ordinary pull.
     if journal::current_branch(state).as_deref() == Some(branch) {
         return pull(state, rebase);
     }
@@ -131,24 +193,32 @@ pub fn pull_branch(state: &AppState, branch: &str, rebase: bool) -> Result<CmdOu
     let before = branch_oid(state, branch);
 
     let refspec = format!("{theirs}:{branch}");
-    let mut out = git_cmd::run(&path, &["fetch", &remote, &refspec])?;
+    let out = git_cmd::run(&path, &["fetch", &remote, &refspec])?;
 
     // It has commits of its own, so the update has to be a real merge, and a
-    // merge needs the branch in the working tree. Do the whole dance out of
-    // sight instead of handing the problem back.
+    // merge needs the branch in the working tree.
     if !out.ok && out.stderr.contains("non-fast-forward") {
-        return pull_by_visiting(state, branch, rebase);
+        return visit(
+            state,
+            branch,
+            &format!("pulling {branch}"),
+            &format!("{branch} brought up to date with {remote}/{theirs}"),
+            |state| pull(state, rebase),
+        );
     }
 
-    if out.ok {
-        let after = branch_oid(state, branch);
-        if before == after {
-            out.stdout = format!("{branch} was already up to date");
-        } else {
-            out.stdout = format!("{branch} brought up to date with {remote}/{theirs}");
-        }
-    }
-    Ok(out)
+    let message = if !out.ok {
+        said(&out)
+    } else if before == branch_oid(state, branch) {
+        format!("{branch} was already up to date")
+    } else {
+        format!("{branch} brought up to date with {remote}/{theirs}")
+    };
+    Ok(MergeOutcome {
+        ok: out.ok,
+        message,
+        conflicts: Vec::new(),
+    })
 }
 
 /// Where a local branch points, as an owned string.
@@ -161,75 +231,103 @@ fn branch_oid(state: &AppState, branch: &str) -> Option<String> {
     found.get().target().map(|oid| oid.to_string())
 }
 
-/// Pulls a branch that has diverged, by going there and coming back.
+/// Does something standing on another branch, and comes home after.
 ///
-/// Stash, switch, pull, switch back, unstash. Every step is undone on the way
-/// out, including on failure: if the pull conflicts, the merge is abandoned
-/// before returning, so the repository is left exactly as it was found and the
-/// user is told the branch needs their attention rather than discovering
-/// themselves standing on it mid-merge.
+/// Git merges, rebases and pulls into the branch you are on, which is why
+/// "merge this into that" normally means checking out, acting, and remembering
+/// to come back. This is that trip made out of sight: open work is set down,
+/// `target` is checked out, `act` runs on it, and the way home is the reverse.
+/// `done` is what to say when it all worked.
 ///
-/// The one thing this cannot hide is `auto_stash` being switched off with a
-/// dirty tree, because then the switch itself is refused — and quietly
-/// overriding a setting is worse than saying so.
-fn pull_by_visiting(state: &AppState, branch: &str, rebase: bool) -> Result<CmdOutput, String> {
+/// Conflicts are the one thing that does not travel. A half-done merge lives in
+/// the working tree, and leaving the user standing in one on a branch they did
+/// not ask to be on, with their own changes hidden in a stash, is exactly the
+/// surprise this application exists to avoid. So the operation is abandoned,
+/// the trip is undone, and the message says what to do instead: check the
+/// branch out and do it there, where the resolver can open on it. Nothing is
+/// changed and nothing is lost — the same repository as before, one sentence
+/// wiser.
+fn visit(
+    state: &AppState,
+    target: &str,
+    reason: &str,
+    done: &str,
+    act: impl FnOnce(&AppState) -> Result<MergeOutcome, String>,
+) -> Result<MergeOutcome, String> {
     let path = state.path()?;
     let original = journal::current_branch(state)
         .ok_or_else(|| "HEAD is detached; check out a branch first".to_string())?;
 
-    let held = work::stash_before(state, &format!("pulling {branch}"))?;
+    let held = work::stash_before(state, reason)?;
 
-    let switched = git_cmd::run(&path, &["checkout", branch, "--"])?;
+    let switched = git_cmd::run(&path, &["switch", "--", target])?;
     if !switched.ok {
-        let _ = work::restore_after(state, held);
-        let mut out = switched;
-        out.stderr = format!(
-            "{}\n\nCould not step onto {branch} to update it. Commit or stash your changes, or \
-             turn auto-stash on in settings.",
-            out.stderr.trim()
+        let mut message = format!(
+            "{}\n\nCould not step onto {target}.",
+            switched.stderr.trim()
         );
-        return Ok(out);
+        if let Err(note) = work::restore_after(state, held) {
+            message = format!("{message}\n{note}");
+        }
+        return Ok(MergeOutcome {
+            ok: false,
+            message,
+            conflicts: Vec::new(),
+        });
     }
 
-    // See `pull`: name the reconciliation rather than leaving it to config.
-    let mut args = vec!["pull"];
-    args.push(if rebase { "--rebase" } else { "--no-rebase" });
-    let mut out = git_cmd::run(&path, &args)?;
+    let mut outcome = act(state)?;
 
-    if !out.ok {
-        // Leave nothing half-finished behind us. Only one of these applies; the
-        // other is a no-op that reports there is nothing to abort.
+    if !outcome.conflicts.is_empty() {
+        // Only one of these applies; the other reports nothing to abort.
         let _ = git_cmd::run(&path, &["merge", "--abort"]);
         let _ = git_cmd::run(&path, &["rebase", "--abort"]);
-        out.stderr = format!(
-            "{}\n\n{branch} was left as it was: updating it needs a merge that does not apply \
-             cleanly. Check it out to work through it.",
-            out.stderr.trim()
+        outcome.message = format!(
+            "{} would conflict in {}. {target} was left as it was: check it out and try again \
+             there to resolve them.",
+            capitalised(reason),
+            outcome.conflicts.join(", ")
         );
-    } else {
-        out.stdout = format!("{branch} brought up to date");
+        outcome.conflicts.clear();
+        outcome.ok = false;
+    } else if outcome.ok {
+        outcome.message = done.to_string();
     }
 
-    // Home again, whichever way the pull went.
-    let back = git_cmd::run(&path, &["checkout", &original, "--"])?;
+    // Home again, whichever way it went.
+    let back = git_cmd::run(&path, &["switch", "--", &original])?;
     if !back.ok {
-        out.stderr = format!(
-            "{}\n\nCould not return to {original} — you are on {branch}.",
-            out.stderr.trim()
+        outcome.ok = false;
+        outcome.message = format!(
+            "{}\n\nCould not return to {original} — you are on {target}.{}",
+            outcome.message.trim(),
+            if held.stashed {
+                " Your open changes are in the stash."
+            } else {
+                ""
+            }
         );
-        out.ok = false;
-        return Ok(out);
+        return Ok(outcome);
     }
 
     match work::restore_after(state, held) {
-        Ok(Some(note)) => out.stdout = format!("{}\n{note}", out.stdout.trim()),
+        Ok(Some(note)) => outcome.message = format!("{}\n{note}", outcome.message.trim()),
         Err(error) => {
-            out.stderr = format!("{}\n{error}", out.stderr.trim());
-            out.ok = false;
+            outcome.ok = false;
+            outcome.message = format!("{}\n{error}", outcome.message.trim());
         }
         Ok(None) => {}
     }
-    Ok(out)
+    Ok(outcome)
+}
+
+/// "merging a into b" as the start of a sentence.
+fn capitalised(text: &str) -> String {
+    let mut chars = text.chars();
+    match chars.next() {
+        Some(first) => first.to_uppercase().collect::<String>() + chars.as_str(),
+        None => String::new(),
+    }
 }
 
 pub fn push_preview(
@@ -299,6 +397,7 @@ pub fn push_preview(
         branch: branch_name,
         remote,
         upstream: upstream_name,
+        upstream_oid: upstream_oid.map(|oid| oid.to_string()),
         new_upstream: upstream_oid.is_none(),
         ahead,
         behind,
@@ -312,19 +411,30 @@ pub fn push_preview(
 ///
 /// When `force` is set the push uses `--force-with-lease`, never a bare
 /// `--force`: the lease makes the remote reject the push if it moved since the
-/// last fetch, which is precisely the case where a plain force would silently
+/// last look, which is precisely the case where a plain force would silently
 /// destroy someone else's commits.
+///
+/// `lease` is what that look saw — the upstream commit the preview showed the
+/// user — and the lease is pinned to it. Without it git leases against the
+/// remote-tracking ref, which the fetch on a timer moves under your feet: a
+/// fetch landing between the preview and the click would quietly widen what
+/// the push is allowed to throw away.
 pub fn push(
     state: &AppState,
     remote: &str,
     branch: &str,
     force: bool,
     set_upstream: bool,
+    lease: Option<&str>,
 ) -> Result<CmdOutput, String> {
     let path = state.path()?;
+    let with_lease = match lease {
+        Some(expected) => format!("--force-with-lease=refs/heads/{branch}:{expected}"),
+        None => "--force-with-lease".to_string(),
+    };
     let mut args = vec!["push"];
     if force {
-        args.push("--force-with-lease");
+        args.push(&with_lease);
     }
     if set_upstream {
         args.push("--set-upstream");
@@ -334,47 +444,37 @@ pub fn push(
     git_cmd::run(&path, &args)
 }
 
+/// Merges a branch into the checked out one, carrying open work on git's own
+/// `--autostash` the way [`pull`] does.
 pub fn merge(state: &AppState, branch: &str, no_ff: bool) -> Result<MergeOutcome, String> {
     let path = state.path()?;
-    let branch_name = branch.to_string();
     // diff3 keeps the merge base in the conflict markers, which the conflict
     // resolver shows as its third pane.
-    let mut args = vec!["-c", "merge.conflictStyle=diff3", "merge"];
+    let mut args = vec!["-c", "merge.conflictStyle=diff3", "merge", "--autostash"];
     if no_ff {
         args.push("--no-ff");
     }
     args.push(branch);
 
     let before = journal::head_oid(state);
-    let branch = journal::current_branch(state);
+    let on = journal::current_branch(state);
     let out = git_cmd::run(&path, &args)?;
-    let conflicts = crate::conflict::list(state).unwrap_or_default();
+    let moved = out.ok;
+    let outcome = settled(state, out);
 
-    if out.ok && conflicts.is_empty() {
+    if moved {
         journal::record(
             state,
             "merge",
-            format!("Merge {branch_label}", branch_label = branch_name),
-            branch,
+            format!("Merge {branch}"),
+            on,
             before,
             journal::head_oid(state),
             Mode::Hard,
             true,
         );
     }
-    let message = if out.stderr.trim().is_empty() {
-        out.stdout.trim().to_string()
-    } else {
-        format!("{}\n{}", out.stdout.trim(), out.stderr.trim())
-            .trim()
-            .to_string()
-    };
-
-    Ok(MergeOutcome {
-        ok: out.ok && conflicts.is_empty(),
-        message,
-        conflicts,
-    })
+    Ok(outcome)
 }
 
 pub fn abort_merge(state: &AppState) -> Result<String, String> {
@@ -384,15 +484,10 @@ pub fn abort_merge(state: &AppState) -> Result<String, String> {
 
 /// Merges one branch into another, whichever one is checked out.
 ///
-/// Git only ever merges into the branch you are standing on, which is why
-/// merging two other branches normally means checking one out, merging, and
-/// remembering to come back. Dropping one branch onto another says what is
-/// wanted plainly enough that none of that should be the user's problem.
-///
 /// Three cases, cheapest first: the target is already checked out and this is
 /// an ordinary merge; the target is merely behind, so its ref is moved with no
 /// working tree involved at all; or the two have diverged, and the merge has to
-/// be made somewhere — so it is made on the target and we come home after.
+/// be made somewhere — so it is made on the target, on a [`visit`].
 pub fn merge_into(
     state: &AppState,
     source: &str,
@@ -407,7 +502,13 @@ pub fn merge_into(
         return fast_forward_ref(state, source, target);
     }
 
-    merge_by_visiting(state, source, target, no_ff)
+    visit(
+        state,
+        target,
+        &format!("merging {source} into {target}"),
+        &format!("{source} merged into {target}"),
+        |state| merge(state, source, no_ff),
+    )
 }
 
 /// Moves a branch that is strictly behind straight to where the other one is.
@@ -447,151 +548,19 @@ fn fast_forward_ref(state: &AppState, source: &str, target: &str) -> Result<Merg
     })
 }
 
-/// Merges into a branch by going there and coming back.
-///
-/// Conflicts are the one thing that cannot be hidden: an unfinished merge lives
-/// in the working tree, so leaving would abandon it. In that case we stay on the
-/// target and say so — the resolver opens on a branch the user is actually
-/// standing on, which is the only state where finishing the merge makes sense.
-fn merge_by_visiting(
-    state: &AppState,
-    source: &str,
-    target: &str,
-    no_ff: bool,
-) -> Result<MergeOutcome, String> {
-    let path = state.path()?;
-    let original = journal::current_branch(state)
-        .ok_or_else(|| "HEAD is detached; check out a branch first".to_string())?;
-
-    let held = work::stash_before(state, &format!("merging {source} into {target}"))?;
-
-    let switched = git_cmd::run(&path, &["checkout", target, "--"])?;
-    if !switched.ok {
-        let _ = work::restore_after(state, held);
-        return Ok(MergeOutcome {
-            ok: false,
-            message: format!(
-                "{}\n\nCould not step onto {target} to merge into it. Commit or stash your \
-                 changes, or turn auto-stash on in settings.",
-                switched.stderr.trim()
-            ),
-            conflicts: Vec::new(),
-        });
-    }
-
-    let mut outcome = merge(state, source, no_ff)?;
-
-    if !outcome.conflicts.is_empty() {
-        outcome.message = format!(
-            "{}\n\nYou are on {target} with the merge half-done. Resolve it here, then switch \
-             back to {original}.",
-            outcome.message.trim()
-        );
-        // The stash belongs to the branch it was taken from, and putting it
-        // back on top of a conflicted tree would tangle the two.
-        if held.stashed {
-            outcome.message = format!(
-                "{}\nYour open changes are still stashed.",
-                outcome.message.trim()
-            );
-        }
-        return Ok(outcome);
-    }
-
-    let back = git_cmd::run(&path, &["checkout", &original, "--"])?;
-    if !back.ok {
-        outcome.ok = false;
-        outcome.message = format!(
-            "{}\n\nCould not return to {original} — you are on {target}.",
-            outcome.message.trim()
-        );
-        return Ok(outcome);
-    }
-
-    if outcome.ok {
-        outcome.message = format!("{source} merged into {target}");
-    }
-    match work::restore_after(state, held) {
-        Ok(Some(note)) => outcome.message = format!("{}\n{note}", outcome.message.trim()),
-        Err(error) => {
-            outcome.ok = false;
-            outcome.message = format!("{}\n{error}", outcome.message.trim());
-        }
-        Ok(None) => {}
-    }
-    Ok(outcome)
-}
-
-/// Rebases a branch onto another without asking the user to stand on it first.
-///
-/// `git rebase <onto> <branch>` checks the branch out itself, so the trip is
-/// git's rather than ours; all this adds is the way home and the stash around
-/// it. As with a merge, a conflict keeps us there, because that is where the
-/// rebase has to be finished.
+/// Rebases a branch onto another without asking the user to stand on it first:
+/// a [`visit`] to the branch, with the rebase made there.
 pub fn rebase_branch(state: &AppState, branch: &str, onto: &str) -> Result<MergeOutcome, String> {
-    let path = state.path()?;
-    let original = journal::current_branch(state)
-        .ok_or_else(|| "HEAD is detached; check out a branch first".to_string())?;
-    let held = work::stash_before(state, &format!("rebasing {branch} onto {onto}"))?;
-
-    let before = branch_oid(state, branch);
-    let out = git_cmd::run(
-        &path,
-        &["-c", "merge.conflictStyle=diff3", "rebase", onto, branch],
-    )?;
-    let conflicts = crate::conflict::list(state).unwrap_or_default();
-
-    let mut outcome = MergeOutcome {
-        ok: out.ok && conflicts.is_empty(),
-        message: format!("{}\n{}", out.stdout.trim(), out.stderr.trim())
-            .trim()
-            .to_string(),
-        conflicts,
-    };
-
-    if !outcome.conflicts.is_empty() {
-        outcome.message = format!(
-            "{}\n\nYou are on {branch} with the rebase half-done. Resolve it here, then switch \
-             back to {original}.",
-            outcome.message.trim()
-        );
-        return Ok(outcome);
+    if journal::current_branch(state).as_deref() == Some(branch) {
+        return rebase(state, onto);
     }
-
-    if outcome.ok {
-        journal::record(
-            state,
-            "rebase",
-            format!("Rebase {branch} onto {onto}"),
-            Some(branch.to_string()),
-            before,
-            branch_oid(state, branch),
-            Mode::Hard,
-            true,
-        );
-        outcome.message = format!("{branch} rebased onto {onto}");
-    }
-
-    if original != branch {
-        let back = git_cmd::run(&path, &["checkout", &original, "--"])?;
-        if !back.ok {
-            outcome.ok = false;
-            outcome.message = format!(
-                "{}\n\nCould not return to {original} — you are on {branch}.",
-                outcome.message.trim()
-            );
-            return Ok(outcome);
-        }
-    }
-    match work::restore_after(state, held) {
-        Ok(Some(note)) => outcome.message = format!("{}\n{note}", outcome.message.trim()),
-        Err(error) => {
-            outcome.ok = false;
-            outcome.message = format!("{}\n{error}", outcome.message.trim());
-        }
-        Ok(None) => {}
-    }
-    Ok(outcome)
+    visit(
+        state,
+        branch,
+        &format!("rebasing {branch} onto {onto}"),
+        &format!("{branch} rebased onto {onto}"),
+        |state| rebase(state, onto),
+    )
 }
 
 /// Commits in `head` that are not in `base` — the `base..head` range.
@@ -647,36 +616,29 @@ fn err(e: git2::Error) -> String {
     e.message().to_string()
 }
 
-/// Replays the current branch on top of another.
-///
-/// Like a merge, this stashes uncommitted work first: a rebase refuses to start
-/// with a dirty tree, and asking the user to tidy up by hand is the sort of
-/// thing this application exists to avoid.
+/// Replays the current branch on top of another, carrying open work on git's
+/// own `--autostash` the way [`pull`] does: a rebase refuses to start with a
+/// dirty tree, and asking the user to tidy up by hand is the sort of thing this
+/// application exists to avoid.
 pub fn rebase(state: &AppState, onto: &str) -> Result<MergeOutcome, String> {
     let path = state.path()?;
     let before = journal::head_oid(state);
     let branch = journal::current_branch(state);
 
-    let held = work::stash_before(state, &format!("rebasing onto {onto}"))?;
-    let out = git_cmd::run(&path, &["rebase", onto])?;
-    let conflicts = crate::conflict::list(state).unwrap_or_default();
+    let out = git_cmd::run(
+        &path,
+        &[
+            "-c",
+            "merge.conflictStyle=diff3",
+            "rebase",
+            "--autostash",
+            onto,
+        ],
+    )?;
+    let moved = out.ok;
+    let outcome = settled(state, out);
 
-    // Only put the changes back once the rebase has finished; mid-rebase the
-    // working tree belongs to git.
-    let mut notes = Vec::new();
-    if conflicts.is_empty() {
-        match work::restore_after(state, held) {
-            Ok(Some(note)) => notes.push(note),
-            Err(error) => notes.push(error),
-            Ok(None) => {}
-        }
-    } else if held.stashed {
-        notes.push(
-            "Your uncommitted changes are in the stash until the rebase finishes".to_string(),
-        );
-    }
-
-    if out.ok && conflicts.is_empty() {
+    if moved {
         journal::record(
             state,
             "rebase",
@@ -688,22 +650,7 @@ pub fn rebase(state: &AppState, onto: &str) -> Result<MergeOutcome, String> {
             true,
         );
     }
-
-    let mut message = [out.stdout.trim(), out.stderr.trim()]
-        .iter()
-        .filter(|s| !s.is_empty())
-        .cloned()
-        .collect::<Vec<_>>()
-        .join("\n");
-    for note in notes {
-        message = format!("{}\n{note}", message.trim());
-    }
-
-    Ok(MergeOutcome {
-        ok: out.ok && conflicts.is_empty(),
-        message: message.trim().to_string(),
-        conflicts,
-    })
+    Ok(outcome)
 }
 
 pub fn abort_rebase(state: &AppState) -> Result<String, String> {
@@ -715,17 +662,7 @@ pub fn abort_rebase(state: &AppState) -> Result<String, String> {
 pub fn continue_rebase(state: &AppState) -> Result<MergeOutcome, String> {
     let path = state.path()?;
     let out = git_cmd::run(&path, &["-c", "core.editor=true", "rebase", "--continue"])?;
-    let conflicts = crate::conflict::list(state).unwrap_or_default();
-    Ok(MergeOutcome {
-        ok: out.ok && conflicts.is_empty(),
-        message: [out.stdout.trim(), out.stderr.trim()]
-            .iter()
-            .filter(|s| !s.is_empty())
-            .cloned()
-            .collect::<Vec<_>>()
-            .join("\n"),
-        conflicts,
-    })
+    Ok(settled(state, out))
 }
 
 /// Whether git is part-way through something the user has to finish.
@@ -735,10 +672,11 @@ pub struct InProgress {
     pub rebasing: bool,
     pub cherry_picking: bool,
     pub reverting: bool,
-    /// A switch put the work back and it did not fit: files are conflicted,
-    /// git is running nothing, and the auto-stash the switch made is still on
-    /// the list. Only then is there a switch to undo — conflicts left by a
-    /// stash applied by hand look identical to git and are not undoable.
+    /// A switch, pull, merge or rebase put the work back and it did not fit:
+    /// files are conflicted, git is running nothing, and the auto-stash it
+    /// made is still on the list. Only then is there a restore to undo —
+    /// conflicts left by a stash applied by hand look identical to git and are
+    /// not undoable.
     pub restoring: bool,
     /// The stash a conflicted apply or pop came from, while its mess is still
     /// in the tree. Set only while the apply can still be taken back off.
@@ -794,7 +732,7 @@ pub fn in_progress(state: &AppState) -> Result<InProgress, String> {
         rebasing,
         cherry_picking,
         reverting,
-        restoring: !running && has_unmerged(&root) && auto_stash_on_top(&root),
+        restoring: !running && has_unmerged(&root) && work::auto_stash_on_top(&root),
         applied_stash: (!running).then(|| work::applied_stash(&root)).flatten(),
         prepared: prepared_message(&git_dir),
     })
@@ -817,16 +755,6 @@ fn prepared_message(git_dir: &std::path::Path) -> Option<String> {
         }
     }
     None
-}
-
-/// Whether the top stash is one this app made to carry work across a switch.
-///
-/// `undo_restore` puts that stash back, so without it on top there is nothing
-/// to undo and offering the button only leads to a refusal.
-fn auto_stash_on_top(root: &std::path::Path) -> bool {
-    git_cmd::run_checked(root, &["stash", "list", "-1"])
-        .map(|out| out.contains(work::AUTO_STASH))
-        .unwrap_or(false)
 }
 
 /// True when the index holds unmerged entries, whatever put them there.

@@ -465,12 +465,17 @@ pub struct Diverged {
     pub behind: usize,
 }
 
-/// Stops a positional ref name from being read as a flag. `--` alone does not
-/// do this — it separates revisions from paths, and a leading-dash revision is
-/// still parsed as an option before `--` is ever reached. A branch is not
-/// restricted to names `git branch` itself would create: `update-ref` writes
-/// `refs/heads/-f` without complaint, and a remote that carries one hands it
-/// straight to a click that means "check this out".
+/// Stops a positional ref name from being read as a flag by `git branch`. A
+/// branch is not restricted to names `git branch` itself would create:
+/// `update-ref` writes `refs/heads/-f` without complaint, and a remote that
+/// carries one hands it straight to a click.
+///
+/// Switching is done with `git switch`, not `checkout`: `switch` takes no
+/// paths, so a plain `--` ends its options and everything after it is a ref.
+/// `checkout` would need this constant instead, since its `--` separates
+/// revisions from paths — and the `checkout` in the git that Debian and Ubuntu
+/// ship (2.39, 2.43) does not know it, reads it as a pathspec, and refuses
+/// every switch the app makes.
 const END_OF_OPTIONS: &str = "--end-of-options";
 
 /// Checks out an existing local branch, or a remote branch by creating a local
@@ -493,40 +498,41 @@ pub fn checkout(state: &AppState, name: &str) -> Result<CheckoutOutcome, String>
     }
     let plan = {
         let repo = state.repo()?;
-        // Every argument form ends in `--`. Without it git falls back to
-        // reading the name as a path, and `git checkout notes.txt` on a name
-        // that is not a ref throws away the uncommitted changes in that file
-        // without a word. With it, a name that is not a ref is an error, which
-        // is the truth.
+        // `git switch`, never `git checkout`: checkout falls back to reading a
+        // name as a path, and `git checkout notes.txt` on a name that is not a
+        // ref throws away the uncommitted changes in that file without a word.
+        // `switch` has no paths to fall back to, so a name that is not a ref is
+        // an error, which is the truth — and its `--` keeps a name like `-f`
+        // from being read as a flag.
         if repo.find_branch(name, BranchType::Local).is_ok() {
-            Plan::Args(vec![
-                "checkout".into(),
-                END_OF_OPTIONS.into(),
-                name.into(),
-                "--".into(),
-            ])
+            Plan::Args(vec!["switch".into(), "--".into(), name.into()])
         } else if repo.find_branch(name, BranchType::Remote).is_ok() {
             let local = name.split_once('/').map(|(_, n)| n).unwrap_or(name);
             if repo.find_branch(local, BranchType::Local).is_ok() {
                 Plan::Update(local.to_string())
             } else {
                 Plan::Args(vec![
-                    "checkout".into(),
-                    "-b".into(),
+                    "switch".into(),
+                    "-c".into(),
                     local.into(),
                     "--track".into(),
-                    END_OF_OPTIONS.into(),
-                    name.into(),
                     "--".into(),
+                    name.into(),
                 ])
             }
+        } else if has_remote_branch(state, name) {
+            // A bare branch name that only a remote has yet — a review branch
+            // fetched a moment ago, say. Git's own guess, a local branch that
+            // tracks it, is what the click meant.
+            Plan::Args(vec!["switch".into(), "--".into(), name.into()])
         } else {
-            // Could be a tag or a raw revision; let git decide and report.
+            // Could be a tag or a raw revision, neither of which is a branch to
+            // stand on; let git decide and report.
             Plan::Args(vec![
-                "checkout".into(),
-                END_OF_OPTIONS.into(),
-                name.into(),
+                "switch".into(),
+                "--detach".into(),
                 "--".into(),
+                name.into(),
             ])
         }
     };
@@ -646,12 +652,7 @@ fn checkout_and_update(
 /// the branch stands against its upstream, and the caller here is about to
 /// change exactly that.
 fn switch_to(state: &AppState, local: &str) -> Result<String, String> {
-    let args = vec![
-        "checkout".to_string(),
-        END_OF_OPTIONS.to_string(),
-        local.to_string(),
-        "--".to_string(),
-    ];
+    let args = vec!["switch".to_string(), "--".to_string(), local.to_string()];
     let said = switch(state, local, &args)?;
     Ok(if said.contains(CARRIED) {
         said.trim().to_string()
@@ -667,8 +668,8 @@ fn switch_to(state: &AppState, local: &str) -> Result<String, String> {
 /// touches nothing but the ref and refuses anything that is not a
 /// fast-forward, so even a wrong ancestry answer above could not cost anything
 /// — and the switch that follows lands straight on the updated branch. Already
-/// standing on it, the update is `merge --ff-only`, with the open work set
-/// down and picked back up when it turns out to be in the way.
+/// standing on it, the update is `merge --ff-only`, with the open work carried
+/// on git's own `--autostash`.
 fn fast_forward_to(
     state: &AppState,
     local: &str,
@@ -678,36 +679,17 @@ fn fast_forward_to(
 ) -> Result<CheckoutOutcome, String> {
     let path = state.path()?;
     let before = local_oid(state, local);
-    let mut notes = Vec::new();
 
     let base = if standing {
-        let args = ["merge", "--ff-only", END_OF_OPTIONS, remote_ref];
-        match git_cmd::run_checked(&path, &args) {
-            Ok(_) => {}
-            Err(error)
-                if refused_over_local_changes(&error) && state.config().global.auto_stash =>
-            {
-                let held = work::stash_before(state, &format!("pulling {remote_ref}"))?;
-                let merged = git_cmd::run_checked(&path, &args);
-                match work::restore_after(state, held) {
-                    Ok(Some(note)) => notes.push(note),
-                    Err(note) => notes.push(note),
-                    Ok(None) => {}
-                }
-                merged?;
-            }
-            Err(error) => return Err(error),
-        }
+        git_cmd::run_checked(
+            &path,
+            &["merge", "--ff-only", "--autostash", "--", remote_ref],
+        )?;
         format!("Pulled {behind} {}", commits(behind))
     } else {
         git_cmd::run_checked(
             &path,
-            &[
-                "fetch",
-                ".",
-                END_OF_OPTIONS,
-                &format!("{remote_ref}:{local}"),
-            ],
+            &["fetch", ".", "--", &format!("{remote_ref}:{local}")],
         )?;
         let said = switch_to(state, local).map_err(|error| {
             format!("{local} was brought up to date with {remote_ref}, but switching to it did not work.\n{error}")
@@ -726,11 +708,7 @@ fn fast_forward_to(
         true,
     );
 
-    let mut message = format!("{base} from {remote_ref}");
-    for note in notes {
-        message = format!("{message}\n{note}");
-    }
-    Ok(CheckoutOutcome::said(message))
+    Ok(CheckoutOutcome::said(format!("{base} from {remote_ref}")))
 }
 
 /// The checkout of a branch that has moved on while its remote did too.
@@ -811,13 +789,12 @@ fn commits(n: usize) -> &'static str {
 /// local one should be called, which is not always the last path segment.
 pub fn checkout_tracking(state: &AppState, local: &str, tracking: &str) -> Result<String, String> {
     let args = vec![
-        "checkout".to_string(),
-        "-b".to_string(),
+        "switch".to_string(),
+        "-c".to_string(),
         local.to_string(),
         "--track".to_string(),
-        END_OF_OPTIONS.to_string(),
-        tracking.to_string(),
         "--".to_string(),
+        tracking.to_string(),
     ];
     switch(state, local, &args)
 }
@@ -826,12 +803,11 @@ pub fn checkout_tracking(state: &AppState, local: &str, tracking: &str) -> Resul
 /// arrived without a branch to hang them on.
 pub fn checkout_at(state: &AppState, local: &str, revision: &str) -> Result<String, String> {
     let args = vec![
-        "checkout".to_string(),
-        "-b".to_string(),
+        "switch".to_string(),
+        "-c".to_string(),
         local.to_string(),
-        END_OF_OPTIONS.to_string(),
-        revision.to_string(),
         "--".to_string(),
+        revision.to_string(),
     ];
     switch(state, local, &args)
 }
@@ -889,7 +865,11 @@ fn carry(state: &AppState, name: &str, args: &[&str], refusal: &str) -> Result<S
     let previous = crate::journal::current_branch(state);
     // Where to put HEAD back if this does not work out. A detached HEAD has no
     // branch to name, so the commit itself is the way back.
-    let was = previous.clone().or_else(|| crate::journal::head_oid(state));
+    let was: Option<Vec<String>> = match &previous {
+        Some(branch) => Some(vec!["switch".into(), "--".into(), branch.clone()]),
+        None => crate::journal::head_oid(state)
+            .map(|oid| vec!["switch".into(), "--detach".into(), "--".into(), oid]),
+    };
     let message = match &previous {
         Some(branch) => format!("{} on {branch}: switching to {name}", work::AUTO_STASH),
         None => format!("{}: switching to {name}", work::AUTO_STASH),
@@ -921,8 +901,7 @@ fn carry(state: &AppState, name: &str, args: &[&str], refusal: &str) -> Result<S
         // Only the staged/unstaged split could not be restored, which is not
         // worth refusing the switch over. The tree is cleaned first: a failed
         // apply can leave part of itself behind.
-        || (git_cmd::run_checked(&root, &["reset", "--hard", "HEAD"]).is_ok()
-            && git_cmd::run_checked(&root, &["stash", "apply"]).is_ok());
+        || (unapply(&root, &held) && git_cmd::run_checked(&root, &["stash", "apply"]).is_ok());
 
     if landed {
         drop_stash(state, &held);
@@ -931,9 +910,10 @@ fn carry(state: &AppState, name: &str, args: &[&str], refusal: &str) -> Result<S
 
     // It would have conflicted. Put everything back exactly as it was: the
     // tree, then the branch, then the work on top of it.
-    let _ = git_cmd::run_checked(&root, &["reset", "--hard", "HEAD"]);
+    unapply(&root, &held);
     if let Some(back) = &was {
-        let _ = git_cmd::run_checked(&root, &["checkout", END_OF_OPTIONS, back, "--"]);
+        let back: Vec<&str> = back.iter().map(String::as_str).collect();
+        let _ = git_cmd::run_checked(&root, &back);
     }
     if git_cmd::run_checked(&root, &["stash", "pop", "--index"]).is_err()
         && git_cmd::run_checked(&root, &["stash", "pop"]).is_err()
@@ -944,6 +924,40 @@ fn carry(state: &AppState, name: &str, args: &[&str], refusal: &str) -> Result<S
         ));
     }
     Err(in_the_way(name, refusal))
+}
+
+/// Takes a half-applied stash back off the tree.
+///
+/// `reset --hard` puts the tracked files back and leaves untracked ones where
+/// they are — and an apply that stopped part-way has often already written the
+/// stash's untracked files before it stopped. They are copies of what the
+/// stash still holds (the push that made it took the originals off the disk),
+/// and left in place they make the next apply, or the pop that puts everything
+/// back, refuse over files that "already exist". So they go too: only the
+/// paths the stash carries, named literally, and nothing else in the tree.
+fn unapply(root: &std::path::Path, held: &str) -> bool {
+    if git_cmd::run_checked(root, &["reset", "--hard", "HEAD"]).is_err() {
+        return false;
+    }
+    // A stash made with `--include-untracked` keeps those files in a third
+    // parent; one made without has no such parent and nothing to clean.
+    let Ok(listed) = git_cmd::run_checked(
+        root,
+        &["ls-tree", "-r", "--name-only", &format!("{held}^3")],
+    ) else {
+        return true;
+    };
+    let paths: Vec<String> = listed
+        .lines()
+        .filter(|line| !line.is_empty())
+        .map(|path| format!(":(literal){path}"))
+        .collect();
+    if paths.is_empty() {
+        return true;
+    }
+    let mut args = vec!["clean", "-f", "-d", "--"];
+    args.extend(paths.iter().map(String::as_str));
+    git_cmd::run_checked(root, &args).is_ok()
 }
 
 /// Removes the stash this made, wherever it has ended up in the list.
@@ -1069,22 +1083,18 @@ pub fn create_branch(
     checkout: bool,
 ) -> Result<String, String> {
     let path = state.path()?;
+    // `switch -c` ends its options at `--`, so a start point named like a flag
+    // is still a start point. Plain `branch` has no such grammar — a `--`
+    // there is read as a bogus second start point — hence `--end-of-options`.
     let mut args: Vec<&str> = if checkout {
-        vec!["checkout", "-b", name, END_OF_OPTIONS]
+        vec!["switch", "-c", name, "--"]
     } else {
         vec!["branch", END_OF_OPTIONS, name]
     };
     if let Some(start) = start {
         args.push(start);
     }
-    // `checkout -b` keeps the `revs -- paths` grammar even though a start
-    // point is never read as a path; plain `branch` has no such grammar, and a
-    // trailing `--` there is read as a bogus second start point instead of
-    // being discarded.
-    if checkout {
-        args.push("--");
-    }
-    // `git checkout -b` says "Switched to a new branch" on stderr, so its stdout
+    // `git switch -c` says "Switched to a new branch" on stderr, so its stdout
     // is empty on success. Say it ourselves rather than hand back nothing.
     git_cmd::run_checked(&path, &args)?;
     Ok(match (checkout, start) {

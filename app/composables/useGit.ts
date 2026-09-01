@@ -294,6 +294,8 @@ export interface PushPreview {
   branch: string
   remote: string
   upstream: string | null
+  /** Where the upstream stood when this was read; a force push leases on it. */
+  upstream_oid: string | null
   new_upstream: boolean
   ahead: number
   behind: number
@@ -1569,19 +1571,33 @@ export function useGit() {
       if (forge.usable.value) void forge.loadReviews()
       return ok
     },
-    pull: async (rebase = false) => {
-      const out = await guard('Pull', () => invoke<CmdOutput>('pull', { rebase }))
-      const ok = report('Pull', out)
+    /**
+     * Pulls the checked out branch. With `rebase` left out the user's own
+     * `pull.rebase` decides, the way a typed `git pull` would.
+     */
+    pull: async (rebase?: boolean) => {
+      const outcome = await guard('Pull', () => invoke<MergeOutcome>('pull', { rebase }))
+      if (outcome) note(`Pull: ${outcome.message}`, outcome.ok ? 'info' : 'error')
       await refresh()
-      return ok
+      return outcome
     },
     pushPreview: (branch?: string, fetchFirst = false) =>
       guard('Push preview', () =>
         invoke<PushPreview>('push_preview', { branch, fetchFirst })
       ),
-    push: async (remoteName: string, branch: string, force: boolean, setUpstream: boolean) => {
+    /**
+     * `lease` is the upstream commit the force-push preview showed: the push
+     * is allowed to replace that and nothing newer.
+     */
+    push: async (
+      remoteName: string,
+      branch: string,
+      force: boolean,
+      setUpstream: boolean,
+      lease?: string | null
+    ) => {
       const out = await guard('Push', () =>
-        invoke<CmdOutput>('push', { remoteName, branch, force, setUpstream })
+        invoke<CmdOutput>('push', { remoteName, branch, force, setUpstream, lease })
       )
       const ok = report(force ? 'Force push' : 'Push', out)
       // A rejection for being behind has an answer; hand it to the toolbar
@@ -1606,21 +1622,23 @@ export function useGit() {
      * Brings a branch up to date whether or not it is checked out, and whether
      * or not there are open changes. The backend does whatever that takes.
      */
-    pullBranch: async (branch: string, rebase = false) => {
-      const out = await guard('Pull', () =>
-        invoke<CmdOutput>('pull_branch', { branch, rebase })
+    pullBranch: async (branch: string, rebase?: boolean) => {
+      const outcome = await guard('Pull', () =>
+        invoke<MergeOutcome>('pull_branch', { branch, rebase })
       )
-      const ok = report('Pull', out)
+      if (outcome) note(`Pull ${branch}: ${outcome.message}`, outcome.ok ? 'info' : 'error')
       await refresh()
-      return ok
+      return outcome
     },
     pushBranch: async (branch: string, setUpstream: boolean) => {
       // A branch that already tracks something goes back where it came from,
-      // whichever remote that is; only a new branch has to guess.
+      // whichever remote that is; only a new branch has to be told, and the
+      // answer is the repository's own remote — never a fork added to look
+      // at somebody's review.
       const upstream = store.refs?.locals.find((b) => b.name === branch)?.upstream ?? null
       const tracked = upstream?.split('/')[0] ?? null
-      const remotes = tracked ? [] : await invoke<string[]>('remotes').catch(() => [])
-      const target = tracked ?? remotes[0] ?? 'origin'
+      const primary = tracked ? null : await invoke<string | null>('primary_remote').catch(() => null)
+      const target = tracked ?? primary ?? 'origin'
       const out = await guard('Push', () =>
         invoke<CmdOutput>('push', {
           remoteName: target,
@@ -1711,7 +1729,7 @@ export function useGit() {
     },
     abortMerge: () => run<string>('Abort merge', 'abort_merge'),
     /** The way out of a conflicted auto-stash, which no abort can undo. */
-    undoRestore: () => run<string>('Undo the switch', 'undo_restore'),
+    undoRestore: () => run<string>('Put it back', 'undo_restore'),
 
     conflictRead: (path: string) =>
       guard('Read conflict', () => invoke<ConflictFile>('conflict_read', { path })),
