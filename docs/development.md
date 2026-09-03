@@ -1,91 +1,57 @@
 # Development
 
-Rust and Tauri underneath, Nuxt (Vue 3) on top. Everything the user-facing
-[README](../README.md) leaves out lives here.
+Tauri 2 and Rust underneath, Nuxt 4 (Vue 3) on top. This is the doc for people hacking on gitnoob. The [README](../README.md) covers install and the feature list.
 
 ## Running
 
-Requires Rust and Node.
+You need Node and Rust.
 
 ```sh
 npm install
-npm run app          # development: starts Nuxt and the window together
-npm run app:build    # a real bundle in src-tauri/target/release/bundle
-npm run typecheck    # vue-tsc over the frontend
-npm test             # vitest over the frontend
+npm run app          # dev: Nuxt dev server plus the Tauri window
+npm run app:build    # release bundle in src-tauri/target/release/bundle
+npm run typecheck    # vue-tsc
+npm test             # vitest
 cargo test --manifest-path src-tauri/Cargo.toml
 ```
 
-**Use one of the first two to run it.** Launching
-`src-tauri/target/debug/gitnoob` by hand shows a blank window: a debug build
-loads `devUrl` from `tauri.conf.json` rather than the bundle compiled into it,
-and with no dev server there is nothing to show. Only a release build serves
-`frontendDist`.
+Always run the app through `npm run app` or a release build. Launching `src-tauri/target/debug/gitnoob` by hand gives a blank window, because a debug build loads the dev server URL from `tauri.conf.json` and there is none running.
 
-`npm run dev` alone serves the frontend in a browser, where every backend call
-fails because `invoke` needs the Tauri host. It is still useful for checking
-layout, and the labs there draw a page against fixtures rather than against a
-repository — `?lab=review` the review page, `?lab=conflict` the resolver,
-`?lab=home` the home tab, and `?lab=squash` the commit graph, the working-tree
-panel and the sidebar together, which is where squashing, a moved file and the
-branch menus can be looked at without arranging a repository into that state
-first. `&settings=ai` on that one opens the settings on a section;
-`&slow=1200` on the home lab holds the read back that many milliseconds, which
-is the only way to look at the outline the page draws while it waits. All four
-are compiled out of anything built for release. `GITUI_DEVTOOLS=1` opens the web inspector; debug builds only.
+`npm run dev` on its own serves the frontend in a browser. Every backend call fails there because `invoke` needs Tauri, but it is handy for layout work. There are also a few fixture-backed lab pages that let you look at a screen without setting up a repo in that state:
+
+- `?lab=review` the pull request page
+- `?lab=conflict` the conflict resolver
+- `?lab=home` the home tab (`&slow=1200` delays the load so you can see the skeleton)
+- `?lab=squash` the graph, working tree panel and sidebar together (`&settings=ai` opens settings on a section)
+
+The labs are compiled out of release builds. `GITUI_DEVTOOLS=1` opens the web inspector in debug builds.
 
 ### Platform build dependencies
 
-- **Linux** — `libgtk-3-dev`, `libwebkit2gtk-4.1-dev`, `libsoup-3.0-dev`,
-  `libjavascriptcoregtk-4.1-dev`.
-- **Windows** — the Visual Studio Build Tools (the MSVC x64 compiler and a
-  Windows SDK), plus the WebView2 runtime, which Windows 11 already ships.
-- **macOS** — Xcode command line tools.
+- **Linux**: `libgtk-3-dev`, `libwebkit2gtk-4.1-dev`, `libsoup-3.0-dev`, `libjavascriptcoregtk-4.1-dev`
+- **Windows**: Visual Studio Build Tools (MSVC x64 and a Windows SDK) plus the WebView2 runtime
+- **macOS**: Xcode command line tools
 
-### Two Nuxt quirks worth knowing
+### Two Nuxt quirks
 
-Nuxt stamps `crossorigin` on its stylesheet and module script tags, and Tauri
-serves the bundle from the `tauri://` protocol where those CORS requests fail —
-a blank window with no CSS. A `prerender:generate` hook in `nuxt.config.ts`
-strips them. `cssCodeSplit` is off so the page links one stylesheet rather than
-fetching per-route chunks at runtime.
+Nuxt puts `crossorigin` on its stylesheet and script tags. Tauri serves the bundle from `tauri://`, where those CORS requests fail and you get a blank window with no CSS. A `prerender:generate` hook in `nuxt.config.ts` strips the attribute. `cssCodeSplit` is off so the page links one stylesheet instead of fetching per-route chunks at runtime.
 
 ## How it works
 
-Reads go through **libgit2** (the `git2` crate): the revision walk, diffs,
-status, ahead/behind counts, ref enumeration. They need to be fast and they need
-structured data rather than text to parse.
+**Reads go through libgit2** (the `git2` crate): revision walk, diffs, status, ahead/behind, refs. Fast, and structured data instead of text to parse.
 
-Writes go through the **`git` CLI**: checkout, add, restore, commit, merge,
-fetch, pull, push, stash. That keeps the user's own environment in force —
-credential helpers, SSH agent and `~/.ssh/config`, hooks, commit signing,
-`merge.conflictStyle` — none of which libgit2 gets for free. It is also what
-makes the activity log honest: it shows the same commands and the same output a
-terminal would.
+**Writes go through the `git` CLI**: checkout, add, restore, commit, merge, fetch, pull, push, stash. This keeps the user's environment in force: credential helpers, SSH agent, `~/.ssh/config`, hooks, commit signing, `merge.conflictStyle`. It also makes the activity log honest, since it shows the exact commands a terminal would run.
 
-Two consequences worth knowing:
+Two things that follow from this:
 
-- Where git needs a decision, the app makes it explicitly rather than leaving it
-  to config. A pull passes `--rebase` or `--no-rebase`, because a bare `git
-  pull` across a divergence stops to ask. Ref arguments are followed by `--`,
-  because `git checkout <name>` on a name that is not a ref quietly restores the
-  *file* of that name over your edits. Paths are passed as `:(literal)`
-  pathspecs, because a pathspec after `--` still wildmatches, and a file named
-  `a[b].txt` would otherwise take `ab.txt` with it.
-- `git2` is built with `default-features = false`, so there is no `openssl-sys`
-  or `libssh2-sys` in the build: the transport those provide is not used.
+- Where git would stop and ask, the app decides explicitly. A pull passes `--rebase` or `--no-rebase`. Ref arguments are followed by `--`, because `git checkout <name>` on a non-ref restores the file of that name over your edits. Paths are passed as `:(literal)` pathspecs, because a pathspec after `--` still wildmatches and `a[b].txt` would otherwise match `ab.txt`.
+- `git2` is built with `default-features = false`. No `openssl-sys`, no `libssh2-sys`, because that transport is never used.
 
-## Which repository a call is about
+## Which repo a call is about
 
-The window has project tabs; the backend holds one open path. Every call from
-the window carries `__repo` — the repository it believes it is asking about —
-and one wrapper around the invoke handler (`aimed`, at the foot of `lib.rs`)
-applies it before the command runs. The frontend side is
-`app/composables/useInvoke.ts`, which every `invoke` in the app goes through.
+The window has project tabs. The backend holds one open path. Every call from the frontend carries `__repo`, the repository it thinks it is talking to, and the `aimed` wrapper at the bottom of `lib.rs` applies it before the command runs. On the frontend that is `app/composables/useInvoke.ts`.
 
-**Import `invoke` from `useInvoke`, never from `@tauri-apps/api/core`.** A
-call that skips the wrapper is not addressed to anything, and will act on
-whichever repository happens to be open when it lands.
+**Import `invoke` from `useInvoke`, never from `@tauri-apps/api/core`.** A call that skips the wrapper acts on whichever repo happens to be open when it lands.
 
 ## Layout
 
@@ -93,143 +59,90 @@ whichever repository happens to be open when it lands.
 src-tauri/src
   lib.rs        Tauri command surface
   state.rs      the open repository
-  git_cmd.rs    git CLI wrapper, and the command log the window shows
+  git_cmd.rs    git CLI wrapper and the command log
   refs.rs       repo info, branches, tags, stashes, status, checkout
-  create.rs     clone and create: bringing a repository into existence
-  graph.rs      revision walk and commit-graph lane layout
-  diff.rs       commit details, file diffs, working-tree diffs
-  remote.rs     fetch, pull, push preview, push, merge, rebase
-  rebase.rs     the interactive rebase, and squashing a run of commits
+  create.rs     clone and init
+  graph.rs      revision walk and lane layout
+  diff.rs       commit details, file diffs, working tree diffs
+  blame.rs      blame
+  remote.rs     fetch, pull, push, merge, rebase
+  rebase.rs     interactive rebase and squash
   conflict.rs   conflict marker parsing and resolution
   work.rs       stage, unstage, discard, commit, amend, stash, hunks
-  worktree.rs   listing, adding and removing worktrees
+  worktree.rs   worktrees
+  submodule.rs  submodules
+  lfs.rs        git-lfs
   journal.rs    undo and redo
+  home.rs       the home tab
   config.rs     settings, profiles, projects
   forge/        GitHub and GitLab
-    mod.rs        the calls a command makes
-    types.rs      what a forge hands back
-    http.rs       account, host, request, pagination
-    people.rs     faces, fetched once and cached
-    github.rs     what is GitHub's alone
-    gitlab.rs     what is GitLab's alone
   review.rs     one pull or merge request, rolled up
   ai.rs         OpenRouter
   ssh.rs        per-profile keys
-  avatar.rs     author pictures, fetched once and cached
+  sign.rs       commit signing
+  avatar.rs     author pictures, cached
   watch.rs      filesystem watcher
+src-tauri/tests
+  repo.rs       integration tests against real repos built with git
 app
-  app.vue           shell, tabs, repository picker
-  composables/      the single shared store and the invoke wrappers
-  components/       sidebar, graph, panels, dialogs, conflict resolver, review
+  app.vue           shell, tabs, repo picker
+  composables/      useGit.ts is the shared store; useInvoke.ts wraps every call
+  components/       everything visual
   assets/css/       main.css and the generated themes.css
+test                vitest, unit and happy-dom component tests
 scripts
-  release.mjs       the one command that cuts a release
-  theme/            the palette, and the generator that writes themes.css
+  release.mjs       cuts a release
+  theme/            palette and the generator for themes.css
 ```
 
 ## Themes
 
-`app/assets/css/themes.css` and `app/composables/themeList.ts` are **generated**
-from `scripts/theme/palette.mjs` by `npm run theme`. Edit the palette, not the
-output — a test regenerates both and fails if what is checked in has drifted,
-and the same test checks every theme at every contrast level against the
-contrast ratios each piece of text has to meet.
+`app/assets/css/themes.css` and `app/composables/themeList.ts` are generated from `scripts/theme/palette.mjs` by `npm run theme`. Edit the palette, not the output. A test regenerates both and fails if the checked-in files drifted, and checks every theme against WCAG contrast ratios.
 
-## The content security policy
+## Content security policy
 
-`app.security.csp` in `tauri.conf.json` is `default-src 'self'`, with
-`img-src` opened to `data:` and `https:` (author pictures arrive as data
-URIs; a request's description can hold a screenshot) and `connect-src` opened
-to `ipc: http://ipc.localhost`, which is how a call reaches the backend at
-all.
+`app.security.csp` in `tauri.conf.json` is `default-src 'self'`, with `img-src` opened to `data:` and `https:` for avatars and screenshots in PR descriptions, and `connect-src` opened to `ipc: http://ipc.localhost` so calls can reach the backend at all.
 
-Nuxt's inline import map is what kept this off for a long time. It still cannot
-be an external file — an import map has to be inline — but `tauri-build`
-hashes the inline scripts of the bundled page at build time and adds those
-hashes to the policy, so they are allowed by hash rather than by putting
-`'unsafe-inline'` back.
+Nuxt's inline import map has to stay inline. `tauri-build` hashes the inline scripts at build time and adds the hashes to the policy, which is how they are allowed without `'unsafe-inline'`.
 
-The policy only applies to a **release** build, since a debug build loads the
-page from the dev server. Changing it means checking it in a real bundle: a
-policy that blocks the app's own scripts shows as a blank window.
+The policy only applies to release builds. If you change it, check it in a real bundle: a policy that blocks the app's own scripts shows as a blank window.
 
 ## Testing
 
 ```sh
-cargo test --manifest-path src-tauri/Cargo.toml   # 377
-npm test                                          # 402 across 47 files
+cargo test --manifest-path src-tauri/Cargo.toml
+npm test
 npm run typecheck
 ```
 
-The Rust suite is unit tests over the parts with fiddly rules (remote URL
-parsing, API bases, check and verdict states, the merge-readiness roll-up,
-one-hunk patch rebuilding, SSH command building, transport-failure explanations,
-AI answer parsing, and the config file's round trip, migrations and corrupt-file
-path) and integration tests against real repositories built with the `git` CLI —
-graph lane invariants, divergence reporting, every conflict-resolution
-combination, undo and redo, auto-stash, cherry-picking out of order, squashing a
-run of commits and undoing it, files moved with `git mv` and files moved with
-the shell, staged, unstaged, discarded and read as a diff,
-empty repositories, detached HEAD, CRLF files, cloning and creating
-repositories, managing remotes against a bare one, and pushing to one, force
-push and its lease included.
+The Rust suite is unit tests for the fiddly parsers and roll-ups, plus integration tests that build real repositories with the `git` CLI: graph lanes, divergence, every conflict combination, undo and redo, auto-stash, cherry-pick, squash, moved files, empty repos, detached HEAD, CRLF, clone and init, remotes against a bare repo, push and force push.
 
-The frontend suite covers the review page end to end against a fixture forge,
-the markdown renderer, the patch parser, the conflict grid, the diff and graph
-views, the branch-deletion verdicts, the ref chips, the squash dialog and the
-menus that open it, the highlighter and the themes.
+The frontend suite covers the review page against a fixture forge, the markdown renderer, patch parser, conflict grid, diff and graph views, branch deletion, ref chips, squash dialog, highlighter and themes. Component tests declare `@vitest-environment happy-dom` at the top of the file.
 
-Two notes for anyone running the suites on Windows:
+CI runs both suites on all three platforms on every push and PR (`.github/workflows/check.yml`). Two Windows notes:
 
-- A checkout writes CRLF, so a test comparing a file against a fixture written
-  with bare newlines has to normalise first. The theme test does.
-- `*` cannot be part of a filename, so the pathspec test that needs one is
-  `#[cfg(not(windows))]`; the same hazard is covered everywhere by a name with
-  square brackets in it.
+- A checkout writes CRLF, so tests comparing against fixtures with bare newlines normalise first.
+- `*` is not a valid filename on Windows, so the pathspec test that needs one is `#[cfg(not(windows))]`. The square-bracket case covers the same hazard everywhere.
 
-`npm run typecheck` reports nothing, and the checks workflow fails if that
-changes.
+`npm run typecheck` reports nothing today and CI fails if that changes.
 
 ## Releasing
-
-One command:
 
 ```sh
 npm run release 0.5.0
 ```
 
-It runs both suites and stops if either fails, writes the version into
-`tauri.conf.json`, `Cargo.toml` and `Cargo.lock`, commits that, tags it and
-pushes — and refuses before any of it on a dirty tree, a branch that is not
-main, a tag that already exists here or on the remote, or a version that is not
-above the current one. `--dry-run` runs every check and both suites and changes
-nothing; `--skip-tests`, `--any-branch` and `--force` lift one check each.
+It runs both suites, writes the version into `tauri.conf.json`, `Cargo.toml` and `Cargo.lock`, commits, tags and pushes. It refuses on a dirty tree, a branch that is not main, an existing tag, or a version that is not above the current one. `--dry-run` runs every check and changes nothing. `--skip-tests`, `--any-branch` and `--force` each lift one check.
 
-The push of the `v*` tag is what starts `.github/workflows/release.yml`, which
-builds the app for all three platforms and publishes a GitHub release with the
-installers attached, so nobody has to install Rust to run it.
+Pushing the `v*` tag starts `.github/workflows/release.yml`, which builds all three platforms and publishes a GitHub release with the installers attached. A draft release is created first so the three jobs have one place to upload to, and it is published only when all three finish.
 
-What comes out: a universal `.dmg` for macOS covering Intel and Apple Silicon,
-an NSIS `.exe` and an `.msi` for Windows, and an `.AppImage`, a `.deb` and an
-`.rpm` for Linux — the Linux build on Ubuntu 22.04 rather than the newest
-release, because the AppImage carries the glibc it was built against as a floor.
+The workflow runs `scripts/release.mjs --write-only` before building so the version compiled into the app matches the tag. This matters: the updater compares that number against the newest release, and an app that reports an older version than it is would offer to install itself forever.
 
-A draft release is created before the three build jobs start, so they have an
-agreed place to upload to rather than three of them each creating "the"
-release, and it is published only once all three have finished. A release is
-never half a release.
-
-The version compiled into the app is taken from the tag before anything is
-built — the workflow runs `scripts/release.mjs --write-only`, the same writing
-the release command does by hand, so the two cannot drift. It matters more than
-it looks: the updater compares that number against the newest release, and an
-app that reports a version older than the one it is would offer to install
-itself, for ever.
+What comes out: a universal `.dmg`, an NSIS `.exe` and an `.msi`, and an `.AppImage`, `.deb` and `.rpm`. Linux builds on Ubuntu 22.04 on purpose, because the AppImage carries the glibc it was built against as a floor.
 
 ### Signing
 
-Bundles are signed with the project's updater key, and both halves of it must be
-dealt with once:
+Bundles are signed with the project's updater key:
 
 ```sh
 npx tauri signer generate -w ~/.tauri/gitnoob.key
@@ -237,32 +150,18 @@ gh secret set TAURI_SIGNING_PRIVATE_KEY < ~/.tauri/gitnoob.key
 gh secret set TAURI_SIGNING_PRIVATE_KEY_PASSWORD --body ""
 ```
 
-The public half lives in `tauri.conf.json` under `plugins.updater.pubkey` and is
-already there. **Keep the private key.** It is not in the repository and cannot
-be recovered from anything that is; lose it and every installed copy refuses
-every future update, and everyone reinstalls by hand.
+The public half is in `tauri.conf.json` under `plugins.updater.pubkey`. **Do not lose the private key.** It is not in the repo and cannot be recovered. Without it every installed copy refuses every future update.
 
-With the secrets missing the build fails rather than publishing unsigned
-bundles, which is the intended failure: an unsigned bundle is one every
-installed copy would refuse anyway.
+With the secrets missing, the build fails instead of publishing unsigned bundles. That is intended.
 
-Nothing is code-signed with an Apple or Windows certificate yet, so a first
-launch needs a nudge. Each release says how to get past it.
+Nothing is code-signed with an Apple or Windows certificate yet, so first launch needs a click past the warning.
 
 ### Updating in place
 
-Settings → Updates: the version installed, a button to check, and the release
-notes of whatever is on offer before the user agrees to it. Installing downloads
-the bundle, verifies its signature against the public key compiled into the
-running app, writes it and restarts. On Linux this works from the AppImage;
-installed from the `.deb` or `.rpm`, updating belongs to the package manager.
+Settings → Updates shows the installed version, a check button, and the release notes of whatever is on offer. Installing downloads the bundle, verifies the signature against the compiled-in public key, writes it and restarts. On Linux this works from the AppImage; `.deb` and `.rpm` installs update through the package manager.
 
-The app also asks once at launch, quietly — a machine that is offline should not
-be told so every time the window opens — and what it finds turns up as a line in
-the profile menu and a dot beside Updates in settings. "Look for a new version at
-launch" in that same page turns it off.
+The app also checks once at launch, quietly. A new version shows as a line in the profile menu and a dot next to Updates in settings. "Look for a new version at launch" in that page turns it off.
 
 ## Screenshots
 
-The README's images live in [`screenshots/`](screenshots/), which has its own
-note on what each one is meant to show and how to take a replacement.
+The README's images live in [`screenshots/`](screenshots/).
