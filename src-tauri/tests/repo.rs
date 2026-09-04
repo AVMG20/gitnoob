@@ -77,6 +77,27 @@ impl Sandbox {
         self.git(&["commit", "-q", "-m", message]);
     }
 
+    /// Runs git with a committer date, for the tests whose picture depends on
+    /// which of two commits is newer. Everything else in a test is made in
+    /// the same second, and the walk orders commits made in the same second
+    /// as it pleases.
+    fn git_dated(&self, args: &[&str], date: &str) -> String {
+        let out = Command::new("git")
+            .args(args)
+            .current_dir(&self.root)
+            .env("GIT_AUTHOR_DATE", date)
+            .env("GIT_COMMITTER_DATE", date)
+            .output()
+            .expect("git should be on PATH");
+        assert!(
+            out.status.success(),
+            "git {:?} failed: {}",
+            args,
+            String::from_utf8_lossy(&out.stderr)
+        );
+        String::from_utf8_lossy(&out.stdout).into_owned()
+    }
+
     fn state(&self) -> AppState {
         // Reading a token on an unsigned build puts a macOS password dialog on
         // screen, and a test suite that stops to ask for a password is a test
@@ -943,6 +964,275 @@ fn graph_lanes_and_segments_stay_consistent() {
     let root = page.rows.last().unwrap();
     assert!(root.parents.is_empty());
     assert!(root.segments.iter().all(|s| s.y2 != 2 || s.x1 != root.lane));
+}
+
+/// A branch behind its upstream used to have the commits still to pull drawn
+/// as a branch off to the side, rejoining at the local tip: the shape of a
+/// merge, for what is a fast-forward. They belong straight above, held back.
+#[test]
+fn what_the_upstream_has_and_you_do_not_sits_straight_above_you() {
+    let sandbox = Sandbox::new("behind");
+    sandbox.commit("a.txt", "1\n", "Root");
+    sandbox.commit("a.txt", "2\n", "Have this");
+    let bare = bare_origin(&sandbox, "behind");
+    sandbox.git(&["push", "-q", "-u", "origin", "main"]);
+    sandbox.commit("a.txt", "3\n", "Pushed by someone else");
+    sandbox.commit("a.txt", "4\n", "And this");
+    sandbox.git(&["push", "-q", "origin", "main"]);
+    // Back to where the local branch was: origin/main is now two ahead of it.
+    sandbox.git(&["reset", "-q", "--hard", "HEAD~2"]);
+
+    let page = graph::build(&sandbox.state(), 500).unwrap();
+    let by = |summary: &str| {
+        page.rows
+            .iter()
+            .find(|row| row.summary == summary)
+            .unwrap_or_else(|| panic!("{summary} should be in the graph"))
+    };
+    let top = by("And this");
+    let mid = by("Pushed by someone else");
+    let mine = by("Have this");
+
+    assert!(top
+        .labels
+        .iter()
+        .any(|l| l.kind == "remote" && l.name == "origin/main"));
+    assert!(mine.labels.iter().any(|l| l.kind == "local" && l.head));
+
+    // One straight column, no line stepping sideways anywhere in it.
+    for row in [top, mid, mine] {
+        assert_eq!(row.lane, 0, "{} left the trunk's column", row.summary);
+        for segment in &row.segments {
+            assert_eq!(
+                segment.x1, segment.x2,
+                "{} is drawn as a branch",
+                row.summary
+            );
+        }
+    }
+
+    // Not pulled yet, and drawn as such down to the commit that is here.
+    assert!(top.unpulled && mid.unpulled);
+    assert!(!mine.unpulled);
+    assert!(top.segments.iter().all(|s| s.faint));
+    assert!(mid.segments.iter().all(|s| s.faint));
+    assert!(mine.segments.iter().filter(|s| s.y2 == 1).all(|s| s.faint));
+    assert!(mine.segments.iter().filter(|s| s.y1 == 1).all(|s| !s.faint));
+    // And the commits themselves are not what the remote lacks.
+    assert!(page.rows.iter().all(|row| !row.unpushed));
+
+    let _ = std::fs::remove_dir_all(bare.parent().unwrap());
+}
+
+/// A squash leaves one commit with one parent, and the branch it squashed with
+/// nothing pointing back at it. The two make the same patch, and that is the
+/// link the graph draws.
+#[test]
+fn a_squashed_branch_hangs_off_the_commit_that_carries_its_work() {
+    let sandbox = Sandbox::new("squash-link");
+    sandbox.commit("a.txt", "1\n", "Root");
+    sandbox.git(&["checkout", "-q", "-b", "topic"]);
+    sandbox.commit("t.txt", "t\n", "Topic one");
+    sandbox.commit("t.txt", "t\nt2\n", "Topic two");
+    sandbox.git(&["checkout", "-q", "main"]);
+    sandbox.commit("m.txt", "m\n", "Main moved on");
+    sandbox.git(&["merge", "-q", "--squash", "topic"]);
+    // Made after the work it squashes, as a squash always is.
+    sandbox.git_dated(
+        &["commit", "-q", "-m", "Add the topic (#12)"],
+        "2030-01-01T10:00:00 +0000",
+    );
+    sandbox.write("m.txt", "m2\n");
+    sandbox.git(&["add", "--all"]);
+    sandbox.git_dated(
+        &["commit", "-q", "-m", "After the squash"],
+        "2030-01-01T10:01:00 +0000",
+    );
+
+    let page = graph::build(&sandbox.state(), 500).unwrap();
+    let at = |summary: &str| {
+        page.rows
+            .iter()
+            .position(|row| row.summary == summary)
+            .unwrap_or_else(|| panic!("{summary} should be in the graph"))
+    };
+    let squash = &page.rows[at("Add the topic (#12)")];
+    let tip = &page.rows[at("Topic two")];
+
+    assert_eq!(squash.parents.len(), 1, "a squash is not a merge");
+    assert_eq!(squash.carries, vec![tip.oid.clone()]);
+    assert!(
+        page.rows
+            .iter()
+            .filter(|row| row.oid != squash.oid)
+            .all(|row| row.carries.is_empty()),
+        "only the squash carries the branch"
+    );
+
+    // A broken line leaves the squash for the branch's lane and stays broken
+    // through every row down to the tip.
+    let link = squash
+        .segments
+        .iter()
+        .find(|s| s.y1 == 1 && s.x2 == tip.lane)
+        .expect("a line from the squash to the branch it squashed");
+    assert!(link.dashed);
+    assert_ne!(tip.lane, squash.lane);
+    for row in &page.rows[at("Add the topic (#12)") + 1..at("Topic two")] {
+        let through: Vec<_> = row.segments.iter().filter(|s| s.x1 == tip.lane).collect();
+        assert!(!through.is_empty(), "{} drops the link", row.summary);
+        assert!(
+            through.iter().all(|s| s.dashed),
+            "{} turns the link solid",
+            row.summary
+        );
+    }
+    assert!(tip.segments.iter().filter(|s| s.y2 == 1).all(|s| s.dashed));
+    // The branch's own commits stay history: solid.
+    assert!(tip.segments.iter().filter(|s| s.y1 == 1).all(|s| !s.dashed));
+}
+
+/// A rebase merge is the same thing one commit at a time: copies with new ids,
+/// and the branch left pointing at the originals.
+#[test]
+fn a_rebased_branch_hangs_off_the_newest_copy_of_its_commits() {
+    let sandbox = Sandbox::new("rebase-link");
+    sandbox.commit("a.txt", "1\n", "Root");
+    sandbox.git(&["checkout", "-q", "-b", "topic"]);
+    sandbox.commit("t.txt", "t\n", "Topic one");
+    sandbox.commit("u.txt", "u\n", "Topic two");
+    sandbox.git(&["checkout", "-q", "main"]);
+    sandbox.commit("m.txt", "m\n", "Main moved on");
+    // What "rebase and merge" leaves behind: the branch's commits replayed
+    // onto main under new ids, the branch itself untouched.
+    sandbox.git_dated(&["cherry-pick", "main..topic"], "2030-01-01T10:00:00 +0000");
+    sandbox.write("m.txt", "m2\n");
+    sandbox.git(&["add", "--all"]);
+    sandbox.git_dated(
+        &["commit", "-q", "-m", "Afterwards"],
+        "2030-01-01T10:01:00 +0000",
+    );
+
+    let page = graph::build(&sandbox.state(), 500).unwrap();
+    let rows = |summary: &str| -> Vec<&graph::GraphRow> {
+        page.rows
+            .iter()
+            .filter(|row| row.summary == summary)
+            .collect()
+    };
+    // Two of each: the original and its copy. The copy is the one on main,
+    // which is the one whose parent is not the other topic commit.
+    let two = rows("Topic two");
+    assert_eq!(two.len(), 2);
+    let original = two
+        .iter()
+        .find(|row| row.labels.iter().any(|l| l.name == "topic"))
+        .unwrap();
+    let copy = two.iter().find(|row| row.oid != original.oid).unwrap();
+
+    assert_eq!(copy.carries, vec![original.oid.clone()]);
+    assert!(rows("Topic one").iter().all(|row| row.carries.is_empty()));
+    assert!(copy
+        .segments
+        .iter()
+        .any(|s| s.y1 == 1 && s.x2 == original.lane && s.dashed));
+}
+
+/// A branch that only shares a name of a change with the trunk is not linked:
+/// a wrong link says the work has landed when it has not.
+#[test]
+fn a_branch_whose_work_did_not_land_stays_unlinked() {
+    let sandbox = Sandbox::new("no-link");
+    sandbox.commit("a.txt", "1\n", "Root");
+    sandbox.git(&["checkout", "-q", "-b", "topic"]);
+    sandbox.commit("t.txt", "t\n", "Topic work");
+    sandbox.git(&["checkout", "-q", "main"]);
+    sandbox.commit("t.txt", "something else\n", "Same file, different change");
+
+    let page = graph::build(&sandbox.state(), 500).unwrap();
+    assert!(page.rows.iter().all(|row| row.carries.is_empty()));
+}
+
+/// The line you are on is marked from your commit down to where it left the
+/// trunk, and nowhere else, so the frontend can bring it forward.
+#[test]
+fn the_line_you_stand_on_is_marked_down_to_the_trunk() {
+    let sandbox = Sandbox::new("current-line");
+    sandbox.commit("a.txt", "1\n", "Root");
+    sandbox.commit("a.txt", "2\n", "Fork point");
+    sandbox.git(&["checkout", "-q", "-b", "topic"]);
+    sandbox.commit("t.txt", "t\n", "Topic one");
+    sandbox.commit("t.txt", "t2\n", "Topic two");
+    sandbox.git(&["checkout", "-q", "main"]);
+    sandbox.commit("m.txt", "m\n", "Main work");
+    sandbox.git(&["checkout", "-q", "topic"]);
+
+    let page = graph::build(&sandbox.state(), 500).unwrap();
+    let by = |summary: &str| {
+        page.rows
+            .iter()
+            .find(|row| row.summary == summary)
+            .unwrap_or_else(|| panic!("{summary} should be in the graph"))
+    };
+    let mine = by("Topic two").lane;
+    assert_ne!(mine, 0, "the trunk keeps the first column");
+
+    for summary in ["Topic two", "Topic one"] {
+        let row = by(summary);
+        assert!(row.segments.iter().filter(|s| s.y1 == 1).all(|s| s.current));
+    }
+    // The trunk's own commit beside the branch is not on your line.
+    let main = by("Main work");
+    assert!(main
+        .segments
+        .iter()
+        .filter(|s| s.x1 == main.lane)
+        .all(|s| !s.current));
+    assert!(main
+        .segments
+        .iter()
+        .filter(|s| s.x1 == mine)
+        .all(|s| s.current));
+    // Into the fork point bright, out of it plain.
+    let fork = by("Fork point");
+    assert!(fork
+        .segments
+        .iter()
+        .any(|s| s.y2 == 1 && s.x1 == mine && s.current));
+    assert!(fork
+        .segments
+        .iter()
+        .filter(|s| s.y1 == 1)
+        .all(|s| !s.current));
+    assert!(by("Root").segments.iter().all(|s| !s.current));
+}
+
+/// The sidebar can be told which branch is the trunk. The graph's first column
+/// has to follow the same answer, or the two disagree about what the
+/// repository is organised around.
+#[test]
+fn the_first_column_follows_the_chosen_trunk() {
+    let sandbox = Sandbox::new("chosen-trunk");
+    sandbox.commit("a.txt", "1\n", "Root");
+    sandbox.git(&["checkout", "-q", "-b", "develop"]);
+    sandbox.commit("d.txt", "d\n", "Develop work");
+    sandbox.git(&["checkout", "-q", "main"]);
+    sandbox.commit("m.txt", "m\n", "Main work");
+
+    let lane_of = |summary: &str| {
+        let page = graph::build(&sandbox.state(), 500).unwrap();
+        page.rows
+            .iter()
+            .find(|row| row.summary == summary)
+            .map(|row| row.lane)
+            .unwrap()
+    };
+    assert_eq!(lane_of("Main work"), 0);
+    assert_ne!(lane_of("Develop work"), 0);
+
+    sandbox.git(&["config", "gitnoob.trunk", "develop"]);
+    assert_eq!(lane_of("Develop work"), 0);
+    assert_ne!(lane_of("Main work"), 0);
 }
 
 #[test]

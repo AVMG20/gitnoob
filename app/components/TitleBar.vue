@@ -25,6 +25,7 @@ import { useShortcuts } from '~/composables/useShortcuts'
 import { useUpdates } from '~/composables/useUpdates'
 import { useRebase } from '~/composables/useRebase'
 import { usePanes } from '~/composables/usePanes'
+import { useBranchNaming } from '~/composables/useBranchNaming'
 
 const emit = defineEmits<{ leave: [depth: number] }>()
 
@@ -56,7 +57,19 @@ const updateOffered = computed(() =>
   ['available', 'downloading', 'ready'].includes(updates.store.stage)
 )
 
+const branchNaming = useBranchNaming()
+/**
+ * The dialog, for when the graph is not there to type into. The graph takes
+ * the name inline on the row the branch starts from whenever it is on screen,
+ * which is nearly always; a file or a review open in its place leaves the
+ * dialog as the way to ask.
+ */
 const showBranch = ref(false)
+
+function newBranch() {
+  if (store.busy) return
+  if (!branchNaming.begin()) showBranch.value = true
+}
 const showHistory = ref(false)
 
 /**
@@ -134,9 +147,7 @@ useShortcuts({
   'repo.push': () => !store.busy && void push(),
   'repo.refresh': () => !store.busy && void git.refresh(),
   'repo.settings': () => config.openSettings('profiles'),
-  'branch.create': () => {
-    if (!store.busy) showBranch.value = true
-  },
+  'branch.create': () => newBranch(),
   'stash.push': () => !store.busy && void git.stashPush(),
   'history.undo': () => !store.busy && nextUndo.value && void git.undo(),
   'history.redo': () => !store.busy && nextRedo.value && void git.redo()
@@ -350,7 +361,7 @@ async function reconcile(rebase: boolean) {
 
       <span class="sep" />
 
-      <button class="btn" :disabled="store.busy" @click="showBranch = true">
+      <button class="btn" :disabled="store.busy" title="Start a branch here" @click="newBranch">
         <GitBranchPlus :size="14" /> Branch
       </button>
       <button class="btn" :disabled="store.busy" title="Stash everything" @click="git.stashPush()">
@@ -496,7 +507,7 @@ async function reconcile(rebase: boolean) {
       >
         Back to {{ lastBranch }}
       </button>
-      <button class="btn tiny ghost" :disabled="store.busy" @click="showBranch = true">
+      <button class="btn tiny ghost" :disabled="store.busy" @click="newBranch">
         Branch from here
       </button>
     </div>

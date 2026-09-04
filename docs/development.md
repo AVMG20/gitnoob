@@ -47,6 +47,19 @@ Two things that follow from this:
 - Where git would stop and ask, the app decides explicitly. A pull passes `--rebase` or `--no-rebase`. Ref arguments are followed by `--`, because `git checkout <name>` on a non-ref restores the file of that name over your edits. Paths are passed as `:(literal)` pathspecs, because a pathspec after `--` still wildmatches and `a[b].txt` would otherwise match `ab.txt`.
 - `git2` is built with `default-features = false`. No `openssl-sys`, no `libssh2-sys`, because that transport is never used.
 
+## The graph
+
+`graph.rs` walks every ref newest first and hands each commit a lane. The lane table holds, per column, the commit that column is waiting to reach; a commit claims the column waiting for it, hands it on to its first parent, and opens a column for every other parent. Each row's line segments are derived from the table just before and after that step, so a row draws on its own and the list can be virtualized.
+
+A few decisions that are easy to undo by accident:
+
+- **The trunk owns the leftmost column.** `main`, `master`, or whatever `gitnoob.trunk` names, the same answer the sidebar measures branches against. Anchored on HEAD instead, the whole picture slid sideways every time you checked something out.
+- **A trunk behind its upstream is anchored at the upstream's tip.** Otherwise the commits still to pull were the one line that could not have the column, and were drawn as a branch beside you rejoining at your commit — a merge, for what is a fast-forward. They sit straight above you, held back (`Segment.faint`, `GraphRow.unpulled`), the mirror of the hollow ring on a commit not pushed yet.
+- **The line you are on is marked** from HEAD's commit down to where it runs into another line (`Segment.current`), and the frontend draws it a shade brighter. Not above HEAD: that is the rest of the branch, or the upstream's commits, and neither is where you are.
+- **Squash and rebase merges are found by patch-id.** Git keeps no record of where a squash commit came from, so a branch merged that way dangles. Every branch tip nothing is built on has the patch from its fork point to its tip measured, and the single-parent commits above it are asked whether they make the same patch; a rebase is the same question one commit at a time. A match is drawn as a broken line from the commit that carries the work down to the branch tip (`GraphRow.carries`). Only the page is looked at, and only against the trunk's fork point: a wrong link is worse than a missing one. Patch-ids are cached for the life of the process, since a commit's content never changes.
+
+A new branch is named in the graph itself, on the row it starts from (`useBranchNaming`). The dialog stays for when the graph is not on screen.
+
 ## Which repo a call is about
 
 The window has project tabs. The backend holds one open path. Every call from the frontend carries `__repo`, the repository it thinks it is talking to, and the `aimed` wrapper at the bottom of `lib.rs` applies it before the command runs. On the frontend that is `app/composables/useInvoke.ts`.

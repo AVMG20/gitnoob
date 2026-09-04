@@ -1,6 +1,7 @@
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
+use std::sync::{Mutex, OnceLock};
 
-use git2::{Oid, Sort};
+use git2::{Branch, BranchType, Oid, Repository, Revwalk, Sort};
 use serde::Serialize;
 
 use crate::refs;
@@ -19,16 +20,24 @@ pub struct RefLabel {
 /// `y` is expressed in thirds of a row so the frontend never has to know the
 /// layout rules: 0 is the top edge, 1 the centre (where the node sits), 2 the
 /// bottom edge.
-#[derive(Serialize)]
+#[derive(Serialize, Clone, Debug, PartialEq, Eq)]
 pub struct Segment {
     pub x1: usize,
     pub y1: u8,
     pub x2: usize,
     pub y2: u8,
     pub color: usize,
-    /// A line belonging to a stash, drawn broken: a stash hangs off the commit
-    /// it was made on rather than being part of the history.
+    /// A line that is not history, drawn broken: a stash hanging off the
+    /// commit it was made on, or a branch whose work reached another line by a
+    /// squash or a rebase rather than by a merge.
     pub dashed: bool,
+    /// A line the upstream has and no local branch does yet. Drawn held back,
+    /// so what is still to be pulled reads as sitting above where you stand
+    /// rather than as part of it.
+    pub faint: bool,
+    /// Part of the line HEAD is on, from the commit you stand on down to where
+    /// that line runs into another. Drawn a shade brighter than the rest.
+    pub current: bool,
 }
 
 #[derive(Serialize)]
@@ -49,6 +58,13 @@ pub struct GraphRow {
     /// boundary between what the remote has and what it does not is visible in
     /// the graph rather than only in an ahead count.
     pub unpushed: bool,
+    /// On the upstream of a local branch but on no local branch yet: what a
+    /// pull would bring in. The mirror of `unpushed`.
+    pub unpulled: bool,
+    /// Branch tips whose work this commit carries without being a merge of
+    /// them: the result of a squash merge, or the last of a rebase. Git records
+    /// no link between the two, so it is found by comparing what they change.
+    pub carries: Vec<String>,
     /// Which stash this row is, when it is one. A stash is a commit, so it
     /// draws like one — with its own mark, on a broken line to the commit it
     /// was made on.
@@ -60,6 +76,25 @@ pub struct GraphPage {
     pub rows: Vec<GraphRow>,
     /// True when the walk stopped at `limit` and older commits remain.
     pub has_more: bool,
+}
+
+/// The walk the graph draws: every ref, newest first, a branch's commits kept
+/// together.
+///
+/// Shared with `depth`, which has to count the very same rows in the very same
+/// order or the number it reports is not the row the graph puts the commit on.
+fn walk(repo: &Repository) -> Result<Revwalk<'_>, String> {
+    let mut walk = repo.revwalk().map_err(err)?;
+    // Topological order keeps a branch's commits contiguous; the time secondary
+    // sort keeps the result close to what the user expects to read.
+    walk.set_sorting(Sort::TOPOLOGICAL | Sort::TIME)
+        .map_err(err)?;
+    // Push every ref, not just HEAD, so unmerged branches are visible.
+    walk.push_glob("refs/heads/*").map_err(err)?;
+    let _ = walk.push_glob("refs/remotes/*");
+    let _ = walk.push_glob("refs/tags/*");
+    let _ = walk.push_head();
+    Ok(walk)
 }
 
 /// How far back a commit sits in the same walk the graph draws.
@@ -76,17 +111,7 @@ pub fn depth(state: &AppState, oid: &str) -> Result<Option<usize>, String> {
     let repo = state.repo()?;
     let wanted = Oid::from_str(oid).map_err(err)?;
 
-    let mut walk = repo.revwalk().map_err(err)?;
-    // The same ordering and the same refs as `build`, or the number counted
-    // here would not be the row the graph draws.
-    walk.set_sorting(Sort::TOPOLOGICAL | Sort::TIME)
-        .map_err(err)?;
-    walk.push_glob("refs/heads/*").map_err(err)?;
-    let _ = walk.push_glob("refs/remotes/*");
-    let _ = walk.push_glob("refs/tags/*");
-    let _ = walk.push_head();
-
-    for (index, found) in walk.enumerate() {
+    for (index, found) in walk(&repo)?.enumerate() {
         if index >= DEPTH_CAP {
             break;
         }
@@ -109,25 +134,14 @@ pub fn depth(state: &AppState, oid: &str) -> Result<Option<usize>, String> {
 pub fn build(state: &AppState, limit: usize) -> Result<GraphPage, String> {
     let repo = state.repo()?;
     let labels = refs::labels_by_oid(&repo);
-    let unpushed = unpushed_commits(&repo, limit);
-
-    let mut walk = repo.revwalk().map_err(err)?;
-    // Topological order keeps a branch's commits contiguous; the time secondary
-    // sort keeps the result close to what the user expects to read.
-    walk.set_sorting(Sort::TOPOLOGICAL | Sort::TIME)
-        .map_err(err)?;
-    // Push every ref, not just HEAD, so unmerged branches are visible.
-    walk.push_glob("refs/heads/*").map_err(err)?;
-    let _ = walk.push_glob("refs/remotes/*");
-    let _ = walk.push_glob("refs/tags/*");
-    let _ = walk.push_head();
+    let Against { unpushed, unpulled } = against_upstreams(&repo, limit);
 
     // Read the commits first, then work out the picture. The two are separate
     // jobs, and only the second one is hard enough to be worth testing on
     // histories that would be a chore to build a repository for.
     let mut commits: Vec<Commit> = Vec::with_capacity(limit.min(4096));
     let mut has_more = false;
-    for oid in walk {
+    for oid in walk(&repo)? {
         let oid = oid.map_err(err)?;
         if commits.len() >= limit {
             has_more = true;
@@ -142,12 +156,17 @@ pub fn build(state: &AppState, limit: usize) -> Result<GraphPage, String> {
             author: author.name().unwrap_or("").to_string(),
             email: author.email().unwrap_or("").to_string(),
             time: commit.time().seconds(),
+            unpulled: unpulled.contains(&oid),
+            carries: Vec::new(),
             stash: None,
         });
     }
 
-    let commits = with_stashes(state, &repo, commits);
-    let plotted = plot(&commits, trunk_tip(&repo));
+    let anchor = trunk_tip(&repo);
+    let mut commits = with_stashes(state, &repo, commits);
+    link_folded(&repo, &mut commits, anchor, &labels);
+    let head = repo.head().ok().and_then(|h| h.target());
+    let plotted = plot(&commits, anchor, head);
 
     let rows = commits
         .into_iter()
@@ -176,7 +195,9 @@ pub fn build(state: &AppState, limit: usize) -> Result<GraphPage, String> {
                         .collect()
                 })
                 .unwrap_or_default(),
-            unpushed: unpushed.contains(&commit.oid.to_string()),
+            unpushed: unpushed.contains(&commit.oid),
+            unpulled: commit.unpulled,
+            carries: commit.carries.iter().map(|p| p.to_string()).collect(),
             stash: commit.stash,
         })
         .collect();
@@ -194,7 +215,7 @@ pub fn build(state: &AppState, limit: usize) -> Result<GraphPage, String> {
 ///
 /// A stash whose parent is older than this page is left out. A line to a row
 /// that is not there is a line to nowhere.
-fn with_stashes(state: &AppState, repo: &git2::Repository, commits: Vec<Commit>) -> Vec<Commit> {
+fn with_stashes(state: &AppState, repo: &Repository, commits: Vec<Commit>) -> Vec<Commit> {
     let Ok(entries) = crate::work::stash_list(state) else {
         return commits;
     };
@@ -204,7 +225,7 @@ fn with_stashes(state: &AppState, repo: &git2::Repository, commits: Vec<Commit>)
 
     // Keyed by the commit each one hangs off, newest first within a parent so
     // `stash@{0}` sits closest to the top.
-    let mut hanging: std::collections::HashMap<Oid, Vec<Commit>> = std::collections::HashMap::new();
+    let mut hanging: HashMap<Oid, Vec<Commit>> = HashMap::new();
     for entry in entries {
         let Ok(oid) = Oid::from_str(&entry.oid) else {
             continue;
@@ -225,6 +246,8 @@ fn with_stashes(state: &AppState, repo: &git2::Repository, commits: Vec<Commit>)
             author: author.name().unwrap_or("").to_string(),
             email: author.email().unwrap_or("").to_string(),
             time: entry.time,
+            unpulled: false,
+            carries: Vec::new(),
             stash: Some(entry.index),
         });
     }
@@ -248,6 +271,12 @@ pub struct Commit {
     pub author: String,
     pub email: String,
     pub time: i64,
+    /// On an upstream and on no local branch: not pulled yet.
+    pub unpulled: bool,
+    /// Branch tips this commit is the squash or the rebase of. Drawn as a
+    /// broken line from here to each, the way a merge's second parent is drawn
+    /// solid.
+    pub carries: Vec<Oid>,
     /// Set when this row is a stash rather than a commit of the history.
     pub stash: Option<usize>,
 }
@@ -260,17 +289,56 @@ pub struct Place {
     pub segments: Vec<Segment>,
 }
 
+/// One column of the picture: what it is waiting for and how its line looks.
+///
+/// The look travels with the column rather than with the commit that set it,
+/// because a line is drawn one row at a time and the rows a line merely passes
+/// through know nothing about the commit it left. A stash's line has to stay
+/// broken all the way down to the commit the stash hangs off, and the line of
+/// commits still to be pulled has to stay held back until it lands on the one
+/// you have.
+#[derive(Clone, Default)]
+struct Lane {
+    /// The commit this column is waiting to reach; `None` for an empty column,
+    /// which keeps the colour it last wore so it is not handed out twice.
+    waiting: Option<Oid>,
+    color: usize,
+    dashed: bool,
+    faint: bool,
+    current: bool,
+}
+
+impl Lane {
+    fn clear(&mut self) {
+        let color = self.color;
+        *self = Lane {
+            color,
+            ..Lane::default()
+        };
+    }
+
+    /// A segment of this column's line between two points of a row.
+    fn segment(&self, x1: usize, y1: u8, x2: usize, y2: u8) -> Segment {
+        Segment {
+            x1,
+            y1,
+            x2,
+            y2,
+            color: self.color,
+            dashed: self.dashed,
+            faint: self.faint,
+            current: self.current,
+        }
+    }
+}
+
 /// Turns a list of commits, newest first, into the lines to draw.
 ///
-/// `anchor` is the commit whose line owns the leftmost column — the trunk's tip.
-fn plot(commits: &[Commit], anchor: Option<Oid>) -> Vec<Place> {
-    let mut lanes: Vec<Option<Oid>> = Vec::new();
-    let mut colors: Vec<usize> = Vec::new();
-    // Which lanes are carrying a stash's line rather than a line of the
-    // history. Kept in step with `lanes`, because the line has to stay broken
-    // all the way down to the commit the stash hangs off — which is one row
-    // when nothing else is stashed there, and several when more is.
-    let mut dashed: Vec<bool> = Vec::new();
+/// `anchor` is the commit whose line owns the leftmost column — the trunk's
+/// tip. `head` is the commit you are standing on: its line is marked from there
+/// down, so the frontend can bring it forward.
+fn plot(commits: &[Commit], anchor: Option<Oid>, head: Option<Oid>) -> Vec<Place> {
+    let mut lanes: Vec<Lane> = Vec::new();
     let mut next_color = 0usize;
     let mut places: Vec<Place> = Vec::with_capacity(commits.len());
 
@@ -291,40 +359,46 @@ fn plot(commits: &[Commit], anchor: Option<Oid>) -> Vec<Place> {
     // turns up, since above that row there is no line to draw.
     let mut reserved = None;
     if let Some(anchor) = anchor {
-        lanes.push(Some(anchor));
-        colors.push(TRUNK_COLOR);
-        dashed.push(false);
+        lanes.push(Lane {
+            waiting: Some(anchor),
+            color: TRUNK_COLOR,
+            ..Lane::default()
+        });
         reserved = Some(0);
     }
 
     for commit in commits {
         let oid = commit.oid;
 
-        let lanes_before = lanes.clone();
-        let colors_before = colors.clone();
-        let dashed_before = dashed.clone();
+        let before = lanes.clone();
         let reserved_before = reserved;
 
         // 1. Claim a lane. Scanning from the left means a commit that both the
         //    trunk and a branch built on it are waiting for is drawn on the
         //    trunk, which is the line it belongs to.
-        let lane = match lanes.iter().position(|l| *l == Some(oid)) {
+        let lane = match lanes.iter().position(|l| l.waiting == Some(oid)) {
             Some(i) => i,
             None => {
-                let i = alloc(&mut lanes, &mut colors, &mut dashed);
-                // Coloured before it is filled: an empty lane still carries
-                // whatever colour last ran through it, and a lane counted as
-                // live would rule that colour out for the line about to take
-                // the lane over.
-                colors[i] = pick_color(&lanes, &colors, &mut next_color);
-                lanes[i] = Some(oid);
+                let i = open(&mut lanes, &mut next_color);
+                lanes[i].waiting = Some(oid);
                 i
             }
         };
-        let color = colors[lane];
-        // The line leaving this row is broken if a stash is what is leaving.
-        // An ordinary commit taking the lane over makes it solid again.
-        dashed[lane] = commit.stash.is_some();
+        let color = lanes[lane].color;
+        {
+            let here = &mut lanes[lane];
+            // The line leaving this row is broken if a stash is what is
+            // leaving, and held back if the commit is one you do not have yet.
+            // An ordinary commit taking the lane over makes it plain again.
+            here.dashed = commit.stash.is_some();
+            here.faint = commit.unpulled;
+            // Your line is bright from where you stand downwards. Not above:
+            // what sits above HEAD is the rest of the branch, or the upstream's
+            // commits, and neither is where you are.
+            if head == Some(oid) {
+                here.current = true;
+            }
+        }
         if reserved == Some(lane) {
             reserved = None;
         }
@@ -332,9 +406,8 @@ fn plot(commits: &[Commit], anchor: Option<Oid>) -> Vec<Place> {
         // 2. Release any other lane that was also waiting for this commit —
         //    several children merging back into one line.
         for (i, slot) in lanes.iter_mut().enumerate() {
-            if i != lane && *slot == Some(oid) {
-                *slot = None;
-                dashed[i] = false;
+            if i != lane && slot.waiting == Some(oid) {
+                slot.clear();
             }
         }
 
@@ -342,10 +415,7 @@ fn plot(commits: &[Commit], anchor: Option<Oid>) -> Vec<Place> {
         //    lane of its own unless it is already tracked.
         let parents = &commit.parents;
         match parents.split_first() {
-            None => {
-                lanes[lane] = None;
-                dashed[lane] = false;
-            }
+            None => lanes[lane].clear(),
             Some((first, rest)) => {
                 // The lane carries on to the first parent even when another
                 // lane is already waiting for that same commit. Both hold it
@@ -354,20 +424,31 @@ fn plot(commits: &[Commit], anchor: Option<Oid>) -> Vec<Place> {
                 // duplicate here instead would move the join a row early and
                 // draw the branch sliding into its neighbour's column before
                 // there is anything there to join.
-                lanes[lane] = Some(*first);
+                lanes[lane].waiting = Some(*first);
                 for parent in rest {
-                    if lanes.contains(&Some(*parent)) {
+                    if lanes.iter().any(|l| l.waiting == Some(*parent)) {
                         continue;
                     }
-                    let i = alloc(&mut lanes, &mut colors, &mut dashed);
-                    colors[i] = pick_color(&lanes, &colors, &mut next_color);
-                    lanes[i] = Some(*parent);
+                    let i = open(&mut lanes, &mut next_color);
+                    lanes[i].waiting = Some(*parent);
+                    lanes[i].faint = commit.unpulled;
                 }
             }
         }
+        // A branch this commit is the squash or rebase of gets a lane exactly
+        // as a merge's second parent does, on a broken line: the work came
+        // from there, but git has no record of it.
+        for tip in &commit.carries {
+            if lanes.iter().any(|l| l.waiting == Some(*tip)) {
+                continue;
+            }
+            let i = open(&mut lanes, &mut next_color);
+            lanes[i].waiting = Some(*tip);
+            lanes[i].dashed = true;
+            lanes[i].faint = commit.unpulled;
+        }
 
-        trim(&mut lanes, &mut colors, &mut dashed);
-        let lanes_after = lanes.clone();
+        trim(&mut lanes);
 
         // 4. Turn the before/after tables into segments.
         // Where a line ends up, preferring the lane it is already in. Two lines
@@ -375,42 +456,28 @@ fn plot(commits: &[Commit], anchor: Option<Oid>) -> Vec<Place> {
         // whichever comes first and would draw a line that is staying put as
         // stepping into its neighbour.
         let find = |want: &Oid, prefer: usize| -> Option<usize> {
-            if lanes_after.get(prefer).and_then(|slot| slot.as_ref()) == Some(want) {
+            if lanes.get(prefer).and_then(|slot| slot.waiting.as_ref()) == Some(want) {
                 return Some(prefer);
             }
-            lanes_after
+            lanes
                 .iter()
-                .position(|slot| slot.as_ref() == Some(want))
+                .position(|slot| slot.waiting.as_ref() == Some(want))
         };
 
         let mut segments = Vec::new();
-        for (x, slot) in lanes_before.iter().enumerate() {
+        for (x, was) in before.iter().enumerate() {
             // A lane still only reserved holds a commit the walk has not
             // reached, so there is no line above this row to come down from.
             if reserved_before == Some(x) {
                 continue;
             }
-            let Some(waiting) = slot else { continue };
-            if *waiting == oid {
+            let Some(waiting) = was.waiting else { continue };
+            if waiting == oid {
                 // Incoming line ends at this row's node.
-                segments.push(Segment {
-                    x1: x,
-                    y1: 0,
-                    x2: lane,
-                    y2: 1,
-                    color: colors_before[x],
-                    dashed: dashed_before[x],
-                });
-            } else if let Some(to) = find(waiting, x) {
+                segments.push(was.segment(x, 0, lane, 1));
+            } else if let Some(to) = find(&waiting, x) {
                 // A line that just passes this row by.
-                segments.push(Segment {
-                    x1: x,
-                    y1: 0,
-                    x2: to,
-                    y2: 2,
-                    color: colors_before[x],
-                    dashed: dashed_before[x],
-                });
+                segments.push(was.segment(x, 0, to, 2));
             }
         }
         for (i, parent) in parents.iter().enumerate() {
@@ -423,9 +490,27 @@ fn plot(commits: &[Commit], anchor: Option<Oid>) -> Vec<Place> {
                 x2: to,
                 y2: 2,
                 // The first parent continues this commit's line, so it keeps its
-                // colour; a merge's other parents belong to the line they join.
-                color: if i == 0 { color } else { colors[to] },
+                // colour and its brightness; a merge's other parents belong to
+                // the lines they join.
+                color: if i == 0 { color } else { lanes[to].color },
                 dashed: commit.stash.is_some(),
+                faint: commit.unpulled,
+                current: i == 0 && lanes[lane].current,
+            });
+        }
+        for tip in &commit.carries {
+            let Some(to) = find(tip, usize::MAX) else {
+                continue;
+            };
+            segments.push(Segment {
+                x1: lane,
+                y1: 1,
+                x2: to,
+                y2: 2,
+                color: lanes[to].color,
+                dashed: true,
+                faint: commit.unpulled,
+                current: false,
             });
         }
 
@@ -440,7 +525,7 @@ fn plot(commits: &[Commit], anchor: Option<Oid>) -> Vec<Place> {
             }
         }
 
-        let width = lanes_before.len().max(lanes_after.len()).max(lane + 1);
+        let width = before.len().max(lanes.len()).max(lane + 1);
 
         // Lines that live entirely past the right-hand edge of the column are
         // never seen, and a repository with a few hundred remote branches has
@@ -462,29 +547,50 @@ fn plot(commits: &[Commit], anchor: Option<Oid>) -> Vec<Place> {
     places
 }
 
-/// The commits a local branch has and its upstream does not.
+/// What the local branches and their upstreams each have that the other does
+/// not.
+struct Against {
+    /// On a local branch but not on its upstream.
+    unpushed: HashSet<Oid>,
+    /// On an upstream but on no local branch at all.
+    unpulled: HashSet<Oid>,
+}
+
+/// The commits a local branch has and its upstream does not, and the other way
+/// round.
 ///
 /// An ahead count says how many there are; this says which, so the graph can
 /// draw the boundary between what the remote knows about and what is still only
-/// here. Branches with no upstream contribute nothing: everything on them is
-/// unpushed in a sense, but there is nowhere it was meant to go.
-fn unpushed_commits(repo: &git2::Repository, limit: usize) -> HashSet<String> {
-    let mut out = HashSet::new();
-    let Ok(branches) = repo.branches(Some(git2::BranchType::Local)) else {
-        return out;
+/// here — and, the other way, between what is here and what a pull would bring.
+/// Branches with no upstream contribute nothing: everything on them is unpushed
+/// in a sense, but there is nowhere it was meant to go.
+///
+/// Unpushed is measured branch by branch, because it is a statement about one
+/// branch and its own remote. Unpulled is measured against every local branch
+/// at once: a commit the upstream has is only "not here yet" if no branch here
+/// has it, and a topic branch rebased onto a fresher `origin/main` than the
+/// local `main` has every one of those commits already.
+fn against_upstreams(repo: &Repository, limit: usize) -> Against {
+    let mut unpushed = HashSet::new();
+    let mut unpulled = HashSet::new();
+    let Ok(branches) = repo.branches(Some(BranchType::Local)) else {
+        return Against { unpushed, unpulled };
     };
 
-    for branch in branches.flatten() {
-        let (branch, _) = branch;
+    let mut locals = Vec::new();
+    let mut upstreams = Vec::new();
+    for (branch, _) in branches.flatten() {
         let Some(local) = branch.get().target() else {
             continue;
         };
+        locals.push(local);
         let Some(upstream) = branch.upstream().ok().and_then(|u| u.get().target()) else {
             continue;
         };
         if local == upstream {
             continue;
         }
+        upstreams.push(upstream);
 
         let Ok(mut walk) = repo.revwalk() else {
             continue;
@@ -492,32 +598,255 @@ fn unpushed_commits(repo: &git2::Repository, limit: usize) -> HashSet<String> {
         if walk.push(local).is_err() || walk.hide(upstream).is_err() {
             continue;
         }
-        for oid in walk.flatten().take(limit) {
-            out.insert(oid.to_string());
+        unpushed.extend(walk.flatten().take(limit));
+    }
+
+    if !upstreams.is_empty() {
+        if let Ok(mut walk) = repo.revwalk() {
+            for upstream in upstreams {
+                let _ = walk.push(upstream);
+            }
+            for local in locals {
+                let _ = walk.hide(local);
+            }
+            unpulled.extend(walk.flatten().take(limit));
         }
     }
-    out
+
+    Against { unpushed, unpulled }
 }
 
 /// The tip of the branch this repository is organised around.
 ///
-/// `main` and `master` are looked for locally and then on a remote, so a clone
-/// that has never checked the default branch out still has a trunk. A
-/// repository that uses neither name falls back to whatever HEAD is on: the
-/// column is then no steadier than HEAD is, but it is still steadier than
-/// handing it to whichever branch was committed to last.
-fn trunk_tip(repo: &git2::Repository) -> Option<Oid> {
-    for name in [
-        "refs/heads/main",
-        "refs/heads/master",
-        "refs/remotes/origin/main",
-        "refs/remotes/origin/master",
-    ] {
-        if let Some(oid) = repo.find_reference(name).ok().and_then(|r| r.target()) {
-            return Some(oid);
+/// The branch the sidebar was told about, or `main` and `master` looked for
+/// locally and then on a remote, so a clone that has never checked the default
+/// branch out still has a trunk. A repository that uses neither name falls back
+/// to whatever HEAD is on: the column is then no steadier than HEAD is, but it
+/// is still steadier than handing it to whichever branch was committed to last.
+///
+/// A local branch that has fallen behind its upstream anchors the column at the
+/// upstream's tip instead. Anchored at the local tip, the commits still to be
+/// pulled were the one line in the picture that could not have the column,
+/// and were drawn as a branch off to the side that rejoined at your commit —
+/// the shape of a merge, for a fast-forward. Anchored where the line actually
+/// ends, they sit straight above you, which is what they are.
+fn trunk_tip(repo: &Repository) -> Option<Oid> {
+    if let Some(name) = refs::trunk_of(repo) {
+        if let Ok(branch) = repo.find_branch(&name, BranchType::Local) {
+            return furthest(repo, &branch);
+        }
+        if let Ok(branch) = repo.find_branch(&name, BranchType::Remote) {
+            return branch.get().target();
         }
     }
-    repo.head().ok().and_then(|h| h.target())
+    let head = repo.head().ok()?;
+    if head.is_branch() {
+        return furthest(repo, &Branch::wrap(head));
+    }
+    head.target()
+}
+
+/// A local branch's tip, or its upstream's when that is strictly ahead of it.
+fn furthest(repo: &Repository, branch: &Branch) -> Option<Oid> {
+    let local = branch.get().target()?;
+    let upstream = branch
+        .upstream()
+        .ok()
+        .and_then(|u| u.get().target())
+        .or_else(|| {
+            // No upstream set, but a remote copy under the same name is what
+            // a fetch would have brought, and what "behind" is measured
+            // against in the sidebar.
+            let name = branch.name().ok().flatten()?;
+            repo.find_branch(&format!("origin/{name}"), BranchType::Remote)
+                .ok()
+                .and_then(|b| b.get().target())
+        });
+    match upstream {
+        Some(up) if up != local && repo.graph_descendant_of(up, local).unwrap_or(false) => Some(up),
+        _ => Some(local),
+    }
+}
+
+// --- squash and rebase merges ------------------------------------------------
+
+/// Finds the branches whose work landed somewhere without a merge commit, and
+/// links each to the commit that carries it.
+///
+/// A merge leaves a commit with two parents and the picture draws the join. A
+/// squash leaves one commit with one parent, and a rebase leaves copies with
+/// new ids: git keeps no record of where either came from, so the branch is
+/// drawn dangling as though nothing had happened to it — and its work is
+/// somewhere in the trunk with nothing to say so.
+///
+/// What a squash does keep is the change itself. The diff from a branch's fork
+/// point to its tip and the diff the squash commit makes are the same patch,
+/// and git's own `patch-id` is a hash of a patch that ignores where in the file
+/// it landed and what the message said. So every branch tip nothing is built
+/// on has its patch measured, and every single-parent commit near it is asked
+/// whether it makes the same one. A rebase is the same question one commit at
+/// a time: when every commit on the branch has a copy, the branch is linked to
+/// the newest copy.
+///
+/// Only the commits on this page are looked at, and only against the trunk's
+/// fork point: a branch squashed into some other branch is matched when that
+/// branch had nothing of its own at the time, which is the usual case, and
+/// left alone otherwise. A wrong link is worse than a missing one.
+fn link_folded(
+    repo: &Repository,
+    commits: &mut [Commit],
+    anchor: Option<Oid>,
+    labels: &HashMap<String, Vec<refs::Decoration>>,
+) {
+    let Some(anchor) = anchor else { return };
+
+    // A tip is a commit a branch points at that nothing on the page has as a
+    // parent. Anything built on is a branch still going, not one folded away.
+    let has_child: HashSet<Oid> = commits
+        .iter()
+        .flat_map(|c| c.parents.iter().copied())
+        .collect();
+    let tips: Vec<usize> = commits
+        .iter()
+        .enumerate()
+        .filter(|(_, c)| c.stash.is_none() && !has_child.contains(&c.oid) && c.oid != anchor)
+        .filter(|(_, c)| {
+            labels
+                .get(&c.oid.to_string())
+                .is_some_and(|v| v.iter().any(|d| d.kind == "local" || d.kind == "remote"))
+        })
+        .map(|(at, _)| at)
+        .collect();
+    if tips.is_empty() {
+        return;
+    }
+
+    let links = {
+        let rows: &[Commit] = commits;
+        // The patch each single-parent commit makes, worked out once per row
+        // however many tips ask.
+        let mut memo: HashMap<usize, Option<Oid>> = HashMap::new();
+        let mut patch_of = |at: usize| -> Option<Oid> {
+            *memo.entry(at).or_insert_with(|| {
+                let commit = &rows[at];
+                match (commit.stash, commit.parents.as_slice()) {
+                    (None, [parent]) => patch_id(repo, *parent, commit.oid),
+                    _ => None,
+                }
+            })
+        };
+
+        let mut links: Vec<(usize, Oid)> = Vec::new();
+        for tip in tips {
+            let tip_oid = rows[tip].oid;
+            let Ok(base) = repo.merge_base(anchor, tip_oid) else {
+                continue;
+            };
+            // Already in the trunk the ordinary way, or ahead of it: nothing
+            // to find.
+            if base == tip_oid || base == anchor {
+                continue;
+            }
+            // Where the copy could be: above the tip, nearest first. A squash
+            // is made after the work it squashes, and the walk puts a newer
+            // commit above an older one it does not descend from. Nothing
+            // below is looked at: the branch's own commits are there, and a
+            // one-commit branch makes the same patch its squash would.
+            let near: Vec<usize> = (tip.saturating_sub(FOLD_REACH)..tip).rev().collect();
+
+            // The whole branch as one patch, which is what a squash makes of it.
+            if let Some(wanted) = patch_id(repo, base, tip_oid) {
+                if let Some(&at) = near.iter().find(|&&at| patch_of(at) == Some(wanted)) {
+                    links.push((at, tip_oid));
+                    continue;
+                }
+            }
+
+            // Or one commit at a time, which is what a rebase makes of it.
+            // Bounded: a branch a hundred commits long is not one anybody
+            // rebase-merged.
+            let Some(own) = commits_between(repo, base, tip_oid, REBASE_CAP) else {
+                continue;
+            };
+            let mut left: HashSet<Oid> = own
+                .iter()
+                .filter_map(|&oid| repo.find_commit(oid).ok())
+                .filter(|c| c.parent_count() == 1)
+                .filter_map(|c| patch_id(repo, c.parent_id(0).ok()?, c.id()))
+                .collect();
+            if left.len() != own.len() {
+                continue;
+            }
+            let mut newest: Option<usize> = None;
+            for &at in &near {
+                let Some(id) = patch_of(at) else { continue };
+                if left.remove(&id) {
+                    newest = Some(newest.map_or(at, |best| best.min(at)));
+                    if left.is_empty() {
+                        break;
+                    }
+                }
+            }
+            if let (true, Some(at)) = (left.is_empty(), newest) {
+                links.push((at, tip_oid));
+            }
+        }
+        links
+    };
+
+    for (at, tip) in links {
+        commits[at].carries.push(tip);
+    }
+}
+
+/// The commits on `tip`'s side of `base`, or `None` when there are more than
+/// `cap` of them.
+fn commits_between(repo: &Repository, base: Oid, tip: Oid, cap: usize) -> Option<Vec<Oid>> {
+    let mut walk = repo.revwalk().ok()?;
+    walk.push(tip).ok()?;
+    walk.hide(base).ok()?;
+    let mut out = Vec::new();
+    for oid in walk.flatten() {
+        if out.len() >= cap {
+            return None;
+        }
+        out.push(oid);
+    }
+    Some(out)
+}
+
+/// The patch-id of the change from one commit's tree to another's, or `None`
+/// when the two trees are the same: an empty patch matches every other empty
+/// patch, and says nothing.
+///
+/// Remembered across calls, process-wide. A commit's content never changes, so
+/// neither does the answer, and the graph is rebuilt after every action: the
+/// diffs are only ever taken once per commit rather than once per refresh.
+fn patch_id(repo: &Repository, from: Oid, to: Oid) -> Option<Oid> {
+    static CACHE: OnceLock<PatchCache> = OnceLock::new();
+    let cache = CACHE.get_or_init(|| Mutex::new(HashMap::new()));
+    if let Some(known) = cache.lock().ok().and_then(|c| c.get(&(from, to)).copied()) {
+        return known;
+    }
+
+    let old = repo.find_commit(from).ok()?.tree().ok()?;
+    let new = repo.find_commit(to).ok()?.tree().ok()?;
+    let diff = repo.diff_tree_to_tree(Some(&old), Some(&new), None).ok()?;
+    let id = if diff.deltas().len() == 0 {
+        None
+    } else {
+        diff.patchid(None).ok()
+    };
+
+    if let Ok(mut cache) = cache.lock() {
+        // Bounded rather than forever: a session that has walked a very large
+        // history has walked it, and starting over costs one refresh.
+        if cache.len() >= PATCH_CACHE {
+            cache.clear();
+        }
+        cache.insert((from, to), id);
+    }
+    id
 }
 
 /// How many lanes the frontend has room for. Kept in step with `MAX_LANES`
@@ -539,6 +868,21 @@ const DRAWN_LANES: usize = 28;
 /// there is no point finding one.
 const DEPTH_CAP: usize = 100_000;
 
+/// The longest branch worth checking commit by commit for a rebase.
+const REBASE_CAP: usize = 48;
+
+/// How many rows above a branch tip are asked whether they carry its work.
+/// Far enough that a branch squashed a page ago is still found; near enough
+/// that a page set to thousands of rows does not diff every one of them for
+/// every dangling tip on the first load.
+const FOLD_REACH: usize = 500;
+
+/// How many patch-ids to remember before starting over.
+const PATCH_CACHE: usize = 100_000;
+
+/// The patch-id of the change between two commits, by the pair.
+type PatchCache = Mutex<HashMap<(Oid, Oid), Option<Oid>>>;
+
 /// How many colours the frontend cycles through. Kept in step with
 /// `LANE_COLORS` there, which is where they are actually chosen.
 const PALETTE: usize = 10;
@@ -555,12 +899,11 @@ const TRUNK_COLOR: usize = 0;
 /// exactly when the colour was carrying the most weight. So the search steps
 /// past any colour a live lane is already wearing, and only repeats one when
 /// there are more lines on screen than there are colours to tell them apart.
-fn pick_color(lanes: &[Option<Oid>], colors: &[usize], next: &mut usize) -> usize {
+fn pick_color(lanes: &[Lane], next: &mut usize) -> usize {
     let taken: HashSet<usize> = lanes
         .iter()
-        .enumerate()
-        .filter(|(_, lane)| lane.is_some())
-        .map(|(i, _)| colors[i])
+        .filter(|lane| lane.waiting.is_some())
+        .map(|lane| lane.color)
         .collect();
 
     for step in 0..PALETTE {
@@ -575,30 +918,34 @@ fn pick_color(lanes: &[Option<Oid>], colors: &[usize], next: &mut usize) -> usiz
     candidate
 }
 
-/// Returns the index of a reusable empty lane, appending one if none is free.
+/// Opens a lane for a line that is starting: the first empty one, or a new one
+/// on the right, freshly coloured and otherwise plain.
 ///
 /// The trunk's column is never among them: it holds the trunk's tip from before
 /// the first row and the trunk's own history from then on, so it is never empty
 /// for anything else to move into.
-fn alloc(lanes: &mut Vec<Option<Oid>>, colors: &mut Vec<usize>, dashed: &mut Vec<bool>) -> usize {
-    match lanes.iter().position(|l| l.is_none()) {
+///
+/// Coloured while it is still empty on purpose: an empty lane still carries
+/// whatever colour last ran through it, and a lane counted as live would rule
+/// that colour out for the line about to take the lane over.
+fn open(lanes: &mut Vec<Lane>, next_color: &mut usize) -> usize {
+    let i = match lanes.iter().position(|l| l.waiting.is_none()) {
         Some(i) => i,
         None => {
-            lanes.push(None);
-            colors.push(0);
-            dashed.push(false);
+            lanes.push(Lane::default());
             lanes.len() - 1
         }
-    }
+    };
+    let color = pick_color(lanes, next_color);
+    lanes[i].color = color;
+    i
 }
 
 /// Drops trailing empty lanes so the graph column stays as narrow as the history
 /// actually needs.
-fn trim(lanes: &mut Vec<Option<Oid>>, colors: &mut Vec<usize>, dashed: &mut Vec<bool>) {
-    while lanes.last() == Some(&None) {
+fn trim(lanes: &mut Vec<Lane>) {
+    while lanes.last().is_some_and(|l| l.waiting.is_none()) {
         lanes.pop();
-        colors.pop();
-        dashed.pop();
     }
 }
 
@@ -685,6 +1032,8 @@ mod tests {
             author: "Tester".into(),
             email: "tester@example.com".into(),
             time: 0,
+            unpulled: false,
+            carries: Vec::new(),
             stash: None,
         }
     }
@@ -706,9 +1055,9 @@ mod tests {
             commit(2, &[3]),
             commit(3, &[]),
         ];
-        assert!(faults(&commits, None).is_empty());
+        assert!(faults(&commits, None, None).is_empty());
 
-        let places = plot(&commits, None);
+        let places = plot(&commits, None, None);
         // Its own lane, beside the line it hangs off.
         assert_ne!(places[1].lane, places[2].lane);
         // Everything leaving the stash is drawn broken.
@@ -742,7 +1091,7 @@ mod tests {
             commit(2, &[3]),
             commit(3, &[]),
         ];
-        let places = plot(&commits, None);
+        let places = plot(&commits, None, None);
         // Row 0 and row 3 have nothing to do with the stash.
         for at in [0usize, 3] {
             assert!(
@@ -770,9 +1119,9 @@ mod tests {
             commit(2, &[3]),
             commit(3, &[]),
         ];
-        assert!(faults(&commits, None).is_empty());
+        assert!(faults(&commits, None, None).is_empty());
 
-        let places = plot(&commits, None);
+        let places = plot(&commits, None, None);
         let first = places[1].lane;
         // The older stash's row has the newer one's line passing through it,
         // and a line passing a row by must not come out solid.
@@ -811,8 +1160,8 @@ mod tests {
             commit(7, &[3]),
             commit(3, &[]),
         ];
-        assert!(faults(&commits, None).is_empty());
-        let places = plot(&commits, None);
+        assert!(faults(&commits, None, None).is_empty());
+        let places = plot(&commits, None, None);
         assert!(
             places[3].segments.iter().all(|seg| !seg.dashed),
             "an ordinary commit taking a freed lane draws a solid line"
@@ -827,8 +1176,8 @@ mod tests {
     /// one, in the same lane and the same colour. Where that fails the user
     /// sees exactly what a broken graph looks like: a line that stops in
     /// mid-air, or a stub that starts from nothing.
-    fn faults(commits: &[Commit], anchor: Option<Oid>) -> Vec<String> {
-        let places = plot(commits, anchor);
+    fn faults(commits: &[Commit], anchor: Option<Oid>, head: Option<Oid>) -> Vec<String> {
+        let places = plot(commits, anchor, head);
         let mut out = Vec::new();
 
         // Two lines can leave a row in the same lane and colour — a branch
@@ -873,11 +1222,12 @@ mod tests {
                 }
             }
             // A commit with parents keeps its line going; only a root ends one.
+            // A branch it carries the work of gets a line too.
             let leaving = place.segments.iter().filter(|s| s.y1 == 1).count();
-            if leaving != commits[row].parents.len() {
+            let expected = commits[row].parents.len() + commits[row].carries.len();
+            if leaving != expected {
                 out.push(format!(
-                    "row {row}: {} parents but {leaving} lines leaving the node",
-                    commits[row].parents.len()
+                    "row {row}: {expected} lines expected but {leaving} leaving the node"
                 ));
             }
             if let Some(next) = places.get(row + 1) {
@@ -895,7 +1245,7 @@ mod tests {
     }
 
     fn check(commits: &[Commit], anchor: Option<Oid>) {
-        let faults = faults(commits, anchor);
+        let faults = faults(commits, anchor, None);
         assert!(faults.is_empty(), "{}", faults.join("\n"));
     }
 
@@ -961,7 +1311,7 @@ mod tests {
         ];
         check(&history, Some(id(5)));
 
-        let places = plot(&history, Some(id(5)));
+        let places = plot(&history, Some(id(5)), None);
         for (row, place) in places.iter().enumerate().take(4).skip(1) {
             assert!(
                 place.segments.iter().any(|s| s.x1 == 0 && s.y1 == 0),
@@ -984,7 +1334,7 @@ mod tests {
         ];
         check(&history, Some(id(2)));
 
-        let places = plot(&history, Some(id(2)));
+        let places = plot(&history, Some(id(2)), None);
         assert_eq!(
             places[0].lane, 1,
             "the newer branch took the trunk's column"
@@ -1006,7 +1356,7 @@ mod tests {
             commit(5, &[6]),
             commit(6, &[]),
         ];
-        let places = plot(&history, Some(id(1)));
+        let places = plot(&history, Some(id(1)), None);
         let colours: HashSet<usize> = places[0]
             .segments
             .iter()
@@ -1070,7 +1420,17 @@ mod tests {
                     }
                     parents.dedup();
                 }
-                history.push(commit(n, &parents));
+                let mut made = commit(n, &parents);
+                // Now and then a commit that is the squash of some older one,
+                // and a stretch of commits not pulled yet.
+                if random(6) == 0 && older > 1 {
+                    let tip = n + 1 + random(older);
+                    if !parents.contains(&tip) {
+                        made.carries.push(id(tip));
+                    }
+                }
+                made.unpulled = random(5) == 0;
+                history.push(made);
             }
 
             // Sometimes the walk stopped at a limit, leaving lines in flight on
@@ -1081,7 +1441,10 @@ mod tests {
                 .get(random(history.len() as u32) as usize)
                 .map(|c| c.oid);
 
-            let faults = faults(history, head);
+            let standing = history
+                .get(random(history.len() as u32) as usize)
+                .map(|c| c.oid);
+            let faults = faults(history, head, standing);
             assert!(
                 faults.is_empty(),
                 "round {round}:\n{}\nhistory: {:?}",
@@ -1098,6 +1461,147 @@ mod tests {
                     .collect::<Vec<_>>()
             );
         }
+    }
+
+    #[test]
+    fn brightens_the_line_you_stand_on_down_to_where_it_leaves_the_trunk() {
+        // HEAD is 2, on a branch off 4. Above it, 1 is the same line carried on
+        // — the upstream's newer commit, say — and 3 is the trunk beside it.
+        let history = [
+            commit(1, &[2]),
+            commit(2, &[4]),
+            commit(3, &[4]),
+            commit(4, &[5]),
+            commit(5, &[]),
+        ];
+        assert!(faults(&history, Some(id(3)), Some(id(2))).is_empty());
+        let places = plot(&history, Some(id(3)), Some(id(2)));
+        let mine = places[1].lane;
+
+        // Nothing above where you stand is bright: that is the rest of the
+        // branch, not where you are.
+        assert!(places[0].segments.iter().all(|s| !s.current));
+        assert!(places[1]
+            .segments
+            .iter()
+            .filter(|s| s.y1 == 0)
+            .all(|s| !s.current));
+        // From your node down, it is.
+        assert!(places[1]
+            .segments
+            .iter()
+            .filter(|s| s.y1 == 1)
+            .all(|s| s.current));
+        // The trunk's row beside it: your line passes by bright, the trunk's
+        // own line stays plain.
+        let passing: Vec<&Segment> = places[2].segments.iter().filter(|s| s.x1 == mine).collect();
+        assert!(!passing.is_empty());
+        assert!(passing.iter().all(|s| s.current));
+        assert!(places[2]
+            .segments
+            .iter()
+            .filter(|s| s.x1 == places[2].lane)
+            .all(|s| !s.current));
+        // Where the branch left the trunk: bright into the node, plain out of
+        // it — below here the history is the trunk's, not the branch's.
+        assert!(places[3]
+            .segments
+            .iter()
+            .any(|s| s.y2 == 1 && s.x1 == mine && s.current));
+        assert!(places[3]
+            .segments
+            .iter()
+            .filter(|s| s.y1 == 1)
+            .all(|s| !s.current));
+        assert!(places[4].segments.iter().all(|s| !s.current));
+    }
+
+    #[test]
+    fn standing_on_the_trunk_brightens_it_all_the_way_down() {
+        let history = [commit(1, &[2]), commit(2, &[3]), commit(3, &[])];
+        let places = plot(&history, Some(id(1)), Some(id(2)));
+        assert!(places[0].segments.iter().all(|s| !s.current));
+        assert!(places[1]
+            .segments
+            .iter()
+            .filter(|s| s.y1 == 1)
+            .all(|s| s.current));
+        assert!(places[2]
+            .segments
+            .iter()
+            .filter(|s| s.y1 == 0)
+            .all(|s| s.current));
+    }
+
+    #[test]
+    fn a_branch_folded_in_hangs_off_the_commit_that_carries_it() {
+        // 1 is the squash of the branch whose tip is 3; the trunk is 1 ← 2 ← 4.
+        let mut history = vec![
+            commit(1, &[2]),
+            commit(2, &[4]),
+            commit(3, &[4]),
+            commit(4, &[]),
+        ];
+        history[0].carries.push(id(3));
+        check(&history, Some(id(1)));
+
+        let places = plot(&history, Some(id(1)), None);
+        let link = places[0]
+            .segments
+            .iter()
+            .find(|s| s.y1 == 1 && s.x2 != places[0].lane)
+            .expect("a line leaves the squash for the branch it squashed");
+        assert!(link.dashed);
+        // Broken all the way down: past the row between, and into the tip.
+        assert!(places[1]
+            .segments
+            .iter()
+            .filter(|s| s.x1 == link.x2)
+            .all(|s| s.dashed));
+        assert_eq!(places[2].lane, link.x2);
+        assert!(places[2]
+            .segments
+            .iter()
+            .filter(|s| s.y2 == 1)
+            .all(|s| s.dashed));
+        // The branch's own history below its tip is history, and solid.
+        assert!(places[2]
+            .segments
+            .iter()
+            .filter(|s| s.y1 == 1)
+            .all(|s| !s.dashed));
+    }
+
+    #[test]
+    fn what_is_still_to_pull_is_held_back_down_to_the_commit_you_have() {
+        // origin/main is 1 and main is 3: 1 and 2 are not pulled yet.
+        let mut history = vec![
+            commit(1, &[2]),
+            commit(2, &[3]),
+            commit(3, &[4]),
+            commit(4, &[]),
+        ];
+        history[0].unpulled = true;
+        history[1].unpulled = true;
+        check(&history, Some(id(1)));
+
+        let places = plot(&history, Some(id(1)), Some(id(3)));
+        // Straight above, in the trunk's own column: not a branch beside it.
+        assert!(places.iter().all(|p| p.lane == 0));
+        assert!(places[0].segments.iter().all(|s| s.faint));
+        assert!(places[1].segments.iter().all(|s| s.faint));
+        // Held back into your node, and plain — and yours — out of it.
+        assert!(places[2]
+            .segments
+            .iter()
+            .filter(|s| s.y2 == 1)
+            .all(|s| s.faint));
+        assert!(places[2]
+            .segments
+            .iter()
+            .filter(|s| s.y1 == 1)
+            .all(|s| !s.faint && s.current));
+        assert!(places[3].segments.iter().all(|s| !s.faint));
     }
 
     #[test]

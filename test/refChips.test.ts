@@ -30,9 +30,12 @@ function row(
     lane: 0,
     color,
     width: 1,
-    segments: to.map((c) => ({ x1: 0, y1: 1, x2: 0, y2: 2, color: c })),
+    segments: to.map((c) => ({ x1: 0, y1: 1, x2: 0, y2: 2, color: c, dashed: false, faint: false, current: false })),
     labels,
-    unpushed: false
+    unpushed: false,
+    unpulled: false,
+    carries: [],
+    stash: null
   }
 }
 
@@ -138,6 +141,25 @@ describe('lineChips', () => {
 
     expect(owners[0]!.name).toBe('feature')
     expect(owners[2]).toBeNull()
+  })
+
+  // The line a merge sends out to a branch since deleted starts at the merge,
+  // in a colour nothing was running into that row. The name of whatever last
+  // wore that colour is over, and must not be printed down the merged-in line.
+  it('drops the name when a merge starts a new line in a colour that has been used', () => {
+    const owners = lineChips([
+      // `feature` ends here, and colour 1 with it.
+      row('tip', 1, [local('feature')], []),
+      row('above', 0, [local('main')]),
+      // A merge on main: its own line carries on and a second leaves in
+      // colour 1, which nothing was running into.
+      row('merge', 0, [], [0, 1]),
+      // Main's line runs past the commit that was brought in.
+      row('brought-in', 1, [], [0, 1]),
+      row('below', 0)
+    ])
+
+    expect(owners.map((c) => c?.name ?? null)).toEqual(['feature', 'main', 'main', null, 'main'])
   })
 
   it('takes over from the previous holder when a line names itself', () => {

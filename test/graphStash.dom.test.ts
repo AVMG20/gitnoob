@@ -26,9 +26,11 @@ function row(over: Partial<GraphRow>): GraphRow {
     lane: 0,
     color: 0,
     width: 2,
-    segments: [{ x1: 0, y1: 1, x2: 0, y2: 2, color: 0, dashed: false }],
+    segments: [{ x1: 0, y1: 1, x2: 0, y2: 2, color: 0, dashed: false, faint: false, current: false }],
     labels: [],
     unpushed: false,
+    unpulled: false,
+    carries: [],
     stash: null,
     ...over
   }
@@ -63,7 +65,7 @@ beforeEach(() => {
       lane: 1,
       color: 1,
       stash: 0,
-      segments: [{ x1: 1, y1: 1, x2: 1, y2: 2, color: 1, dashed: true }]
+      segments: [{ x1: 1, y1: 1, x2: 1, y2: 2, color: 1, dashed: true, faint: false, current: false }]
     }),
     row({}),
     row({ oid: 'c2', short: 'c2', summary: 'feat: older', parents: [], segments: [] })

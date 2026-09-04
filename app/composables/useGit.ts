@@ -208,8 +208,14 @@ export interface Segment {
   x2: number
   y2: number
   color: number
-  /** A stash's line, drawn broken: it hangs off the history, it is not in it. */
+  /** Not history, drawn broken: a stash's line, or the link from a squash or
+      a rebase back to the branch it folded in. */
   dashed: boolean
+  /** On the upstream and not here yet: what a pull would bring. Drawn held
+      back, so it reads as above where you stand rather than as part of it. */
+  faint: boolean
+  /** The line you are on, from your commit down. Drawn a shade brighter. */
+  current: boolean
 }
 export interface RefLabel {
   kind: string
@@ -233,6 +239,11 @@ export interface GraphRow {
   labels: RefLabel[]
   /** On a local branch but not yet on its upstream. */
   unpushed: boolean
+  /** On an upstream and on no local branch: not pulled yet. */
+  unpulled: boolean
+  /** Branch tips whose work this commit carries without being a merge of
+      them — a squash, or the last commit of a rebase. */
+  carries: string[]
   /** Which stash this row is, when it is one rather than a commit. */
   stash: number | null
 }
@@ -1788,22 +1799,55 @@ const FALLBACK_LANES = [
 ]
 
 const lanes = ref<string[]>(FALLBACK_LANES)
+const bright = ref<string[]>(FALLBACK_LANES.map((one) => lift(one, false)))
 
 /** Reads the lane colours out of the stylesheet. Called when the theme lands. */
 export function refreshLanes() {
   if (typeof window === 'undefined') return
-  const style = getComputedStyle(document.documentElement)
+  const root = document.documentElement
+  const style = getComputedStyle(root)
   const found = FALLBACK_LANES.map((_, at) =>
     style.getPropertyValue(`--lane-${at + 1}`).trim()
   )
   // A stylesheet that has not arrived yet answers with empty strings, and a
   // graph drawn in no colour at all is worse than one drawn in the old ones.
   if (found.every((one) => one.length > 0)) lanes.value = found
+  const light = 'light' in root.dataset
+  bright.value = lanes.value.map((one) => lift(one, light))
 }
 
 /** The modulo keeps the index in range, which the checker cannot work out. */
 export const laneColor = (index: number): string =>
   lanes.value[index % lanes.value.length] ?? FALLBACK_LANES[0]!
+
+/**
+ * A lane's colour brought forward a step, for the line you are standing on.
+ *
+ * Slightly: the point is that the eye can find the line among a dozen without
+ * the rest of the picture looking switched off. Worked out once per theme
+ * rather than per segment, because the graph asks thousands of times a frame.
+ */
+export const laneBright = (index: number): string =>
+  bright.value[index % bright.value.length] ?? laneColor(index)
+
+/**
+ * The same hue, one step further from the background.
+ *
+ * On a dark ground that is towards white; on a light one, where towards white
+ * is towards the page, it is a deeper and fuller version of the colour. Both
+ * are what "brighter" means when you look at the line.
+ */
+function lift(hex: string, light: boolean): string {
+  const value = parseInt(hex.slice(1), 16)
+  if (Number.isNaN(value) || hex.length !== 7) return hex
+  const channel = (shift: number) => (value >> shift) & 255
+  const mix = (part: number, towards: number, amount: number) =>
+    Math.round(part + (towards - part) * amount)
+  const [r, g, b] = light
+    ? [mix(channel(16), 0, 0.18), mix(channel(8), 0, 0.18), mix(channel(0), 0, 0.18)]
+    : [mix(channel(16), 255, 0.22), mix(channel(8), 255, 0.22), mix(channel(0), 255, 0.22)]
+  return `#${[r, g, b].map((part) => part!.toString(16).padStart(2, '0')).join('')}`
+}
 
 /**
  * A lane's colour at a given opacity.
