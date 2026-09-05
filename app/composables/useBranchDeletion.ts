@@ -4,15 +4,19 @@ import type { BranchDeletion } from './useGit'
  * The answer to "is this safe to delete?", worked out from what the preview
  * found. Kept apart from the dialog so it can be read on its own, and so the
  * cases that used to be got wrong are testable without a window.
+ *
+ * The dialog title already carries the branch name, so nothing here repeats
+ * it — these read as short verdicts, not sentences about a branch.
  */
 export interface Verdict {
   /** `safe`: nothing is lost. `careful`: nothing is lost yet something is
    *  worth reading. `danger`: commits go away. */
   tone: 'safe' | 'careful' | 'danger'
-  /** The answer in a handful of words, for the top of the dialog. */
+  /** The verdict in a handful of words. Usually the whole message. */
   headline: string
-  /** Why, in a sentence or two. */
-  detail: string
+  /** The one thing the headline cannot carry, when there is one. Left off
+   *  wherever the headline already says it, which is most cases. */
+  detail?: string
   /** Whether the tick box has to be ticked before this can be pressed. */
   acknowledge: boolean
 }
@@ -37,6 +41,11 @@ function against(found: BranchDeletion) {
   return found.against ?? found.head ?? 'the commit you are on'
 }
 
+/** The remote's own name — `origin`, not `origin/some/long/branch/name`. */
+function remoteName(found: BranchDeletion) {
+  return found.remote?.remote ?? found.upstream?.split('/')[0] ?? 'the remote'
+}
+
 /**
  * Deleting the local branch. Git keeps the commits in the reflog for weeks
  * after the label goes, so even the bad case is not quite the end — but the
@@ -44,20 +53,14 @@ function against(found: BranchDeletion) {
  */
 export function localVerdict(found: BranchDeletion): Verdict {
   if (found.trunk_holds) {
-    return {
-      tone: 'safe',
-      headline: 'Safe to delete',
-      detail: `${against(found)} already holds every commit on ${found.name}, so deleting the branch here loses nothing.`,
-      acknowledge: false
-    }
+    return { tone: 'safe', headline: `Merged into ${against(found)}`, acknowledge: false }
   }
 
   // The remote has it all: the branch can be checked out again from there.
   if (found.upstream && found.unpushed === 0) {
     return {
       tone: 'careful',
-      headline: 'Safe here — the remote keeps a copy',
-      detail: `${found.name} has not landed on ${against(found)}, but ${found.upstream} holds every commit on it. You can check it out again from there.`,
+      headline: `Not on ${against(found)} — ${remoteName(found)} has every commit`,
       acknowledge: false
     }
   }
@@ -70,30 +73,19 @@ export function localVerdict(found: BranchDeletion): Verdict {
     const many = found.also_on.length > 1
     return {
       tone: 'careful',
-      headline: `Not on ${against(found)} yet`,
-      detail: `${found.name} has not landed on ${against(found)}. ${list(found.also_on)} ${
-        many ? 'hold' : 'holds'
-      } every commit on it, so nothing goes today — but ${
-        many ? 'those branches are' : 'that branch is'
-      } not where work is kept, and a reset there takes the work with it.`,
+      headline: `Not on ${against(found)} — only ${list(found.also_on)}`,
+      detail: `A reset on ${many ? 'those branches' : 'that branch'} takes the work with it.`,
       acknowledge: false
     }
   }
 
   const orphaned = found.only_here
-  const where = found.upstream
-    ? `on ${found.name} and not on ${found.upstream}`
-    : `only on ${found.name}, which has no remote copy`
   return {
     tone: 'danger',
-    headline: `${commits(orphaned)} would be left with no branch`,
-    detail: `${commits(orphaned)} ${orphaned === 1 ? 'is' : 'are'} ${where}. Deleting it leaves ${
-      orphaned === 1 ? 'that commit' : 'those commits'
-    } reachable from nothing. Git keeps ${
-      orphaned === 1 ? 'it' : 'them'
-    } in the reflog for about 30 days, so \`git reflog\` can still bring ${
-      orphaned === 1 ? 'it' : 'them'
-    } back until then.`,
+    headline: `${commits(orphaned)} left with no branch`,
+    detail: `${
+      found.upstream ? `Not on ${found.upstream}` : 'No remote copy'
+    }. git reflog gets ${orphaned === 1 ? 'it' : 'them'} back for about 30 days.`,
     acknowledge: true
   }
 }
@@ -109,20 +101,17 @@ export function remoteVerdict(found: BranchDeletion): Verdict | null {
   if (remote.unmerged === 0) {
     return {
       tone: 'careful',
-      headline: `${remote.name} holds nothing new`,
-      detail: `Every commit on ${remote.name} is already on ${against(found)}. Deleting it there removes the branch for everyone, but no work goes with it.`,
+      headline: `${remote.remote} holds nothing extra`,
       acknowledge: false
     }
   }
 
   return {
     tone: 'danger',
-    headline: `${commits(remote.unmerged)} exist only on ${remote.name}`,
-    detail: `${commits(remote.unmerged)} on ${remote.name} ${
-      remote.unmerged === 1 ? 'is' : 'are'
-    } not on ${against(found)} — most likely somebody else's work. Deleting the branch there removes ${
+    headline: `${commits(remote.unmerged)} only on ${remote.remote}`,
+    detail: `Likely somebody else's. Deleting there is for everyone, and no reflog brings ${
       remote.unmerged === 1 ? 'it' : 'them'
-    } for everyone, and no reflog here brings ${remote.unmerged === 1 ? 'it' : 'them'} back.`,
+    } back.`,
     acknowledge: true
   }
 }

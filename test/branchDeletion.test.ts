@@ -22,11 +22,14 @@ function preview(over: Partial<BranchDeletion> = {}): BranchDeletion {
 }
 
 describe('deleting the branch here', () => {
-  it('calls a merged branch safe', () => {
+  it('calls a merged branch safe, in a handful of words', () => {
     const verdict = localVerdict(preview())
     expect(verdict.tone).toBe('safe')
     expect(verdict.acknowledge).toBe(false)
-    expect(verdict.detail).toContain('main')
+    expect(verdict.headline).toContain('main')
+    // The title already says which branch this is about.
+    expect(verdict.headline).not.toContain('feature')
+    expect(verdict.detail).toBeUndefined()
   })
 
   // The old dialog took "ahead of its upstream" as loss on its own, and warned
@@ -37,7 +40,6 @@ describe('deleting the branch here', () => {
     )
     expect(verdict.tone).toBe('safe')
     expect(verdict.acknowledge).toBe(false)
-    expect(verdict.detail).not.toMatch(/reachable from nothing/)
   })
 
   // It also said "it has no upstream holding a copy" whenever nothing was
@@ -48,8 +50,9 @@ describe('deleting the branch here', () => {
     )
     expect(verdict.tone).toBe('careful')
     expect(verdict.acknowledge).toBe(false)
-    expect(verdict.detail).toContain('origin/feature')
-    expect(verdict.detail).not.toMatch(/no upstream/)
+    // The remote, not the long remote-tracking name.
+    expect(verdict.headline).toContain('origin')
+    expect(verdict.headline).not.toContain('origin/feature')
   })
 
   // And "reachable from nothing" was said about branches another local branch
@@ -59,7 +62,7 @@ describe('deleting the branch here', () => {
       preview({ trunk_holds: false, also_on: ['develop'], only_here: 2 })
     )
     expect(verdict.acknowledge).toBe(false)
-    expect(verdict.detail).toContain('develop')
+    expect(verdict.headline).toContain('develop')
   })
 
   // The case that started this: a branch that has only reached `staging` was
@@ -77,8 +80,7 @@ describe('deleting the branch here', () => {
     const verdict = localVerdict(
       preview({ trunk_holds: false, also_on: ['develop', 'release', 'staging'], only_here: 1 })
     )
-    expect(verdict.detail).toContain('develop, release and staging')
-    expect(verdict.detail).toContain('hold')
+    expect(verdict.headline).toContain('develop, release and staging')
   })
 
   // Landing on the trunk is the question, not landing on wherever you stand.
@@ -87,8 +89,8 @@ describe('deleting the branch here', () => {
       preview({ trunk_holds: true, against: 'main', head: 'some-other-branch' })
     )
     expect(verdict.tone).toBe('safe')
-    expect(verdict.detail).toContain('main')
-    expect(verdict.detail).not.toContain('some-other-branch')
+    expect(verdict.headline).toContain('main')
+    expect(verdict.headline).not.toContain('some-other-branch')
   })
 
   it('warns, counts and asks for a tick when the commits are only here', () => {
@@ -106,12 +108,12 @@ describe('deleting the branch here', () => {
     const verdict = localVerdict(preview({ trunk_holds: false, upstream: null, only_here: 1 }))
     expect(verdict.tone).toBe('danger')
     expect(verdict.headline).toContain('1 commit')
-    expect(verdict.detail).toContain('no remote copy')
+    expect(verdict.detail).toContain('No remote copy')
   })
 
   // No trunk and no branch under HEAD: nothing to name but the commit itself.
   it('speaks of the commit rather than a branch on a detached HEAD', () => {
-    expect(localVerdict(preview({ head: null, against: null })).detail).toContain(
+    expect(localVerdict(preview({ head: null, against: null })).headline).toContain(
       'the commit you are on'
     )
   })
@@ -127,13 +129,16 @@ describe('deleting the copy on the remote', () => {
     expect(remoteVerdict(preview())).toBeNull()
   })
 
-  it('is calm when the remote holds nothing new', () => {
+  it('is calm and brief when the remote holds nothing new', () => {
     const verdict = remoteVerdict(
       preview({ remote: { name: 'origin/feature', remote: 'origin', unmerged: 0 } })
     )
     expect(verdict?.tone).toBe('careful')
     expect(verdict?.acknowledge).toBe(false)
-    expect(verdict?.detail).toContain('for everyone')
+    expect(verdict?.headline).toContain('origin')
+    // Nothing is at stake, so nothing beyond the line itself.
+    expect(verdict?.detail).toBeUndefined()
+    expect(verdict?.headline).not.toContain('feature')
   })
 
   // The case that used to pass as "loses nothing" with a one-click delete:
@@ -150,6 +155,6 @@ describe('deleting the copy on the remote', () => {
     expect(verdict?.tone).toBe('danger')
     expect(verdict?.acknowledge).toBe(true)
     expect(verdict?.headline).toContain('2 commits')
-    expect(verdict?.detail).toContain('no reflog')
+    expect(verdict?.detail).toContain('reflog')
   })
 })

@@ -49,42 +49,42 @@ onMounted(async () => {
 <template>
   <AppModal
     :title="`Delete ${props.name}?`"
-    :width="540"
+    :width="460"
     @close="emit('close')"
   >
-    <p v-if="!preview" class="dim">Working out what this would lose…</p>
+    <p v-if="!preview" class="dim">Checking…</p>
 
     <p v-else-if="preview.is_head" class="verdict careful">
       <Info :size="14" class="glyph" />
-      <span>
-        <strong>{{ preview.name }} is the branch you are on.</strong>
-        Git will not delete it out from under you — switch to another branch first.
-      </span>
+      <span>You are on this branch. Switch to another one first.</span>
     </p>
 
     <template v-else>
+      <!-- One line each. The buttons carry the risk in their colour, so
+           nothing here has to spell out what deleting means. -->
       <p v-if="local" class="verdict" :class="local.tone">
         <component :is="icon[local.tone]" :size="14" class="glyph" />
         <span>
-          <strong>{{ local.headline }}.</strong>
-          {{ local.detail }}
+          {{ local.headline }}<template v-if="local.detail"> — {{ local.detail }}</template>
         </span>
       </p>
 
       <p v-if="remote" class="verdict" :class="remote.tone">
         <component :is="icon[remote.tone]" :size="14" class="glyph" />
         <span>
-          <strong>{{ remote.headline }}.</strong>
-          {{ remote.detail }}
+          {{ remote.headline }}<template v-if="remote.detail"> — {{ remote.detail }}</template>
         </span>
       </p>
 
-      <p v-if="preview.other_remotes.length" class="line dim">
-        The same name is also on
-        <span v-for="(full, i) in preview.other_remotes" :key="full">
-          <span class="mono">{{ full }}</span
-          ><span v-if="i < preview.other_remotes.length - 1">, </span> </span
-        >. Those are left alone — delete them where they live.
+      <p v-if="preview.other_remotes.length" class="verdict careful">
+        <Info :size="14" class="glyph" />
+        <span>
+          Same name on
+          <span v-for="(full, i) in preview.other_remotes" :key="full">
+            <span class="mono">{{ full }}</span
+            ><span v-if="i < preview.other_remotes.length - 1">, </span> </span
+          >, left alone.
+        </span>
       </p>
 
       <label v-if="asks" class="ack">
@@ -104,7 +104,7 @@ onMounted(async () => {
           :disabled="store.busy || localBlocked"
           @click="remove(false)"
         >
-          {{ preview.remote ? 'Delete here only' : 'Delete branch' }}
+          {{ preview.remote ? 'Delete here' : 'Delete' }}
         </button>
         <button
           v-if="preview.remote"
@@ -121,21 +121,15 @@ onMounted(async () => {
 </template>
 
 <style scoped>
-.line {
-  margin: 0 0 12px;
-  font-size: 12.5px;
-  line-height: 1.55;
-}
-
+/* A verdict is a line, not a panel. Only the case that loses work gets the
+   weight of a box; the rest is a coloured line and its glyph. */
 .verdict {
   display: flex;
   align-items: flex-start;
-  gap: 8px;
-  margin: 0 0 10px;
-  padding: 10px 11px;
-  border-radius: 7px;
+  gap: 7px;
+  margin: 0 0 6px;
   font-size: 12.5px;
-  line-height: 1.55;
+  line-height: 1.5;
 }
 
 .verdict .glyph {
@@ -145,27 +139,25 @@ onMounted(async () => {
 
 .verdict.safe {
   color: var(--green-soft);
-  background: var(--success-bg);
-  border: 1px solid var(--success-line);
 }
 
 .verdict.careful {
-  color: var(--text);
-  background: var(--bg-raised);
-  border: 1px solid var(--line);
+  color: var(--text-dim);
 }
 
 .verdict.danger {
   color: var(--red-soft);
   background: var(--danger-bg);
   border: 1px solid var(--danger-line);
+  border-radius: 7px;
+  padding: 8px 10px;
 }
 
 .ack {
   display: flex;
   align-items: center;
   gap: 8px;
-  margin-top: 4px;
+  margin-top: 8px;
   font-size: 12px;
   color: var(--red);
   cursor: pointer;
