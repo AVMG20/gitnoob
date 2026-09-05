@@ -1417,7 +1417,10 @@ onUnmounted(() => {
                  drawn over the cell takes the pointer off the cell that
                  summoned it, and closes itself. A descendant cannot — the cell
                  is still hovered while the pointer is anywhere inside it. -->
-            <span v-if="item.refs.length" class="refs-set">
+            <!-- Nothing while a branch is being named on this row: the editor
+                 stands where the chips do, and a name half showing through
+                 what is being typed over it was two names in one place. -->
+            <span v-if="item.refs.length && editing?.oid !== item.row.oid" class="refs-set">
               <span
                 v-for="(chip, at) in item.refs"
                 :key="chip.key"
@@ -1470,7 +1473,7 @@ onUnmounted(() => {
                  for the rows in between. The tick is left off: this commit is
                  on that branch, but it is not where the branch is. -->
             <template
-              v-for="chip in (item.ghost ? [item.ghost] : [])"
+              v-for="chip in (item.ghost && editing?.oid !== item.row.oid ? [item.ghost] : [])"
               :key="chip.key"
             >
               <span
@@ -1491,7 +1494,7 @@ onUnmounted(() => {
             <!-- Carries the leader on from the chip to the edge of the column,
                  where the graph's own line picks it up and runs to the node. -->
             <span
-              v-if="item.row.labels.length"
+              v-if="item.row.labels.length && editing?.oid !== item.row.oid"
               class="leader"
               :style="{ background: laneColor(item.row.color) }"
             />
@@ -1737,8 +1740,8 @@ onUnmounted(() => {
             :class="{ bad: editing.name && nameProblem }"
             :style="{
               color: laneColor(item.row.color),
-              background: laneTint(item.row.color, 0.16),
-              outline: `1px solid ${laneTint(item.row.color, 0.55)}`
+              backgroundImage: `linear-gradient(${laneTint(item.row.color, 0.18)}, ${laneTint(item.row.color, 0.18)})`,
+              outline: `1px solid ${laneTint(item.row.color, 0.6)}`
             }"
             @click.stop
             @dblclick.stop
@@ -2027,8 +2030,9 @@ onUnmounted(() => {
   outline-offset: -1px;
   font-size: 11px;
   font-weight: 600;
-  /* The lane tint goes over this as a background, and it must not be
-     see-through: there are lines and a message underneath. */
+  /* Opaque, with the lane's tint laid over it as a background image: the
+     tint on its own is mostly see-through, and there is a line, a leader and
+     the start of a message underneath it. */
   background-color: var(--bg-panel);
   box-shadow: 0 2px 10px var(--shadow);
 }

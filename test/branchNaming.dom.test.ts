@@ -81,6 +81,21 @@ describe('naming a branch in the graph', () => {
     expect(document.querySelector('.scrim')).toBeNull()
   })
 
+  it('takes the place of the chips on its row rather than sitting over them', async () => {
+    const wrapper = mount(Host)
+    await flushPromises()
+    expect(wrapper.findAll('.row')[0]!.find('.chip').exists()).toBe(true)
+
+    await branchFrom(wrapper, 0)
+    const head = wrapper.findAll('.row')[0]!
+    expect(head.find('.naming').exists()).toBe(true)
+    expect(head.find('.chip').exists()).toBe(false)
+    expect(head.find('.leader').exists()).toBe(false)
+
+    await head.find('.naming input').trigger('keydown', { key: 'Escape' })
+    expect(wrapper.findAll('.row')[0]!.find('.chip').exists()).toBe(true)
+  })
+
   it('creates and checks the branch out from that commit on Enter', async () => {
     const wrapper = mount(Host)
     await flushPromises()
