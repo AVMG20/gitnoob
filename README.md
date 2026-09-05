@@ -21,7 +21,7 @@ So I started building my own. This is it. It's the tool I use for my own work no
 
 ## What it does
 
-- Commit graph with real lanes, fast even on very large repos
+- Commit graph with real lanes, fast even on very large repos. Squash and rebase merges are drawn too, found by patch-id
 - Stage and unstage by file, hunk, or individual lines
 - Drag a branch onto another to merge or rebase. Drag a commit onto a branch to cherry-pick
 - Interactive rebase by drag and drop: reorder, squash, reword, drop, with a preview before it runs

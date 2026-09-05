@@ -29,6 +29,8 @@ function row(over: Partial<GraphRow>): GraphRow {
     segments: [],
     labels: [],
     unpushed: false,
+    unpulled: false,
+    carries: [],
     stash: null,
     ...over
   }

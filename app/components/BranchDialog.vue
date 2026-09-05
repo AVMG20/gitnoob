@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { computed, ref } from 'vue'
 import { useGit } from '~/composables/useGit'
+import { branchNameProblem } from '~/composables/useBranchName'
 
 const props = defineProps<{
   /** Where the branch starts. Empty means whatever is checked out. */
@@ -20,21 +21,9 @@ const start = ref(props.start ?? '')
 const taken = computed(() =>
   store.refs?.locals.some((b) => b.name === name.value.trim()) ?? false
 )
-const invalid = computed(() => {
-  const value = name.value.trim()
-  // The rules git itself enforces, checked up front so the error is inline.
-  return (
-    !value ||
-    taken.value ||
-    /[\s~^:?*\[\\]/.test(value) ||
-    value.startsWith('-') ||
-    value.startsWith('/') ||
-    value.endsWith('/') ||
-    value.endsWith('.') ||
-    value.includes('..') ||
-    value.includes('@{')
-  )
-})
+/** What is wrong with the name, or null once git would take it. */
+const problem = computed(() => branchNameProblem(name.value, taken.value))
+const invalid = computed(() => problem.value !== null)
 
 async function submit() {
   if (invalid.value) return
@@ -57,8 +46,7 @@ async function submit() {
         autofocus
         @keyup.enter="submit"
       />
-      <span v-if="taken" class="hint bad">A branch with that name already exists.</span>
-      <span v-else-if="name && invalid" class="hint bad">Git will not accept that name.</span>
+      <span v-if="name && problem" class="hint bad">{{ problem }}</span>
     </label>
 
     <label class="field">

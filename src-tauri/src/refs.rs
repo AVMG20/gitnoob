@@ -1152,36 +1152,42 @@ pub fn trunk(state: &AppState) -> Trunk {
             chosen: false,
         };
     };
+    match chosen_trunk(&repo) {
+        Some(name) => Trunk {
+            name: Some(name),
+            chosen: true,
+        },
+        None => Trunk {
+            name: trunk_of(&repo),
+            chosen: false,
+        },
+    }
+}
 
-    // What this repository was told, when it still names something real. A
-    // branch that has since been deleted falls back rather than measuring
-    // everything against nothing.
-    if let Ok(path) = state.path() {
-        if let Ok(raw) = git_cmd::run_checked(&path, &["config", "--get", TRUNK_KEY]) {
-            let chosen = raw.trim();
-            if !chosen.is_empty() && ref_exists(&repo, chosen) {
-                return Trunk {
-                    name: Some(chosen.to_string()),
-                    chosen: true,
-                };
-            }
-        }
-    }
+/// What this repository was told its trunk is, when it still names something
+/// real. A branch that has since been deleted falls back rather than measuring
+/// everything against nothing.
+fn chosen_trunk(repo: &Repository) -> Option<String> {
+    let chosen = repo.config().ok()?.get_string(TRUNK_KEY).ok()?;
+    let chosen = chosen.trim();
+    (!chosen.is_empty() && ref_exists(repo, chosen)).then(|| chosen.to_string())
+}
 
-    // The usual names, local first: a clone that has never checked the default
-    // branch out still has `origin/main` to measure against.
-    for name in ["main", "master", "origin/main", "origin/master"] {
-        if ref_exists(&repo, name) {
-            return Trunk {
-                name: Some(name.to_string()),
-                chosen: false,
-            };
-        }
+/// The branch this repository is organised around: the one it was told about,
+/// else the usual names, local first — a clone that has never checked the
+/// default branch out still has `origin/main` to measure against. `None` when
+/// there is nothing of the kind.
+///
+/// This is what the graph anchors its leftmost column to, so the answer here
+/// and the answer the sidebar compares branches against are one answer.
+pub fn trunk_of(repo: &Repository) -> Option<String> {
+    if let Some(chosen) = chosen_trunk(repo) {
+        return Some(chosen);
     }
-    Trunk {
-        name: None,
-        chosen: false,
-    }
+    ["main", "master", "origin/main", "origin/master"]
+        .into_iter()
+        .find(|name| ref_exists(repo, name))
+        .map(str::to_string)
 }
 
 /// Names the branch this repository is organised around, or forgets the name

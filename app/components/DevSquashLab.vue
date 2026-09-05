@@ -37,9 +37,11 @@ function commit(oid: string, summary: string, ago: number, over: Partial<GraphRo
     lane: 0,
     color: 0,
     width: 1,
-    segments: [{ x1: 0, y1: 1, x2: 0, y2: 2, color: 0, dashed: false }],
+    segments: [{ x1: 0, y1: 1, x2: 0, y2: 2, color: 0, dashed: false, faint: false, current: false }],
     labels: [],
     unpushed: false,
+    unpulled: false,
+    carries: [],
     stash: null,
     ...over
   }

@@ -27,6 +27,8 @@ const row = (oid: string, summary: string): GraphRow => ({
   segments: [],
   labels: [],
   unpushed: false,
+  unpulled: false,
+  carries: [],
   stash: null
 })
 

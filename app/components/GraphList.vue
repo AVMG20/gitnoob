@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, nextTick, onMounted, onUnmounted, ref, watch } from 'vue'
+import { computed, nextTick, onMounted, onUnmounted, ref, watch, type VNode } from 'vue'
 import {
   Archive,
   ArrowDownToLine,
@@ -27,6 +27,7 @@ import {
   fullTime,
   highlight,
   isRunning,
+  laneBright,
   laneColor,
   laneTint,
   relativeTime,
@@ -51,6 +52,8 @@ import { useDragDrop } from '~/composables/useDragDrop'
 import { keyLabel, useShortcuts } from '~/composables/useShortcuts'
 import { useColumns, type ColumnId } from '~/composables/useColumns'
 import { useConfig } from '~/composables/useConfig'
+import { branchNameProblem } from '~/composables/useBranchName'
+import { useBranchNaming } from '~/composables/useBranchNaming'
 
 const git = useGit()
 const store = git.store
@@ -58,6 +61,7 @@ const rebase = useRebase()
 const menu = useContextMenu()
 const drag = useDragDrop()
 const config = useConfig()
+const naming = useBranchNaming()
 
 /** Whether to draw author pictures at all, which Settings can turn off. */
 const avatars = computed(() => config.settings.value?.show_avatars !== false)
@@ -100,7 +104,6 @@ const hit = ref(0)
 /** The commit a hard reset is being confirmed against; the only one that asks. */
 const resetTarget = ref<string | null>(null)
 const tagTarget = ref<GraphRow | null>(null)
-const branchTarget = ref<GraphRow | null>(null)
 /** The stash whose drop is being confirmed, by index; null when none is. */
 const dropping = ref<number | null>(null)
 /** The commits whose fold is being composed, or null when none is. */
@@ -239,6 +242,15 @@ interface RowMemo {
    * there is one for every branch ever made from the trunk.
    */
   junction: boolean
+  /** The commit HEAD is on: its node wears the brighter ring its line does. */
+  mine: boolean
+  /**
+   * What the node says on hover about a branch folded in without a merge:
+   * on the commit that carries the work, which branches; on the branch's
+   * tip, where it went. Empty for the commits this does not concern, which
+   * is nearly all of them.
+   */
+  folded: string
   letters: string
   tint: string
   when: string
@@ -252,6 +264,11 @@ const memos = new Map<string, RowMemo>()
 watch(() => store.rows, () => {
   memos.clear()
   cancelUnfold()
+  // A refresh that comes and goes under the editor leaves it where it was;
+  // only a row that is no longer there takes it away.
+  if (editing.value && !store.rows.some((row) => row.oid === editing.value?.oid)) {
+    editing.value = null
+  }
 })
 
 function memoOf(row: GraphRow, index: number): RowMemo {
@@ -263,6 +280,8 @@ function memoOf(row: GraphRow, index: number): RowMemo {
       hidden: chips.slice(1),
       ghost: row.labels.length ? null : (lineOwners.value[index] ?? null),
       junction: row.parents.length > 1,
+      mine: row.labels.some((label) => label.head),
+      folded: foldedNote(row),
       letters: initials(row.author, row.email),
       tint: tint(row.email),
       when: relativeTime(row.time)
@@ -270,6 +289,44 @@ function memoOf(row: GraphRow, index: number): RowMemo {
     memos.set(row.oid, memo)
   }
   return memo
+}
+
+/**
+ * The rows by id, for the handful of lookups that go from one row to another.
+ * Rebuilt with the rows, which is rarely, rather than searched per row.
+ */
+const byOid = computed(() => new Map(store.rows.map((row) => [row.oid, row])))
+
+/** Which commit each folded-in branch tip went into, keyed by the tip. */
+const foldedInto = computed(() => {
+  const into = new Map<string, GraphRow>()
+  for (const row of store.rows) for (const tip of row.carries) into.set(tip, row)
+  return into
+})
+
+/** The branch names a commit points at, for a tooltip. */
+function branchNames(row: GraphRow): string {
+  return row.labels
+    .filter((label) => label.kind === 'local' || label.kind === 'remote')
+    .map((label) => label.name)
+    .join(', ')
+}
+
+/**
+ * The hover text for a squash or a rebase. Git records no link between the
+ * squash commit and the branch it squashed, so the graph's broken line is the
+ * only place the relationship is stated, and it should say what it is.
+ */
+function foldedNote(row: GraphRow): string {
+  if (row.carries.length) {
+    const names = row.carries
+      .map((tip) => byOid.value.get(tip))
+      .filter((tip): tip is GraphRow => !!tip)
+      .map((tip) => branchNames(tip) || tip.short)
+    return ` · carries ${names.join(', ')}: squashed or rebased in, not merged`
+  }
+  const carrier = foldedInto.value.get(row.oid)
+  return carrier ? ` · folded into ${carrier.short} without a merge` : ''
 }
 
 const window_ = computed(() =>
@@ -291,6 +348,8 @@ const window_ = computed(() =>
       refs: memo.chip ? [memo.chip, ...memo.hidden] : [],
       ghost: memo.ghost,
       junction: memo.junction,
+      mine: memo.mine,
+      folded: memo.folded,
       picture: found ?? null,
       letters: found === null ? memo.letters : '',
       tint: memo.tint,
@@ -335,12 +394,14 @@ function headTrace(index: number) {
   return index === headIndex.value ? ROW / 2 : ROW
 }
 
-/** True while the commit HEAD is on is scrolled out of the window. */
-const headOffScreen = computed(() => {
-  if (headIndex.value < 0) return false
-  const top = headIndex.value * ROW
+/** True while the row at `index` is scrolled out of the window. */
+function offScreen(index: number) {
+  const top = index * ROW
   return top + ROW < listTop.value || top > listTop.value + height.value
-})
+}
+
+/** True while the commit HEAD is on is scrolled out of the window. */
+const headOffScreen = computed(() => headIndex.value >= 0 && offScreen(headIndex.value))
 /** Which way to send the eye — and the scroll — to reach it. */
 const headBelow = computed(() => headIndex.value * ROW > listTop.value)
 
@@ -602,6 +663,58 @@ async function openReset(oid: string, mode: ResetMode) {
   if (said !== null && mode === 'hard') git.note(`${said}. Undo puts it back.`)
 }
 
+// --- naming a new branch
+
+/**
+ * The row a new branch is being named on, and the name so far.
+ *
+ * Typed into the graph itself, on the row the branch starts from, the way
+ * GitKraken does it: the row already says where, so all that is left to ask
+ * is what to call it, and a dialog in front of the graph was a page of reading
+ * to type one word. Enter creates the branch and checks it out; Escape, or
+ * clicking anywhere else, forgets it.
+ *
+ * `start` is what the command is told: a commit when the request named one,
+ * and nothing when it meant HEAD, which is then HEAD in the log as well.
+ */
+const editing = ref<{ oid: string; start: string | null; name: string } | null>(null)
+
+const nameTaken = computed(() => {
+  const name = editing.value?.name.trim()
+  return !!name && (store.refs?.locals.some((branch) => branch.name === name) ?? false)
+})
+/** What is wrong with the name so far, or null once git would take it. */
+const nameProblem = computed(() =>
+  editing.value ? branchNameProblem(editing.value.name, nameTaken.value) : null
+)
+
+/**
+ * Opens the editor on `start`, or on the commit HEAD is on. False when there is
+ * no such row to open it on, which the toolbar answers with the dialog.
+ */
+function nameBranch(start: string | null): boolean {
+  const oid = start ?? headRow.value?.oid
+  const index = oid ? store.rows.findIndex((row) => row.oid === oid) : -1
+  if (!oid || index < 0) return false
+  editing.value = { oid, start, name: '' }
+  // Brought into view only when it is not: the row under the pointer that
+  // was just right-clicked should stay under the pointer.
+  if (offScreen(index)) scrollTo(oid)
+  return true
+}
+
+/** The editor takes the keyboard the moment it is drawn. */
+function focusName(vnode: VNode) {
+  ;(vnode.el as HTMLInputElement | null)?.focus()
+}
+
+async function submitName() {
+  const edit = editing.value
+  if (!edit || nameProblem.value) return
+  editing.value = null
+  await git.createBranch(edit.name.trim(), edit.start ?? undefined)
+}
+
 // --- ref chips
 
 /**
@@ -833,9 +946,10 @@ function commitMenu(event: MouseEvent, row: GraphRow) {
       // checking the commit out directly detaches HEAD, and anything committed
       // afterwards belongs to no branch.
       {
-        label: 'Branch from here…',
+        label: 'Branch from here',
         icon: GitBranchPlus,
-        action: () => (branchTarget.value = row)
+        hint: 'type a name',
+        action: () => nameBranch(row.oid)
       },
       {
         label: 'Checkout this commit',
@@ -1085,15 +1199,18 @@ function onDropOnRow(row: GraphRow) {
 }
 
 const observer = new ResizeObserver(measure)
+let withdraw = () => {}
 onMounted(() => {
   measure()
   if (viewport.value) observer.observe(viewport.value)
   window.addEventListener('keydown', onKey)
+  withdraw = naming.offer(nameBranch)
 })
 onUnmounted(() => {
   observer.disconnect()
   window.removeEventListener('keydown', onKey)
   window.clearTimeout(unfoldTimer)
+  withdraw()
 })
 </script>
 
@@ -1202,7 +1319,7 @@ onUnmounted(() => {
           <path
             v-if="store.rows.length"
             :d="`M${x(headLane)},${ROW / 2} L${x(headLane)},${ROW}`"
-            :stroke="laneColor(headColor)"
+            :stroke="laneBright(headColor)"
             stroke-width="2"
             stroke-dasharray="2 3"
             stroke-linecap="round"
@@ -1260,7 +1377,7 @@ onUnmounted(() => {
             drop: drag.state.over === `commit:${item.row.oid}`
           }"
           :style="{ top: `${item.top}px` }"
-          draggable="true"
+          :draggable="editing?.oid === item.row.oid ? 'false' : 'true'"
           @click="onRowClick($event, item.row)"
           @contextmenu="commitMenu($event, item.row)"
           @dragstart="beginDrag($event, item.row)"
@@ -1300,7 +1417,10 @@ onUnmounted(() => {
                  drawn over the cell takes the pointer off the cell that
                  summoned it, and closes itself. A descendant cannot — the cell
                  is still hovered while the pointer is anywhere inside it. -->
-            <span v-if="item.refs.length" class="refs-set">
+            <!-- Nothing while a branch is being named on this row: the editor
+                 stands where the chips do, and a name half showing through
+                 what is being typed over it was two names in one place. -->
+            <span v-if="item.refs.length && editing?.oid !== item.row.oid" class="refs-set">
               <span
                 v-for="(chip, at) in item.refs"
                 :key="chip.key"
@@ -1353,7 +1473,7 @@ onUnmounted(() => {
                  for the rows in between. The tick is left off: this commit is
                  on that branch, but it is not where the branch is. -->
             <template
-              v-for="chip in (item.ghost ? [item.ghost] : [])"
+              v-for="chip in (item.ghost && editing?.oid !== item.row.oid ? [item.ghost] : [])"
               :key="chip.key"
             >
               <span
@@ -1374,7 +1494,7 @@ onUnmounted(() => {
             <!-- Carries the leader on from the chip to the edge of the column,
                  where the graph's own line picks it up and runs to the node. -->
             <span
-              v-if="item.row.labels.length"
+              v-if="item.row.labels.length && editing?.oid !== item.row.oid"
               class="leader"
               :style="{ background: laneColor(item.row.color) }"
             />
@@ -1395,7 +1515,7 @@ onUnmounted(() => {
             <path
               v-if="headTrace(item.index)"
               :d="`M${x(headLane)},0 L${x(headLane)},${headTrace(item.index)}`"
-              :stroke="laneColor(headColor)"
+              :stroke="laneBright(headColor)"
               stroke-width="2"
               stroke-dasharray="2 3"
               stroke-linecap="round"
@@ -1423,16 +1543,23 @@ onUnmounted(() => {
               opacity="0.45"
               fill="none"
             />
+            <!-- The line you are on is a step brighter and a touch heavier
+                 than the rest, from your commit down to where its line runs
+                 into another: enough to find it among a dozen, not enough to
+                 make the others look switched off. What the upstream has and
+                 you do not is held back instead, so it reads as sitting above
+                 you rather than as part of where you are. -->
             <path
               v-for="(segment, i) in item.row.segments"
               :key="i"
               :d="path(segment)"
-              :stroke="laneColor(segment.color)"
+              :stroke="segment.current ? laneBright(segment.color) : laneColor(segment.color)"
               fill="none"
-              stroke-width="2"
+              :stroke-width="segment.current ? 2.6 : 2"
               stroke-linecap="round"
               :stroke-dasharray="segment.dashed ? '3 3' : undefined"
-              :opacity="segment.dashed ? 0.75 : undefined"
+              :opacity="segment.faint ? 0.42 : segment.dashed ? 0.75 : undefined"
+              :class="{ current: segment.current, faint: segment.faint }"
             />
             <!-- A commit the upstream does not have yet wears a ring. Colour
                  alone will not do it: the first lane is already the accent
@@ -1456,14 +1583,15 @@ onUnmounted(() => {
                 :cx="x(item.row.lane)"
                 :cy="ROW / 2"
                 :r="JOINT"
-                :fill="item.row.unpushed ? 'var(--bg)' : laneColor(item.row.color)"
-                :stroke="laneColor(item.row.color)"
+                :fill="item.row.unpushed || item.row.unpulled ? 'var(--bg)' : laneColor(item.row.color)"
+                :stroke="item.mine ? laneBright(item.row.color) : laneColor(item.row.color)"
                 stroke-width="2"
+                :stroke-dasharray="item.row.unpulled ? '3 2.5' : undefined"
               />
               <title>
                 {{ item.row.author }} · a branch joins or parts here{{
-                  item.row.unpushed ? ' · not pushed yet' : ''
-                }}
+                  item.row.unpushed ? ' · not pushed yet' : item.row.unpulled ? ' · not pulled yet' : ''
+                }}{{ item.folded }}
               </title>
             </g>
             <!-- A stash is not part of the history, so it is not drawn as one:
@@ -1535,16 +1663,23 @@ onUnmounted(() => {
                    this one only crops the face and makes it look shrunken, and
                    the two lines running into the node already say it is a
                    merge. -->
+              <!-- A commit you do not have yet wears its ring broken, the way
+                   the working tree's node does: it is there, and it is not
+                   yours yet. -->
               <circle
                 :cx="x(item.row.lane)"
                 :cy="ROW / 2"
                 :r="NODE"
                 fill="none"
-                :stroke="laneColor(item.row.color)"
+                :stroke="item.mine ? laneBright(item.row.color) : laneColor(item.row.color)"
                 stroke-width="2"
+                :stroke-dasharray="item.row.unpulled ? '3 2.5' : undefined"
+                :opacity="item.row.unpulled ? 0.8 : undefined"
               />
               <title>
-                {{ item.row.author }}{{ item.row.unpushed ? ' · not pushed yet' : '' }}
+                {{ item.row.author }}{{
+                  item.row.unpushed ? ' · not pushed yet' : item.row.unpulled ? ' · not pulled yet' : ''
+                }}{{ item.folded }}
               </title>
             </g>
           </svg>
@@ -1594,6 +1729,41 @@ onUnmounted(() => {
           >
             {{ item.when }}
           </span>
+
+          <!-- The name of a branch about to start here, typed in place. Laid
+               over the start of the row rather than into one of its columns,
+               so it is in the same place whichever columns are on show, and
+               wearing the colour of the line it will belong to. -->
+          <span
+            v-if="editing?.oid === item.row.oid"
+            class="naming"
+            :class="{ bad: editing.name && nameProblem }"
+            :style="{
+              color: laneColor(item.row.color),
+              backgroundImage: `linear-gradient(${laneTint(item.row.color, 0.18)}, ${laneTint(item.row.color, 0.18)})`,
+              outline: `1px solid ${laneTint(item.row.color, 0.6)}`
+            }"
+            @click.stop
+            @dblclick.stop
+            @contextmenu.stop
+          >
+            <GitBranchPlus :size="11" class="glyph" />
+            <input
+              v-model="editing.name"
+              class="name-box"
+              type="text"
+              placeholder="new branch name"
+              spellcheck="false"
+              autocomplete="off"
+              :title="nameProblem ?? 'Enter creates it and checks it out. Esc cancels.'"
+              @vue:mounted="focusName"
+              @keydown.enter.prevent="submitName"
+              @keydown.esc.stop.prevent="editing = null"
+              @keydown.stop
+              @blur="editing = null"
+            />
+            <span v-if="editing.name && nameProblem" class="naming-hint">{{ nameProblem }}</span>
+          </span>
         </div>
       </div>
 
@@ -1632,12 +1802,6 @@ onUnmounted(() => {
       :oids="squashing"
       @done="clearMarks()"
       @close="squashing = null"
-    />
-    <BranchDialog
-      v-if="branchTarget"
-      :start="branchTarget.oid"
-      :start-label="`${branchTarget.short} · ${branchTarget.summary.slice(0, 40)}`"
-      @close="branchTarget = null"
     />
   </section>
 </template>
@@ -1846,6 +2010,77 @@ onUnmounted(() => {
   outline: 1px solid var(--accent);
   outline-offset: -1px;
   background: color-mix(in srgb, var(--accent) 14%, transparent);
+}
+
+/* The inline branch editor: a chip you can type into, over the start of the
+   row. Above the chips and the unfolded ref column, which are the only other
+   things drawn out of the row's flow. */
+.naming {
+  position: absolute;
+  left: 8px;
+  top: 3px;
+  bottom: 3px;
+  z-index: 7;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  width: min(300px, 55%);
+  padding: 0 6px;
+  border-radius: 3px;
+  outline-offset: -1px;
+  font-size: 11px;
+  font-weight: 600;
+  /* Opaque, with the lane's tint laid over it as a background image: the
+     tint on its own is mostly see-through, and there is a line, a leader and
+     the start of a message underneath it. */
+  background-color: var(--bg-panel);
+  box-shadow: 0 2px 10px var(--shadow);
+}
+
+.naming .glyph {
+  flex: none;
+  opacity: 0.85;
+}
+
+.naming .name-box {
+  flex: 1;
+  min-width: 0;
+  padding: 0;
+  border: none;
+  border-radius: 0;
+  background: none;
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--text);
+}
+
+.naming .name-box::placeholder {
+  color: var(--text-faint);
+  font-weight: 500;
+}
+
+.naming .name-box:focus {
+  outline: none;
+}
+
+.naming.bad {
+  outline-color: var(--red) !important;
+}
+
+/* What is wrong with the name, under the editor, in the same breath. */
+.naming-hint {
+  position: absolute;
+  left: 0;
+  top: 100%;
+  margin-top: 3px;
+  padding: 2px 7px;
+  border-radius: 3px;
+  font-size: 10.5px;
+  font-weight: 500;
+  white-space: nowrap;
+  color: var(--red);
+  background: var(--bg-panel);
+  box-shadow: 0 2px 8px var(--shadow);
 }
 
 .cell {

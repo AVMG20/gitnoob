@@ -113,9 +113,19 @@ export function lineChips(rows: GraphRow[]): (RefChip | null)[] {
     if (own) latest.set(row.color, own)
     const chip = own ?? latest.get(row.color) ?? null
     // What leaves the bottom of this row arrives at the top of the next.
-    arriving = new Set(
+    const leaving = new Set(
       row.segments.filter((segment) => segment.y2 === 2).map((segment) => segment.color)
     )
+    // A line a merge sends out to a parent nothing was waiting for starts
+    // here, in a colour that was not running into this row. Whatever last
+    // wore that colour has ended, and its name must not be carried on to a
+    // line it has nothing to do with: a deleted branch merged in used to be
+    // ghosted with the name of an older line that happened to share its
+    // shade.
+    for (const color of leaving) {
+      if (color !== row.color && !arriving.has(color)) latest.delete(color)
+    }
+    arriving = leaving
     return chip
   })
 }
