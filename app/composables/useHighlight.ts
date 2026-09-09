@@ -85,7 +85,12 @@ function boot(): Promise<void> {
   return booting
 }
 
-if (typeof window !== 'undefined') void boot()
+// Deliberately not started here. This module is loaded before `useSyntax` can
+// have read the stored choice — it is what `useSyntax` imports — so booting now
+// would build the highlighter around the default theme and then fetch the real
+// one on top of it, which is a wasted load and one guaranteed plain paint.
+// Whoever asks first starts it: `setHighlightTheme` as `useSyntax` loads, or
+// `tokenise` if something wants colour before that.
 
 /**
  * Resolves once the highlighter is up and its first theme is loaded.
@@ -117,6 +122,7 @@ function ensure(language: string) {
 
 /** Loads a theme in the background and repaints once it is there. */
 export function setHighlightTheme(id: string): void {
+  const previous = theme.value
   theme.value = id
   if (id === 'plain') {
     version.value++
@@ -134,7 +140,12 @@ export function setHighlightTheme(id: string): void {
         version.value++
       })
       .catch(() => {
-        // An unknown theme leaves the last one on rather than clearing colour.
+        // Put the last theme back. Everything below paints against
+        // `theme.value` and gives up where it is not loaded, so leaving a theme
+        // that would not load in place is not "no change" — it is every line in
+        // the window going plain, with nothing that would ever load it again.
+        if (theme.value === id) theme.value = previous
+        version.value++
       })
   })
 }

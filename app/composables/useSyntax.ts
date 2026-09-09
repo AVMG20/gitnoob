@@ -82,10 +82,18 @@ function stored(): string | null {
 
 const syntax = ref<string>(PLAIN)
 
-function setSyntax(id: string) {
-  if (!KNOWN.has(id)) return
+/** Whether what is on screen is a choice somebody made or only the default. */
+let chosen = false
+
+function apply(id: string) {
   syntax.value = id
   setHighlightTheme(id)
+}
+
+function setSyntax(id: string) {
+  if (!KNOWN.has(id)) return
+  chosen = true
+  apply(id)
   try {
     localStorage.setItem(KEY, id)
   } catch {
@@ -96,9 +104,31 @@ function setSyntax(id: string) {
 // Read and applied as the composable loads, like the app theme, so code is
 // never seen in one theme's colours and then repainted in another's.
 if (typeof document !== 'undefined') {
-  const first = stored() ?? fallback()
-  syntax.value = first
-  setHighlightTheme(first)
+  const saved = stored()
+  chosen = saved !== null
+  apply(saved ?? fallback())
+
+  /*
+   * While nothing has been picked, the default keeps following the window.
+   *
+   * The scheme that used to ship was "Match the theme", and each scheme stated
+   * its light values under `[data-light]`, so putting a light theme on swapped
+   * the syntax colours in the same frame. A Shiki theme carries one set of
+   * colours and knows nothing about the window, so without this a window that
+   * started dark keeps a dark theme's foreground on a light background for the
+   * rest of the session — and a restart quietly fixes it, which is worse.
+   *
+   * It watches the attribute rather than the theme store because the store
+   * pulls the git store in behind it, and this needs one boolean off the root
+   * element.
+   */
+  if (!chosen) {
+    new MutationObserver(() => {
+      if (chosen) return
+      const next = fallback()
+      if (next !== syntax.value) apply(next)
+    }).observe(document.documentElement, { attributeFilter: ['data-light'] })
+  }
 }
 
 /** The picker's rows, in the shape `SearchSelect` takes. */

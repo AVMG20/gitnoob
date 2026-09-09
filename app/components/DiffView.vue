@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed, ref, watch } from 'vue'
 import type { DiffLine, FileDiff } from '~/composables/useGit'
-import { highlightLine, highlightWhole, languageFor } from '~/composables/useHighlight'
+import { highlightLine, highlightWhole, languageFor, version } from '~/composables/useHighlight'
 import { diffRows, diffWindow, oldText } from '~/composables/useCode'
 
 const props = defineProps<{
@@ -222,7 +222,9 @@ const before = computed(() => {
   const hunks = props.diff?.hunks ?? []
   if (!hunks.some((hunk) => hunk.lines.some((line) => line.origin === '-'))) return null
   const plain = oldText(hunks, file.plain)
-  if (!plain) return null
+  // The old copy is the new file plus everything the patch deletes, so a diff
+  // that removes a great deal can clear the limit `whole` was held to.
+  if (!plain || plain.length > WHOLE_LIMIT) return null
   return { plain, html: highlightWhole(plain.join('\n'), language_) }
 })
 
@@ -233,8 +235,17 @@ const before = computed(() => {
  * again for every line on every re-render — and a diff is thousands of lines
  * that have not changed. The cache is dropped whenever the language does, which
  * is whenever a different file is opened.
+ *
+ * And whenever a grammar or a theme lands. That was safe to leave out while
+ * highlighting was synchronous and a line was coloured the moment it was
+ * asked for; with Shiki the first answer for a line can be the plain-text
+ * fallback, and a cache that never hears about the grammar arriving would hand
+ * that answer back for as long as the file is open. Worse, a render made
+ * entirely of cache hits never reaches the highlighter, so the component stops
+ * tracking `version` at all and no later bump can bring it back.
  */
 const perLine = computed(() => {
+  void version.value
   const cache = new Map<string, string>()
   const language_ = language.value
   return (code: string) => {

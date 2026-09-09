@@ -107,3 +107,53 @@ describe('choosing one', () => {
     expect(syntax.syntax.value).toBe('github-dark')
   })
 })
+
+/**
+ * The scheme that used to ship was "Match the theme", which swapped its colours
+ * the moment a light app theme went on. A Shiki theme knows nothing about the
+ * window, so the default has to keep following it.
+ */
+describe('the default following the window', () => {
+  /** `useTheme` puts this on the root element for every light theme. */
+  const goLight = () => {
+    document.documentElement.dataset.light = ''
+  }
+  const goDark = () => {
+    delete document.documentElement.dataset.light
+  }
+  /** The observer fires on a microtask, so let one go by. */
+  const settle = () => new Promise((done) => setTimeout(done, 0))
+
+  it('follows the window to light and back while nothing has been picked', async () => {
+    const { useSyntax } = await load()
+    const syntax = useSyntax()
+    expect(syntax.syntax.value).toBe('github-dark')
+
+    goLight()
+    await settle()
+    expect(syntax.syntax.value).toBe('github-light')
+
+    goDark()
+    await settle()
+    expect(syntax.syntax.value).toBe('github-dark')
+  })
+
+  it('stops following once a theme has actually been chosen', async () => {
+    const { useSyntax } = await load()
+    const syntax = useSyntax()
+    syntax.setSyntax('dracula')
+
+    goLight()
+    await settle()
+    expect(syntax.syntax.value).toBe('dracula')
+  })
+
+  it('never follows a window whose theme was chosen in an earlier session', async () => {
+    const { useSyntax } = await load('monokai')
+    const syntax = useSyntax()
+
+    goLight()
+    await settle()
+    expect(syntax.syntax.value).toBe('monokai')
+  })
+})
