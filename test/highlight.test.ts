@@ -99,14 +99,15 @@ describe('highlightWhole', () => {
   })
 
   /**
-   * The whole reason for the change. A line of TypeScript out of an SFC is
-   * template text to any grammar that is only shown the line, because the
-   * `<script>` tag that made it TypeScript is four lines above it.
+   * The whole reason for the change. The old highlighter painted a `.vue` file
+   * with the xml grammar, which left the script block as markup.
    */
   it('reads the script block of a single-file component as TypeScript', () => {
     const whole = highlightWhole(SFC, 'vue')
-    const alone = highlightLine("const label = ref('x')", 'vue')
-    expect(coloured(whole[6]!)).toBeGreaterThan(coloured(alone))
+    // `const`, the name, `ref` and the string all get a colour of their own.
+    expect(coloured(whole[6]!)).toBeGreaterThan(2)
+    // And the template above it is coloured as markup, not as TypeScript.
+    expect(coloured(whole[1]!)).toBeGreaterThan(0)
   })
 
   it('colours a comment inside the script block, which xml never could', () => {
@@ -126,5 +127,70 @@ describe('highlightWhole', () => {
   it('leaves text alone when there is no grammar for it', () => {
     const lines = highlightWhole('a < b\nc', null)
     expect(lines).toEqual(['a &lt; b', 'c'])
+  })
+})
+
+/**
+ * A review shows hunks and nothing else, so a pull request touching the script
+ * body of a component carries no `<script>` tag at all — and the `vue` grammar,
+ * shown a fragment with no block tag in it, reads the lot as template text.
+ */
+describe('a piece of a single-file component, with no block tag in it', () => {
+  const script = ["const label = ref('x')", 'function go() {', '  return label.value', '}'].join('\n')
+  const style = ['.pane {', '  color: red;', '  display: flex;', '}'].join('\n')
+  const template = ['<div class="pane">', '  <p>{{ label }}</p>', '</div>'].join('\n')
+
+  it('reads a script fragment as TypeScript rather than as markup', () => {
+    expect(coloured(highlightWhole(script, 'vue').join(''))).toBeGreaterThan(3)
+  })
+
+  it('reads a style fragment as CSS', () => {
+    expect(coloured(highlightWhole(style, 'vue').join(''))).toBeGreaterThan(3)
+  })
+
+  it('leaves a template fragment to the component grammar, which handles it', () => {
+    const lines = highlightWhole(template, 'vue')
+    expect(coloured(lines.join(''))).toBeGreaterThan(2)
+    expect(text(lines.join('\n'))).toBe(template)
+  })
+
+  it('keeps the text exactly, whichever grammar it settled on', () => {
+    for (const fragment of [script, style, template]) {
+      expect(text(highlightWhole(fragment, 'vue').join('\n'))).toBe(fragment)
+    }
+  })
+
+  it('leaves a whole component alone, since its tags already say what is what', () => {
+    const whole = highlightWhole(SFC_WITH_STYLE, 'vue')
+    expect(text(whole.join('\n'))).toBe(SFC_WITH_STYLE)
+    // The style block is CSS and the script block is TypeScript, in one file.
+    expect(coloured(whole[6]!)).toBeGreaterThan(1)
+    expect(coloured(whole[10]!)).toBeGreaterThan(1)
+  })
+})
+
+const SFC_WITH_STYLE = [
+  '<template>',
+  '  <p>{{ label }}</p>',
+  '</template>',
+  '',
+  '<script setup lang="ts">',
+  '// a comment',
+  "const label = ref('x')",
+  '</script>',
+  '',
+  '<style scoped>',
+  '.pane { color: red; }',
+  '</style>'
+].join('\n')
+
+describe('filenames that used to come out with no grammar at all', () => {
+  it('reads a lock file that is really TOML', () => {
+    expect(languageFor('Cargo.lock')).toBe('toml')
+  })
+
+  it('reads a Dockerfile whose suffix names an environment, not a type', () => {
+    expect(languageFor('Dockerfile.prod')).toBe('docker')
+    expect(languageFor('docker/Dockerfile.dev')).toBe('docker')
   })
 })

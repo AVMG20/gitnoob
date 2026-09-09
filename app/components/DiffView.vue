@@ -179,8 +179,17 @@ function lineClass(origin: string) {
 /**
  * A file long enough that painting all of it to colour a few changed lines
  * costs more than the colour is worth. Generated files are what reach this.
+ *
+ * It used to be twenty thousand, which was the right number for a highlighter
+ * that compiled its grammars in. Shiki runs real TextMate grammars and is some
+ * four times slower for it, and a diff pays twice — once for the file and once
+ * for the old copy rebuilt from it. Measured on a `.vue` file: a thousand lines
+ * is 212ms for both sides, two thousand 381ms, five thousand 906ms, twenty
+ * thousand 3.1s. Three seconds of blocked window is not a trade, so the limit
+ * is where the wait is still under a second and above any file somebody wrote
+ * by hand.
  */
-const WHOLE_LIMIT = 20_000
+const WHOLE_LIMIT = 8_000
 
 /**
  * The file, coloured whole, beside the plain lines it was made from.

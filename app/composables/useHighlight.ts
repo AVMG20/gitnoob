@@ -165,6 +165,45 @@ function paint(tokens: { content: string; color?: string; fontStyle?: number }[]
   return html
 }
 
+/** Files that are several other languages inside a wrapper. */
+const SFC = new Set(['vue', 'svelte'])
+
+/** The tags that wrapper is made of, and which say what a line is. */
+const SFC_TAG = /<\/?(?:template|script|style)[\s>]/
+
+/**
+ * Which grammar a piece of a single-file component should be read with.
+ *
+ * The `vue` grammar decides what a line is from the block tag above it, so a
+ * fragment that does not carry one is template text as far as it is concerned —
+ * and a review shows exactly that. A pull request touching the script body of a
+ * component has no `<script>` tag anywhere in its hunks, and the whole file came
+ * out flat.
+ *
+ * Nothing in a review says which block a hunk came from; the forge sends the
+ * patch and not the file. So the fragment is read for what it looks like, and
+ * only where it looks like one thing clearly. A tie, or nothing recognised at
+ * all, leaves the wrapper's own grammar in place — which is what this did
+ * before, and is never worse than it.
+ */
+function blockOf(text: string, language: string): string {
+  if (!SFC.has(language) || SFC_TAG.test(text)) return language
+  let markup = 0
+  let script = 0
+  let style = 0
+  for (const line of text.split('\n')) {
+    const trimmed = line.trim()
+    if (!trimmed) continue
+    // Order matters: `<div :class="x">` is markup, whatever else is in it.
+    if (/^<\/?[a-zA-Z]/.test(trimmed) || trimmed.includes('{{')) markup++
+    else if (/\b(?:const|let|var|function|import|export|return|await|async|new|typeof)\b|=>/.test(trimmed)) script++
+    else if (/^[-\w]+\s*:\s*[^;]+;$/.test(trimmed) || /^[.#&][\w-]/.test(trimmed)) style++
+  }
+  if (script > markup && script >= style) return 'typescript'
+  if (style > markup && style > script) return 'css'
+  return language
+}
+
 /**
  * Tokens for some text, or null when they cannot be had yet.
  *
@@ -178,7 +217,7 @@ function tokenise(text: string, language: string | null) {
     void boot()
     return null
   }
-  const id = language ?? PLAIN
+  const id = blockOf(text, language ?? PLAIN)
   if (id !== PLAIN && !highlighter.getLoadedLanguages().includes(id)) {
     ensure(id)
     return null
@@ -387,6 +426,7 @@ const BY_NAME: Record<string, string> = {
   '.profile': 'bash',
   '.vimrc': 'viml',
   '.zshrc': 'bash',
+  'cargo.lock': 'toml',
   'cmakelists.txt': 'cmake',
   dockerfile: 'docker',
   gemfile: 'ruby',
@@ -473,6 +513,9 @@ export function languageFor(path: string) {
   if (byName) return byName
   const byExtension = BY_EXTENSION[extensionOf(file)]
   if (byExtension) return byExtension
+  // `Dockerfile.prod` is a Dockerfile: what follows the name is which
+  // environment it builds, not what kind of file it is.
+  if (file.startsWith('dockerfile.')) return BY_NAME.dockerfile ?? null
   const base = dotfileBase(file)
   return (base ? BY_NAME[base] : null) ?? null
 }
