@@ -295,3 +295,61 @@ export function patchMarks(rows: DiffRow[], height: number): Mark[] {
   }
   return fold(found, height)
 }
+
+/**
+ * The file as it was before the change, rebuilt from the file as it is now.
+ *
+ * A deleted line is not in the new file at all, so the one place a diff could
+ * never colour properly was its own `-` lines: they fell back to being read one
+ * at a time, and a line at a time cannot see the `<script>` tag that made it
+ * TypeScript or the `/*` that made it a comment. Reading the old copy off disk
+ * would be another round trip per file; it is not needed, because the diff and
+ * the new file together already say what the old one was.
+ *
+ * Every line of the diff carries the number it had on each side, so the old
+ * file is the new one with each hunk's new-side lines swapped back for its
+ * old-side lines, and the untouched stretches between hunks copied across.
+ *
+ * Rebuilt optimistically and then checked: every line the diff claims for the
+ * old side has to be found at its own number in the result. The diff and the
+ * file are read separately, so a write landing between the two would otherwise
+ * produce a plausible file that is not the one being shown. A null return means
+ * the caller should keep doing what it did before.
+ */
+export function oldText(hunks: DiffHunk[], now: string[]): string[] | null {
+  const old: string[] = []
+  // 1-based, into `now`: how far through the new file the walk has come.
+  let at = 1
+
+  for (const hunk of hunks) {
+    const sides = hunk.lines.filter((line) => line.origin !== '\\')
+    const firstNew = sides.find((line) => line.new_lineno !== null)?.new_lineno ?? null
+    // A hunk that only deletes has no new-side line to sit against, and so it
+    // sits exactly where the walk has got to.
+    if (firstNew !== null) {
+      if (firstNew < at) return null
+      while (at < firstNew) old.push(now[at++ - 1] ?? '')
+    }
+    for (const line of sides) if (line.old_lineno !== null) old.push(line.content)
+    const lastNew = sides.reduce<number | null>(
+      (last, line) => line.new_lineno ?? last,
+      null
+    )
+    if (lastNew !== null) at = lastNew + 1
+  }
+  while (at <= now.length) old.push(now[at++ - 1] ?? '')
+
+  // The check, and it is the new side that carries it. Every old-side line was
+  // copied out of the diff, so checking those against the rebuild only asks
+  // whether the splice put them back where it found them. What says the two
+  // were read of the same version of the file is the new side: each line the
+  // diff claims has to be at that number in the text on disk. Where it is not,
+  // a write landed between the two reads and every offset here is out.
+  for (const hunk of hunks) {
+    for (const line of hunk.lines) {
+      if (line.new_lineno !== null && now[line.new_lineno - 1] !== line.content) return null
+      if (line.old_lineno !== null && old[line.old_lineno - 1] !== line.content) return null
+    }
+  }
+  return old
+}

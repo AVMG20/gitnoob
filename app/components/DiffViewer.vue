@@ -165,11 +165,14 @@ async function toFirstChange() {
  *
  * Both views want it now. The whole-file view is made of it, and the diff view
  * colours from it: highlighting a patch line by line cannot see anything that
- * spans lines, and in a `.vue` or `.html` file — painted with the xml grammar,
- * which hands the inside of a `<script>` block to javascript — a lone line out
- * of that block has no tags in it and comes out with no colour at all. Reading
- * the file is one call against a file already on disk, and the diff view was
- * the one place that could not tell you what it was looking at.
+ * spans lines, and in a `.vue` file a lone line out of the `<script>` block is
+ * template text as far as any grammar can tell, because the tag that made it
+ * TypeScript is not in what was passed. Reading the file is one call against a
+ * file already on disk, and the diff view was the one place that could not tell
+ * you what it was looking at.
+ *
+ * One side is enough: the diff view rebuilds the other from this text and the
+ * patch, rather than spending a second call on it.
  */
 async function loadText() {
   const current = target.value

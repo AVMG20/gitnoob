@@ -1,128 +1,258 @@
-import hljs from 'highlight.js/lib/core'
+import { ref } from 'vue'
+import { bundledLanguages, bundledLanguagesInfo, createHighlighter, type Highlighter } from 'shiki'
 
-import bash from 'highlight.js/lib/languages/bash'
-import c from 'highlight.js/lib/languages/c'
-import clojure from 'highlight.js/lib/languages/clojure'
-import cmake from 'highlight.js/lib/languages/cmake'
-import cpp from 'highlight.js/lib/languages/cpp'
-import csharp from 'highlight.js/lib/languages/csharp'
-import css from 'highlight.js/lib/languages/css'
-import dart from 'highlight.js/lib/languages/dart'
-import diff from 'highlight.js/lib/languages/diff'
-import dockerfile from 'highlight.js/lib/languages/dockerfile'
-import elixir from 'highlight.js/lib/languages/elixir'
-import erlang from 'highlight.js/lib/languages/erlang'
-import go from 'highlight.js/lib/languages/go'
-import gradle from 'highlight.js/lib/languages/gradle'
-import graphql from 'highlight.js/lib/languages/graphql'
-import groovy from 'highlight.js/lib/languages/groovy'
-import haskell from 'highlight.js/lib/languages/haskell'
-import ini from 'highlight.js/lib/languages/ini'
-import java from 'highlight.js/lib/languages/java'
-import javascript from 'highlight.js/lib/languages/javascript'
-import json from 'highlight.js/lib/languages/json'
-import julia from 'highlight.js/lib/languages/julia'
-import kotlin from 'highlight.js/lib/languages/kotlin'
-import latex from 'highlight.js/lib/languages/latex'
-import lua from 'highlight.js/lib/languages/lua'
-import makefile from 'highlight.js/lib/languages/makefile'
-import markdown from 'highlight.js/lib/languages/markdown'
-import nginx from 'highlight.js/lib/languages/nginx'
-import nix from 'highlight.js/lib/languages/nix'
-import objectivec from 'highlight.js/lib/languages/objectivec'
-import ocaml from 'highlight.js/lib/languages/ocaml'
-import perl from 'highlight.js/lib/languages/perl'
-import plaintext from 'highlight.js/lib/languages/plaintext'
-import php from 'highlight.js/lib/languages/php'
-import powershell from 'highlight.js/lib/languages/powershell'
-import properties from 'highlight.js/lib/languages/properties'
-import protobuf from 'highlight.js/lib/languages/protobuf'
-import python from 'highlight.js/lib/languages/python'
-import r from 'highlight.js/lib/languages/r'
-import ruby from 'highlight.js/lib/languages/ruby'
-import rust from 'highlight.js/lib/languages/rust'
-import scala from 'highlight.js/lib/languages/scala'
-import scss from 'highlight.js/lib/languages/scss'
-import shell from 'highlight.js/lib/languages/shell'
-import sql from 'highlight.js/lib/languages/sql'
-import swift from 'highlight.js/lib/languages/swift'
-import typescript from 'highlight.js/lib/languages/typescript'
-import vim from 'highlight.js/lib/languages/vim'
-import xml from 'highlight.js/lib/languages/xml'
-import yaml from 'highlight.js/lib/languages/yaml'
+/**
+ * Colour for code, from Shiki.
+ *
+ * Shiki runs the same TextMate grammars VS Code does, which is what makes a
+ * `.vue` file come out right: its grammar knows a `<script>` block holds
+ * TypeScript and a `<style>` block holds CSS, rather than the whole file being
+ * approximated as XML the way the old highlighter had to.
+ *
+ * The cost is that a grammar is loaded rather than compiled in, so the first
+ * paint of a language we have not seen yet has no colour. `version` below is
+ * how a component finds out that colour has arrived.
+ */
 
-// Registered explicitly rather than importing the full bundle: this keeps the
-// app self-contained without shipping 190 grammars nobody opens.
-const languages: Record<string, unknown> = {
-  bash,
-  c,
-  clojure,
-  cmake,
-  cpp,
-  csharp,
-  css,
-  dart,
-  diff,
-  dockerfile,
-  elixir,
-  erlang,
-  go,
-  gradle,
-  graphql,
-  groovy,
-  haskell,
-  ini,
-  java,
-  javascript,
-  json,
-  julia,
-  kotlin,
-  latex,
-  lua,
-  makefile,
-  markdown,
-  nginx,
-  nix,
-  objectivec,
-  ocaml,
-  perl,
-  php,
-  plaintext,
-  powershell,
-  properties,
-  protobuf,
-  python,
-  r,
-  ruby,
-  rust,
-  scala,
-  scss,
-  shell,
-  sql,
-  swift,
-  typescript,
-  vim,
-  xml,
-  yaml
+/**
+ * Grammars compiled in from the start.
+ *
+ * A repository is nearly always one of these, and a grammar that is already
+ * loaded paints on the first frame rather than the second. The rest are fetched
+ * when a file that needs them is opened.
+ */
+const PRELOAD = [
+  'bash',
+  'css',
+  'html',
+  'javascript',
+  'json',
+  'markdown',
+  'python',
+  'rust',
+  'typescript',
+  'vue',
+  'yaml'
+]
+
+/** Shiki paints these without a grammar, and never fails on them. */
+const PLAIN = 'text'
+
+/**
+ * Bumped whenever a grammar or a theme finishes loading.
+ *
+ * Every function below reads it before it paints, so a component that colours
+ * code inside a `computed` re-runs on its own once the grammar it wanted is
+ * there. Without it the first file opened in a language stays grey until
+ * something unrelated happens to redraw it.
+ */
+export const version = ref(0)
+
+/** The Shiki theme in use, or `plain` for no colour at all. */
+export const theme = ref<string>('github-dark')
+
+let highlighter: Highlighter | null = null
+let booting: Promise<void> | null = null
+const loading = new Set<string>()
+
+/** Every id and alias Shiki ships, so a fence naming `ts` or `yml` resolves. */
+const ALIASES = new Map<string, string>()
+for (const language of bundledLanguagesInfo) {
+  ALIASES.set(language.id, language.id)
+  for (const alias of language.aliases ?? []) ALIASES.set(alias, language.id)
 }
 
-for (const [name, language] of Object.entries(languages)) {
-  hljs.registerLanguage(name, language as never)
+/**
+ * Starts the highlighter, once.
+ *
+ * Nothing waits on this. Callers paint plain text until it resolves and the
+ * version bump brings them back.
+ */
+function boot(): Promise<void> {
+  if (booting) return booting
+  booting = createHighlighter({
+    themes: [theme.value === 'plain' ? 'github-dark' : theme.value],
+    langs: PRELOAD
+  })
+    .then((made) => {
+      highlighter = made
+      version.value++
+    })
+    .catch(() => {
+      // A highlighter that would not start is not worth retrying on every
+      // keystroke; code stays plain, which is legible.
+    })
+  return booting
+}
+
+if (typeof window !== 'undefined') void boot()
+
+/**
+ * Resolves once the highlighter is up and its first theme is loaded.
+ *
+ * Nothing in the app waits on this — a component paints plain text and is
+ * brought back by the version bump. It is here for a test, which has no frames
+ * to be brought back on and would otherwise be asserting against the fallback.
+ */
+export function ready(): Promise<void> {
+  return boot()
+}
+
+/** Loads a grammar in the background, then asks whoever wanted it to repaint. */
+function ensure(language: string) {
+  if (!highlighter || loading.has(language)) return
+  if (highlighter.getLoadedLanguages().includes(language)) return
+  if (!(language in bundledLanguages)) return
+  loading.add(language)
+  void highlighter
+    .loadLanguage(language as keyof typeof bundledLanguages)
+    .then(() => {
+      version.value++
+    })
+    .catch(() => {
+      // A grammar that will not load leaves the file plain rather than empty.
+    })
+    .finally(() => loading.delete(language))
+}
+
+/** Loads a theme in the background and repaints once it is there. */
+export function setHighlightTheme(id: string): void {
+  theme.value = id
+  if (id === 'plain') {
+    version.value++
+    return
+  }
+  void boot().then(() => {
+    if (!highlighter) return
+    if (highlighter.getLoadedThemes().includes(id)) {
+      version.value++
+      return
+    }
+    highlighter
+      .loadTheme(id as never)
+      .then(() => {
+        version.value++
+      })
+      .catch(() => {
+        // An unknown theme leaves the last one on rather than clearing colour.
+      })
+  })
+}
+
+const escapeHtml = (text: string) =>
+  text.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+
+/** Shiki's font-style bits, which it does not export as a value. */
+const ITALIC = 1
+const BOLD = 2
+const UNDERLINE = 4
+
+/** One line of tokens as the HTML a row is filled with. */
+function paint(tokens: { content: string; color?: string; fontStyle?: number }[]): string {
+  let html = ''
+  for (const token of tokens) {
+    const text = escapeHtml(token.content)
+    const style: string[] = []
+    if (token.color) style.push(`color:${token.color}`)
+    const font = token.fontStyle ?? 0
+    if (font > 0) {
+      if (font & ITALIC) style.push('font-style:italic')
+      if (font & BOLD) style.push('font-weight:bold')
+      if (font & UNDERLINE) style.push('text-decoration:underline')
+    }
+    html += style.length ? `<span style="${style.join(';')}">${text}</span>` : text
+  }
+  return html
+}
+
+/**
+ * Tokens for some text, or null when they cannot be had yet.
+ *
+ * Reads `version` first so that a caller inside a `computed` takes a dependency
+ * on it and comes back when the grammar lands.
+ */
+function tokenise(text: string, language: string | null) {
+  void version.value
+  if (theme.value === 'plain') return null
+  if (!highlighter) {
+    void boot()
+    return null
+  }
+  const id = language ?? PLAIN
+  if (id !== PLAIN && !highlighter.getLoadedLanguages().includes(id)) {
+    ensure(id)
+    return null
+  }
+  if (!highlighter.getLoadedThemes().includes(theme.value)) return null
+  try {
+    return highlighter.codeToTokens(text, { lang: id as never, theme: theme.value as never }).tokens
+  } catch {
+    return null
+  }
+}
+
+/**
+ * Colours one line of code.
+ *
+ * A line on its own cannot be read in the context of the file it came from — a
+ * line of TypeScript out of a `.vue` file is template text as far as the
+ * grammar can tell, because the `<script>` tag that made it TypeScript is some
+ * lines above and not in what was passed. So this is the fallback, and
+ * [`highlightWhole`] is what a caller should reach for wherever it can.
+ */
+export function highlightLine(code: string, language: string | null): string {
+  if (!code) return ''
+  const tokens = tokenise(code, language)
+  if (!tokens || tokens.length !== 1) return escapeHtml(code)
+  return paint(tokens[0]!)
+}
+
+/**
+ * Colours a whole file, and hands back one line of HTML per line of source.
+ *
+ * Worth the extra work over [`highlightLine`] wherever the whole text is at
+ * hand, because the things a line cannot know about itself are exactly the ones
+ * that matter: the body of a block comment, a string that runs on, and the
+ * script inside a `.vue` file.
+ *
+ * Shiki hands back its tokens already grouped by line, so unlike the old
+ * highlighter there are no spans left open across a newline to close and
+ * reopen.
+ */
+export function highlightWhole(text: string, language: string | null): string[] {
+  const source = text.split('\n')
+  const tokens = tokenise(text, language)
+  // A highlighter that lost a line somewhere is not worth trusting over the
+  // plain text: the marks in the gutter are keyed by line number.
+  if (!tokens || tokens.length !== source.length) return source.map(escapeHtml)
+  return tokens.map(paint)
+}
+
+/**
+ * Colours a fenced code block out of a comment body.
+ *
+ * The fence names its own language rather than a path doing it, so the name is
+ * put through Shiki's own aliases — that way `ts`, `sh` and `yml` work — and a
+ * fence naming something we have no grammar for is escaped rather than guessed
+ * at.
+ */
+export function highlightBlock(code: string, info: string): string {
+  return highlightWhole(code, ALIASES.get(info.toLowerCase()) ?? null).join('\n')
 }
 
 /**
  * File extension to grammar.
  *
- * Vue, Svelte and HTML all read well as xml, whose grammar hands the inside of
- * a `<script>` block to javascript and a `<style>` block to css — which is what
- * makes a single-file component come out right, so long as it is coloured whole
- * rather than a line at a time.
+ * Unlike the old highlighter these are the real grammars: `.vue` is `vue` and
+ * `.tsx` is `tsx`, rather than both being approximated by
+ * something close enough. A single-file component now comes out right a line at a time as well
+ * as whole, so long as the whole file is what was passed.
  */
 const BY_EXTENSION: Record<string, string> = {
   as: 'javascript',
   asd: 'clojure',
   bash: 'bash',
-  bat: 'powershell',
+  bat: 'bat',
   c: 'c',
   cc: 'cpp',
   cfg: 'ini',
@@ -130,60 +260,61 @@ const BY_EXTENSION: Record<string, string> = {
   clj: 'clojure',
   cljs: 'clojure',
   cmake: 'cmake',
-  cmd: 'powershell',
+  cmd: 'bat',
   conf: 'ini',
   cpp: 'cpp',
   cs: 'csharp',
   csproj: 'xml',
   css: 'css',
-  csv: 'plaintext',
+  csv: 'csv',
   cxx: 'cpp',
   dart: 'dart',
   diff: 'diff',
-  ejs: 'xml',
+  ejs: 'html',
   env: 'ini',
-  erb: 'ruby',
+  erb: 'erb',
   erl: 'erlang',
   ex: 'elixir',
   exs: 'elixir',
-  fish: 'shell',
-  gawk: 'bash',
+  fish: 'fish',
+  gawk: 'awk',
   go: 'go',
   gql: 'graphql',
-  gradle: 'gradle',
+  gradle: 'groovy',
   graphql: 'graphql',
   groovy: 'groovy',
   h: 'c',
-  handlebars: 'xml',
-  hbs: 'xml',
+  handlebars: 'handlebars',
+  hbs: 'handlebars',
+  hcl: 'hcl',
   hpp: 'cpp',
   hrl: 'erlang',
   hs: 'haskell',
-  htm: 'xml',
-  html: 'xml',
+  htm: 'html',
+  html: 'html',
   ini: 'ini',
   java: 'java',
   jl: 'julia',
   js: 'javascript',
   json: 'json',
-  json5: 'json',
-  jsonc: 'json',
+  json5: 'json5',
+  jsonc: 'jsonc',
   jsonl: 'json',
-  jsx: 'javascript',
+  jsx: 'jsx',
   kt: 'kotlin',
   kts: 'kotlin',
-  less: 'scss',
-  lisp: 'clojure',
+  less: 'less',
+  lisp: 'lisp',
   lua: 'lua',
-  m: 'objectivec',
-  make: 'makefile',
+  m: 'objective-c',
+  make: 'make',
   md: 'markdown',
-  mdx: 'markdown',
+  mdx: 'mdx',
   mjs: 'javascript',
-  mk: 'makefile',
+  mk: 'make',
   ml: 'ocaml',
   mli: 'ocaml',
-  mm: 'objectivec',
+  mm: 'objective-cpp',
   ndjson: 'json',
   nix: 'nix',
   patch: 'diff',
@@ -193,7 +324,7 @@ const BY_EXTENSION: Record<string, string> = {
   plist: 'xml',
   pm: 'perl',
   properties: 'properties',
-  proto: 'protobuf',
+  proto: 'proto',
   ps1: 'powershell',
   psm1: 'powershell',
   py: 'python',
@@ -202,32 +333,32 @@ const BY_EXTENSION: Record<string, string> = {
   rb: 'ruby',
   resx: 'xml',
   rs: 'rust',
-  sass: 'scss',
+  sass: 'sass',
   sbt: 'scala',
   scala: 'scala',
   scss: 'scss',
-  sh: 'bash',
+  sh: 'shellscript',
   sql: 'sql',
   storyboard: 'xml',
-  svelte: 'xml',
+  svelte: 'svelte',
   svg: 'xml',
   swift: 'swift',
   tex: 'latex',
-  tf: 'ini',
-  tfvars: 'ini',
-  toml: 'ini',
+  tf: 'terraform',
+  tfvars: 'terraform',
+  toml: 'toml',
   ts: 'typescript',
-  tsx: 'typescript',
-  txt: 'plaintext',
-  vim: 'vim',
-  vue: 'xml',
+  tsx: 'tsx',
+  txt: PLAIN,
+  vim: 'viml',
+  vue: 'vue',
   xaml: 'xml',
   xml: 'xml',
   xsd: 'xml',
   xsl: 'xml',
   yaml: 'yaml',
   yml: 'yaml',
-  zsh: 'bash'
+  zsh: 'shellscript'
 }
 
 /**
@@ -243,26 +374,26 @@ const BY_NAME: Record<string, string> = {
   '.babelrc': 'json',
   '.bash_profile': 'bash',
   '.bashrc': 'bash',
-  '.dockerignore': 'bash',
+  '.dockerignore': 'ini',
   '.editorconfig': 'ini',
   '.env': 'ini',
   '.eslintrc': 'json',
-  '.gitattributes': 'bash',
+  '.gitattributes': 'ini',
   '.gitconfig': 'ini',
-  '.gitignore': 'bash',
+  '.gitignore': 'ini',
   '.gitmodules': 'ini',
   '.npmrc': 'ini',
   '.prettierrc': 'json',
   '.profile': 'bash',
-  '.vimrc': 'vim',
+  '.vimrc': 'viml',
   '.zshrc': 'bash',
   'cmakelists.txt': 'cmake',
-  dockerfile: 'dockerfile',
+  dockerfile: 'docker',
   gemfile: 'ruby',
-  justfile: 'makefile',
-  // The makefile grammar, not bash: a rule's target and its recipe are
-  // different things, and bash colours neither of them.
-  makefile: 'makefile',
+  justfile: 'make',
+  // The make grammar, not bash: a rule's target and its recipe are different
+  // things, and bash colours neither of them.
+  makefile: 'make',
   procfile: 'yaml',
   rakefile: 'ruby',
   vagrantfile: 'ruby'
@@ -271,9 +402,9 @@ const BY_NAME: Record<string, string> = {
 /**
  * What to call the file, for the chip above a diff.
  *
- * Not the grammar it is coloured with: a `.vue` file is painted with the xml
- * grammar because that reads best, and labelling it "xml" told the reader
- * something about our highlighter rather than about their file.
+ * Not the grammar it is coloured with: the grammar is an implementation detail
+ * and naming it told the reader something about our highlighter rather than
+ * about their file.
  */
 const NAMED: Record<string, string> = {
   cc: 'c++',
@@ -344,91 +475,4 @@ export function languageFor(path: string) {
   if (byExtension) return byExtension
   const base = dotfileBase(file)
   return (base ? BY_NAME[base] : null) ?? null
-}
-
-const escapeHtml = (text: string) =>
-  text
-    .replace(/&/g, '&amp;')
-    .replace(/</g, '&lt;')
-    .replace(/>/g, '&gt;')
-
-/**
- * Colours one line of code.
- *
- * Highlighting line by line loses context that spans lines — the body of a long
- * block comment is not recognised as one — but a diff only ever has fragments
- * to show, and this keeps a large file instant to render.
- */
-export function highlightLine(code: string, language: string | null) {
-  if (!code) return ''
-  if (!language) return escapeHtml(code)
-  try {
-    return hljs.highlight(code, { language, ignoreIllegals: true }).value
-  } catch {
-    return escapeHtml(code)
-  }
-}
-
-/**
- * Colours a whole file, and hands back one line of HTML per line of source.
- *
- * Worth the extra work over [`highlightLine`] wherever the whole text is at
- * hand, because the things a line cannot know about itself are exactly the ones
- * that matter: the body of a block comment, a string that runs on, and — the
- * reason this exists — the script inside a `.vue` file, which is painted with
- * the xml grammar and only becomes JavaScript once the `<script>` tag above it
- * has been read.
- *
- * A highlight can leave spans open across a newline, which would then wrap the
- * rest of the file when the lines are laid out as separate rows. So each line
- * closes what is still open and the next one opens it again.
- */
-export function highlightWhole(text: string, language: string | null): string[] {
-  const source = text.split('\n')
-  if (!language) return source.map(escapeHtml)
-
-  let html: string
-  try {
-    html = hljs.highlight(text, { language, ignoreIllegals: true }).value
-  } catch {
-    return source.map(escapeHtml)
-  }
-
-  const lines: string[] = []
-  const open: string[] = []
-  let line = ''
-  // Everything hljs emits is either a span tag, a newline, or escaped text —
-  // any `<` in the text itself has already become `&lt;`.
-  for (const token of html.match(/<span[^>]*>|<\/span>|\n|[^<\n]+/g) ?? []) {
-    if (token === '\n') {
-      lines.push(line + '</span>'.repeat(open.length))
-      line = open.join('')
-    } else if (token === '</span>') {
-      open.pop()
-      line += token
-    } else if (token.startsWith('<span')) {
-      open.push(token)
-      line += token
-    } else {
-      line += token
-    }
-  }
-  lines.push(line + '</span>'.repeat(open.length))
-
-  // A highlighter that lost a line somewhere is not worth trusting over the
-  // plain text: the marks in the gutter are keyed by line number.
-  return lines.length === source.length ? lines : source.map(escapeHtml)
-}
-
-/**
- * Colours a fenced code block out of a comment body.
- *
- * The fence names its own language rather than a path doing it, so the name is
- * asked of highlight.js directly — that way its aliases (`ts`, `sh`, `yml`)
- * work, and a fence that names nothing we have is escaped rather than guessed
- * at.
- */
-export function highlightBlock(code: string, info: string): string {
-  const language = info && hljs.getLanguage(info) ? info : null
-  return highlightWhole(code, language).join('\n')
 }

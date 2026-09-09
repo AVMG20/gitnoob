@@ -2,7 +2,7 @@
 import { computed, ref, watch } from 'vue'
 import type { DiffLine, FileDiff } from '~/composables/useGit'
 import { highlightLine, highlightWhole, languageFor } from '~/composables/useHighlight'
-import { diffRows, diffWindow } from '~/composables/useCode'
+import { diffRows, diffWindow, oldText } from '~/composables/useCode'
 
 const props = defineProps<{
   diff: FileDiff | null
@@ -201,9 +201,26 @@ const whole = computed(() => {
 })
 
 /**
+ * The same for the file as it was, so `-` lines are coloured in context too.
+ *
+ * Only built where the diff actually deletes something: for a patch that only
+ * adds, the old copy would be highlighted and never read from.
+ */
+const before = computed(() => {
+  const file = whole.value
+  const language_ = language.value
+  if (!file || !language_) return null
+  const hunks = props.diff?.hunks ?? []
+  if (!hunks.some((hunk) => hunk.lines.some((line) => line.origin === '-'))) return null
+  const plain = oldText(hunks, file.plain)
+  if (!plain) return null
+  return { plain, html: highlightWhole(plain.join('\n'), language_) }
+})
+
+/**
  * Highlighted lines, cached by content.
  *
- * `paint` used to be called straight from the template, so highlight.js ran
+ * `paint` used to be called straight from the template, so the highlighter ran
  * again for every line on every re-render — and a diff is thousands of lines
  * that have not changed. The cache is dropped whenever the language does, which
  * is whenever a different file is opened.
@@ -287,6 +304,13 @@ function paint(line: DiffLine) {
   if (file && line.new_lineno !== null) {
     const at = line.new_lineno - 1
     if (file.plain[at] === line.content) return file.html[at] ?? ''
+  }
+  // A deleted line is not in the new file, so it is read out of the old one,
+  // rebuilt from this diff and the new file together.
+  const was = before.value
+  if (was && line.old_lineno !== null) {
+    const at = line.old_lineno - 1
+    if (was.plain[at] === line.content) return was.html[at] ?? ''
   }
   return perLine.value(line.content)
 }

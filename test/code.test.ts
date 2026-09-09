@@ -5,6 +5,7 @@ import {
   OVERSCAN,
   diffRows,
   diffWindow,
+  oldText,
   fileMarks,
   firstChangedLine,
   markedLines,
@@ -181,5 +182,46 @@ describe('marks', () => {
   it('has nothing to draw for a file with no changes', () => {
     expect(fileMarks(markedLines('a\nb', []))).toEqual([])
     expect(patchMarks([], 0)).toEqual([])
+  })
+})
+
+describe('oldText', () => {
+  /** A five-line file, of which the middle line was rewritten. */
+  const now = ['one', 'two', 'CHANGED', 'four', 'five']
+
+  it('rebuilds the old file from the new one and the patch', () => {
+    const hunks = [hunk(ctx(2, 2, 'two'), del(3, 'three'), add(3, 'CHANGED'), ctx(4, 4, 'four'))]
+    expect(oldText(hunks, now)).toEqual(['one', 'two', 'three', 'four', 'five'])
+  })
+
+  it('rebuilds a hunk that only deletes, which has no new-side line to sit on', () => {
+    const after = ['one', 'two', 'five']
+    const hunks = [hunk(ctx(2, 2, 'two'), del(3, 'three'), del(4, 'four'), ctx(5, 3, 'five'))]
+    expect(oldText(hunks, after)).toEqual(['one', 'two', 'three', 'four', 'five'])
+  })
+
+  it('rebuilds across several hunks, keeping the untouched stretches between', () => {
+    const after = ['A', 'two', 'three', 'four', 'E']
+    const hunks = [
+      hunk(del(1, 'a'), add(1, 'A'), ctx(2, 2, 'two')),
+      hunk(ctx(4, 4, 'four'), del(5, 'e'), add(5, 'E'))
+    ]
+    expect(oldText(hunks, after)).toEqual(['a', 'two', 'three', 'four', 'e'])
+  })
+
+  it('ignores the no-newline remark, which is a line of neither file', () => {
+    const hunks = [hunk(ctx(2, 2, 'two'), del(3, 'three'), add(3, 'CHANGED'), eof())]
+    expect(oldText(hunks, now)).toEqual(['one', 'two', 'three', 'four', 'five'])
+  })
+
+  it('gives back null when the file on disk is not the one the diff was cut from', () => {
+    // The diff says line 2 is "two"; the file has moved on since it was read.
+    const moved = ['one', 'SOMETHING ELSE', 'CHANGED', 'four', 'five']
+    const hunks = [hunk(ctx(2, 2, 'two'), del(3, 'three'), add(3, 'CHANGED'), ctx(4, 4, 'four'))]
+    expect(oldText(hunks, moved)).toBeNull()
+  })
+
+  it('leaves a file with no hunks exactly as it is', () => {
+    expect(oldText([], now)).toEqual(now)
   })
 })

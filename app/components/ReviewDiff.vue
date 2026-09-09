@@ -5,7 +5,7 @@ import CommentBox from './CommentBox.vue'
 import { useReview } from '~/composables/useReview'
 import type { Pending, RFileWithDiff, Thread } from '~/composables/useReview'
 import type { DiffLine } from '~/composables/useGit'
-import { highlightLine, languageFor } from '~/composables/useHighlight'
+import { highlightLine, highlightWhole, languageFor } from '~/composables/useHighlight'
 import { renderMarkdown } from '~/composables/useMd'
 
 const props = defineProps<{
@@ -27,22 +27,35 @@ function lineClass(origin: string) {
 }
 
 /**
- * Highlighted lines, cached by content.
+ * Each hunk coloured as a block, keyed by the line numbers it covers.
  *
- * Highlighting every line on every re-render is what made the diff view slow
- * before it cached; the cache lives as long as the language does, which is as
- * long as this file is on screen.
+ * A review is read against a pull request rather than a checkout, so there is
+ * no file on disk to colour from the way the local diff view does. A hunk is
+ * the most context there is — but it is far more than a line: a block comment,
+ * a string that runs on, and a `<script>` block whose opening tag is inside the
+ * hunk all come out right, where one line at a time none of them could.
+ *
+ * Both sides are coloured, so a `-` line is read as the language too rather
+ * than being the one kind of line left plain.
  */
-const perLine = computed(() => {
-  const cache = new Map<string, string>()
+const painted = computed(() => {
   const lang = language.value
-  return (code: string) => {
-    const hit = cache.get(code)
-    if (hit !== undefined) return hit
-    const html = highlightLine(code, lang)
-    cache.set(code, html)
-    return html
+  const byNew = new Map<number, string>()
+  const byOld = new Map<number, string>()
+  if (!lang) return { byNew, byOld }
+  for (const hunk of props.file.hunks) {
+    const sides = hunk.lines.filter((line) => line.origin !== '\\')
+    for (const [pick, into] of [
+      [(line: DiffLine) => line.new_lineno, byNew] as const,
+      [(line: DiffLine) => line.old_lineno, byOld] as const
+    ]) {
+      const lines = sides.filter((line) => pick(line) !== null)
+      if (!lines.length) continue
+      const html = highlightWhole(lines.map((line) => line.content).join('\n'), lang)
+      lines.forEach((line, at) => into.set(pick(line)!, html[at] ?? ''))
+    }
   }
+  return { byNew, byOld }
 })
 
 /**
@@ -83,8 +96,15 @@ const marker = (line: DiffLine) => line.origin === '\\'
  * is escaped and left alone instead of being coloured as whatever language
  * this is.
  */
-const body = (line: DiffLine) =>
-  marker(line) ? highlightLine(line.content, null) : perLine.value(line.content)
+const body = (line: DiffLine) => {
+  if (marker(line)) return highlightLine(line.content, null)
+  const { byNew, byOld } = painted.value
+  // A context line is in both; the new side is the one the review is against.
+  const found =
+    (line.new_lineno !== null ? byNew.get(line.new_lineno) : undefined) ??
+    (line.old_lineno !== null ? byOld.get(line.old_lineno) : undefined)
+  return found ?? highlightLine(line.content, language.value)
+}
 
 function draftHere(line: DiffLine) {
   const draft = store.draft

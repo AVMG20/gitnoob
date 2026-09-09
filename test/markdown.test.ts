@@ -1,5 +1,10 @@
-import { describe, expect, it } from 'vitest'
+import { beforeAll, describe, expect, it } from 'vitest'
 import { renderMarkdown } from '../app/composables/useMd'
+import { ready } from '../app/composables/useHighlight'
+
+// Shiki loads its grammars rather than compiling them in, so a fence is plain
+// text until it is up. The app is brought back by a repaint; a test has to ask.
+beforeAll(() => ready())
 
 /** Tags and entities out, so a test can say what a body reads as. */
 const text = (html: string) =>
@@ -37,11 +42,14 @@ describe('renderMarkdown', () => {
   it('names a fence language as a class and colours what it knows', () => {
     const known = renderMarkdown('```ts\nconst a = 1\n```')
     expect(known).toContain('<pre><code class="language-ts">')
-    expect(known).toContain('hljs-keyword')
+    // Shiki resolves the token against the theme and writes the colour onto the
+    // span, so what says it was highlighted is a style rather than a class.
+    expect(known).toContain('<span style="color:')
+    expect(text(known)).toBe('const a = 1')
     // A language nothing is registered for is still labelled, never guessed at.
     const unknown = renderMarkdown('```wobble\nx\n```')
     expect(text(unknown)).toBe('x')
-    expect(unknown).not.toContain('hljs-')
+    expect(unknown).not.toContain('<span style="color:')
   })
 
   it('does not let a fence language break out of its attribute', () => {

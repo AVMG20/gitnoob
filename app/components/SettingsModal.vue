@@ -39,6 +39,8 @@ import { useColumns } from '~/composables/useColumns'
 import { useUpdates } from '~/composables/useUpdates'
 import { useZoom } from '~/composables/useZoom'
 import { useSyntax } from '~/composables/useSyntax'
+import { highlightWhole } from '~/composables/useHighlight'
+import SearchSelect from '~/components/SearchSelect.vue'
 
 const config = useConfig()
 const forge = useForge()
@@ -51,7 +53,33 @@ const { theme, themes, setTheme, contrast, contrasts, setContrast } = useTheme()
 const themeCount = (kind: string) => themes.filter((one) => one.kind === kind).length
 const cols = useColumns()
 const { zoom, steps: zoomSteps, setZoom } = useZoom()
-const { syntax, schemes, setSyntax } = useSyntax()
+const { syntax, choices, setSyntax } = useSyntax()
+
+/** The picker hands back an id; the store is what decides to keep it. */
+const chosenSyntax = computed({
+  get: () => syntax.value,
+  set: (id: string) => setSyntax(id)
+})
+
+/**
+ * A sample coloured in the chosen theme, so the choice is made by looking.
+ *
+ * A single-file component on purpose: the template, the TypeScript inside
+ * `<script>` and the comment above it are three different grammars, which is
+ * exactly what the old highlighter could not tell apart and the clearest way to
+ * see that a theme is doing its job.
+ */
+const PREVIEW = `<template>
+  <p :class="tone">{{ label }}</p>
+</template>
+
+<script setup lang="ts">
+// A comment, a string and a number.
+const label = ref<string>('gitnoob')
+const tone = compute(label, 3)
+<\/script>`
+
+const previewLines = computed(() => highlightWhole(PREVIEW, 'vue'))
 const updates = useUpdates()
 
 const section = computed(() => config.store.settingsSection)
@@ -751,25 +779,22 @@ onMounted(async () => {
 
           <h3 class="sub">Syntax colours</h3>
           <p class="dim intro">
-            Which scheme code is coloured with in a diff and in an open file. Each has a light
-            variant of its own, so the choice holds whichever theme is on above.
+            Which theme code is coloured with in a diff and in an open file. These are Shiki's
+            themes, the same ones VS Code loads, so search by the name you already know it by.
+            Dark and light are marked: a dark theme under a light window is hard going.
           </p>
-          <div class="schemes">
-            <button
-              v-for="one in schemes"
-              :key="one.id"
-              class="scheme"
-              :class="{ on: one.id === syntax }"
-              @click="setSyntax(one.id)"
-            >
-              <span class="scheme-swatch">
-                <span v-for="(colour, at) in one.swatch" :key="at" :style="{ background: colour }" />
-              </span>
-              <span class="scheme-name">{{ one.name }}</span>
-              <span class="faint small">{{ one.from }}</span>
-              <Check v-if="one.id === syntax" :size="13" class="tick" />
-            </button>
-          </div>
+          <SearchSelect
+            v-model="chosenSyntax"
+            :options="choices"
+            placeholder="Choose a theme…"
+            empty="No theme by that name."
+          />
+          <pre class="preview"><code
+            v-for="(line, at) in previewLines"
+            :key="at"
+            class="preview-line"
+            v-html="line || '&nbsp;'"
+          /></pre>
 
           <h3 class="sub">Columns in the commit list</h3>
           <p class="dim intro">
@@ -1482,48 +1507,24 @@ select {
 
 /* The scheme cards carry three bars — keyword, string, comment — which is what
    tells two schemes apart at a glance and what the eye compares between them. */
-.schemes {
-  display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(168px, 1fr));
-  gap: 8px;
-  margin-bottom: 18px;
-}
-
-.scheme {
-  position: relative;
-  display: flex;
-  flex-direction: column;
-  gap: 3px;
-  padding: 9px 10px;
-  text-align: left;
+/* The sample sits on the window's own background rather than the theme's, which
+   is where a diff shows it too: the row tint carries which side a line is on,
+   so only the token colours come from the syntax theme. */
+.preview {
+  margin: 10px 0 18px;
+  padding: 10px 12px;
+  overflow-x: auto;
   background: var(--bg-raised);
   border: 1px solid var(--line);
   border-radius: 7px;
 }
 
-.scheme:hover {
-  border-color: var(--text-faint);
-}
-
-.scheme.on {
-  border-color: var(--accent);
-  background: var(--bg-active);
-}
-
-.scheme-swatch {
-  display: flex;
-  gap: 3px;
-  margin-bottom: 3px;
-}
-
-.scheme-swatch span {
-  width: 22px;
-  height: 6px;
-  border-radius: 2px;
-}
-
-.scheme-name {
+.preview-line {
+  display: block;
+  font-family: var(--mono);
   font-size: 12px;
+  line-height: 1.5;
+  white-space: pre;
   color: var(--text);
 }
 
