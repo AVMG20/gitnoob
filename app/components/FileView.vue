@@ -3,7 +3,7 @@ import { computed, onMounted, onUnmounted, ref } from 'vue'
 import { Users } from 'lucide-vue-next'
 import { relativeTime, useGit, type BlameRun, type FileDiff } from '~/composables/useGit'
 import { highlightWhole, languageFor } from '~/composables/useHighlight'
-import { CODE_ROW, markedLines, windowOf, type Line } from '~/composables/useCode'
+import { CODE_ROW, markedLines, wasRuns, windowOf, type Line } from '~/composables/useCode'
 import { useContextMenu } from '~/composables/useContextMenu'
 import { tint } from '~/composables/useAvatars'
 
@@ -45,13 +45,69 @@ const counts = computed(() => ({
 // they answer for it: clicking one shows the lines it stands in for. The panel
 // is anchored to the mark rather than to the pointer, the way an editor does
 // it, so the old text lands beside the new and the two can be read together.
+//
+// A run of changed lines answers as one. Three rewritten lines are one edit,
+// not three, so the run is one bar, lit and clicked as a whole, and one panel
+// holding all three of the lines it replaced — which is the only form in which
+// they can be read against the three that took their place.
+//
+// The panel still hangs from the line that was clicked rather than from the
+// run's first or last, because only the clicked line is certainly on screen:
+// the rows outside the view are not drawn, and a panel anchored to one of them
+// would be a click that did nothing.
 const open = ref<{ line: number; kind: 'was' | 'gone' } | null>(null)
+
+/** The run each changed line belongs to, keyed by every line in it. */
+const changed = computed(() => wasRuns(lines.value))
+
+const runAtLine = (line: Line) => changed.value.get(line.number)
+
+/** The run a line number is in, for the two refs that hold one by its line. */
+const runAtNumber = (number: number | undefined) =>
+  number === undefined ? undefined : changed.value.get(number)
+
+/** The bar the pointer is over, which lights the whole run rather than a row. */
+const hovered = ref<number | null>(null)
+
+/** Whether two lines are the same change, which is what the bar is drawn as. */
+const sameRun = (line: Line, other: number | undefined) => {
+  const run = runAtLine(line)
+  return !!run && run === runAtNumber(other)
+}
+
+/** True for every line of an open or hovered run: the bar lights as one. */
+const isLit = (line: Line) =>
+  sameRun(line, hovered.value ?? undefined) ||
+  (open.value?.kind === 'was' && sameRun(line, open.value.line))
 
 const isOpen = (line: Line, kind: 'was' | 'gone') =>
   open.value?.line === line.number && open.value.kind === kind
 
+/** A click anywhere in a run opens the run; a second one anywhere closes it. */
 function show(line: Line, kind: 'was' | 'gone') {
-  open.value = isOpen(line, kind) ? null : { line: line.number, kind }
+  const same =
+    open.value?.kind === kind &&
+    (kind === 'gone' ? open.value.line === line.number : sameRun(line, open.value.line))
+  open.value = same ? null : { line: line.number, kind }
+}
+
+/**
+ * Where a bar starts and ends, which is what rounds its ends.
+ *
+ * Read off the marks rather than off the change runs, so a block of added
+ * lines is capped the same way a rewritten one is: what makes a bar one bar is
+ * that the line above or below it does not carry the same mark.
+ */
+const capTop = (line: Line) => !!line.mark && lines.value[line.number - 2]?.mark !== line.mark
+const capBottom = (line: Line) => !!line.mark && lines.value[line.number]?.mark !== line.mark
+
+function wasHint(line: Line) {
+  const run = runAtLine(line)
+  if (!run) return ''
+  const count = run.end - run.start + 1
+  return count === 1
+    ? 'Click to see what this line said before'
+    : `Click to see what these ${count} lines said before`
 }
 
 /** The old lines, coloured as a piece so a block comment reads as one. */
@@ -276,9 +332,16 @@ const ROW = CODE_ROW
              a line that is new has nothing to answer with, so it stays a mark. -->
         <span
           class="gutter"
-          :class="{ live: line.was.length, shown: isOpen(line, 'was') }"
-          :title="line.was.length ? 'Click to see what this line said before' : ''"
+          :class="{
+            live: line.was.length,
+            lit: isLit(line),
+            head: capTop(line),
+            tail: capBottom(line)
+          }"
+          :title="wasHint(line)"
           @click="line.was.length && show(line, 'was')"
+          @mouseenter="hovered = runAtLine(line)?.start ?? null"
+          @mouseleave="hovered = null"
         >
           <span
             v-if="line.removed.length"
@@ -307,13 +370,12 @@ const ROW = CODE_ROW
             </span>
           </span>
 
+          <!-- No heading on this one: the code is the answer, and a label
+               over three lines of it is in the way of reading them. -->
           <span v-if="isOpen(line, 'was')" class="before was-at">
-            <span class="before-head">
-              {{ line.was.length === 1 ? 'Was' : `Was, ${line.was.length} lines` }}
-            </span>
             <span class="before-body">
               <span
-                v-for="(html, at) in paintOld(line.was)"
+                v-for="(html, at) in paintOld(runAtLine(line)?.was ?? [])"
                 :key="at"
                 class="before-line"
                 v-html="html || ' '"
@@ -451,9 +513,22 @@ button.chip:disabled {
   inset: 0 -4px;
 }
 
-.gutter.live:hover,
-.gutter.shown {
+/* Lit as a run, not as a row: hovering or opening any line of a rewritten
+   block brightens the whole bar, which is what says the block is one thing. */
+.gutter.lit {
   filter: brightness(1.35);
+}
+
+/* Only the ends of a run are rounded, so the lines between them run together
+   into one bar rather than reading as a column of separate ticks. */
+.gutter.head {
+  border-top-left-radius: 2px;
+  border-top-right-radius: 2px;
+}
+
+.gutter.tail {
+  border-bottom-left-radius: 2px;
+  border-bottom-right-radius: 2px;
 }
 
 .line.added .gutter {

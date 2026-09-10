@@ -228,6 +228,49 @@ export function markedLines(text: string | null, hunks: DiffHunk[]): Line[] {
   }))
 }
 
+/** A run of lines that were changed together, and everything they replaced. */
+export interface WasRun {
+  /** The first line of the run. */
+  start: number
+  /** The last line of the run, which is what the panel hangs below. */
+  end: number
+  /** What the whole run replaced, in order. */
+  was: string[]
+}
+
+/**
+ * Consecutive changed lines folded into the one change they are.
+ *
+ * Git reports a rewritten block as a deletion and an insertion sitting
+ * together, and the line-by-line reading of that gives every line its own mark
+ * to click and its own one-line answer. That is not what happened: three lines
+ * were rewritten once. So a run of lines that each replaced something is read
+ * as a single change — one bar down the gutter, and one panel showing the
+ * three lines as they were, together, which is the only form in which they can
+ * be compared with the three that took their place.
+ *
+ * A seam breaks a run: lines deleted with nothing put in their place are their
+ * own change, and they have their own mark on that boundary to say so.
+ */
+export function wasRuns(lines: Line[]): Map<number, WasRun> {
+  const runs = new Map<number, WasRun>()
+  let current: WasRun | null = null
+  for (const line of lines) {
+    if (!line.was.length) {
+      current = null
+      continue
+    }
+    if (current && line.number === current.end + 1 && !line.removed.length) {
+      current.end = line.number
+      current.was.push(...line.was)
+    } else {
+      current = { start: line.number, end: line.number, was: [...line.was] }
+    }
+    runs.set(line.number, current)
+  }
+  return runs
+}
+
 /**
  * One bar on the strip beside the scrollbar, in fractions of the whole.
  *

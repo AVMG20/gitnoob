@@ -10,6 +10,7 @@ import {
   firstChangedLine,
   markedLines,
   patchMarks,
+  wasRuns,
   windowOf
 } from '../app/composables/useCode'
 import type { DiffHunk, DiffLine } from '../app/composables/useGit'
@@ -157,6 +158,43 @@ describe('markedLines', () => {
 
   it('has no lines without the file', () => {
     expect(markedLines(null, [])).toEqual([])
+  })
+})
+
+describe('wasRuns', () => {
+  it('reads a rewritten block as one change with all of its old lines', () => {
+    const lines = markedLines('a\nb\nc\nd', [
+      hunk(ctx(1, 1), del(2, 'was b'), del(3, 'was c'), add(2), add(3), ctx(4, 4))
+    ])
+    const runs = wasRuns(lines)
+    expect(runs.get(2)).toBe(runs.get(3))
+    expect(runs.get(2)).toMatchObject({ start: 2, end: 3, was: ['was b', 'was c'] })
+  })
+
+  it('leaves untouched and newly added lines out of any run', () => {
+    const lines = markedLines('a\nb\nc', [hunk(ctx(1, 1), del(2), add(2), add(3))])
+    const runs = wasRuns(lines)
+    expect(runs.get(2)).toMatchObject({ start: 2, end: 2, was: ['old'] })
+    expect(runs.has(1)).toBe(false)
+    expect(runs.has(3)).toBe(false)
+  })
+
+  it('keeps changes apart when a stretch of untouched lines lies between them', () => {
+    const lines = markedLines('a\nb\nc\nd', [
+      hunk(ctx(1, 1), del(2, 'was b'), add(2), ctx(3, 3), del(4, 'was d'), add(4))
+    ])
+    const runs = wasRuns(lines)
+    expect(runs.get(2)?.start).toBe(2)
+    expect(runs.get(4)?.start).toBe(4)
+  })
+
+  it('breaks a run at a seam, which is a change of its own', () => {
+    const runs = wasRuns([
+      { number: 1, mark: 'changed', was: ['was a'], removed: [] },
+      { number: 2, mark: 'changed', was: ['was b'], removed: ['dropped'] }
+    ])
+    expect(runs.get(1)?.end).toBe(1)
+    expect(runs.get(2)?.start).toBe(2)
   })
 })
 
