@@ -4,6 +4,7 @@ import { ExternalLink, Sparkles, UserPlus } from 'lucide-vue-next'
 import { useAi } from '~/composables/useAi'
 import { useForge, type Member } from '~/composables/useForge'
 import { useGit } from '~/composables/useGit'
+import { useAttachments } from '~/composables/useAttachments'
 import type { Choice } from '~/components/SearchSelect.vue'
 
 const emit = defineEmits<{ close: [] }>()
@@ -38,7 +39,26 @@ const working = ref(false)
 const edited = ref(false)
 
 const label = computed(() => (forge.store.status?.kind === 'gitlab' ? 'merge request' : 'pull request'))
+
 const forgeName = computed(() => (forge.store.status?.kind === 'gitlab' ? 'GitLab' : 'GitHub'))
+
+const bodyField = ref<HTMLTextAreaElement | null>(null)
+
+/**
+ * A screenshot dropped on the description goes into it.
+ *
+ * The request does not exist yet, which does not matter: a file is attached to
+ * the project rather than to the request, so it can be uploaded before there
+ * is anything to put it in.
+ */
+const attach = useAttachments({
+  field: () => bodyField.value,
+  text: () => body.value,
+  write: (value) => {
+    body.value = value
+    edited.value = true
+  }
+})
 
 /** The local branch behind a name, when there is one; remote-only has none. */
 function local(name: string) {
@@ -153,7 +173,9 @@ async function write() {
 
 /** Hands the half-written review to the forge's own page. */
 async function handOver() {
-  if (!source.value || !target.value) return
+  // Not while a picture is still on its way either: the body handed over would
+  // be the line holding its place, and the dialog closes behind it.
+  if (!source.value || !target.value || attach.sending.value) return
   working.value = true
   error.value = null
   try {
@@ -199,7 +221,14 @@ async function submit(andOpen: boolean) {
 }
 
 const ready = computed(
-  () => !!source.value && !!target.value && source.value !== target.value && !!title.value.trim()
+  () =>
+    !!source.value &&
+    !!target.value &&
+    source.value !== target.value &&
+    !!title.value.trim() &&
+    // Not while a picture in the description is still on its way: what would
+    // be sent is the line holding its place.
+    attach.sending.value === 0
 )
 </script>
 
@@ -270,11 +299,23 @@ const ready = computed(
           @keyup.enter="submit(false)"
         />
         <textarea
+          ref="bodyField"
           v-model="body"
           rows="7"
+          :class="{ over: attach.over.value }"
           placeholder="What this changes, and why."
           @input="edited = true"
+          @dragover="attach.onDragOver"
+          @dragleave="attach.onDragLeave"
+          @drop="attach.onDrop"
+          @paste="attach.onPaste"
         />
+        <p v-if="attach.sending.value" class="hint faint" data-testid="attach-busy">
+          Attaching an image…
+        </p>
+        <p v-else-if="attach.failure.value" class="hint bad" data-testid="attach-failure">
+          {{ attach.failure.value }}
+        </p>
       </div>
 
       <div class="who">
@@ -323,7 +364,7 @@ const ready = computed(
       <button class="btn btn-ghost" @click="emit('close')">Cancel</button>
       <button
         class="btn btn-ghost hand"
-        :disabled="!source || !target || working"
+        :disabled="!source || !target || working || attach.sending.value > 0"
         :title="`Open ${forgeName}'s own form with this already filled in`"
         @click="handOver"
       >
@@ -400,6 +441,12 @@ const ready = computed(
   width: 100%;
   margin-top: 6px;
   resize: vertical;
+}
+
+/* An image is over the description and will be written into it if let go. */
+.field textarea.over {
+  border-color: var(--accent);
+  box-shadow: inset 0 0 0 1px var(--accent);
 }
 
 .who {

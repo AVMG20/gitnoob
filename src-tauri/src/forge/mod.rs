@@ -4,6 +4,7 @@ use crate::avatar;
 use crate::config::{self, ForgeKind};
 use crate::state::AppState;
 
+mod attach;
 mod github;
 mod gitlab;
 mod http;
@@ -12,6 +13,7 @@ mod types;
 
 pub use types::*;
 
+pub use attach::upload_attachment;
 use github::*;
 use gitlab::*;
 pub use http::*;

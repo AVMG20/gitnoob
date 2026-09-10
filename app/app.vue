@@ -330,7 +330,30 @@ onMounted(async () => {
   // platform without file notifications — and for the commonest case of all:
   // you left, changed something elsewhere, and came back.
   window.addEventListener('focus', onFocus)
+
+  // A file dropped anywhere but on a box that wants one is dropped on nothing.
+  window.addEventListener('dragover', swallowDrop)
+  window.addEventListener('drop', swallowDrop)
 })
+
+/**
+ * Stops a missed file drop from replacing the window with the file.
+ *
+ * `dragDropEnabled` is off in the window's configuration, so that the page can
+ * see the drags it runs itself — a branch onto a branch, a commit onto the
+ * plan. The other half of that is that an operating system file drop reaches
+ * the page too, and a page that does not refuse one lets the webview do what
+ * it does by default: navigate to `file:///…`. There is no address bar and no
+ * Back here, so that is the app gone, along with every draft in it.
+ *
+ * Dropping an image onto a comment box is now something the app asks for, so
+ * missing the box by twenty pixels is a thing that will happen. The boxes' own
+ * handlers run first and are unaffected; this only catches what lands nowhere.
+ */
+function swallowDrop(event: DragEvent) {
+  if (!Array.from(event.dataTransfer?.types ?? []).includes('Files')) return
+  event.preventDefault()
+}
 
 /** When the window was last read on being focused. */
 let lastFocusRead = 0
@@ -355,6 +378,8 @@ onUnmounted(() => {
   unlistenCommand?.()
   updates.stopWatching()
   window.removeEventListener('focus', onFocus)
+  window.removeEventListener('dragover', swallowDrop)
+  window.removeEventListener('drop', swallowDrop)
 })
 </script>
 
