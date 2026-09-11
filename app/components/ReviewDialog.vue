@@ -2,7 +2,7 @@
 import { computed, onMounted, ref, watch } from 'vue'
 import { ExternalLink, Sparkles, UserPlus } from 'lucide-vue-next'
 import { useAi } from '~/composables/useAi'
-import { useForge, type Member } from '~/composables/useForge'
+import { useForge, type Member, type ReviewDraft } from '~/composables/useForge'
 import { useGit } from '~/composables/useGit'
 import type { Choice } from '~/components/SearchSelect.vue'
 
@@ -25,17 +25,21 @@ const remoteOnly = computed(() => {
   })
 })
 
-const source = ref(store.repo?.detached ? '' : store.repo?.head ?? '')
-const target = ref('')
-const title = ref('')
-const body = ref('')
-const draft = ref(false)
-const assignees = ref<Member[]>([])
-const reviewers = ref<Member[]>([])
+const path = store.repo?.path ?? null
+/** What was here when this dialog last closed on this repository, if anything. */
+const saved: ReviewDraft | null = path && forge.store.draftFor === path ? forge.store.draft : null
+
+const source = ref(saved?.source ?? (store.repo?.detached ? '' : store.repo?.head ?? ''))
+const target = ref(saved?.target ?? '')
+const title = ref(saved?.title ?? '')
+const body = ref(saved?.body ?? '')
+const draft = ref(saved?.draft ?? false)
+const assignees = ref<Member[]>(saved?.assignees ?? [])
+const reviewers = ref<Member[]>(saved?.reviewers ?? [])
 const error = ref<string | null>(null)
 const working = ref(false)
 /** Set once the title has been typed in, so a branch change stops guessing. */
-const edited = ref(false)
+const edited = ref(saved?.edited ?? false)
 
 const label = computed(() => (forge.store.status?.kind === 'gitlab' ? 'merge request' : 'pull request'))
 const forgeName = computed(() => (forge.store.status?.kind === 'gitlab' ? 'GitLab' : 'GitHub'))
@@ -86,8 +90,39 @@ function guessTitle(): string {
   return tip?.summary ?? source.value
 }
 
-target.value = guessTarget()
-title.value = guessTitle()
+if (!target.value) target.value = guessTarget()
+// A saved title that was never typed is still a guess, and the branch may
+// have gained a commit since; guess again rather than show a stale one.
+if (!edited.value) title.value = guessTitle()
+
+/** Anything worth coming back for: typed text, chosen people, the draft box. */
+const dirty = computed(
+  () => edited.value || !!body.value || draft.value || assignees.value.length > 0 || reviewers.value.length > 0
+)
+
+/**
+ * Closing by ✕ or Escape keeps what was written, so a slip does not cost the
+ * description. Cancel and the three ways of finishing throw it away.
+ */
+function leave(keep: boolean) {
+  if (keep && path && dirty.value) {
+    forge.store.draft = {
+      source: source.value,
+      target: target.value,
+      title: title.value,
+      body: body.value,
+      draft: draft.value,
+      assignees: assignees.value,
+      reviewers: reviewers.value,
+      edited: edited.value
+    }
+    forge.store.draftFor = path
+  } else {
+    forge.store.draft = null
+    forge.store.draftFor = null
+  }
+  emit('close')
+}
 
 // The title is a guess until it is typed in; while it is still a guess it
 // follows whichever branch is being merged.
@@ -159,7 +194,7 @@ async function handOver() {
   try {
     const url = await forge.compareUrl(source.value, target.value, title.value.trim(), body.value)
     await forge.open(url)
-    emit('close')
+    leave(false)
   } catch (e) {
     error.value = String(e)
   } finally {
@@ -188,7 +223,7 @@ async function submit(andOpen: boolean) {
     // more use than an error that suggests nothing happened.
     if (review.warning) git.note(review.warning)
     if (andOpen) await forge.open(review.url)
-    emit('close')
+    leave(false)
   } catch (e) {
     // The forge's own words: it names the real reason — no commits between the
     // branches, a review already open, a token without the scope.
@@ -204,7 +239,7 @@ const ready = computed(
 </script>
 
 <template>
-  <AppModal :title="`New ${label}`" :width="560" @close="emit('close')">
+  <AppModal :title="`New ${label}`" :width="720" keep @close="leave(true)">
     <!-- ⌘/Ctrl+Enter from anywhere in the form, since the description is a
          textarea and Enter belongs to it. -->
     <div
@@ -320,7 +355,7 @@ const ready = computed(
     </div>
 
     <template #footer>
-      <button class="btn btn-ghost" @click="emit('close')">Cancel</button>
+      <button class="btn btn-ghost" @click="leave(false)">Cancel</button>
       <button
         class="btn btn-ghost hand"
         :disabled="!source || !target || working"

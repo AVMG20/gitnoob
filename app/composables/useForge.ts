@@ -26,6 +26,19 @@ export interface Member {
   name: string
 }
 
+/** Everything the new review dialog holds, so closing it loses nothing. */
+export interface ReviewDraft {
+  source: string
+  target: string
+  title: string
+  body: string
+  draft: boolean
+  assignees: Member[]
+  reviewers: Member[]
+  /** Whether the title was typed, or is still a guess that follows the branch. */
+  edited: boolean
+}
+
 /**
  * The repository a review's branch lives in.
  *
@@ -159,6 +172,10 @@ const store = reactive({
   /** The review a lookup is out for, so the panel can say it is coming. */
   loadingDetail: null as number | null,
   detailError: null as string | null,
+  /** A review that was being written when its dialog closed, so it can be picked up again. */
+  draft: null as ReviewDraft | null,
+  /** The repository `draft` was written for, so another tab does not inherit it. */
+  draftFor: null as string | null,
   /** Everyone this project can hand a review to, once asked. */
   members: [] as Member[],
   /** The project `members` describes, so a switch does not show the last one. */
