@@ -160,8 +160,190 @@ fn reasoning_field(level: &str) -> serde_json::Value {
     }
 }
 
-/// One chat completion round trip.
-async fn complete(state: &AppState, system: &str, user: String) -> Result<String, String> {
+/// What one chat completion came back with, before anyone reads meaning
+/// into it.
+///
+/// Kept apart from the parsing because every provider on OpenRouter shapes the
+/// same answer slightly differently: content as a string or as a list of
+/// parts, thinking in a `reasoning` field or inline in `<think>` tags, and an
+/// answer that ran out of tokens looking exactly like one that was never
+/// written. The caller decides what counts as an answer.
+#[derive(Debug, Default, Clone, PartialEq)]
+struct Reply {
+    /// The message content as sent, indentation and all. Blank when the
+    /// model wrote none.
+    content: String,
+    /// Whatever the model thought before answering, when the provider sends
+    /// it back. Some providers put the whole answer here by mistake.
+    reasoning: String,
+    /// OpenRouter's normalised reason, e.g. `stop` or `length`.
+    finish: String,
+    /// How many tokens went on thinking, when the provider counts them.
+    reasoning_tokens: Option<u64>,
+}
+
+impl Reply {
+    fn cut_off(&self) -> bool {
+        self.finish == "length"
+    }
+
+    fn is_blank(&self) -> bool {
+        self.content.trim().is_empty()
+    }
+
+    /// Why an answer is missing, in words that say what to change.
+    fn missing(&self, model: &str) -> String {
+        let thought = match self.reasoning_tokens {
+            Some(n) if n > 0 => format!(" after {n} reasoning tokens"),
+            _ if !self.reasoning.is_empty() => " after thinking".to_string(),
+            _ => String::new(),
+        };
+        if self.cut_off() {
+            format!(
+                "{model} ran out of tokens{thought} before writing an answer. \
+                 Raise Max tokens or turn Thinking off in Settings › AI"
+            )
+        } else if !self.reasoning.is_empty() {
+            format!(
+                "{model} put its whole answer in the reasoning field and none in the reply \
+                 (finish reason: {}). Try Thinking off, or another model",
+                self.finish
+            )
+        } else {
+            format!(
+                "{model} returned an empty answer (finish reason: {})",
+                if self.finish.is_empty() {
+                    "none"
+                } else {
+                    &self.finish
+                }
+            )
+        }
+    }
+}
+
+/// Reads one chat completion body into a [`Reply`].
+///
+/// A 200 is not always an answer: OpenRouter forwards a provider's failure as
+/// `choices[0].error` with the status of the gateway, not the provider. That
+/// is caught here so it reads as the failure it is rather than as an empty
+/// answer.
+fn parse_reply(body: &serde_json::Value) -> Result<Reply, String> {
+    let choice = body
+        .get("choices")
+        .and_then(|c| c.get(0))
+        .ok_or_else(|| "OpenRouter sent no choices back".to_string())?;
+
+    if let Some(error) = choice.get("error") {
+        let detail = error
+            .get("message")
+            .and_then(|v| v.as_str())
+            .unwrap_or("no detail");
+        return Err(format!("The provider failed: {detail}"));
+    }
+
+    let message = choice.get("message");
+    let text = |field: &str| -> String {
+        message
+            .and_then(|m| m.get(field))
+            .map(text_of)
+            .unwrap_or_default()
+    };
+    let (content, inline_thinking) = strip_think_tags(&text("content"));
+    let mut reasoning = text("reasoning");
+    if reasoning.is_empty() {
+        // DeepSeek's own name for the same field, which some hosts keep.
+        reasoning = text("reasoning_content");
+    }
+    if reasoning.is_empty() {
+        reasoning = inline_thinking;
+    }
+
+    let finish = choice
+        .get("finish_reason")
+        .and_then(|v| v.as_str())
+        .unwrap_or("")
+        .to_string();
+    let reasoning_tokens = body
+        .get("usage")
+        .and_then(|u| u.get("completion_tokens_details"))
+        .and_then(|d| d.get("reasoning_tokens"))
+        .and_then(|v| v.as_u64());
+
+    Ok(Reply {
+        content,
+        reasoning: reasoning.trim().to_string(),
+        finish,
+        reasoning_tokens,
+    })
+}
+
+/// The text of a content field, whichever of the two shapes it takes.
+///
+/// A plain string most of the time; a list of `{type: "text", text}` parts
+/// from providers that speak the multimodal dialect even for text.
+fn text_of(value: &serde_json::Value) -> String {
+    match value {
+        serde_json::Value::String(s) => s.clone(),
+        serde_json::Value::Array(parts) => parts
+            .iter()
+            .filter_map(|part| {
+                part.get("text")
+                    .and_then(|t| t.as_str())
+                    .or_else(|| part.as_str())
+            })
+            .collect::<Vec<_>>()
+            .join(""),
+        _ => String::new(),
+    }
+}
+
+/// Splits `<think>…</think>` blocks out of an answer.
+///
+/// Returns the answer without them, and the thinking on its own. A hosted
+/// model whose chat template leaks its thinking into the content is the usual
+/// source; an unclosed `<think>` means the model never got to the answer, so
+/// everything after it is thinking too.
+fn strip_think_tags(text: &str) -> (String, String) {
+    const OPEN: &str = "<think>";
+    const CLOSE: &str = "</think>";
+    let mut answer = String::new();
+    let mut thinking = String::new();
+    let mut rest = text;
+    while let Some(start) = rest.find(OPEN) {
+        answer.push_str(&rest[..start]);
+        let inner = &rest[start + OPEN.len()..];
+        match inner.find(CLOSE) {
+            Some(end) => {
+                thinking.push_str(&inner[..end]);
+                rest = &inner[end + CLOSE.len()..];
+            }
+            None => {
+                thinking.push_str(inner);
+                rest = "";
+            }
+        }
+    }
+    answer.push_str(rest);
+    (answer, thinking)
+}
+
+/// One chat completion round trip, returned as the model sent it.
+///
+/// `floor` is the fewest completion tokens the request may be allowed. The
+/// settings cap is a cost control for commit messages; an answer that is a
+/// block of code the user already has on screen needs room for that block,
+/// and capping it below that room can only produce a cut-off answer.
+///
+/// An empty reply that was not cut off is asked for once more before it is
+/// reported: providers behind OpenRouter do return nothing now and then, and
+/// the second ask almost always lands.
+async fn complete_raw(
+    state: &AppState,
+    system: &str,
+    user: &str,
+    floor: u32,
+) -> Result<(Reply, String), String> {
     let config = state.config();
     let model = config
         .global
@@ -170,49 +352,86 @@ async fn complete(state: &AppState, system: &str, user: String) -> Result<String
         .clone()
         .ok_or_else(|| "No model chosen — pick one in Settings › AI".to_string())?;
     let key = key()?;
+    let max_tokens = config.global.ai.max_tokens.max(floor);
+    let mut reasoning = Some(reasoning_field(&config.global.ai.reasoning));
+    let client = client()?;
 
-    let response = client()?
-        .post(format!("{BASE}/chat/completions"))
-        .bearer_auth(key)
-        // OpenRouter uses these for its own attribution listings.
-        .header("HTTP-Referer", "https://github.com/gitnoob")
-        .header("X-Title", "gitnoob")
-        .json(&serde_json::json!({
+    let mut reply = Reply::default();
+    // Two goes at most: a retry for a blank reply, or one for a thinking
+    // switch the model refused, and never a third.
+    for attempt in 0..2 {
+        let mut request = serde_json::json!({
             "model": model,
-            "max_tokens": config.global.ai.max_tokens,
-            "reasoning": reasoning_field(&config.global.ai.reasoning),
+            "max_tokens": max_tokens,
             "messages": [
                 { "role": "system", "content": system },
                 { "role": "user", "content": user }
             ]
-        }))
-        .send()
-        .await
-        .map_err(|e| format!("Could not reach OpenRouter: {e}"))?;
+        });
+        if let Some(reasoning) = &reasoning {
+            request["reasoning"] = reasoning.clone();
+        }
+        let response = client
+            .post(format!("{BASE}/chat/completions"))
+            .bearer_auth(&key)
+            // OpenRouter uses these for its own attribution listings.
+            .header("HTTP-Referer", "https://github.com/gitnoob")
+            .header("X-Title", "gitnoob")
+            .json(&request)
+            .send()
+            .await
+            .map_err(|e| format!("Could not reach OpenRouter: {e}"))?;
 
-    let status = response.status();
-    let body: serde_json::Value = response
-        .json()
-        .await
-        .map_err(|e| format!("OpenRouter sent something unreadable: {e}"))?;
+        let status = response.status();
+        let body: serde_json::Value = response
+            .json()
+            .await
+            .map_err(|e| format!("OpenRouter sent something unreadable: {e}"))?;
 
-    if !status.is_success() {
-        let detail = body
-            .get("error")
-            .and_then(|e| e.get("message"))
-            .and_then(|v| v.as_str())
-            .unwrap_or("no detail");
-        return Err(format!("{status}: {detail}"));
+        if !status.is_success() {
+            let detail = body
+                .get("error")
+                .and_then(|e| e.get("message"))
+                .and_then(|v| v.as_str())
+                .unwrap_or("no detail");
+            // Some models think whether asked to or not, and OpenRouter
+            // refuses the request rather than ignoring the switch. The
+            // setting is a cost control, not a requirement, so the same
+            // request goes again with the model's own default.
+            if reasoning.is_some() && cannot_stop_thinking(detail) {
+                reasoning = None;
+                continue;
+            }
+            return Err(format!("{status}: {detail}"));
+        }
+
+        reply = parse_reply(&body)?;
+        let worth_retrying = reply.is_blank() && reply.reasoning.is_empty() && !reply.cut_off();
+        if !worth_retrying || attempt == 1 {
+            break;
+        }
     }
+    Ok((reply, model))
+}
 
-    body.get("choices")
-        .and_then(|c| c.get(0))
-        .and_then(|c| c.get("message"))
-        .and_then(|m| m.get("content"))
-        .and_then(|v| v.as_str())
-        .map(|s| s.trim().to_string())
-        .filter(|s| !s.is_empty())
-        .ok_or_else(|| "The model returned an empty answer".to_string())
+/// Whether an error says the model will think regardless of the setting.
+///
+/// OpenRouter's wording as of this writing: "Reasoning is mandatory for this
+/// endpoint and cannot be disabled." Matched loosely, since the sentence is
+/// theirs to change.
+fn cannot_stop_thinking(detail: &str) -> bool {
+    let lower = detail.to_ascii_lowercase();
+    lower.contains("reasoning")
+        && (lower.contains("mandatory") || lower.contains("cannot be disabled"))
+}
+
+/// One chat completion round trip, as the text the model wrote.
+async fn complete(state: &AppState, system: &str, user: String) -> Result<String, String> {
+    let (reply, model) = complete_raw(state, system, &user, 0).await?;
+    if reply.is_blank() {
+        return Err(reply.missing(&model));
+    }
+    Ok(reply.content.trim().to_string())
 }
 
 /// Writes a commit message from what is staged.
@@ -554,8 +773,71 @@ pub async fn resolve_conflict(
         after.join("\n")
     );
 
-    let answer = complete(state, CONFLICT_SYSTEM, prompt).await?;
-    Ok(strip_fences(&answer))
+    // Room for the answer: it is at most about the size of both sides put
+    // together, and a cap below that can only cut it off.
+    let floor = u32::try_from(
+        ours.iter()
+            .chain(&theirs)
+            .map(|l| l.len() + 1)
+            .sum::<usize>()
+            / 2
+            + 512,
+    )
+    .unwrap_or(u32::MAX);
+
+    let (reply, model) = complete_raw(state, CONFLICT_SYSTEM, &prompt, floor).await?;
+    resolution_of(&reply, &model)
+}
+
+/// The line the model is told to put before its answer, and the one after.
+///
+/// An answer with edges is one that can be found wherever the model put it:
+/// after a sentence of commentary it was told not to write, inside a fence it
+/// was told not to add, or in the reasoning field on a host whose chat
+/// template loses the final turn. It is also the only way an empty
+/// resolution — both sides deleted the lines — can be told from no answer.
+const RESOLUTION_OPEN: &str = "=====BEGIN RESOLUTION=====";
+const RESOLUTION_CLOSE: &str = "=====END RESOLUTION=====";
+
+/// Reads the resolved lines out of a reply.
+///
+/// Looks for the delimited block in the content first and the reasoning
+/// second. Without a delimited block, the content is the answer if there is
+/// one, minus any fence the model added anyway.
+fn resolution_of(reply: &Reply, model: &str) -> Result<Vec<String>, String> {
+    if reply.cut_off() {
+        return Err(if reply.is_blank() {
+            reply.missing(model)
+        } else {
+            format!(
+                "{model} ran out of tokens part way through the answer. \
+                 Raise Max tokens or turn Thinking off in Settings › AI"
+            )
+        });
+    }
+    if let Some(lines) = delimited(&reply.content).or_else(|| delimited(&reply.reasoning)) {
+        return Ok(lines);
+    }
+    if reply.is_blank() {
+        return Err(reply.missing(model));
+    }
+    Ok(strip_fences(reply.content.trim_matches(['\r', '\n'])))
+}
+
+/// The lines between the delimiters, when both are there in order.
+///
+/// A fence the model wrapped the block in, inside or outside the delimiters,
+/// is dropped; the delimiter lines themselves may carry stray whitespace.
+fn delimited(text: &str) -> Option<Vec<String>> {
+    let lines: Vec<&str> = text.lines().collect();
+    let open = lines.iter().position(|l| l.trim() == RESOLUTION_OPEN)?;
+    let close = lines
+        .iter()
+        .skip(open + 1)
+        .position(|l| l.trim() == RESOLUTION_CLOSE)
+        .map(|at| at + open + 1)?;
+    let inner = strip_fences(&lines[open + 1..close].join("\n"));
+    Some(inner)
 }
 
 /// Splits a model's answer into a summary line and a body.
@@ -661,10 +943,17 @@ the text that keeps BOTH intentions where they are compatible. If they are \
 genuinely incompatible, keep the side whose change is clearly newer or more \
 specific.
 
-Reply with the resolved lines only. No conflict markers. No markdown, no code \
-fences, no commentary, no explanation. Preserve the file's existing \
+Reply with the resolved lines between two marker lines, exactly like this:
+
+=====BEGIN RESOLUTION=====
+<the resolved lines>
+=====END RESOLUTION=====
+
+Nothing else: no conflict markers, no markdown, no code fences, no commentary, \
+no explanation before or after the markers. Preserve the file's existing \
 indentation style and language exactly. If the right answer is to keep one side \
-unchanged, output that side verbatim.";
+unchanged, output that side verbatim. If the right answer is to delete the \
+lines entirely, put nothing between the markers.";
 
 #[cfg(test)]
 mod tests {
@@ -777,5 +1066,204 @@ mod tests {
     fn drops_a_label_the_model_prefixed() {
         let message = split_message("Summary: Tidy the parser");
         assert_eq!(message.summary, "Tidy the parser");
+    }
+
+    fn reply(body: serde_json::Value) -> Reply {
+        parse_reply(&body).unwrap()
+    }
+
+    #[test]
+    fn reads_content_as_a_string_or_as_parts() {
+        let plain = reply(serde_json::json!({
+            "choices": [{ "message": { "content": "  hello \n" }, "finish_reason": "stop" }]
+        }));
+        assert_eq!(plain.content, "  hello \n");
+        assert_eq!(plain.finish, "stop");
+
+        let parts = reply(serde_json::json!({
+            "choices": [{ "message": { "content": [
+                { "type": "text", "text": "hel" },
+                { "type": "text", "text": "lo" }
+            ] } }]
+        }));
+        assert_eq!(parts.content, "hello");
+    }
+
+    #[test]
+    fn a_null_content_with_reasoning_is_not_an_answer() {
+        let r = reply(serde_json::json!({
+            "choices": [{
+                "message": { "content": null, "reasoning": "Let me think..." },
+                "finish_reason": "length"
+            }],
+            "usage": { "completion_tokens_details": { "reasoning_tokens": 1500 } }
+        }));
+        assert_eq!(r.content, "");
+        assert_eq!(r.reasoning, "Let me think...");
+        assert!(r.cut_off());
+        let why = r.missing("deepseek/deepseek-v4.1-flash");
+        assert!(why.contains("ran out of tokens"), "{why}");
+        assert!(why.contains("1500 reasoning tokens"), "{why}");
+        assert!(why.contains("Max tokens"), "{why}");
+    }
+
+    #[test]
+    fn reasoning_content_is_read_under_deepseeks_name_too() {
+        let r = reply(serde_json::json!({
+            "choices": [{
+                "message": { "content": "", "reasoning_content": "thinking" },
+                "finish_reason": "stop"
+            }]
+        }));
+        assert_eq!(r.reasoning, "thinking");
+        assert!(r.missing("m").contains("reasoning field"));
+    }
+
+    #[test]
+    fn inline_think_tags_are_thinking_not_answer() {
+        let r = reply(serde_json::json!({
+            "choices": [{
+                "message": { "content": "<think>\nhmm\n</think>\nAdd a thing" },
+                "finish_reason": "stop"
+            }]
+        }));
+        assert_eq!(r.content.trim(), "Add a thing");
+        assert_eq!(r.reasoning, "hmm");
+
+        // Never closed: the model ran out before it got to the answer.
+        let (answer, thinking) = strip_think_tags("<think>still going");
+        assert_eq!(answer, "");
+        assert_eq!(thinking, "still going");
+        assert_eq!(
+            strip_think_tags("no tags"),
+            ("no tags".to_string(), String::new())
+        );
+    }
+
+    #[test]
+    fn a_first_line_keeps_its_indentation() {
+        let r = reply(serde_json::json!({
+            "choices": [{ "message": { "content": "    let x = 1;\n    let y = 2;\n" }, "finish_reason": "stop" }]
+        }));
+        assert_eq!(
+            resolution_of(&r, "m").unwrap(),
+            vec!["    let x = 1;".to_string(), "    let y = 2;".to_string()]
+        );
+    }
+
+    #[test]
+    fn a_model_that_must_think_is_recognised_from_the_refusal() {
+        assert!(cannot_stop_thinking(
+            "Reasoning is mandatory for this endpoint and cannot be disabled."
+        ));
+        assert!(!cannot_stop_thinking("Invalid API key"));
+        assert!(!cannot_stop_thinking(
+            "reasoning.effort must be one of low, medium, high"
+        ));
+    }
+
+    #[test]
+    fn a_provider_error_inside_a_200_is_an_error() {
+        let err = parse_reply(&serde_json::json!({
+            "choices": [{ "error": { "message": "upstream overloaded" }, "finish_reason": "error" }]
+        }))
+        .unwrap_err();
+        assert!(err.contains("upstream overloaded"), "{err}");
+
+        let err = parse_reply(&serde_json::json!({ "id": "x" })).unwrap_err();
+        assert!(err.contains("no choices"), "{err}");
+    }
+
+    #[test]
+    fn an_empty_answer_says_so_without_guessing() {
+        let r = reply(serde_json::json!({
+            "choices": [{ "message": { "content": "" }, "finish_reason": "stop" }]
+        }));
+        assert_eq!(
+            r.missing("m"),
+            "m returned an empty answer (finish reason: stop)"
+        );
+    }
+
+    fn done(content: &str, reasoning: &str) -> Reply {
+        Reply {
+            content: content.to_string(),
+            reasoning: reasoning.to_string(),
+            finish: "stop".to_string(),
+            reasoning_tokens: None,
+        }
+    }
+
+    #[test]
+    fn the_system_prompt_asks_for_the_markers_the_parser_looks_for() {
+        assert!(CONFLICT_SYSTEM.contains(RESOLUTION_OPEN));
+        assert!(CONFLICT_SYSTEM.contains(RESOLUTION_CLOSE));
+    }
+
+    #[test]
+    fn a_delimited_answer_is_found_wherever_the_model_put_it() {
+        let block =
+            "=====BEGIN RESOLUTION=====\n  let x = 1;\n  let y = 2;\n=====END RESOLUTION=====";
+        let want = vec!["  let x = 1;".to_string(), "  let y = 2;".to_string()];
+
+        assert_eq!(resolution_of(&done(block, ""), "m").unwrap(), want);
+        // Commentary around it, which the model was told not to write.
+        let chatty = format!("Sure, here is the merge:\n{block}\nLet me know if that helps.");
+        assert_eq!(resolution_of(&done(&chatty, ""), "m").unwrap(), want);
+        // Fenced, inside the markers.
+        let fenced = "=====BEGIN RESOLUTION=====\n```rust\n  let x = 1;\n  let y = 2;\n```\n=====END RESOLUTION=====";
+        assert_eq!(resolution_of(&done(fenced, ""), "m").unwrap(), want);
+        // Stray whitespace on the marker lines.
+        let loose =
+            " =====BEGIN RESOLUTION===== \n  let x = 1;\n  let y = 2;\n=====END RESOLUTION=====  ";
+        assert_eq!(resolution_of(&done(loose, ""), "m").unwrap(), want);
+        // The whole answer landed in the reasoning field.
+        assert_eq!(
+            resolution_of(&done("", &format!("I will keep both.\n{block}")), "m").unwrap(),
+            want
+        );
+    }
+
+    #[test]
+    fn an_empty_resolution_is_an_answer_when_it_is_delimited() {
+        let block = "=====BEGIN RESOLUTION=====\n=====END RESOLUTION=====";
+        assert_eq!(
+            resolution_of(&done(block, ""), "m").unwrap(),
+            Vec::<String>::new()
+        );
+        // But nothing at all is still nothing.
+        assert!(resolution_of(&done("", ""), "m").is_err());
+        assert!(resolution_of(&done("", "only thinking"), "m").is_err());
+    }
+
+    #[test]
+    fn an_undelimited_answer_is_still_taken_minus_its_fence() {
+        assert_eq!(
+            resolution_of(&done("```\nlet x = 1;\n```", ""), "m").unwrap(),
+            vec!["let x = 1;".to_string()]
+        );
+        // Only an opening marker: not a block, so the content stands as is.
+        let half = "=====BEGIN RESOLUTION=====\nlet x = 1;";
+        assert_eq!(
+            resolution_of(&done(half, ""), "m").unwrap(),
+            vec![
+                "=====BEGIN RESOLUTION=====".to_string(),
+                "let x = 1;".to_string()
+            ]
+        );
+    }
+
+    #[test]
+    fn a_cut_off_resolution_is_refused_rather_than_written_half() {
+        let mut r = done("=====BEGIN RESOLUTION=====\nlet x = 1;", "");
+        r.finish = "length".to_string();
+        let err = resolution_of(&r, "m").unwrap_err();
+        assert!(err.contains("part way"), "{err}");
+
+        let mut r = done("", "thinking");
+        r.finish = "length".to_string();
+        assert!(resolution_of(&r, "m")
+            .unwrap_err()
+            .contains("ran out of tokens"));
     }
 }
