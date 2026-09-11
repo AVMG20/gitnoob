@@ -349,7 +349,7 @@ watch(
     <ReviewMergeDialog v-if="merging" @close="merging = false" />
 
     <!-- Finishing: what was said, and the verdict it adds up to. -->
-    <AppModal v-if="finishing" title="Finish review" :width="540" @close="finishing = false">
+    <AppModal v-if="finishing" title="Finish review" :width="540" keep @close="finishing = false">
       <p v-if="store.pending.length" class="tally waiting" data-testid="pending-tally">
         <MessageSquare :size="14" class="glyph" />
         <strong>

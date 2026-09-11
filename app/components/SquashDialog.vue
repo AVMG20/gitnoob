@@ -78,6 +78,7 @@ async function apply() {
   <AppModal
     :title="`Squash ${commits.length || props.oids.length} commits into one`"
     :width="620"
+    keep
     @close="emit('close')"
   >
     <p v-if="failed" class="note bad">

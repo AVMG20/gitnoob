@@ -1,7 +1,12 @@
 <script setup lang="ts">
-import { onMounted, onUnmounted } from 'vue'
+import { onMounted, onUnmounted, ref } from 'vue'
 
-const props = defineProps<{ title: string; width?: number }>()
+/**
+ * `keep`: a click on the scrim does nothing. For dialogs that hold typed
+ * work, where one stray click outside the box would throw it all away.
+ * Escape and the ✕ still close them; both are deliberate.
+ */
+const props = defineProps<{ title: string; width?: number; keep?: boolean }>()
 const emit = defineEmits<{ close: [] }>()
 
 function onKey(event: KeyboardEvent) {
@@ -10,10 +15,27 @@ function onKey(event: KeyboardEvent) {
 
 onMounted(() => window.addEventListener('keydown', onKey))
 onUnmounted(() => window.removeEventListener('keydown', onKey))
+
+/**
+ * A click lands on the scrim whenever the press and the release straddle
+ * it: select text in a field, drag past the edge, let go, and the browser
+ * reports a click on the scrim. Only a press that started there counts.
+ */
+const pressed = ref(false)
+
+function onDown(event: PointerEvent) {
+  pressed.value = event.target === event.currentTarget
+}
+
+function onScrim() {
+  const started = pressed.value
+  pressed.value = false
+  if (started && !props.keep) emit('close')
+}
 </script>
 
 <template>
-  <div class="scrim" @click.self="emit('close')">
+  <div class="scrim" @pointerdown="onDown" @click.self="onScrim">
     <div class="modal" :style="{ width: `${props.width ?? 460}px` }">
       <div class="head">
         <h2>{{ props.title }}</h2>
