@@ -236,9 +236,15 @@ fn yes() -> bool {
 fn default_page_size() -> usize {
     500
 }
+/// Room for the answer, thinking included: OpenRouter counts reasoning
+/// tokens against this cap, so a model that thinks first needs it above what
+/// the answer alone would take. Shown in Settings › AI.
 fn default_max_tokens() -> u32 {
-    1500
+    3000
 }
+/// What the cap was before it was a setting. A config still carrying it never
+/// chose it, so it moves up with the default.
+const OLD_MAX_TOKENS: u32 = 1500;
 /// Off by default: a commit message does not need a reasoning budget, and
 /// thinking tokens are billed.
 fn default_reasoning() -> String {
@@ -379,6 +385,11 @@ pub fn remember_recent(profile: &mut Profile, path: &str, name: &str) {
 /// silently getting the other ones. Nothing is written back to disk here — the
 /// box is filled the next time the settings are saved.
 fn settle_ai(config: &mut Config) {
+    // The cap was written to disk on every save while nothing showed it, so a
+    // config that says the old number never chose it.
+    if config.global.ai.max_tokens == OLD_MAX_TOKENS {
+        config.global.ai.max_tokens = default_max_tokens();
+    }
     if config.global.ai.commit_prompt.is_some() {
         return;
     }
@@ -1021,6 +1032,27 @@ mod tests {
         assert!(config.global.show_avatars);
         assert_eq!(config.global.auto_fetch_minutes, default_fetch_minutes());
         assert_eq!(config.global.graph_page_size, default_page_size());
+    }
+
+    #[test]
+    fn the_old_hidden_token_cap_moves_up_and_a_chosen_one_stays() {
+        let dir = Dir::new("max-tokens");
+        let read = |json: &str| {
+            fs::write(file_path(dir.path()), json).unwrap();
+            load(dir.path()).global.ai.max_tokens
+        };
+        assert_eq!(
+            read(r#"{"version":1,"global":{"ai":{"max_tokens":1500}},"profiles":[]}"#),
+            3000
+        );
+        assert_eq!(
+            read(r#"{"version":1,"global":{"ai":{"max_tokens":8000}},"profiles":[]}"#),
+            8000
+        );
+        assert_eq!(
+            read(r#"{"version":1,"global":{"ai":{}},"profiles":[]}"#),
+            3000
+        );
     }
 
     #[test]

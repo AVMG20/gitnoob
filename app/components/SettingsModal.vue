@@ -283,6 +283,16 @@ async function resetCommitPrompt() {
   if ((config.settings.value?.ai.commit_prompt ?? null) !== null) await patchAi({ commit_prompt: null })
 }
 
+/** The cap, kept to a range a request can actually be made with. */
+async function saveMaxTokens(event: Event) {
+  const input = event.target as HTMLInputElement
+  const stored = config.settings.value?.ai.max_tokens ?? 0
+  const typed = Number(input.value)
+  const next = Number.isFinite(typed) && typed > 0 ? Math.min(200_000, Math.max(256, Math.round(typed))) : stored
+  input.value = String(next)
+  if (next !== stored) await patchAi({ max_tokens: next })
+}
+
 async function patchAi(patch: Record<string, unknown>) {
   const settings = config.settings.value
   if (!settings) return
@@ -683,6 +693,24 @@ onMounted(async () => {
             OpenRouter's own effort levels, passed on to whichever model you picked. Thinking
             tokens are billed, and a commit message rarely needs them — a model that cannot reason
             ignores this either way.
+          </p>
+
+          <label class="field narrow">
+            <span class="label">Max tokens per answer</span>
+            <input
+              type="number"
+              class="max-tokens"
+              min="256"
+              max="200000"
+              step="100"
+              :value="config.settings.value?.ai.max_tokens"
+              @change="saveMaxTokens($event)"
+            />
+          </label>
+          <p class="hint faint no-top">
+            The most the model may write for one answer, thinking included. A conflict is given
+            more room when both sides are bigger than this. Raise it if answers come back cut
+            off; lower it to cap what one request can cost.
           </p>
 
           <!-- The instructions themselves rather than a choice between two of

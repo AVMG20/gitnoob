@@ -223,7 +223,7 @@ function install() {
           graph_page_size: 500,
           ai: {
             model: 'anthropic/claude-sonnet-4.5',
-            max_tokens: 1500,
+            max_tokens: 3000,
             reasoning: 'off',
             commit_style: 'plain',
             commit_prompt: written.value
