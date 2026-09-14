@@ -65,6 +65,26 @@ pub(super) fn client() -> Result<reqwest::Client, String> {
         .map_err(|e| e.to_string())
 }
 
+/// The same client, for a request whose body is a file rather than a sentence.
+///
+/// `timeout` in reqwest is the deadline for the whole exchange, body included.
+/// Twenty seconds is generous for the few kilobytes of JSON every other call
+/// sends and far too little for ten megabytes over a phone: the upload would
+/// fail at exactly the same point every time, which reads as the feature being
+/// broken rather than as the connection being slow. So the deadline scales with
+/// what is being sent, and only the connection itself keeps a fixed one.
+pub(super) fn client_for(bytes: usize) -> Result<reqwest::Client, String> {
+    // Twenty seconds, plus a second for every fifty kilobytes: about 8 Mbit/s
+    // of headroom, which is slower than the connections this needs to work on.
+    let seconds = 20 + (bytes / 50_000) as u64;
+    reqwest::Client::builder()
+        .user_agent("gitnoob/0.1")
+        .connect_timeout(std::time::Duration::from_secs(20))
+        .timeout(std::time::Duration::from_secs(seconds))
+        .build()
+        .map_err(|e| e.to_string())
+}
+
 /// GitHub's API lives on a separate host; GitLab's sits under the web host.
 pub(super) fn api_base(kind: ForgeKind, host: &str) -> String {
     match kind {

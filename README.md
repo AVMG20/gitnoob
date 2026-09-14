@@ -28,6 +28,7 @@ So I started building my own. This is it. It's the tool I use for my own work no
 - Squash a run of commits into one
 - Conflict resolution with checkboxes instead of hand-editing markers
 - Pull requests and merge requests from GitHub and GitLab, with comments, checks, and a merge button
+- Drop or paste a screenshot into a description or a comment and it uploads to the forge
 - Undo and redo for most operations
 - Your uncommitted changes follow you across branch switches
 - Force push always uses `--force-with-lease` and shows what it would drop first

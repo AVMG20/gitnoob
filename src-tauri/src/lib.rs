@@ -1443,6 +1443,21 @@ async fn forge_review_commits(
     forge::review_commits(&state, number).await
 }
 
+/// Sends one dragged image to the forge and answers with its address.
+///
+/// The bytes arrive as base64 rather than as an array of numbers: every call
+/// carries named arguments as JSON, and a ten megabyte file written out one
+/// number per byte is thirty-odd megabytes of text to parse.
+#[tauri::command]
+async fn forge_upload_attachment(
+    name: String,
+    mime: String,
+    data: String,
+    state: State<'_, AppState>,
+) -> Result<String, String> {
+    forge::upload_attachment(&state, &name, &mime, &data).await
+}
+
 /// Leaves one comment on the conversation itself.
 #[tauri::command]
 async fn forge_post_comment(
@@ -1990,6 +2005,7 @@ pub fn run() {
             forge_review_comments,
             forge_review_files,
             forge_review_commits,
+            forge_upload_attachment,
             forge_post_comment,
             forge_reply_comment,
             forge_add_diff_comment,

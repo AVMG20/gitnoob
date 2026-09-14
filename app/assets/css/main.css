@@ -451,6 +451,88 @@ textarea {
   color: var(--accent);
 }
 
+/* ---------------------------------------------------------------------------
+   The elements a body reaches only by being written as markup. Markdown has no
+   syntax for any of these, so they arrive from a `<details>` fold, a badge row
+   or a keyboard hint somebody typed out by hand.
+   --------------------------------------------------------------------------- */
+.md-body details {
+  margin: 8px 0;
+  border: 1px solid var(--line-soft);
+  border-radius: 5px;
+  padding: 6px 10px;
+  background: var(--bg-raised);
+}
+
+.md-body summary {
+  cursor: pointer;
+  font-weight: 600;
+  /* The marker is the only thing saying the fold opens, so it keeps its own
+     room even when the summary is a single word. */
+  margin: -6px -10px;
+  padding: 6px 10px;
+}
+
+.md-body details[open] > summary {
+  margin-bottom: 0;
+  border-bottom: 1px solid var(--line-soft);
+}
+
+.md-body kbd {
+  font-family: var(--mono);
+  font-size: 10.5px;
+  padding: 1px 5px;
+  border: 1px solid var(--line);
+  border-bottom-width: 2px;
+  border-radius: 4px;
+  background: var(--bg-raised);
+  white-space: nowrap;
+}
+
+.md-body sub,
+.md-body sup {
+  font-size: 9.5px;
+  line-height: 0;
+}
+
+.md-body mark {
+  background: color-mix(in srgb, var(--accent) 22%, transparent);
+  color: var(--text);
+  border-radius: 2px;
+  padding: 0 2px;
+}
+
+.md-body dl {
+  margin: 6px 0;
+}
+
+.md-body dt {
+  font-weight: 600;
+  margin-top: 6px;
+}
+
+.md-body dd {
+  margin: 2px 0 2px 16px;
+  color: var(--text-dim);
+}
+
+.md-body abbr {
+  text-decoration: underline dotted;
+}
+
+/* A badge row is written `<p align="center">`, which nothing else honours. */
+.md-body [align='center'] {
+  text-align: center;
+}
+
+.md-body [align='right'] {
+  text-align: right;
+}
+
+.md-body [align='justify'] {
+  text-align: justify;
+}
+
 .md-body .mention,
 .md-body .ref {
   color: var(--accent-soft);

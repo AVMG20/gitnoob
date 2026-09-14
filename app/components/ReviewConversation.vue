@@ -11,6 +11,7 @@ import type { RComment, ReviewVerdict, Thread } from '~/composables/useReview'
 import { useForge } from '~/composables/useForge'
 import { mergeSummary, verdictLook } from '~/composables/reviewLook'
 import { renderMarkdown } from '~/composables/useMd'
+import { useAttachments } from '~/composables/useAttachments'
 import { quotedInto } from '~/composables/reviewThreads'
 import { relativeTime } from '~/composables/useGit'
 
@@ -137,7 +138,19 @@ watch(
   { immediate: true }
 )
 
+const bodyField = ref<HTMLTextAreaElement | null>(null)
+
+/** A screenshot dropped on the description goes into it, as in a comment. */
+const attach = useAttachments({
+  field: () => bodyField.value,
+  text: () => body.value,
+  write: (value) => {
+    body.value = value
+  }
+})
+
 async function save() {
+  if (attach.sending.value) return
   const done = await review.updateReview(title.value, body.value)
   if (done) emit('update:editing', false)
 }
@@ -173,13 +186,31 @@ async function save() {
 
         <template v-if="props.editing">
           <input v-model="title" class="title-field" type="text" placeholder="Title" />
-          <textarea v-model="body" rows="8" class="body-field" placeholder="What this changes, and why." />
+          <textarea
+            ref="bodyField"
+            v-model="body"
+            rows="8"
+            class="body-field"
+            :class="{ over: attach.over.value }"
+            placeholder="What this changes, and why."
+            @dragover="attach.onDragOver"
+            @dragleave="attach.onDragLeave"
+            @drop="attach.onDrop"
+            @paste="attach.onPaste"
+          />
+          <p v-if="attach.failure.value" class="trouble" data-testid="attach-failure">
+            {{ attach.failure.value }}
+          </p>
           <div class="editing">
+            <span v-if="attach.sending.value" class="faint attaching" data-testid="attach-busy">
+              <Spinner :size="10" />
+              Attaching…
+            </span>
             <button class="btn btn-ghost" @click="emit('update:editing', false)">Cancel</button>
             <button
               class="btn btn-primary"
               data-testid="save-description"
-              :disabled="!title.trim() || store.acting !== null"
+              :disabled="!title.trim() || store.acting !== null || attach.sending.value > 0"
               @click="save"
             >
               <Spinner v-if="store.acting === 'edit'" :size="11" />
@@ -383,11 +414,32 @@ async function save() {
   resize: vertical;
 }
 
+/* An image is over the description and will be written into it if let go. */
+.body-field.over {
+  border-color: var(--accent);
+  box-shadow: inset 0 0 0 1px var(--accent);
+}
+
+.trouble {
+  margin: 6px 0 0;
+  font-size: 11px;
+  color: var(--danger-soft);
+}
+
 .editing {
   display: flex;
+  align-items: center;
   justify-content: flex-end;
   gap: 7px;
   margin-top: 9px;
+}
+
+.attaching {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  margin-right: auto;
+  font-size: 11px;
 }
 
 /* An event is quieter than a card: it happened, it is not being discussed. */
