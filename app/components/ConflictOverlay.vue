@@ -63,22 +63,55 @@ onUnmounted(() => window.removeEventListener('keydown', onKey))
 </template>
 
 <style scoped>
+/*
+ * The resolver takes the window, but as a sheet laid over it rather than a
+ * page swapped in: the repository stays visible, dimmed, round its edge, so it
+ * is clear this is a step you finish and come back out of.
+ */
 .overlay {
   position: fixed;
-  inset: 0;
   z-index: 55;
   display: grid;
   grid-template-rows: auto minmax(0, 1fr);
   background: var(--bg);
+  /* The sheet is the element itself, inset from the window; the shadow's
+     spread paints the dimmed backdrop round it. */
+  inset: 16px;
+  border-radius: 10px;
+  box-shadow:
+    var(--shadow-pop),
+    0 0 0 100vmax var(--overlay);
+  overflow: hidden;
 }
 
+/* The bar across the top is chrome, the toolbar's tone, so the sheet has the
+   same shape as the window it sits over. */
 .bar {
   display: flex;
   align-items: center;
-  gap: 10px;
-  padding: 8px 12px;
-  background: var(--bg-panel);
+  gap: 8px;
+  min-height: 44px;
+  padding: 6px 8px 6px 14px;
+  background: var(--canvas);
   border-bottom: 1px solid var(--line);
+}
+
+.bar strong {
+  font-size: 14px;
+  font-weight: 650;
+}
+
+/* The count of what is left, as a count beside the title. */
+.bar .faint {
+  display: inline-flex;
+  align-items: center;
+  min-height: 18px;
+  padding: 0 7px;
+  border-radius: var(--radius-pill);
+  background: var(--warning-bg);
+  color: var(--warning-soft);
+  font-size: 11px;
+  font-weight: 600;
 }
 
 .warn {
@@ -89,7 +122,23 @@ onUnmounted(() => window.removeEventListener('keydown', onKey))
   flex: 1;
 }
 
+/* Aborting throws away the whole merge or rebase, so it is a bordered button
+   rather than a word that looks like every other one in the bar, and it turns
+   red under the pointer. */
+.bar .btn:not(.icon) {
+  color: var(--text);
+  background: var(--bg);
+  border: 1px solid var(--line);
+}
+
+.bar .btn:not(.icon):hover:not(:disabled) {
+  color: var(--red-soft);
+  background: var(--danger-bg);
+  border-color: var(--danger-line);
+}
+
 .icon {
-  padding: 4px 6px;
+  width: 28px;
+  padding: 0;
 }
 </style>

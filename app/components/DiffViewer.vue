@@ -461,12 +461,17 @@ onUnmounted(() => window.removeEventListener('keydown', onKey))
 <template>
   <section v-if="target" class="viewer">
     <header class="bar">
-      <span class="path mono truncate" :title="target.path">{{ target.path }}</span>
+      <span class="path" :title="target.path">
+        <span class="dir">{{ target.path.slice(0, target.path.lastIndexOf('/') + 1) }}</span>
+        <span class="base-name">{{ target.path.slice(target.path.lastIndexOf('/') + 1) }}</span>
+      </span>
       <span v-if="language" class="pill">{{ language }}</span>
       <span v-if="target.commit" class="pill">{{ target.commit.slice(0, 7) }}</span>
       <span v-else class="pill">{{ target.side }}</span>
-      <span class="plus">+{{ stats.additions }}</span>
-      <span class="minus">−{{ stats.deletions }}</span>
+      <span class="stats">
+        <span class="plus">+{{ stats.additions }}</span>
+        <span class="minus">−{{ stats.deletions }}</span>
+      </span>
 
       <span class="grow" />
 
@@ -504,15 +509,16 @@ onUnmounted(() => window.removeEventListener('keydown', onKey))
         </button>
         <button
           v-if="target.side === 'unstaged'"
-          class="btn"
+          class="btn stage"
           :disabled="store.busy"
           @click="git.stage([target.path])"
         >
           <Check :size="14" /> Stage file
         </button>
-        <button v-else class="btn" :disabled="store.busy" @click="git.unstage([target.path])">
+        <button v-else class="btn stage" :disabled="store.busy" @click="git.unstage([target.path])">
           <Minus :size="14" /> Unstage file
         </button>
+        <span class="divider" />
       </template>
 
       <!-- Always here, whichever view is on screen. It used to appear along
@@ -521,7 +527,7 @@ onUnmounted(() => window.removeEventListener('keydown', onKey))
            a column of the file, so asking for it from the patch opens that
            view rather than doing nothing. -->
       <button
-        class="btn"
+        class="btn tool"
         :class="{ on: diffMode.mode === 'file' && diffMode.blame }"
         :title="
           diffMode.mode !== 'file'
@@ -535,16 +541,16 @@ onUnmounted(() => window.removeEventListener('keydown', onKey))
         <Users :size="14" />
       </button>
 
-      <button class="btn" title="Every commit that touched this file" @click="showHistory">
+      <button class="btn tool" title="Every commit that touched this file" @click="showHistory">
         <History :size="14" />
       </button>
-      <button class="btn" title="Copy path" @click="copyText(target.path, 'Path')">
+      <button class="btn tool" title="Copy path" @click="copyText(target.path, 'Path')">
         <Copy :size="14" />
       </button>
-      <button class="btn" :title="git.revealLabel" @click="git.reveal(target.path)">
+      <button class="btn tool" :title="git.revealLabel" @click="git.reveal(target.path)">
         <FolderOpen :size="14" />
       </button>
-      <button class="btn" title="Close (Esc)" @click="close">
+      <button class="btn tool" title="Close (Esc)" @click="close">
         <X :size="16" />
       </button>
     </header>
@@ -610,6 +616,8 @@ onUnmounted(() => window.removeEventListener('keydown', onKey))
 </template>
 
 <style scoped>
+/* The viewer is a pane of the shell's grid and takes the page tone from it, so
+   it paints nothing behind itself. */
 .viewer {
   display: grid;
   /* The column is stated rather than left implicit. An `auto` column is sized
@@ -619,70 +627,159 @@ onUnmounted(() => window.removeEventListener('keydown', onKey))
   grid-template-columns: minmax(0, 1fr);
   grid-template-rows: auto minmax(0, 1fr);
   min-width: 0;
-  background: var(--bg);
 }
 
+/* The bar over the file is chrome, the same tone as the toolbar and the
+   sidebar, so the diff under it reads as the page. */
 .bar {
   display: flex;
   align-items: center;
-  gap: 8px;
-  padding: 6px 10px;
-  background: var(--bg-panel);
+  gap: 6px;
+  min-height: 40px;
+  padding: 5px 8px 5px 12px;
+  background: var(--canvas);
   border-bottom: 1px solid var(--line);
 }
 
+/* The file's name is what you are looking at; the folders it sits in are
+   where, and read quieter. */
 .path {
+  display: flex;
+  align-items: baseline;
+  min-width: 0;
   max-width: 46%;
+  font-size: 12.5px;
+}
+
+.dir {
+  flex: 0 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--text-faint);
+}
+
+.base-name {
+  flex: none;
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-weight: 600;
   color: var(--text);
+}
+
+/* The language and the side are labels, not counts: square-cornered tags. */
+.bar .pill {
+  border-radius: var(--radius-sm);
+  font-family: var(--mono);
+  font-weight: 500;
+}
+
+/* Lines added and taken away, read as one small tally. */
+.stats {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-family: var(--mono);
+  font-size: 11.5px;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
 }
 
 .grow {
   flex: 1;
 }
 
-/* The same segmented control the file panel uses for path and tree. */
+/* Diff or file: a bordered segmented switch, the same control the file panel
+   uses for path and tree. */
 .modes {
   display: flex;
   flex: none;
+  height: 24px;
   border: 1px solid var(--line);
-  border-radius: 5px;
+  border-radius: var(--radius-sm);
   overflow: hidden;
+  background: var(--bg);
 }
 
 .seg {
-  padding: 1px 7px;
-  font-size: 10.5px;
-  color: var(--text-faint);
+  padding: 0 10px;
+  font-size: 11.5px;
+  font-weight: 500;
+  color: var(--text-dim);
+}
+
+.seg + .seg {
+  border-left: 1px solid var(--line);
 }
 
 .seg:hover {
   color: var(--text);
+  background: var(--bg-hover);
 }
 
 .seg.on {
   background: var(--bg-active);
-  color: var(--text);
+  color: var(--accent-soft);
+  font-weight: 600;
+}
+
+/* Everything on the bar is one size smaller than a toolbar button. */
+.bar .btn {
+  min-height: 26px;
+  padding: 2px 8px;
+  border-radius: var(--radius-sm);
+}
+
+.bar .tool {
+  width: 26px;
+  padding: 0;
 }
 
 /* A toggle rather than an action: on, it holds the pressed look the segmented
    control uses, so the bar has one idea of what "this is on" looks like. */
 .btn.on {
   background: var(--bg-active);
-  color: var(--text);
+  color: var(--accent-soft);
 }
 
 .plus {
   color: var(--green);
-  font-size: 11.5px;
 }
 
 .minus {
   color: var(--red);
-  font-size: 11.5px;
 }
 
+/* Discarding is quiet until the pointer is on it, then it says what it is. */
 .danger {
+  color: var(--text-dim);
+}
+
+.bar .danger:hover:not(:disabled) {
+  background: var(--danger-bg);
   color: var(--red-soft);
+}
+
+/* Staging is the thing this bar is for, so it is the one bordered button. */
+.stage {
+  color: var(--text);
+  background: var(--bg);
+  border: 1px solid var(--line);
+}
+
+.bar .stage:hover:not(:disabled) {
+  background: var(--bg-hover);
+}
+
+.divider {
+  flex: none;
+  width: 1px;
+  height: 18px;
+  margin: 0 3px;
+  background: var(--line);
 }
 
 .pane {
@@ -703,7 +800,7 @@ onUnmounted(() => window.removeEventListener('keydown', onKey))
   display: flex;
   flex-direction: column;
   align-items: center;
-  gap: 8px;
+  gap: 6px;
   padding: 64px 24px;
   text-align: center;
 }
@@ -713,14 +810,15 @@ onUnmounted(() => window.removeEventListener('keydown', onKey))
 }
 
 .lfs h3 {
-  margin: 4px 0 0;
+  margin: 6px 0 0;
   font-size: 14px;
+  font-weight: 650;
 }
 
 .lfs p {
   margin: 0;
   max-width: 460px;
-  font-size: 12px;
+  font-size: 12.5px;
 }
 
 .lfs .oid {

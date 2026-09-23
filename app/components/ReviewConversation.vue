@@ -305,12 +305,12 @@ async function save() {
 .conversation {
   display: grid;
   grid-template-columns: minmax(0, 1fr) 264px;
-  gap: 18px;
+  gap: 24px;
   align-items: start;
   width: 100%;
   max-width: 1180px;
   margin: 0 auto;
-  padding: 16px 22px 64px;
+  padding: 18px 20px 72px;
 }
 
 @media (max-width: 940px) {
@@ -323,21 +323,33 @@ async function save() {
   min-width: 0;
   display: flex;
   flex-direction: column;
-  gap: 9px;
+  gap: 12px;
 }
 
+/* A comment is a bordered box on the page. */
 .card {
-  background: var(--bg-panel);
-  border: 1px solid var(--line-soft);
-  border-radius: 8px;
+  background: var(--bg);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-lg);
   padding: 12px 14px;
+}
+
+/* The description wears a header strip, the way a forge draws the first
+   comment: who wrote it and when, on the chrome tone, over the body. */
+.description > .meta {
+  margin: -12px -14px 0;
+  padding: 6px 10px 6px 14px;
+  min-height: 36px;
+  background: var(--surface);
+  border-bottom: 1px solid var(--line-soft);
+  border-radius: var(--radius-lg) var(--radius-lg) 0 0;
 }
 
 .meta {
   display: flex;
   align-items: center;
   gap: 8px;
-  font-size: 12px;
+  font-size: 12.5px;
   min-width: 0;
 }
 
@@ -351,8 +363,8 @@ async function save() {
 }
 
 .quiet {
-  padding: 3px;
-  border-radius: 4px;
+  padding: 4px;
+  border-radius: var(--radius-sm);
   color: var(--text-faint);
 }
 
@@ -390,13 +402,14 @@ async function save() {
   margin-top: 9px;
 }
 
-/* An event is quieter than a card: it happened, it is not being discussed. */
+/* An event is quieter than a card: it happened, it is not being discussed. A
+   single line, indented to sit on the timeline's own edge. */
 .event {
   display: flex;
   align-items: flex-start;
-  gap: 9px;
-  padding: 2px 4px 2px 0;
-  font-size: 12px;
+  gap: 8px;
+  padding: 0 4px 0 14px;
+  font-size: 12.5px;
   color: var(--text-dim);
 }
 
@@ -408,16 +421,21 @@ async function save() {
   height: 22px;
   border-radius: 50%;
   background: var(--bg-raised);
+  border: 1px solid var(--line);
   color: var(--text-faint);
   flex: none;
 }
 
 .event.good .glyph {
-  color: var(--green);
+  background: var(--success-bg);
+  border-color: var(--success-line);
+  color: var(--success);
 }
 
 .event.bad .glyph {
-  color: var(--red);
+  background: var(--danger-bg);
+  border-color: var(--danger-line);
+  color: var(--danger);
 }
 
 .event .what {
@@ -440,22 +458,22 @@ async function save() {
   color: var(--text-dim);
 }
 
-/* Where the review has ended up: the one card that is about doing rather than
-   reading, so it is the one card with a filled button on it. */
-.standing {
-  border-left: 3px solid var(--line);
-}
-
+/* Where the review has ended up: the one box that is about doing rather than
+   reading, so it is the one with a filled button on it, and the one edged in
+   what it says. */
 .standing.good {
-  border-left-color: var(--green);
+  border-color: var(--success-line);
+  box-shadow: inset 3px 0 0 var(--success);
 }
 
 .standing.bad {
-  border-left-color: var(--red);
+  border-color: var(--danger-line);
+  box-shadow: inset 3px 0 0 var(--danger);
 }
 
 .standing.wait {
-  border-left-color: var(--amber);
+  border-color: var(--warning-line);
+  box-shadow: inset 3px 0 0 var(--warning);
 }
 
 .verdict-line {
@@ -471,15 +489,15 @@ async function save() {
 }
 
 .standing.good .verdict-line .glyph {
-  color: var(--green);
+  color: var(--success);
 }
 
 .standing.bad .verdict-line .glyph {
-  color: var(--red);
+  color: var(--danger);
 }
 
 .standing.wait .verdict-line .glyph {
-  color: var(--amber);
+  color: var(--warning);
 }
 
 .words {
@@ -488,27 +506,25 @@ async function save() {
   display: flex;
   flex-direction: column;
   gap: 2px;
-  font-size: 12.5px;
+  font-size: 13px;
 }
 
 .words .faint {
-  font-size: 11.5px;
+  font-size: 12px;
 }
 
 .go {
   flex: none;
-  padding: 5px 14px;
-  font-size: 12.5px;
 }
 
 .left {
   display: flex;
   align-items: center;
   gap: 5px;
-  margin: 9px 0 0;
-  padding-top: 9px;
+  margin: 12px 0 0;
+  padding-top: 10px;
   border-top: 1px solid var(--line-soft);
-  font-size: 11.5px;
+  font-size: 12px;
 }
 
 .empty {
@@ -521,6 +537,6 @@ async function save() {
    attribute, and three components draw one. Where the description sits is all
    this component has to say about it. */
 .md-body {
-  margin-top: 9px;
+  margin-top: 10px;
 }
 </style>

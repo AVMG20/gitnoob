@@ -109,51 +109,63 @@ async function merge() {
   display: flex;
   flex-direction: column;
   gap: 3px;
-  margin: 0 0 12px;
-  padding: 9px 11px;
-  border-radius: 6px;
-  border-left: 3px solid var(--line);
-  background: var(--bg-raised);
-  font-size: 12.5px;
+  margin: 0 0 14px;
+  padding: 9px 12px;
+  border-radius: var(--radius);
+  border: 1px solid var(--line);
+  background: var(--surface);
+  font-size: 13px;
 }
 
 .standing.good {
-  border-left-color: var(--green);
+  background: var(--success-bg);
+  border-color: var(--success-line);
+  color: var(--success-soft);
 }
 
 .standing.bad {
-  border-left-color: var(--red);
+  background: var(--danger-bg);
+  border-color: var(--danger-line);
+  color: var(--danger-soft);
 }
 
 .standing.wait {
-  border-left-color: var(--amber);
+  background: var(--warning-bg);
+  border-color: var(--warning-line);
+  color: var(--warning-soft);
 }
 
 .standing .faint {
-  font-size: 11.5px;
+  font-size: 12px;
 }
 
 .what {
   margin: 0 0 12px;
-  font-size: 12px;
+  font-size: 12.5px;
   color: var(--text-dim);
 }
 
+/* The three ways to merge, as one bordered group of radio rows: the chosen
+   one is tinted in the accent. */
 .choices {
   display: flex;
   flex-direction: column;
-  gap: 6px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  overflow: hidden;
 }
 
 .choice {
   display: flex;
   align-items: flex-start;
-  gap: 9px;
-  padding: 8px 10px;
-  border: 1px solid var(--line-soft);
-  border-radius: 6px;
+  gap: 10px;
+  padding: 9px 12px;
   cursor: pointer;
-  font-size: 12px;
+  font-size: 12.5px;
+}
+
+.choice + .choice {
+  border-top: 1px solid var(--line);
 }
 
 .choice:hover {
@@ -161,12 +173,11 @@ async function merge() {
 }
 
 .choice:has(input:checked) {
-  border-color: color-mix(in srgb, var(--accent) 55%, transparent);
-  background: color-mix(in srgb, var(--accent) 9%, transparent);
+  background: var(--primary-bg);
 }
 
 .choice input {
-  margin-top: 2px;
+  margin-top: 3px;
   accent-color: var(--accent);
 }
 
@@ -178,15 +189,15 @@ async function merge() {
 
 .choice em {
   font-style: normal;
-  font-size: 11px;
+  font-size: 11.5px;
 }
 
 .after {
   display: flex;
   align-items: center;
-  gap: 7px;
-  margin-top: 12px;
-  font-size: 12px;
+  gap: 8px;
+  margin-top: 14px;
+  font-size: 12.5px;
   color: var(--text-dim);
   cursor: pointer;
 }
@@ -196,7 +207,7 @@ async function merge() {
 }
 
 .go {
-  min-width: 120px;
+  min-width: 128px;
   justify-content: center;
 }
 </style>

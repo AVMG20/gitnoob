@@ -2,12 +2,11 @@
 import { computed, ref, watch } from 'vue'
 import {
   Archive,
-  ArrowDown,
   ArrowDownToLine,
-  ArrowUp,
   ArrowUpFromLine,
   ChevronRight,
   Download,
+  GitBranch,
   GitBranchPlus,
   History,
   Package,
@@ -47,7 +46,8 @@ const { layout } = usePanes()
  * strips stop at the panel's edge instead: they are about the repository and
  * the history, which is what they now sit over.
  */
-const bannerRight = computed(() => `${layout.panel + 5}px`)
+// Over the graph and clear of the inspector, whose own head says what is staged.
+const bannerRight = computed(() => `${layout.panel + 1}px`)
 
 /**
  * A release on offer, or on its way in. The button stays through the download
@@ -255,6 +255,7 @@ async function reconcile(rebase: boolean) {
 <template>
   <header class="bar">
     <div class="repo">
+      <div class="where">
       <!-- The trail into a submodule. The project it belongs to is still what
            the tab says, so this is where being somewhere else has to be
            visible — and each step is its own way back out. -->
@@ -286,18 +287,13 @@ async function reconcile(rebase: boolean) {
         </template>
       </template>
       <strong v-else class="name">{{ store.repo?.name }}</strong>
-      <span class="faint">/</span>
-      <span class="branch mono">
-        {{ store.repo?.head }}
+      </div>
+      <!-- The branch you are on, under the repository's name: the one fact
+           about it that changes under you all day. -->
+      <span class="branch" :class="{ detached: store.repo?.detached }" :title="store.repo?.head">
+        <GitBranch :size="12" class="branch-icon" />
+        <span class="branch-name">{{ store.repo?.head }}</span>
         <span v-if="store.repo?.detached" class="pill">detached</span>
-      </span>
-      <!-- Icons rather than ↑ and ↓: at this size the text arrow crowds the
-           digit next to it and "↑1" reads as "11". -->
-      <span v-if="head?.ahead" class="pill up" :title="`${head.ahead} to push`">
-        <ArrowUp :size="11" :stroke-width="2.5" />{{ head.ahead }}
-      </span>
-      <span v-if="head?.behind" class="pill down" :title="`${head.behind} to pull`">
-        <ArrowDown :size="11" :stroke-width="2.5" />{{ head.behind }}
       </span>
     </div>
 
@@ -347,8 +343,17 @@ async function reconcile(rebase: boolean) {
       <button class="btn" :disabled="store.busy" title="Fetch all remotes" @click="git.fetch()">
         <RefreshCw :size="14" /> Fetch
       </button>
-      <button class="btn" :disabled="store.busy" title="Pull, carrying local work along" @click="git.pull()">
+      <button
+        class="btn"
+        :disabled="store.busy"
+        :title="head?.behind ? `Pull ${head.behind} from upstream, carrying local work along` : 'Pull, carrying local work along'"
+        @click="git.pull()"
+      >
         <ArrowDownToLine :size="14" /> Pull
+        <!-- The counts live on the buttons that act on them: what there is to
+             pull sits on Pull, what there is to push on Push, as a badge on
+             the button's icon. -->
+        <span v-if="head?.behind" class="count down">{{ head.behind }}</span>
       </button>
       <button
         class="btn"
@@ -357,6 +362,7 @@ async function reconcile(rebase: boolean) {
         @click="push"
       >
         <ArrowUpFromLine :size="14" /> Push
+        <span v-if="head?.ahead" class="count up">{{ head.ahead }}</span>
       </button>
 
       <span class="sep" />
@@ -618,6 +624,12 @@ async function reconcile(rebase: boolean) {
 </template>
 
 <style scoped>
+/*
+ * The toolbar is chrome, the tone of the tab strip's open tab above it. The
+ * repository and branch on the left, the everyday actions in the middle as
+ * icons with their names under them — the shape every git client has taught
+ * people to look for — and the window's own tools on the right.
+ */
 .bar {
   position: relative;
   /* Three tracks so the action group sits in the true centre of the window,
@@ -626,20 +638,34 @@ async function reconcile(rebase: boolean) {
   grid-template-columns: 1fr auto 1fr;
   align-items: center;
   gap: 16px;
-  padding: 7px 10px;
-  background: var(--bg-panel);
+  min-height: 52px;
+  padding: 4px 10px 4px 14px;
+  background: var(--canvas);
   border-bottom: 1px solid var(--line);
 }
 
+/* Name over branch, two lines that read as one label. */
 .repo {
   display: flex;
+  flex-direction: column;
+  justify-content: center;
+  gap: 1px;
+  min-width: 0;
+}
+
+.where {
+  display: flex;
   align-items: center;
-  gap: 7px;
+  gap: 4px;
   min-width: 0;
 }
 
 .name {
+  font-size: 13.5px;
+  font-weight: 650;
   white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 /* The trail. The last step is where you are and carries the way out; the ones
@@ -648,11 +674,16 @@ async function reconcile(rebase: boolean) {
   display: inline-flex;
   align-items: center;
   gap: 5px;
-  padding: 2px 6px;
-  border-radius: 5px;
-  font-size: 12px;
+  padding: 1px 5px;
+  margin-left: -5px;
+  border-radius: var(--radius-sm);
+  font-size: 13px;
   color: var(--text-dim);
   white-space: nowrap;
+}
+
+.crumb + .sep + .crumb {
+  margin-left: 0;
 }
 
 .crumb.root,
@@ -667,9 +698,7 @@ async function reconcile(rebase: boolean) {
 
 .crumb.here {
   color: var(--text);
-  background: color-mix(in srgb, var(--accent) 14%, transparent);
-  font-family: var(--mono);
-  font-size: 11px;
+  font-weight: 650;
 }
 
 .sep {
@@ -678,102 +707,137 @@ async function reconcile(rebase: boolean) {
 
 .out {
   display: flex;
-  margin: 0 -3px 0 1px;
-  padding: 1px;
-  border-radius: 3px;
+  padding: 2px;
+  border-radius: var(--radius-sm);
   color: var(--text-faint);
 }
 
 .out:hover {
-  background: var(--bg-active);
+  background: var(--bg-hover);
   color: var(--text);
 }
 
 .branch {
-  display: flex;
+  display: inline-flex;
   align-items: center;
-  gap: 6px;
+  gap: 5px;
+  min-width: 0;
+  font-size: 12px;
+  color: var(--text-dim);
+}
+
+.branch-icon {
+  flex: none;
   color: var(--accent);
 }
 
+.branch-name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.branch.detached .branch-icon {
+  color: var(--amber);
+}
+
+/* The everyday actions: a larger icon with its name under it. */
 .actions {
   display: flex;
   align-items: center;
   justify-content: center;
-  gap: 1px;
+  gap: 2px;
+}
+
+.actions .btn {
+  position: relative;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 54px;
+  min-height: 0;
+  padding: 5px 8px 4px;
+  font-size: 11px;
+  font-weight: 500;
+  line-height: 1.2;
+  color: var(--text-dim);
+}
+
+.actions .btn svg {
+  width: 18px;
+  height: 18px;
+  color: var(--text);
+  stroke-width: 1.75;
+}
+
+.actions .btn:hover:not(:disabled) {
+  color: var(--text);
 }
 
 .tools {
   display: flex;
   align-items: center;
   justify-content: flex-end;
-  gap: 1px;
+  gap: 2px;
 }
 
 .icon-only {
-  padding: 5px 7px;
+  width: 30px;
+  padding: 0;
 }
 
-/* Tinted rather than filled: news, not an alarm, and the pull and push
-   buttons beside it should still be the ones the eye lands on. */
+/* A new version: tinted rather than filled, news and not an alarm. */
 .update {
-  margin-right: 3px;
-  background: color-mix(in srgb, var(--accent) 16%, transparent);
-  color: var(--accent);
+  margin-right: 4px;
+  background: var(--primary-bg);
+  color: var(--accent-soft);
   font-weight: 600;
 }
 
 .update:hover:not(:disabled) {
-  background: color-mix(in srgb, var(--accent) 26%, transparent);
-  color: var(--accent);
+  background: var(--primary-line);
+  color: var(--accent-soft);
 }
 
-/* The profile pill is bordered where the icons around it are not, so the 1px
-   gap the group uses reads as the settings icon touching it. */
 .profile {
-  margin-left: 6px;
+  margin-left: 4px;
 }
 
 .sep {
   width: 1px;
-  height: 18px;
+  height: 22px;
   background: var(--line);
-  margin: 0 5px;
+  margin: 0 6px;
 }
 
-/* A filled pill, so the arrow and the digit have to sit square inside it:
-   even padding, one line box, and no nudging the glyph off centre. */
-.up,
-.down {
-  display: inline-flex;
-  align-items: center;
-  gap: 2px;
-  padding: 2px 7px;
-  border-radius: 999px;
-  font-size: 11px;
-  line-height: 1;
+.where .sep {
+  width: auto;
+  height: auto;
+  margin: 0;
+  background: none;
+}
+
+/* How many there are to pull or push, as a badge on the button's icon. */
+.count {
+  position: absolute;
+  top: 1px;
+  left: calc(50% + 6px);
+  min-width: 16px;
+  height: 16px;
+  padding: 0 4px;
+  border-radius: var(--radius-pill);
+  border: 2px solid var(--canvas);
+  box-sizing: content-box;
+  font-size: 9.5px;
+  font-weight: 700;
+  line-height: 16px;
+  text-align: center;
   font-variant-numeric: tabular-nums;
+  background: var(--accent);
+  color: var(--on-accent);
 }
 
-/* Lucide draws on a padded 24-unit grid, so the arrow carries a sliver of its
-   own space on the left; claw it back so the pill looks evenly filled. */
-.up svg,
-.down svg {
-  margin-left: -2px;
-}
-
-.up {
-  background: var(--success-bg);
-  color: var(--green);
-}
-
-.down {
-  background: color-mix(in srgb, var(--accent) 16%, transparent);
-  color: var(--accent);
-}
-
-/* Under the toolbar, over the graph — but never over the right panel, whose
-   own head says what is staged. The right edge is set from the panel's width. */
+/* Under the toolbar, over the graph — but never over the inspector, whose
+   own head says what is staged. The right edge is set from its width. */
 .banners {
   position: absolute;
   left: 0;
@@ -782,35 +846,46 @@ async function reconcile(rebase: boolean) {
   z-index: 6;
 }
 
-/* The strips are stacked, and the lowest one's edge is what the eye follows
-   across to the panel. Rounding the corner keeps it from reading as a cut. */
-.banners > .banner:last-child {
-  border-bottom-right-radius: 4px;
-}
-
 .banner {
   display: flex;
   align-items: center;
-  gap: 9px;
-  padding: 5px 12px;
+  flex-wrap: wrap;
+  gap: 8px;
+  padding: 6px 12px;
   font-size: 12px;
-  color: #f2bd6e;
-  background: #2a2114;
+  color: var(--warning-soft);
+  background: var(--warning-bg);
   border-bottom: 1px solid var(--warning-line);
 }
 
 .tiny {
-  font-size: 11px;
-  padding: 2px 8px;
-  background: var(--amber);
-  color: #1a1206;
+  min-height: 22px;
+  font-size: 11.5px;
+  padding: 1px 8px;
+  border-radius: var(--radius-sm);
+  background: var(--bg);
+  color: var(--text);
+  border: 1px solid var(--warning-line);
   font-weight: 600;
 }
 
+.banner .tiny:hover:not(:disabled) {
+  background: var(--bg);
+  color: var(--text);
+  border-color: currentColor;
+}
+
 .tiny.ghost {
-  background: none;
-  color: #f2bd6e;
-  border: 1px solid var(--warning-line);
+  background: transparent;
+  color: inherit;
+  border-color: transparent;
+  font-weight: 500;
+}
+
+.banner .tiny.ghost:hover:not(:disabled) {
+  background: color-mix(in srgb, currentColor 12%, transparent);
+  color: inherit;
+  border-color: transparent;
 }
 
 /* The rejected-push strip. Two states in one place: the offer, then the
@@ -825,20 +900,15 @@ async function reconcile(rebase: boolean) {
 }
 
 .banner.danger {
-  color: #f3a1ad;
-  background: #2c1519;
+  color: var(--danger-soft);
+  background: var(--danger-bg);
   border-bottom-color: var(--danger-line);
 }
 
-.banner.danger .tiny.ghost {
-  color: #f3a1ad;
-  border-color: var(--danger-line);
-}
-
-.danger-btn {
+.banner .danger-btn,
+.banner .danger-btn:hover:not(:disabled) {
   background: var(--red);
-  color: #fff;
-  font-weight: 600;
+  color: var(--on-danger);
+  border-color: transparent;
 }
-
 </style>

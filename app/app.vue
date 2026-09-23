@@ -156,8 +156,11 @@ const columns = computed(() => {
   // The viewer and a review page take the whole middle; the rebase plan and a
   // stash keep the sidebar, because the sidebar is where the next branch or
   // the next stash is picked from.
-  if (store.viewer || reviewOpen.value) return `minmax(0, 1fr) 5px ${panel}`
-  return `minmax(0, ${layout.sidebar}px) 5px minmax(0, 1fr) 5px ${panel}`
+  // The handles are the hairlines between the panes, one pixel wide; each
+  // reaches a few pixels either side of itself for the pointer.
+  const gap = '1px'
+  if (store.viewer || reviewOpen.value) return `minmax(0, 1fr) ${gap} ${panel}`
+  return `minmax(0, ${layout.sidebar}px) ${gap} minmax(0, 1fr) ${gap} ${panel}`
 })
 
 /** What every open has to do once the repository itself is in place. */
@@ -458,6 +461,9 @@ onUnmounted(() => {
   min-height: 0;
 }
 
+/* The panes meet edge to edge, with the resize handles as the hairlines
+   between them. The sidebar and the inspector are chrome, in the canvas tone;
+   whatever is in the middle — the graph, a diff, a review — is the page. */
 .body {
   display: grid;
   grid-template-columns: minmax(0, 1fr);
@@ -466,5 +472,13 @@ onUnmounted(() => {
 .body > :deep(*) {
   min-width: 0;
   min-height: 0;
+}
+
+.body > :deep(aside) {
+  background: var(--canvas);
+}
+
+.body > :deep(section) {
+  background: var(--bg);
 }
 </style>

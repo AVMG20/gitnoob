@@ -100,17 +100,17 @@ onMounted(() => {
 
 <style scoped>
 .picker {
+  border-radius: var(--radius-lg);
   border: 1px solid var(--line);
-  border-radius: 8px;
+  background: var(--bg);
   overflow: hidden;
 }
 
 .bar {
   display: flex;
   gap: 6px;
-  padding: 7px;
-  border-bottom: 1px solid var(--line);
-  background: var(--bg-raised);
+  padding: 8px;
+  border-bottom: 1px solid var(--line-soft);
 }
 
 .search {
@@ -121,43 +121,55 @@ onMounted(() => {
   padding: 0 8px;
   background: var(--bg);
   border: 1px solid var(--line);
-  border-radius: 5px;
+  border-radius: var(--radius-sm);
+}
+
+.search:focus-within {
+  border-color: var(--ring);
+  box-shadow: var(--focus);
 }
 
 .search input {
   flex: 1;
   border: none;
   background: none;
-  padding: 5px 0;
+  padding: 4px 0;
 }
 
 .search input:focus {
   outline: none;
+  box-shadow: none;
 }
 
 .sort,
 .tiny {
-  font-size: 11.5px;
-  padding: 4px 7px;
+  font-size: 12px;
+  padding: 3px 9px;
+  min-height: var(--control-h);
   background: var(--bg);
   border: 1px solid var(--line);
-  border-radius: 5px;
+  border-radius: var(--radius-sm);
   color: var(--text);
+}
+
+.sort {
+  padding-right: 28px;
 }
 
 .list {
   max-height: 330px;
   overflow-y: auto;
+  padding: 4px;
 }
 
 .row {
   display: flex;
   align-items: center;
-  gap: 9px;
+  gap: 8px;
   width: 100%;
-  padding: 6px 10px;
+  padding: 5px 8px;
+  border-radius: var(--radius-sm);
   text-align: left;
-  border-bottom: 1px solid var(--line-soft);
 }
 
 .row:hover {
@@ -169,7 +181,7 @@ onMounted(() => {
 }
 
 .tick {
-  color: var(--green);
+  color: var(--text);
   flex: none;
 }
 
@@ -230,9 +242,9 @@ onMounted(() => {
 
 .foot {
   margin: 0;
-  padding: 6px 10px;
-  font-size: 11px;
-  border-top: 1px solid var(--line);
-  background: var(--bg-raised);
+  padding: 7px 10px;
+  font-size: 11.5px;
+  border-top: 1px solid var(--line-soft);
+  background: var(--canvas);
 }
 </style>

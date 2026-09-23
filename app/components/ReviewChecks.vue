@@ -82,39 +82,35 @@ function refresh() {
   width: 100%;
   max-width: 900px;
   margin: 0 auto;
-  padding: 14px 22px 48px;
+  padding: 18px 20px 56px;
 }
 
+/* The checks are one bordered box: how they add up as its header strip, in
+   the colour of the verdict, and a row for each check under it. */
 .head {
   display: flex;
   align-items: center;
-  gap: 9px;
-  padding: 10px 13px;
-  border: 1px solid var(--line-soft);
-  border-left-width: 3px;
-  border-radius: 8px;
-  background: var(--bg-panel);
-  font-size: 12.5px;
-  color: var(--text-dim);
+  gap: 8px;
+  min-height: 42px;
+  padding: 4px 8px 4px 14px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-lg) var(--radius-lg) 0 0;
+  background: var(--surface);
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text);
 }
 
-.head.good {
-  border-left-color: var(--green);
-  color: var(--green-soft);
+.head.good > svg {
+  color: var(--success);
 }
 
-.head.bad {
-  border-left-color: var(--red);
-  color: var(--red-soft);
+.head.bad > svg {
+  color: var(--danger);
 }
 
-.head.wait {
-  border-left-color: var(--amber);
-  color: var(--amber-soft);
-}
-
-.head.none {
-  border-left-color: var(--line);
+.head.wait > svg {
+  color: var(--warning);
 }
 
 .grow {
@@ -124,11 +120,12 @@ function refresh() {
 .list {
   display: flex;
   flex-direction: column;
-  margin: 10px 0 0;
+  margin: 0;
   padding: 0;
   list-style: none;
-  border: 1px solid var(--line-soft);
-  border-radius: 8px;
+  border: 1px solid var(--line);
+  border-top: none;
+  border-radius: 0 0 var(--radius-lg) var(--radius-lg);
   overflow: hidden;
 }
 
@@ -136,9 +133,10 @@ function refresh() {
   display: flex;
   align-items: center;
   gap: 10px;
-  padding: 8px 12px;
-  font-size: 12px;
-  background: var(--bg-panel);
+  min-height: 32px;
+  padding: 4px 10px 4px 14px;
+  font-size: 12.5px;
+  background: var(--bg);
   min-width: 0;
 }
 
@@ -157,17 +155,17 @@ function refresh() {
 
 .mark.good,
 .state.good {
-  color: var(--green);
+  color: var(--success);
 }
 
 .mark.bad,
 .state.bad {
-  color: var(--red);
+  color: var(--danger);
 }
 
 .mark.wait,
 .state.wait {
-  color: var(--amber);
+  color: var(--warning);
 }
 
 .mark.none,
@@ -180,34 +178,43 @@ function refresh() {
   color: var(--text);
 }
 
+/* The state as a small tinted tag beside the name. */
 .state {
   flex: none;
+  padding: 0 6px;
+  border-radius: var(--radius-sm);
+  background: color-mix(in srgb, currentColor 12%, transparent);
   font-size: 10.5px;
-  text-transform: uppercase;
-  letter-spacing: 0.04em;
+  font-weight: 600;
+  text-transform: capitalize;
 }
 
 .detail {
   flex: 1;
   min-width: 0;
   text-align: right;
-  font-size: 11px;
+  font-size: 11.5px;
 }
 
 .open {
   flex: none;
-  padding: 3px;
-  border-radius: 4px;
+  padding: 4px;
+  border-radius: var(--radius-sm);
   color: var(--text-faint);
 }
 
 .open:hover {
-  color: var(--accent);
+  color: var(--text);
   background: var(--bg-hover);
 }
 
+/* With nothing to list, the sentence closes the box instead. */
 .none {
-  margin: 12px 0 0;
-  font-size: 12px;
+  margin: 0;
+  padding: 12px 14px;
+  border: 1px solid var(--line);
+  border-top: none;
+  border-radius: 0 0 var(--radius-lg) var(--radius-lg);
+  font-size: 12.5px;
 }
 </style>

@@ -36,7 +36,9 @@ const LADDERS = {
     scrollbarHover: 0.25,
     shadow: 0.35,
     shadowStrong: 0.55,
-    overlay: 0.62
+    overlay: 0.62,
+    /** The window behind the panels, which float on it as cards. */
+    canvas: -0.035
   },
   /**
    * The black themes: the page is pure black and cannot be stepped down from,
@@ -56,7 +58,8 @@ const LADDERS = {
     scrollbarHover: 0.3,
     shadow: 0.6,
     shadowStrong: 0.75,
-    overlay: 0.7
+    overlay: 0.7,
+    canvas: 0
   },
   light: {
     surface: -0.022,
@@ -71,7 +74,47 @@ const LADDERS = {
     scrollbarHover: -0.24,
     shadow: 0.14,
     shadowStrong: 0.22,
-    overlay: 0.45
+    overlay: 0.45,
+    canvas: -0.035
+  },
+  /**
+   * The Workbench pair, Porcelain and Graphite. The sidebar, the inspector and
+   * the toolbar are chrome, a step off the page (`canvas`); the graph and the
+   * diffs are the page itself. The tab strip is one step further (`deep`), so
+   * the open tab can join the toolbar below it. Steps inside the page are kept
+   * visible on both tones, since a hover has to show on chrome as well.
+   */
+  graphite: {
+    surface: 0.02,
+    raised: 0.05,
+    hover: 0.045,
+    deep: -0.055,
+    active: 0.2,
+    tint: 0.13,
+    tintLine: 0.34,
+    lane: { l: 0.71, c: 0.15 },
+    scrollbar: 0.13,
+    scrollbarHover: 0.22,
+    shadow: 0.4,
+    shadowStrong: 0.6,
+    overlay: 0.55,
+    canvas: -0.028
+  },
+  porcelain: {
+    surface: -0.016,
+    raised: -0.04,
+    hover: -0.05,
+    deep: -0.06,
+    active: 0.12,
+    tint: 0.12,
+    tintLine: 0.34,
+    lane: { l: 0.56, c: 0.16 },
+    scrollbar: -0.16,
+    scrollbarHover: -0.26,
+    shadow: 0.08,
+    shadowStrong: 0.16,
+    overlay: 0.35,
+    canvas: -0.028
   }
 }
 
@@ -124,11 +167,56 @@ const LANE_HUES = [254.6, 73, 155.7, 13.7, 300, 205, 350, 130, 40, 275]
  */
 const THEMES = [
   {
+    name: 'porcelain',
+    label: 'Porcelain',
+    family: 'light',
+    ladder: 'porcelain',
+    default: true,
+    note: 'The default by day: white pages, cool grey chrome, and a calm blue.',
+    bg: { l: 1, c: 0, h: 262 },
+    primary: { l: 0.56, c: 0.19, h: 262 },
+    danger: { l: 0.58, c: 0.2, h: 24 },
+    success: { l: 0.6, c: 0.15, h: 150 },
+    warning: { l: 0.7, c: 0.15, h: 68 },
+    info: { l: 0.56, c: 0.2, h: 305 },
+    lines: 0.85,
+    text: { fg: 15 }
+  },
+  {
+    name: 'graphite',
+    label: 'Graphite',
+    family: 'dark',
+    ladder: 'graphite',
+    note: 'The default by night: a neutral charcoal with the same blue.',
+    bg: { l: 0.235, c: 0.006, h: 262 },
+    primary: { l: 0.64, c: 0.17, h: 262 },
+    danger: { l: 0.66, c: 0.18, h: 22 },
+    success: { l: 0.74, c: 0.15, h: 150 },
+    warning: { l: 0.8, c: 0.14, h: 75 },
+    info: { l: 0.7, c: 0.16, h: 305 },
+    lines: 0.9,
+    text: { fg: 14 }
+  },
+  {
+    name: 'graphite-deep',
+    label: 'Graphite Deep',
+    family: 'dark',
+    ladder: 'graphite',
+    note: 'Between Graphite and Mono: the same window, a step darker.',
+    bg: { l: 0.19, c: 0.006, h: 262 },
+    primary: { l: 0.64, c: 0.17, h: 262 },
+    danger: { l: 0.66, c: 0.18, h: 22 },
+    success: { l: 0.74, c: 0.15, h: 150 },
+    warning: { l: 0.8, c: 0.14, h: 75 },
+    info: { l: 0.7, c: 0.16, h: 305 },
+    lines: 0.9,
+    text: { fg: 14 }
+  },
+  {
     name: 'fjord',
     label: 'Fjord',
     family: 'dark',
-    default: true,
-    note: 'The default: a blue-grey window that keeps out of the way.',
+    note: 'A blue-grey window that keeps out of the way.',
     bg: { l: 0.2184, c: 0.0223, h: 245.8 },
     primary: { l: 0.7069, c: 0.1201, h: 232.4 },
     danger: { l: 0.6409, c: 0.171, h: 13.7 },

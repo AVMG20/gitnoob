@@ -399,7 +399,8 @@ const ROW = CODE_ROW
 
 .note {
   font-family: var(--font);
-  padding: 12px;
+  padding: 16px;
+  color: var(--text-dim);
 }
 
 .line {
@@ -471,7 +472,7 @@ button.chip:disabled {
   flex: none;
   width: 8px;
   height: 8px;
-  border-radius: 50%;
+  border-radius: var(--radius-pill);
 }
 
 .who {
@@ -535,6 +536,8 @@ button.chip:disabled {
   background: var(--green);
 }
 
+/* A deleted run has no line of its own to mark, only the seam below. */
+
 /* A changed line is not a new one, and colouring both the same makes a rewrite
    look like a fresh file. */
 .line.changed .gutter {
@@ -579,11 +582,10 @@ button.chip:disabled {
   max-width: 62vw;
   max-height: 34vh;
   overflow: auto;
-  border: 1px solid var(--line);
   border-left: 3px solid var(--red-soft);
-  border-radius: 4px;
-  background: var(--bg-raised);
-  box-shadow: 0 6px 20px var(--shadow);
+  border-radius: var(--radius-sm);
+  background: var(--bg);
+  box-shadow: var(--shadow-pop);
   cursor: auto;
 }
 
@@ -603,19 +605,18 @@ button.chip:disabled {
   display: block;
   position: sticky;
   top: 0;
-  padding: 2px 8px;
+  padding: 5px 10px;
   font-family: var(--font);
-  font-size: 10px;
-  letter-spacing: 0.06em;
-  text-transform: uppercase;
-  color: var(--text-faint);
-  background: var(--bg-raised);
-  border-bottom: 1px solid var(--line);
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--text-dim);
+  background: var(--surface);
+  border-bottom: 1px solid var(--line-soft);
 }
 
 .before-body {
   display: block;
-  padding: 3px 0;
+  padding: 4px 0;
 }
 
 .before-line {
@@ -640,7 +641,7 @@ button.chip:disabled {
    instead, where the hidden gauge above has already made room for them. */
 .text {
   flex: 1;
-  padding-right: 12px;
+  padding-right: 16px;
   white-space: pre;
 }
 </style>

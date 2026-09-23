@@ -92,15 +92,16 @@ async function copy(text: string) {
 </template>
 
 <style scoped>
+/* Bottom left, clear of the commit button that owns the bottom right. */
 .toasts {
   position: fixed;
   left: 12px;
-  bottom: 36px;
+  bottom: 40px;
   z-index: 60;
   display: flex;
   flex-direction: column;
   align-items: flex-start;
-  gap: 8px;
+  gap: 6px;
   /* A stated width rather than one taken from the longest sentence in the
      stack: notices that arrive one after another should not each be a
      different shape, and a fixed flex box shrinks to its content. */
@@ -110,11 +111,12 @@ async function copy(text: string) {
 .clear {
   align-self: flex-start;
   padding: 2px 8px;
-  font-size: 11px;
+  font-size: 11.5px;
+  font-weight: 500;
   color: var(--text-dim);
-  background: var(--bg-raised);
-  border: 1px solid var(--line);
-  border-radius: 999px;
+  background: var(--bg);
+  box-shadow: var(--shadow-pop);
+  border-radius: var(--radius-sm);
 }
 
 .clear:hover {
@@ -122,22 +124,22 @@ async function copy(text: string) {
   background: var(--bg-hover);
 }
 
+/* A small box over the window. The icon carries what kind of news it is, so
+   the box itself needs no coloured edge. */
 .toast {
   width: 100%;
-  padding: 9px 10px;
-  border: 1px solid var(--line);
-  border-left: 3px solid var(--text-faint);
-  border-radius: 8px;
-  background: var(--bg-panel);
-  box-shadow: 0 6px 20px var(--shadow);
+  padding: 8px 8px 8px 11px;
+  border-radius: var(--radius-lg);
+  background: var(--bg);
+  box-shadow: var(--shadow-pop);
+  animation: toast-in 0.12s ease-out;
 }
 
-.toast.error {
-  border-left-color: var(--red);
-}
-
-.toast.info {
-  border-left-color: var(--accent);
+@keyframes toast-in {
+  from {
+    opacity: 0;
+    transform: translateY(4px);
+  }
 }
 
 .head {
@@ -156,7 +158,7 @@ async function copy(text: string) {
 }
 
 .info .icon {
-  color: var(--accent);
+  color: var(--info);
 }
 
 .title {
@@ -170,8 +172,9 @@ async function copy(text: string) {
 .count {
   flex: none;
   align-self: center;
-  padding: 0 5px;
+  padding: 0 7px;
   font-size: 10.5px;
+  font-weight: 600;
   color: var(--text-dim);
   background: var(--bg-raised);
   border-radius: 999px;
@@ -180,8 +183,8 @@ async function copy(text: string) {
 .close {
   flex: none;
   color: var(--text-faint);
-  border-radius: 5px;
-  padding: 1px;
+  border-radius: var(--radius-sm);
+  padding: 2px;
 }
 
 .close:hover {
@@ -205,7 +208,7 @@ async function copy(text: string) {
 }
 
 .link:hover {
-  color: var(--accent);
+  color: var(--text);
   text-decoration: underline;
 }
 
@@ -220,8 +223,8 @@ async function copy(text: string) {
   white-space: pre-wrap;
   overflow-wrap: anywhere;
   color: var(--text-dim);
-  background: var(--bg-deep);
+  background: var(--canvas);
   border: 1px solid var(--line-soft);
-  border-radius: 6px;
+  border-radius: var(--radius-sm);
 }
 </style>

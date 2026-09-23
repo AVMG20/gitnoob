@@ -484,7 +484,8 @@ function paint(line: DiffLine) {
 
 .note {
   font-family: var(--font);
-  padding: 12px;
+  padding: 16px;
+  color: var(--text-dim);
 }
 
 /* Rows are placed rather than stacked: only the ones on screen are drawn, and
@@ -504,10 +505,10 @@ function paint(line: DiffLine) {
   gap: 10px;
   height: 24px;
   width: 100%;
-  padding: 2px 10px;
+  padding: 2px 10px 2px 16px;
   color: var(--text-faint);
-  background: var(--bg-raised);
-  border-top: 1px solid var(--line-soft);
+  background: var(--surface);
+  border-top: 1px solid var(--line);
   border-bottom: 1px solid var(--line-soft);
   box-sizing: border-box;
 }
@@ -529,26 +530,37 @@ function paint(line: DiffLine) {
   opacity: 1;
 }
 
+/* Small bordered buttons on the hunk's own heading. Staging turns the accent
+   under the pointer, throwing away turns red. */
 .hunk-btn {
+  display: inline-flex;
+  align-items: center;
+  height: 20px;
   font-family: var(--font);
-  font-size: 10.5px;
-  padding: 1px 7px;
-  border: 1px solid var(--line);
-  border-radius: 9px;
+  font-size: 11px;
+  font-weight: 500;
+  padding: 0 8px;
+  border-radius: var(--radius-sm);
   color: var(--text-dim);
+  background: var(--bg);
+  border: 1px solid var(--line);
   white-space: nowrap;
+  transition:
+    background 0.1s,
+    color 0.1s,
+    border-color 0.1s;
 }
 
 .hunk-btn:hover:not(:disabled) {
-  color: var(--text);
+  color: var(--on-accent);
+  background: var(--accent);
   border-color: var(--accent);
-  background: color-mix(in srgb, var(--accent) 14%, transparent);
 }
 
 .hunk-btn.danger:hover:not(:disabled) {
-  color: var(--red-soft);
+  color: var(--on-danger);
+  background: var(--red);
   border-color: var(--red);
-  background: var(--danger-bg);
 }
 
 .hunk-btn:disabled {
@@ -569,8 +581,8 @@ function paint(line: DiffLine) {
 
 .no {
   flex: none;
-  width: 42px;
-  padding-right: 8px;
+  width: 46px;
+  padding-right: 10px;
   text-align: right;
   color: var(--text-faint);
   user-select: none;
@@ -585,7 +597,7 @@ function paint(line: DiffLine) {
 
 .text {
   flex: 1;
-  padding-right: 10px;
+  padding-right: 16px;
   tab-size: 4;
 }
 
@@ -612,13 +624,14 @@ function paint(line: DiffLine) {
 }
 
 /* The row tint carries which side a line is on, so the syntax colours stay
-   readable rather than being overridden by green and red. */
+   readable rather than being overridden by green and red. The diff tokens say
+   that, rather than the success and danger fills they happen to equal. */
 .add {
-  background: var(--success-bg);
+  background: var(--diff-add-bg);
 }
 
 .del {
-  background: var(--danger-bg);
+  background: var(--diff-del-bg);
 }
 
 .gauge {

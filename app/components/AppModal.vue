@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { onMounted, onUnmounted, ref } from 'vue'
+import { X } from 'lucide-vue-next'
 
 /**
  * `keep`: a click on the scrim does nothing. For dialogs that hold typed
@@ -39,7 +40,7 @@ function onScrim() {
     <div class="modal" :style="{ width: `${props.width ?? 460}px` }">
       <div class="head">
         <h2>{{ props.title }}</h2>
-        <button class="btn" @click="emit('close')">✕</button>
+        <button class="btn" title="Close" @click="emit('close')"><X :size="16" /></button>
       </div>
       <div class="content">
         <slot />
@@ -52,6 +53,8 @@ function onScrim() {
 </template>
 
 <style scoped>
+/* The scrim dims the window so the dialog is the thing on screen. No blur:
+   what is behind stays readable, which is often why the dialog was opened. */
 .scrim {
   position: fixed;
   inset: 0;
@@ -59,43 +62,70 @@ function onScrim() {
   display: grid;
   place-items: center;
   background: var(--overlay);
+  animation: scrim-in 0.1s ease-out;
 }
 
+/* A box with a hairline and a shadow: the head, the body, and the actions in a
+   footer of their own, in the chrome's tone. */
 .modal {
   max-width: calc(100vw - 40px);
   max-height: calc(100vh - 60px);
   display: flex;
   flex-direction: column;
-  background: var(--bg-panel);
-  border: 1px solid var(--line);
-  border-radius: 9px;
-  box-shadow: 0 18px 50px var(--shadow-strong);
+  background: var(--bg);
+  border-radius: 10px;
+  box-shadow: var(--shadow-pop);
+  overflow: hidden;
+  animation: modal-in 0.1s ease-out;
 }
 
 .head {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  padding: 11px 14px;
-  border-bottom: 1px solid var(--line);
+  gap: 12px;
+  min-height: 44px;
+  padding: 8px 8px 8px 18px;
+  border-bottom: 1px solid var(--line-soft);
 }
 
 .head h2 {
   margin: 0;
-  font-size: 14px;
-  font-weight: 600;
+  font-size: 15px;
+  font-weight: 650;
+}
+
+.head .btn {
+  width: 28px;
+  padding: 0;
+  color: var(--text-faint);
 }
 
 .content {
-  padding: 14px;
+  padding: 16px 18px 18px;
   overflow: auto;
 }
 
 .footer {
   display: flex;
   justify-content: flex-end;
+  align-items: center;
   gap: 8px;
-  padding: 11px 14px;
-  border-top: 1px solid var(--line);
+  padding: 10px 14px;
+  background: var(--canvas);
+  border-top: 1px solid var(--line-soft);
+}
+
+@keyframes scrim-in {
+  from {
+    opacity: 0;
+  }
+}
+
+@keyframes modal-in {
+  from {
+    opacity: 0;
+    transform: scale(0.985);
+  }
 }
 </style>

@@ -305,36 +305,46 @@ async function saveMessage() {
 </template>
 
 <style scoped>
+/* A pane of the shell's grid, in the page tone the shell gives it. */
 .rebase {
   display: flex;
   flex-direction: column;
   min-width: 0;
-  background: var(--bg);
 }
 
+/* The heading is chrome, the same strip the diff viewer has over a file. */
 .head {
   display: flex;
   align-items: center;
   gap: 10px;
-  padding: 8px 14px;
-  background: var(--bg-panel);
+  min-height: 48px;
+  padding: 6px 8px 6px 14px;
+  background: var(--canvas);
   border-bottom: 1px solid var(--line);
 }
 
 .mark {
-  color: var(--accent);
   flex: none;
+  color: var(--accent);
 }
 
 .titles h2 {
   margin: 0;
-  font-size: 13px;
-  font-weight: 600;
+  font-size: 13.5px;
+  font-weight: 650;
+}
+
+.titles h2 .mono {
+  padding: 0 5px;
+  border-radius: var(--radius-sm);
+  background: var(--bg-raised);
+  font-size: 12px;
+  font-weight: 500;
 }
 
 .sub {
-  margin: 0;
-  font-size: 11px;
+  margin: 1px 0 0;
+  font-size: 11.5px;
 }
 
 .grow {
@@ -342,7 +352,8 @@ async function saveMessage() {
 }
 
 .icon {
-  padding: 4px 6px;
+  width: 28px;
+  padding: 0;
 }
 
 .body {
@@ -362,10 +373,16 @@ async function saveMessage() {
   display: flex;
   align-items: center;
   gap: 8px;
-  padding: 6px 14px;
-  font-size: 11px;
-  color: var(--text-faint);
+  height: 28px;
+  padding: 0 12px;
+  font-size: 11.5px;
+  font-weight: 600;
+  color: var(--text-dim);
   border-bottom: 1px solid var(--line-soft);
+}
+
+.listhead .faint {
+  font-weight: 400;
 }
 
 .todo {
@@ -373,25 +390,22 @@ async function saveMessage() {
   min-height: 0;
   list-style: none;
   margin: 0;
-  padding: 6px 8px;
+  padding: 0;
   overflow-y: auto;
 }
 
+/* The plan is a table: one commit a row, a hairline between rows. */
 .row {
   display: flex;
   align-items: center;
-  gap: 9px;
-  height: 30px;
-  padding: 0 9px;
-  margin-bottom: 2px;
-  border-radius: var(--radius-sm);
-  border: 1px solid transparent;
-  background: var(--bg-panel);
+  gap: 10px;
+  height: 32px;
+  padding: 0 12px 0 6px;
+  border-bottom: 1px solid var(--line-soft);
 }
 
 .row:hover {
-  background: var(--bg-raised);
-  border-color: var(--line-soft);
+  background: var(--bg-hover);
 }
 
 /* The row being dragged stays put, faded, so nothing jumps under the pointer. */
@@ -399,17 +413,15 @@ async function saveMessage() {
   opacity: 0.28;
 }
 
-/* Where it would land. */
+/* Where it would land: a line across the table, in the accent. */
 .slot {
-  height: 30px;
-  margin-bottom: 2px;
-  border-radius: var(--radius-sm);
-  background: var(--bg-hover);
-  border: 1px dashed var(--line);
+  height: 32px;
+  background: var(--primary-bg);
+  box-shadow: inset 0 2px 0 var(--accent);
+  border-bottom: 1px solid var(--line-soft);
 }
 
 .row.here {
-  border-color: var(--warning-line);
   background: var(--warning-bg);
 }
 
@@ -432,16 +444,23 @@ async function saveMessage() {
   cursor: grabbing;
 }
 
+/* What happens to the commit, as a small label in the colour of the outcome.
+   It opens a menu, so it has a button's hover. */
 .act {
   flex: none;
-  width: 76px;
-  padding: 2px 8px;
-  border-radius: 4px;
-  font-family: var(--mono);
+  width: 60px;
+  height: 20px;
+  padding: 0 6px;
+  border-radius: var(--radius-sm);
   font-size: 11px;
   font-weight: 600;
-  text-align: left;
+  text-align: center;
+  text-transform: capitalize;
   border: 1px solid transparent;
+}
+
+.act:hover:not(:disabled) {
+  border-color: currentColor;
 }
 
 .act:disabled {
@@ -449,34 +468,29 @@ async function saveMessage() {
 }
 
 .act-pick {
-  background: var(--primary-bg);
-  color: var(--accent);
-  border-color: var(--primary-line);
+  background: var(--bg-raised);
+  color: var(--text);
 }
 
 .act-reword {
   background: var(--info-bg);
   color: var(--purple-soft);
-  border-color: color-mix(in srgb, var(--purple) 40%, transparent);
 }
 
 .act-squash,
 .act-fixup {
   background: var(--success-bg);
   color: var(--green-soft);
-  border-color: var(--success-line);
 }
 
 .act-edit {
   background: var(--warning-bg);
   color: var(--amber-soft);
-  border-color: var(--warning-line);
 }
 
 .act-drop {
   background: var(--danger-bg);
   color: var(--red-soft);
-  border-color: var(--danger-line);
 }
 
 .hash {
@@ -488,7 +502,7 @@ async function saveMessage() {
 .msg {
   flex: 1;
   min-width: 0;
-  font-size: 12px;
+  font-size: 12.5px;
 }
 
 .row.gone .msg,
@@ -499,36 +513,36 @@ async function saveMessage() {
 
 /* A folded commit is tied to the one above it by a rail down the left. */
 .row.melded {
-  margin-left: 18px;
+  padding-left: 26px;
   position: relative;
 }
 
 .row.melded::before {
   content: '';
   position: absolute;
-  left: -11px;
-  top: -3px;
+  left: 12px;
+  top: -1px;
   bottom: 50%;
-  width: 9px;
+  width: 10px;
   border-left: 1.5px solid var(--success-line);
   border-bottom: 1.5px solid var(--success-line);
-  border-bottom-left-radius: 5px;
+  border-bottom-left-radius: 4px;
 }
 
 .chip {
   flex: none;
   padding: 0 5px;
-  border-radius: 3px;
-  font-size: 10px;
+  border-radius: var(--radius-sm);
+  font-size: 10.5px;
+  font-weight: 500;
   background: var(--warning-bg);
   color: var(--amber-soft);
-  border: 1px solid var(--warning-line);
 }
 
 .who,
 .when {
   flex: none;
-  font-size: 11px;
+  font-size: 11.5px;
 }
 
 .when {
@@ -536,38 +550,41 @@ async function saveMessage() {
   text-align: right;
 }
 
+/* The outcome down the side, as a panel of chrome beside the plan. */
 .outcome {
-  border-left: 1px solid var(--line-soft);
   padding: 12px 14px;
   overflow-y: auto;
-  background: var(--bg-panel);
+  background: var(--canvas);
+  border-left: 1px solid var(--line);
 }
 
 .outcome h3 {
-  margin: 0 0 2px;
-  font-size: 12px;
+  margin: 0;
+  font-size: 11.5px;
+  font-weight: 600;
+  color: var(--text-dim);
 }
 
 .pv {
   list-style: none;
-  margin: 10px 0 0;
+  margin: 8px 0 0;
   padding: 0;
 }
 
 .pv li {
   display: flex;
   align-items: baseline;
-  gap: 9px;
-  padding: 4px 0;
-  font-size: 12px;
+  gap: 8px;
+  padding: 3px 0;
+  font-size: 12.5px;
 }
 
 .node {
   flex: none;
-  width: 7px;
-  height: 7px;
-  border-radius: 50%;
-  background: var(--accent);
+  width: 8px;
+  height: 8px;
+  border-radius: var(--radius-pill);
+  background: var(--lane-1);
 }
 
 .pv .base .node {
@@ -582,28 +599,39 @@ async function saveMessage() {
   min-width: 0;
 }
 
+/* A note after a commit's name, not the global label style. */
 .tag {
-  font-family: var(--mono);
-  font-size: 10px;
+  display: inline;
+  min-height: 0;
+  padding: 0;
+  background: none;
+  font-size: 11px;
   color: var(--text-faint);
 }
 
 .tally {
   margin-top: 12px;
   padding-top: 10px;
-  border-top: 1px solid var(--line-soft);
-  font-size: 11px;
+  border-top: 1px solid var(--line);
+  font-size: 12px;
   color: var(--text-dim);
+}
+
+.tally strong {
+  color: var(--text);
 }
 
 .foot,
 .strip {
   display: flex;
   align-items: center;
-  gap: 9px;
-  padding: 10px 14px;
-  background: var(--bg-panel);
+  gap: 10px;
+  padding: 8px 12px;
   border-top: 1px solid var(--line);
+}
+
+.foot {
+  background: var(--canvas);
 }
 
 .cmd {
@@ -613,52 +641,67 @@ async function saveMessage() {
 
 .refusal {
   font-size: 12px;
-  color: var(--red);
+  color: var(--red-soft);
 }
 
 .warn-line {
   font-size: 12px;
-  color: var(--amber);
+  color: var(--amber-soft);
 }
 
+/* The rebase that is running, as a strip in the warning colour across the
+   bottom of the pane, the same shape the toolbar's banners have. */
 .strip {
-  font-size: 12px;
+  font-size: 12.5px;
   color: var(--amber-soft);
   background: var(--warning-bg);
-  border-top: 1px solid var(--warning-line);
+  border-top-color: var(--warning-line);
 }
 
 .pill {
   flex: none;
-  padding: 1px 7px;
-  border-radius: 999px;
-  font-size: 11px;
   background: color-mix(in srgb, var(--warning-line) 55%, transparent);
+  color: inherit;
 }
 
 .msgbox {
   flex: 1;
   min-width: 0;
   padding: 3px 8px;
-  font-size: 12px;
+  font-size: 12.5px;
 }
 
 .tiny {
-  font-size: 11px;
-  padding: 2px 8px;
-  background: var(--amber);
-  color: #1a1206;
+  min-height: 24px;
+  font-size: 12px;
+  padding: 1px 10px;
+  border-radius: var(--radius-sm);
+  background: var(--bg);
+  color: var(--text);
+  border: 1px solid var(--warning-line);
   font-weight: 600;
 }
 
+.strip .tiny:hover:not(:disabled) {
+  background: var(--bg);
+  color: var(--text);
+  border-color: currentColor;
+}
+
 .tiny.ghost {
-  background: none;
-  color: var(--amber-soft);
-  border: 1px solid var(--warning-line);
+  background: transparent;
+  color: inherit;
+  border-color: transparent;
+  font-weight: 500;
+}
+
+.strip .tiny.ghost:hover:not(:disabled) {
+  background: color-mix(in srgb, currentColor 12%, transparent);
+  color: inherit;
 }
 
 .none {
-  padding: 10px 12px;
-  font-size: 12px;
+  padding: 14px 12px;
+  font-size: 12.5px;
 }
 </style>

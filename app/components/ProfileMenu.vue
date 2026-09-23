@@ -165,34 +165,46 @@ async function pick(id: string) {
   position: relative;
 }
 
+/* The profile, as a button in the toolbar: its face and name, bordered so it
+   reads as the one control there that is about you rather than the repository. */
 .pill-btn {
   display: flex;
   align-items: center;
-  gap: 7px;
-  padding: 5px 9px;
-  border-radius: 6px;
-  background: var(--bg-raised);
+  gap: 6px;
+  height: var(--control-h);
+  padding: 0 8px 0 4px;
+  border-radius: var(--radius);
   border: 1px solid var(--line);
+  background: var(--bg);
   color: var(--text);
+  font-size: 12.5px;
   max-width: 200px;
+  transition:
+    background 0.1s,
+    border-color 0.1s;
+}
+
+/* No face and no logo still leaves the button balanced round its label. */
+.pill-btn > svg:first-child {
+  margin-left: 4px;
 }
 
 .pill-btn:hover,
 .pill-btn.on {
-  background: var(--bg-active);
+  background: var(--bg-hover);
 }
 
 .face {
-  width: 17px;
-  height: 17px;
+  width: 20px;
+  height: 20px;
   border-radius: 50%;
   object-fit: cover;
   flex: none;
 }
 
 .face.big {
-  width: 22px;
-  height: 22px;
+  width: 32px;
+  height: 32px;
 }
 
 /* A profile whose forge has no picture still gets a round slot, so the names
@@ -225,10 +237,17 @@ async function pick(id: string) {
   z-index: 41;
   width: 320px;
   padding: 4px;
-  background: var(--bg-raised);
-  border: 1px solid var(--line);
-  border-radius: 9px;
-  box-shadow: 0 16px 40px var(--shadow-strong);
+  background: var(--bg);
+  border-radius: var(--radius-lg);
+  box-shadow: var(--shadow-pop);
+  animation: pop-in 0.08s ease-out;
+}
+
+@keyframes pop-in {
+  from {
+    opacity: 0;
+    transform: translateY(-3px);
+  }
 }
 
 .current {
@@ -236,9 +255,10 @@ async function pick(id: string) {
   align-items: center;
   gap: 10px;
   padding: 8px 10px;
-  margin: 0 2px 6px;
-  border-radius: 7px;
-  background: var(--bg-panel);
+  margin: 0 0 4px;
+  border-radius: var(--radius);
+  background: var(--canvas);
+  border: 1px solid var(--line-soft);
 }
 
 .grow {
@@ -255,7 +275,7 @@ async function pick(id: string) {
 }
 
 .rows {
-  padding: 2px 12px 8px;
+  padding: 2px 8px 6px;
 }
 
 .row {
@@ -273,20 +293,23 @@ async function pick(id: string) {
 .item {
   display: flex;
   align-items: center;
-  gap: 9px;
+  gap: 8px;
   width: 100%;
-  padding: 6px 10px;
-  border-radius: 6px;
+  min-height: 26px;
+  padding: 3px 8px;
+  border-radius: var(--radius-sm);
   text-align: left;
   font-size: 12.5px;
 }
 
+/* Filled in the accent under the pointer, as a native menu marks its row. */
 .item:hover {
-  background: var(--bg-active);
+  background: var(--accent);
+  color: var(--on-accent);
 }
 
 .tick {
-  color: var(--green);
+  color: var(--text);
   flex: none;
 }
 
@@ -297,7 +320,7 @@ async function pick(id: string) {
 
 .divider {
   height: 1px;
-  margin: 5px 6px;
-  background: var(--line);
+  margin: 4px 6px;
+  background: var(--line-soft);
 }
 </style>

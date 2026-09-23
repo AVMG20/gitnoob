@@ -175,14 +175,17 @@ function onDrop(target: string) {
 </template>
 
 <style scoped>
+/* The strip is the deepest tone in the window. The open tab is the toolbar's
+   tone and runs into it through the strip's bottom line, so the tab and the
+   toolbar under it read as one piece: this is the repository the bar is for. */
 .strip {
   display: flex;
-  align-items: stretch;
+  align-items: flex-end;
   gap: 2px;
-  padding: 0 6px 0 4px;
-  background: var(--bg-deep);
-  border-bottom: 1px solid var(--line);
+  padding: 5px 8px 0 6px;
   min-height: 38px;
+  background: var(--deep);
+  border-bottom: 1px solid var(--line);
 }
 
 /* Clear of the window controls, which the config parks at x: 13. */
@@ -193,10 +196,13 @@ function onDrop(target: string) {
 .icon {
   display: grid;
   place-items: center;
-  width: 30px;
+  flex: none;
+  align-self: center;
+  width: 28px;
+  height: 28px;
+  margin-top: -5px;
   color: var(--text-faint);
-  border-radius: 5px;
-  margin: 4px 0;
+  border-radius: var(--radius);
 }
 
 .icon:hover {
@@ -206,15 +212,18 @@ function onDrop(target: string) {
 
 /* Marked the way an open tab is, because that is what it is while it is up. */
 .icon.on {
-  color: var(--text);
-  background: var(--bg-active);
+  color: var(--accent);
+  background: var(--primary-bg);
 }
 
 .tabs {
   display: flex;
-  align-items: stretch;
+  align-items: flex-end;
   gap: 2px;
+  min-width: 0;
+  margin: 0 2px 0 4px;
   overflow-x: auto;
+  overflow-y: hidden;
 }
 
 /* The pseudo-element alone. `scrollbar-width: none` hides it too, but it also
@@ -225,25 +234,33 @@ function onDrop(target: string) {
 }
 
 .tab {
+  position: relative;
   display: flex;
   align-items: center;
   gap: 7px;
-  padding: 0 8px 0 11px;
-  max-width: 190px;
+  height: 32px;
+  padding: 0 6px 0 12px;
+  max-width: 200px;
+  flex: none;
   color: var(--text-dim);
-  border-top: 2px solid transparent;
+  border: 1px solid transparent;
+  border-bottom: none;
+  border-radius: var(--radius-lg) var(--radius-lg) 0 0;
   white-space: nowrap;
 }
 
 .tab:hover {
-  background: var(--bg-hover);
+  background: color-mix(in srgb, var(--canvas) 55%, var(--deep));
   color: var(--text);
 }
 
 .tab.on {
-  background: var(--bg-panel);
+  z-index: 1;
+  margin-bottom: -1px;
+  height: 33px;
+  background: var(--canvas);
+  border-color: var(--line);
   color: var(--text);
-  border-top-color: var(--accent);
   font-weight: 600;
 }
 
@@ -253,7 +270,12 @@ function onDrop(target: string) {
 
 .tab-icon {
   flex: none;
-  opacity: 0.65;
+  opacity: 0.6;
+}
+
+.tab.on .tab-icon {
+  color: var(--accent);
+  opacity: 1;
 }
 
 .tab-name {
@@ -264,9 +286,9 @@ function onDrop(target: string) {
 .close {
   display: grid;
   place-items: center;
-  width: 17px;
-  height: 17px;
-  border-radius: 4px;
+  width: 18px;
+  height: 18px;
+  border-radius: var(--radius-sm);
   opacity: 0;
   flex: none;
 }
@@ -278,6 +300,6 @@ function onDrop(target: string) {
 
 .close:hover {
   opacity: 1;
-  background: var(--bg-active);
+  background: var(--bg-hover);
 }
 </style>

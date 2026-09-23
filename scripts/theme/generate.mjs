@@ -39,9 +39,13 @@ const clamp = (value) => Math.min(1, Math.max(0, round(value, 4)))
  * downwards, a dark one up, and both stop at the first step that clears the
  * bar.
  */
-function atRatio(bg, target, hue, chroma, light) {
+function atRatio(bg, target, hue, chroma, light, from) {
   let best = light ? '#000000' : '#ffffff'
-  for (let step = 0; step <= 1000; step++) {
+  // The search starts at the page's own lightness and moves away from it. Started
+  // from black, a dark theme's faintest line came back as black itself: black is
+  // a little way from a charcoal page too, just in the wrong direction.
+  const start = Math.round(from * 1000)
+  for (let step = light ? 1000 - start : start; step <= 1000; step++) {
     const l = light ? 1 - step / 1000 : step / 1000
     const hex = oklchToHex({ l: round(l, 4), c: round(chroma, 4), h: hue })
     best = hex
@@ -101,8 +105,16 @@ function lanes(theme, ladder) {
 
 /** Every token a theme carries, at one contrast setting. */
 function tokens(theme, level) {
-  const ladder = LADDERS[theme.family]
-  const shift = CONTRAST[level]
+  const ladder = LADDERS[theme.ladder ?? theme.family]
+  // A theme may ask for softer lines than the rest. The part of the ratio above
+  // 1 is scaled, so high contrast still steps them up in proportion.
+  const scale = theme.lines ?? 1
+  const base = { ...CONTRAST[level], ...(level === 'normal' ? (theme.text ?? {}) : {}) }
+  const shift = {
+    ...base,
+    border: round(1 + (base.border - 1) * scale, 3),
+    borderSoft: round(1 + (base.borderSoft - 1) * scale, 3)
+  }
   const light = theme.family === 'light'
 
   const bg = oklchToHex(theme.bg)
@@ -126,11 +138,13 @@ function tokens(theme, level) {
   // than by where they sit on the ladder: the same lightness reads differently
   // on white and on black, and legibility is the thing being asked for.
   const chroma = Math.min(theme.bg.c * 1.6, 0.02)
-  const fgAt = (target) => atRatio(bg, target, theme.bg.h, chroma, light)
-  const lineAt = (target, tint) => atRatio(bg, target, theme.bg.h, theme.bg.c * tint, light)
+  const fgAt = (target) => atRatio(bg, target, theme.bg.h, chroma, light, theme.bg.l)
+  const lineAt = (target, tint) =>
+    atRatio(bg, target, theme.bg.h, theme.bg.c * tint, light, theme.bg.l)
 
   const map = {
     '--bg': bg,
+    '--canvas': rung(theme.bg, ladder.canvas),
     '--surface': surface,
     '--raised': raised,
     '--deep': rung(theme.bg, ladder.deep),
@@ -186,7 +200,9 @@ function tokens(theme, level) {
     '--diff-add-line': over(success, bg, ladder.tintLine),
     '--diff-del-bg': over(danger, bg, ladder.tint),
     '--diff-del-line': over(danger, bg, ladder.tintLine),
-    '--diff-ours': primary,
+    // Ours is the accent, unless the accent is ink: then it is the trunk's
+    // lane, since a grey side colour says nothing about which side it is.
+    '--diff-ours': seeds.primary.c < 0.03 ? lanes(theme, ladder)[0] : primary,
     '--diff-theirs': info,
 
     '--scrollbar': rung(theme.bg, ladder.scrollbar, 1.2),

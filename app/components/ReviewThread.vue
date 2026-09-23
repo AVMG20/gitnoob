@@ -282,8 +282,9 @@ function fullWhen(iso: string) {
   align-items: center;
   gap: 7px;
   width: 100%;
-  padding: 4px 2px;
-  font-size: 11.5px;
+  padding: 5px 8px;
+  border-radius: var(--radius-sm);
+  font-size: 12px;
   color: var(--text-faint);
   text-align: left;
   min-width: 0;
@@ -291,10 +292,11 @@ function fullWhen(iso: string) {
 
 .folded:hover {
   color: var(--text-dim);
+  background: var(--bg-hover);
 }
 
 .folded .tick {
-  color: var(--green);
+  color: var(--success);
   flex: none;
 }
 
@@ -305,25 +307,36 @@ function fullWhen(iso: string) {
   min-width: 0;
 }
 
-/* The root speaks with the accent behind it; the answers only line up under
-   it, connected by a thread of their own. A settled root goes green: it is
-   still a conversation, but not one anybody has to act on. */
+/* The root speaks with a bar in the accent beside it; the answers only line
+   up under it, connected by a thread of their own. A settled root goes green:
+   it is still a conversation, but not one anybody has to act on. */
 .remark.root {
-  border-left: 2px solid var(--accent);
-  padding-left: 10px;
+  position: relative;
+  padding-left: 11px;
 }
 
-.settled .remark.root {
-  border-left-color: var(--green);
+.remark.root::before {
+  content: '';
+  position: absolute;
+  left: 0;
+  top: 2px;
+  bottom: 2px;
+  width: 2px;
+  border-radius: var(--radius-pill);
+  background: var(--accent);
+}
+
+.settled .remark.root::before {
+  background: var(--success);
 }
 
 .replies {
-  margin-left: 18px;
-  padding-left: 11px;
-  border-left: 1px solid var(--line-soft);
+  margin-left: 20px;
+  padding-left: 12px;
+  border-left: 1px solid var(--line);
   display: flex;
   flex-direction: column;
-  gap: 8px;
+  gap: 10px;
 }
 
 .said {
@@ -335,7 +348,7 @@ function fullWhen(iso: string) {
   display: flex;
   align-items: center;
   gap: 6px;
-  font-size: 11.5px;
+  font-size: 12px;
   min-width: 0;
 }
 
@@ -354,23 +367,25 @@ function fullWhen(iso: string) {
   min-width: 0;
   max-width: 260px;
   font-size: 10.5px;
-  color: var(--accent-soft);
-  padding: 0 4px;
-  border-radius: 3px;
+  color: var(--text-dim);
+  padding: 1px 6px;
+  border-radius: var(--radius-sm);
+  background: var(--bg-raised);
 }
 
 .where:hover {
-  background: var(--bg-hover);
-  color: var(--accent);
+  background: var(--bg-active);
+  color: var(--text);
 }
 
 .chip {
   flex: none;
-  padding: 0 6px;
-  border-radius: 999px;
-  border: 1px solid color-mix(in srgb, var(--amber) 45%, transparent);
-  color: var(--amber-soft);
-  font-size: 10px;
+  padding: 1px 6px;
+  border-radius: var(--radius-sm);
+  background: var(--warning-bg);
+  color: var(--warning-soft);
+  font-size: 10.5px;
+  font-weight: 600;
 }
 
 .resolve,
@@ -379,15 +394,18 @@ function fullWhen(iso: string) {
   display: inline-flex;
   align-items: center;
   gap: 4px;
-  padding: 2px 8px;
-  border-radius: 999px;
+  min-height: 22px;
+  padding: 1px 8px;
+  border-radius: var(--radius-sm);
   border: 1px solid var(--line);
-  color: var(--text-faint);
-  font-size: 10.5px;
+  background: var(--bg);
+  color: var(--text-dim);
+  font-size: 11px;
+  font-weight: 500;
 }
 
 .fold {
-  padding: 2px 5px;
+  padding: 1px 5px;
 }
 
 .resolve:hover,
@@ -397,20 +415,21 @@ function fullWhen(iso: string) {
 }
 
 .resolve.on {
-  color: var(--green-soft);
-  border-color: color-mix(in srgb, var(--green) 45%, transparent);
+  color: var(--success-soft);
+  background: var(--success-bg);
+  border-color: var(--success-line);
 }
 
 .foot {
-  margin-left: 18px;
-  padding-left: 12px;
+  margin-left: 20px;
+  padding-left: 13px;
 }
 
 .more {
   flex: none;
   display: inline-flex;
-  padding: 2px 4px;
-  border-radius: 4px;
+  padding: 3px;
+  border-radius: var(--radius-sm);
   color: var(--text-faint);
   opacity: 0;
 }
@@ -429,11 +448,14 @@ function fullWhen(iso: string) {
   display: inline-flex;
   align-items: center;
   gap: 5px;
-  padding: 2px 9px;
-  border-radius: 999px;
+  min-height: 24px;
+  padding: 2px 10px;
+  border-radius: var(--radius);
   border: 1px solid var(--line);
+  background: var(--bg);
   color: var(--text-dim);
-  font-size: 11px;
+  font-size: 11.5px;
+  font-weight: 500;
 }
 
 .reply:hover {
@@ -443,6 +465,6 @@ function fullWhen(iso: string) {
 
 /* Dressed in main.css. A thread only says how big a comment is. */
 .md-body {
-  font-size: 12px;
+  font-size: 12.5px;
 }
 </style>

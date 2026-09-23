@@ -22,12 +22,17 @@ const label = computed(() => {
 </template>
 
 <style scoped>
+/* A line along the top edge of the panes, drawn only while something is
+   running. It takes no height of its own, so the panes never jump when it
+   comes and goes. */
 .wrap {
   position: relative;
   height: 2px;
+  margin: 0 0 -2px;
   opacity: 0;
-  transition: opacity 0.14s;
+  transition: opacity 0.2s;
   pointer-events: none;
+  z-index: 7;
 }
 
 .wrap.on {
@@ -38,7 +43,7 @@ const label = computed(() => {
   position: absolute;
   inset: 0;
   overflow: hidden;
-  background: color-mix(in srgb, var(--accent) 14%, transparent);
+  background: color-mix(in srgb, var(--primary) 12%, transparent);
 }
 
 /* An indeterminate sweep: git gives no progress, so pretending otherwise would
@@ -47,31 +52,31 @@ const label = computed(() => {
   position: absolute;
   top: 0;
   bottom: 0;
-  width: 34%;
-  background: linear-gradient(90deg, transparent, var(--accent), transparent);
-  animation: sweep 1.15s ease-in-out infinite;
+  width: 30%;
+  background: linear-gradient(90deg, transparent, var(--primary), transparent);
+  animation: sweep 1.3s cubic-bezier(0.45, 0, 0.55, 1) infinite;
 }
 
 @keyframes sweep {
   0% {
-    left: -34%;
+    left: -30%;
   }
   100% {
     left: 100%;
   }
 }
 
+/* What is running, as a small tag under the line's right end. */
 .label {
   position: absolute;
-  right: 10px;
-  top: 4px;
+  right: 8px;
+  top: 8px;
   padding: 2px 8px;
-  border-radius: 0 0 5px 5px;
-  font-size: 11px;
-  color: var(--accent);
-  background: var(--bg-panel);
+  border-radius: var(--radius-sm);
   border: 1px solid var(--line);
-  border-top: none;
+  font-size: 11.5px;
+  color: var(--text-dim);
+  background: var(--bg);
   white-space: nowrap;
 }
 </style>

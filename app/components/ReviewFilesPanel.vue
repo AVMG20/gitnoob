@@ -226,8 +226,6 @@ function dirMenu(event: MouseEvent, path: string) {
   flex-direction: column;
   min-width: 0;
   min-height: 0;
-  background: var(--bg-panel);
-  border-left: 1px solid var(--line);
   overflow: hidden;
 }
 
@@ -235,25 +233,31 @@ function dirMenu(event: MouseEvent, path: string) {
    place with different answers rather than as two designs. */
 .files-head {
   display: flex;
+  align-items: center;
   gap: 10px;
-  padding: 6px 14px;
-  font-size: 11px;
-  color: var(--text-faint);
-  border-bottom: 1px solid var(--line-soft);
+  min-height: 36px;
+  padding: 4px 10px 4px 12px;
+  font-size: 12px;
+  color: var(--text-dim);
 }
 
+/* Path or tree, as a small segmented switch. */
 .toggle {
   margin-left: auto;
   display: flex;
+  gap: 1px;
+  padding: 1px;
+  border-radius: var(--radius);
   border: 1px solid var(--line);
-  border-radius: 5px;
-  overflow: hidden;
+  background: var(--bg-raised);
 }
 
 .seg {
-  padding: 1px 7px;
-  font-size: 10.5px;
-  color: var(--text-faint);
+  padding: 0 8px;
+  min-height: 20px;
+  border-radius: var(--radius-sm);
+  font-size: 11px;
+  color: var(--text-dim);
 }
 
 .seg:hover {
@@ -261,37 +265,42 @@ function dirMenu(event: MouseEvent, path: string) {
 }
 
 .seg.on {
-  background: var(--bg-active);
+  background: var(--bg);
   color: var(--text);
+  font-weight: 600;
 }
 
 .plus {
-  color: var(--green);
-  font-size: 11px;
+  color: var(--success);
+  font-size: 11.5px;
+  font-weight: 600;
 }
 
 .minus {
-  color: var(--red);
-  font-size: 11px;
+  color: var(--danger);
+  font-size: 11.5px;
+  font-weight: 600;
 }
 
 /* Which files are worth looking at right now, one click each. */
 .filters {
   display: flex;
-  gap: 4px;
-  padding: 5px 12px;
-  border-bottom: 1px solid var(--line-soft);
+  align-items: center;
+  gap: 2px;
+  padding: 0 8px 6px;
+  border-bottom: 1px solid var(--line);
 }
 
 .chip {
   display: inline-flex;
   align-items: center;
   gap: 5px;
-  padding: 2px 8px;
-  border-radius: 999px;
-  border: 1px solid transparent;
-  font-size: 10.5px;
-  color: var(--text-faint);
+  min-height: 24px;
+  padding: 0 8px;
+  border-radius: var(--radius);
+  font-size: 11.5px;
+  font-weight: 500;
+  color: var(--text-dim);
 }
 
 .chip:hover {
@@ -300,9 +309,9 @@ function dirMenu(event: MouseEvent, path: string) {
 }
 
 .chip.on {
-  color: var(--text);
-  border-color: var(--line);
-  background: var(--bg-active);
+  color: var(--accent-soft);
+  background: var(--primary-bg);
+  font-weight: 600;
 }
 
 .chip .n {
@@ -318,10 +327,9 @@ function dirMenu(event: MouseEvent, path: string) {
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  width: 21px;
-  height: 21px;
-  border-radius: 5px;
-  border: 1px solid var(--line-soft);
+  width: 24px;
+  height: 24px;
+  border-radius: var(--radius);
   color: var(--text-dim);
 }
 
@@ -339,15 +347,15 @@ function dirMenu(event: MouseEvent, path: string) {
 .progress {
   display: flex;
   flex-direction: column;
-  gap: 4px;
-  padding: 6px 14px;
-  border-top: 1px solid var(--line-soft);
-  font-size: 11px;
+  gap: 6px;
+  padding: 8px 12px 10px;
+  border-top: 1px solid var(--line);
+  font-size: 11.5px;
 }
 
 .bar {
-  height: 3px;
-  border-radius: 2px;
+  height: 4px;
+  border-radius: var(--radius-pill);
   background: var(--bg-raised);
   overflow: hidden;
 }
@@ -355,7 +363,8 @@ function dirMenu(event: MouseEvent, path: string) {
 .fill {
   display: block;
   height: 100%;
-  background: var(--green);
+  border-radius: var(--radius-pill);
+  background: var(--success);
   transition: width 0.15s ease-out;
 }
 

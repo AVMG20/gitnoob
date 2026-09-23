@@ -572,20 +572,22 @@ function fileMenu(event: MouseEvent, path: string) {
 }
 
 .empty {
-  padding: 18px 14px;
-  font-size: 12px;
+  margin: auto;
+  padding: 24px 20px;
+  font-size: 12.5px;
+  text-align: center;
 }
 
 .head {
-  padding: 12px 14px;
+  padding: 10px 12px 12px;
   border-bottom: 1px solid var(--line);
 }
 
 .head-top {
   display: flex;
-  align-items: flex-start;
-  gap: 8px;
-  margin-bottom: 6px;
+  align-items: center;
+  gap: 6px;
+  margin-bottom: 8px;
 }
 
 /* Faded until the pointer is in the panel: changing a message is an occasional
@@ -604,9 +606,9 @@ function fileMenu(event: MouseEvent, path: string) {
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  width: 24px;
-  height: 22px;
-  border-radius: 5px;
+  width: 26px;
+  height: 26px;
+  border-radius: var(--radius);
   color: var(--text-faint);
 }
 
@@ -621,11 +623,18 @@ function fileMenu(event: MouseEvent, path: string) {
 }
 
 .icon-btn.ai:not(:disabled) {
-  color: var(--purple);
+  color: var(--info);
 }
 
+/* Saving is the step that finishes the edit, so it is the filled one. */
 .icon-btn.save:not(:disabled) {
-  color: var(--accent);
+  background: var(--primary);
+  color: var(--primary-fg);
+}
+
+.icon-btn.save:hover:not(:disabled) {
+  background: var(--primary-hover);
+  color: var(--primary-fg);
 }
 
 .details:hover .controls,
@@ -636,49 +645,64 @@ function fileMenu(event: MouseEvent, path: string) {
 
 .field {
   position: relative;
-  margin-bottom: 7px;
+  margin-bottom: 8px;
 }
 
+/* The same editable well the commit box uses, with room for the counter. */
 .field textarea {
   width: 100%;
   display: block;
-  /* Room for the counter in the corner. */
-  padding-right: 38px;
+  padding: 7px 40px 7px 9px;
+  border-radius: var(--radius);
+  background: var(--bg);
+  line-height: 1.5;
 }
 
 .counter {
   position: absolute;
-  top: 6px;
-  right: 8px;
+  top: 8px;
+  right: 9px;
   font-size: 10.5px;
+  line-height: 16px;
   font-variant-numeric: tabular-nums;
   color: var(--text-faint);
   pointer-events: none;
 }
 
 .counter.over {
-  color: var(--amber);
+  color: var(--amber-soft);
+  font-weight: 600;
 }
 
 .warn-line {
   display: flex;
   align-items: center;
   gap: 6px;
-  margin: 0 0 7px;
-  font-size: 11.5px;
-  color: var(--amber);
+  margin: 0 0 8px;
+  padding: 5px 8px;
+  border-radius: var(--radius-sm);
+  font-size: 12px;
+  background: var(--warning-bg);
+  color: var(--amber-soft);
+  border: 1px solid var(--warning-line);
 }
 
+/* The hash as a tag: copied with one click, the copy mark there on hover. */
 .oid {
   display: inline-flex;
   align-items: center;
-  gap: 5px;
-  padding: 2px 6px;
-  border-radius: 4px;
+  gap: 4px;
+  min-height: 20px;
+  padding: 0 6px;
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--line-soft);
+  background: var(--bg-raised);
+  font-size: 11.5px;
+  color: var(--text-dim);
 }
 
 .oid:hover {
-  background: var(--bg-hover);
+  border-color: var(--line);
   color: var(--text);
 }
 
@@ -694,13 +718,14 @@ h3 {
   margin: 0;
   font-size: 14px;
   font-weight: 600;
-  line-height: 1.35;
+  line-height: 1.4;
 }
 
 .body {
   margin: 8px 0 0;
   font-family: var(--font);
-  font-size: 12px;
+  font-size: 12.5px;
+  line-height: 1.6;
   color: var(--text-dim);
   white-space: pre-wrap;
   word-break: break-word;
@@ -708,42 +733,54 @@ h3 {
   overflow: auto;
 }
 
+/* Who and when, as a byline under the title. */
 .who {
   display: flex;
-  align-items: flex-start;
-  gap: 9px;
-  margin-top: 11px;
+  align-items: center;
+  gap: 10px;
+  margin-top: 10px;
   font-size: 12px;
-  line-height: 1.5;
+  line-height: 1.45;
+}
+
+.who .dim {
+  color: var(--text);
+  font-weight: 600;
 }
 
 .parents {
   display: flex;
   align-items: center;
-  gap: 6px;
-  margin-top: 9px;
+  flex-wrap: wrap;
+  gap: 4px;
+  margin-top: 8px;
 }
 
 .parent {
   font-size: 11px;
-  color: var(--text-faint);
-  padding: 1px 5px;
-  border-radius: 4px;
+  color: var(--text-dim);
+  min-height: 20px;
+  padding: 0 6px;
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--line-soft);
+  background: var(--bg-raised);
 }
 
 .parent:hover {
-  background: var(--bg-hover);
-  color: var(--accent);
+  border-color: var(--line);
+  color: var(--text);
 }
 
 /* The forge's own account of the branch, between what the commit says and what
    it changed: the same reading order as the sidebar row that leads here. */
 .review {
-  padding: 10px 14px 12px;
-  border-bottom: 1px solid var(--line);
-  /* A shade off the panel, so the forge's account reads as a block of its own
-     rather than as more of the commit above it. */
-  background: var(--bg-deep);
+  margin: 10px 10px 0;
+  padding: 10px 12px 12px;
+  border-radius: var(--radius);
+  /* A bordered box on the page colour, so the forge's account reads as
+     separate from the commit above it. */
+  background: var(--bg);
+  border: 1px solid var(--line-soft);
 }
 
 .review-top {
@@ -757,35 +794,36 @@ h3 {
   font-size: 11px;
 }
 
+/* The state as a small tag in its own colour, sentence case. */
 .state {
-  padding: 1px 6px;
-  border-radius: 9px;
-  font-size: 10px;
+  padding: 0 6px;
+  border-radius: var(--radius-sm);
+  line-height: 18px;
+  font-size: 10.5px;
   font-weight: 600;
-  text-transform: uppercase;
-  letter-spacing: 0.04em;
-  border: 1px solid var(--line);
-  color: var(--text-faint);
+  text-transform: capitalize;
+  background: var(--bg-raised);
+  color: var(--text-dim);
 }
 
 .state.open {
-  color: var(--green);
-  border-color: color-mix(in srgb, var(--green) 45%, transparent);
+  background: var(--success-bg);
+  color: var(--success-soft);
 }
 
 .state.draft {
-  color: var(--amber);
-  border-color: color-mix(in srgb, var(--amber) 45%, transparent);
+  background: var(--warning-bg);
+  color: var(--amber-soft);
 }
 
 .state.merged {
-  color: var(--purple);
-  border-color: color-mix(in srgb, var(--purple) 45%, transparent);
+  background: var(--info-bg);
+  color: var(--info-soft);
 }
 
 .state.closed {
-  color: var(--red);
-  border-color: color-mix(in srgb, var(--red) 45%, transparent);
+  background: var(--danger-bg);
+  color: var(--danger-soft);
 }
 
 /* The branch pair gives way first: it is the one thing on the row that is
@@ -803,9 +841,12 @@ h3 {
 .link {
   margin-left: auto;
   flex: none;
+  display: grid;
+  place-items: center;
+  width: 24px;
+  height: 24px;
   color: var(--text-faint);
-  padding: 2px;
-  border-radius: 4px;
+  border-radius: var(--radius);
 }
 
 .link:hover {
@@ -836,8 +877,9 @@ h3 {
 }
 
 .label {
-  padding: 1px 6px;
-  border-radius: 9px;
+  padding: 0 6px;
+  line-height: 17px;
+  border-radius: var(--radius-sm);
   border: 1px solid var(--line);
   font-size: 10.5px;
   color: var(--text-dim);
@@ -883,7 +925,7 @@ h3 {
   height: 16px;
   border-radius: 50%;
   overflow: hidden;
-  color: #fff;
+  color: white;
   font-size: 7.5px;
   font-weight: 600;
   line-height: 1;
@@ -905,46 +947,64 @@ h3 {
   text-transform: capitalize;
 }
 
+/* A heading over the file list: how many, how much, and the path/tree switch. */
 .files-head {
   display: flex;
-  gap: 10px;
-  padding: 6px 14px;
-  font-size: 11px;
-  color: var(--text-faint);
-  border-bottom: 1px solid var(--line-soft);
+  align-items: center;
+  gap: 8px;
+  min-height: 32px;
+  padding: 4px 8px 2px 12px;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text);
 }
 
 .toggle {
   margin-left: auto;
   display: flex;
+  height: 22px;
   border: 1px solid var(--line);
-  border-radius: 5px;
+  border-radius: var(--radius-sm);
+  background: var(--bg);
   overflow: hidden;
 }
 
 .seg {
-  padding: 1px 7px;
-  font-size: 10.5px;
-  color: var(--text-faint);
+  padding: 0 8px;
+  font-size: 11px;
+  font-weight: 500;
+  line-height: 20px;
+  color: var(--text-dim);
+}
+
+.seg + .seg {
+  border-left: 1px solid var(--line);
 }
 
 .seg:hover {
   color: var(--text);
+  background: var(--bg-hover);
 }
 
 .seg.on {
   background: var(--bg-active);
   color: var(--text);
+  font-weight: 600;
+}
+
+.plus,
+.minus {
+  font-size: 11.5px;
+  font-weight: 550;
+  font-variant-numeric: tabular-nums;
 }
 
 .plus {
-  color: var(--green);
-  font-size: 11px;
+  color: var(--success-soft);
 }
 
 .minus {
-  color: var(--red);
-  font-size: 11px;
+  color: var(--danger-soft);
 }
 
 
@@ -955,9 +1015,9 @@ h3 {
   align-items: center;
   gap: 8px;
   width: 100%;
-  margin: 12px 0 0;
-  padding: 6px 9px;
-  border-radius: var(--radius-sm);
+  margin: 10px 0 0;
+  padding: 5px 9px;
+  border-radius: var(--radius);
   font-size: 12px;
   text-align: left;
   border: 1px solid transparent;
@@ -1004,8 +1064,8 @@ h3 {
   padding: 8px 10px;
   border: 1px solid var(--line-soft);
   border-top: none;
-  border-radius: 0 0 var(--radius-sm) var(--radius-sm);
-  background: var(--bg-deep);
+  border-radius: 0 0 var(--radius) var(--radius);
+  background: var(--bg);
   font-size: 11px;
 }
 

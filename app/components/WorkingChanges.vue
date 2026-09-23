@@ -618,15 +618,15 @@ function fileMenu(event: MouseEvent, path: string, side: 'staged' | 'unstaged', 
 
 .gone-list {
   margin: 0;
-  padding: 8px 10px;
+  padding: 6px 10px;
   list-style: none;
   max-height: 160px;
   overflow: auto;
   font-size: 11.5px;
   color: var(--text-dim);
-  background: var(--bg-deep);
+  background: var(--surface);
   border: 1px solid var(--line-soft);
-  border-radius: 6px;
+  border-radius: var(--radius-sm);
 }
 
 .working {
@@ -642,20 +642,22 @@ function fileMenu(event: MouseEvent, path: string, side: 'staged' | 'unstaged', 
   display: inline-flex;
   align-items: center;
   gap: 3px;
-  margin-left: 6px;
-  padding: 0 5px;
-  border: 1px solid var(--warning-line);
-  border-radius: 999px;
+  margin-left: 4px;
+  padding: 0 6px;
+  border-radius: var(--radius-pill);
+  background: var(--warning-bg);
   color: var(--amber-soft);
   font-size: 10.5px;
   font-weight: 600;
+  line-height: 16px;
   font-variant-numeric: tabular-nums;
 }
 
 .clashes:hover {
-  background: var(--warning-bg);
+  box-shadow: inset 0 0 0 1px var(--warning-line);
 }
 
+/* The two lists, one above the other, with a hairline where one ends. */
 .group {
   display: flex;
   flex-direction: column;
@@ -663,13 +665,17 @@ function fileMenu(event: MouseEvent, path: string, side: 'staged' | 'unstaged', 
   /* Clip inside the group when the panel is too short, rather than letting one
      group's rows bleed over the next one's header. */
   overflow: hidden;
-  border-bottom: 1px solid var(--line-soft);
+  transition: background 0.1s;
 }
 
+.group + .group {
+  border-top: 1px solid var(--line);
+}
+
+/* Somewhere a dragged file can land: tinted, with an accent edge. */
 .group.drop {
-  background: color-mix(in srgb, var(--accent) 10%, transparent);
-  outline: 1px dashed var(--accent);
-  outline-offset: -3px;
+  background: var(--primary-bg);
+  box-shadow: inset 0 0 0 1px var(--primary-line);
 }
 
 .group-head {
@@ -677,118 +683,171 @@ function fileMenu(event: MouseEvent, path: string, side: 'staged' | 'unstaged', 
   align-items: center;
   justify-content: space-between;
   gap: 8px;
-  padding-right: 8px;
+  min-height: 30px;
+  padding: 2px 6px 2px 0;
   flex: none;
 }
 
-.num {
-  color: var(--text-dim);
+.group-head .section-title {
+  padding: 4px 12px;
+  font-size: 12px;
+  color: var(--text);
 }
 
+/* The count beside a heading. */
+.num {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 18px;
+  padding: 0 5px;
+  border-radius: var(--radius-pill);
+  background: var(--bg-raised);
+  color: var(--text-dim);
+  font-size: 10.5px;
+  font-weight: 600;
+  line-height: 16px;
+  font-variant-numeric: tabular-nums;
+}
+
+/* Stage all, unstage all: small quiet buttons, there when wanted. */
 .tiny {
-  font-size: 11px;
-  padding: 2px 7px;
+  min-height: 24px;
+  font-size: 12px;
+  padding: 1px 8px;
+  border-radius: var(--radius-sm);
 }
 
 .tiny.ai {
-  color: var(--purple);
-  border: 1px solid var(--info);
+  gap: 5px;
+}
+
+.tiny.ai svg {
+  color: var(--info);
 }
 
 .tiny.warn {
   background: var(--amber);
-  color: #1a1206;
+  color: var(--bg);
   font-weight: 600;
 }
 
 .head-tools {
   display: flex;
   align-items: center;
-  gap: 7px;
+  gap: 4px;
 }
 
+/* Path or tree: a small bordered segmented switch. */
 .toggle {
   display: flex;
+  height: 22px;
   border: 1px solid var(--line);
-  border-radius: 5px;
+  border-radius: var(--radius-sm);
+  background: var(--bg);
   overflow: hidden;
 }
 
 .seg {
-  padding: 1px 7px;
-  font-size: 10.5px;
-  color: var(--text-faint);
+  padding: 0 8px;
+  font-size: 11px;
+  font-weight: 500;
+  line-height: 20px;
+  color: var(--text-dim);
+  transition:
+    background 0.1s,
+    color 0.1s;
+}
+
+.seg + .seg {
+  border-left: 1px solid var(--line);
 }
 
 .seg:hover {
   color: var(--text);
+  background: var(--bg-hover);
 }
 
 .seg.on {
   background: var(--bg-active);
   color: var(--text);
+  font-weight: 600;
 }
 
+/* The composer closes the panel: the message, and under it the one button this
+   whole panel exists for. */
 .commit {
-  padding: 9px 10px 10px;
+  padding: 10px;
   border-top: 1px solid var(--line);
-  background: var(--bg-panel);
 }
 
 .commit-head {
   display: flex;
   align-items: center;
   justify-content: space-between;
+  gap: 8px;
+  margin-bottom: 6px;
 }
 
 .amend {
   display: flex;
   align-items: center;
-  gap: 7px;
-  font-size: 11.5px;
+  gap: 6px;
+  font-size: 12px;
   color: var(--text-dim);
   cursor: pointer;
-  padding: 2px 0 5px;
+}
+
+.amend:hover {
+  color: var(--text);
 }
 
 .field {
   position: relative;
-  margin-bottom: 7px;
+  margin-bottom: 8px;
 }
 
+/* An editable well on the page colour, so it reads as the place to type. */
 textarea {
   width: 100%;
   display: block;
-  /* Room for the counter in the corner. */
-  padding-right: 38px;
+  min-height: 80px;
+  padding: 7px 40px 7px 9px;
+  border-radius: var(--radius);
+  background: var(--bg);
+  line-height: 1.5;
 }
 
 .counter {
   position: absolute;
-  top: 6px;
-  right: 8px;
+  top: 8px;
+  right: 9px;
   font-size: 10.5px;
+  line-height: 16px;
   font-variant-numeric: tabular-nums;
   color: var(--text-faint);
   pointer-events: none;
 }
 
 .counter.over {
-  color: var(--amber);
+  color: var(--amber-soft);
+  font-weight: 600;
 }
 
 .buttons {
   display: flex;
-  gap: 7px;
+  gap: 6px;
 }
 
 .wide {
   flex: 1;
+  min-height: 32px;
   justify-content: center;
 }
 
 .stash-btn {
   flex: none;
+  min-height: 32px;
 }
 
 .warn-line,
@@ -796,34 +855,41 @@ textarea {
   display: flex;
   align-items: center;
   gap: 6px;
-  margin: 0 0 7px;
-  font-size: 11.5px;
-  color: var(--amber);
+  margin: 0 0 8px;
+  padding: 5px 8px;
+  border-radius: var(--radius-sm);
+  font-size: 12px;
+  background: var(--warning-bg);
+  color: var(--amber-soft);
+  border: 1px solid var(--warning-line);
 }
 
 .blocked {
-  margin: 7px 0 0;
+  margin: 8px 0 0;
+  padding: 0;
+  background: none;
+  border: none;
   color: var(--text-faint);
 }
 
-/* Says what the button above it will do, in the colour of it being fine. */
+/* Says what the button below will do, in the colour of it being fine. */
 .signhint {
   display: flex;
   align-items: center;
   gap: 5px;
-  margin: 8px 0 0;
+  margin: 0 0 8px;
   padding: 0;
-  font-size: 11px;
-  color: var(--green);
+  font-size: 11.5px;
+  color: var(--success-soft);
 }
 
 .signhint:hover {
-  color: var(--green-soft);
+  text-decoration: underline;
 }
 
 .signhint .mono {
   font-family: var(--mono);
-  font-size: 10px;
+  font-size: 10.5px;
   color: var(--text-faint);
 }
 </style>

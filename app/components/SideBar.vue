@@ -1942,25 +1942,37 @@ async function removeSubmodule(one: Submodule) {
 </template>
 
 <style scoped>
+/* The sidebar is chrome: the shell paints it in the canvas tone and draws the
+   hairline beside it, so it paints nothing of its own round the outside. */
 .side {
   display: grid;
   /* Stated, so a long branch name scrolls inside the sidebar rather than
      widening it past the window. */
   grid-template-columns: minmax(0, 1fr);
   grid-template-rows: auto minmax(0, 1fr);
-  background: var(--bg-panel);
-  border-right: 1px solid var(--line);
 }
 
+/* A field on the page tone, bordered like every other field, with the icon
+   inside it. */
 .filter {
   display: flex;
   align-items: center;
   gap: 6px;
-  margin: 8px;
+  height: var(--control-h);
+  margin: 8px 8px 4px;
   padding: 0 8px;
   background: var(--bg);
   border: 1px solid var(--line);
-  border-radius: 5px;
+  border-radius: var(--radius);
+  color: var(--text-faint);
+  transition:
+    border-color 0.1s,
+    box-shadow 0.1s;
+}
+
+.filter:focus-within {
+  border-color: var(--ring);
+  box-shadow: var(--focus);
 }
 
 .filter input {
@@ -1968,12 +1980,13 @@ async function removeSubmodule(one: Submodule) {
   min-width: 0;
   border: none;
   background: none;
-  padding: 5px 0;
-  font-size: 12px;
+  padding: 0;
+  font-size: 12.5px;
 }
 
 .filter input:focus {
   outline: none;
+  box-shadow: none;
 }
 
 /* The sections are stacked at the height they ask for and the sidebar scrolls
@@ -1986,7 +1999,7 @@ async function removeSubmodule(one: Submodule) {
   flex-direction: column;
   min-height: 0;
   overflow-y: auto;
-  padding-bottom: 14px;
+  padding-bottom: 10px;
 }
 
 .scroll > .toggle,
@@ -2001,7 +2014,6 @@ async function removeSubmodule(one: Submodule) {
    an ordinary window without the sidebar scrolling at all. Dragging a divider
    replaces both the height and the cap. */
 .group {
-  padding-top: 2px;
   flex: none;
   max-height: 250px;
   overflow-y: auto;
@@ -2015,13 +2027,12 @@ async function removeSubmodule(one: Submodule) {
   max-height: none;
 }
 
-/* The divider between two sections is also the handle for the one above it, so
-   the grip draws that line itself rather than hovering in the space above it:
-   it stands in for the heading's own rule, and takes the same height as the
-   margin and padding it replaces. */
+/* The space under a section is also the handle for resizing it: a hairline
+   that turns the accent under the pointer, the same as the lines between the
+   panes. */
 .grip {
   flex: none;
-  height: 18px;
+  height: 9px;
   cursor: row-resize;
   position: relative;
 }
@@ -2029,61 +2040,64 @@ async function removeSubmodule(one: Submodule) {
 .grip::before {
   content: '';
   position: absolute;
-  left: 0;
-  right: 0;
-  top: 8px;
+  left: 10px;
+  right: 10px;
+  top: 4px;
   height: 1px;
   background: var(--line-soft);
+  transition: background 0.12s;
 }
 
 .grip:hover::before,
 .grip:active::before {
-  height: 2px;
   background: var(--accent);
 }
 
-/* The last one has no section under it to divide from. */
+/* The last one has nothing under it to make room for. */
 .grip:last-child::before {
   display: none;
 }
 
-
 /* One indent scale for the whole tree. A row's glyph sits in the same column as
    its section's icon, so a name lines up under the name of the thing it belongs
-   to, and a remote's branches step in once more under the remote. */
+   to, and a remote's branches step in once more under the remote. Rows are
+   inset from the pane's edge by `--inset`, so the indents are measured from
+   inside that. */
 .side {
-  --pad: 8px;
-  --indent: 26px;
-  --indent-2: 40px;
+  --inset: 6px;
+  --pad: 10px;
+  --indent: 22px;
+  --indent-2: 36px;
 }
 
-/* A line above each heading rather than below it, so the rule always sits
-   between two sections. Under the heading it would cut a section off from its
-   own rows, and a collapsed section would leave a line under nothing. */
+/* A section heading: small, semibold and muted, with the chevron in front and
+   the count at the far end. */
 .toggle {
-  width: 100%;
-  padding-left: var(--pad);
+  width: calc(100% - var(--inset) * 2);
+  min-height: 26px;
+  margin: 0 var(--inset);
+  padding: 3px 6px 3px calc(var(--pad) - var(--inset));
+  border-radius: var(--radius-sm);
   text-align: left;
 }
 
 .scroll > .toggle:not(:first-child) {
-  margin-top: 8px;
-  padding-top: 10px;
-  border-top: 1px solid var(--line-soft);
+  margin-top: 2px;
 }
 
 .toggle:hover {
-  color: var(--text-dim);
+  color: var(--text);
 }
 
 .mark {
   flex: none;
-  opacity: 0.75;
+  color: var(--text-faint);
 }
 
 .chev {
-  transition: transform 0.12s;
   flex: none;
+  color: var(--text-faint);
+  transition: transform 0.12s;
 }
 
 .chev.down {
@@ -2092,32 +2106,45 @@ async function removeSubmodule(one: Submodule) {
 
 .count {
   margin-left: auto;
-  font-weight: 400;
+  min-width: 18px;
+  padding: 0 6px;
+  border-radius: var(--radius-pill);
+  background: var(--bg-raised);
+  color: var(--text-dim);
+  font-size: 10.5px;
+  font-weight: 600;
+  line-height: 16px;
+  text-align: center;
+  font-variant-numeric: tabular-nums;
 }
 
-/* The heading keeps the rule above it, so the button beside it has to sit
-   inside that same box rather than after it. */
+/* A heading with a button beside it: the pair take the heading's place, and
+   the button sits inside the same inset. */
 .head-row {
   display: flex;
   align-items: center;
+  gap: 2px;
+  margin-right: var(--inset);
 }
 
 .scroll > .head-row:not(:first-child) {
-  margin-top: 8px;
-  padding-top: 10px;
-  border-top: 1px solid var(--line-soft);
+  margin-top: 2px;
 }
 
 .head-row > .toggle {
   flex: 1;
   min-width: 0;
+  width: auto;
+  margin-right: 0;
 }
 
 .head-action {
   flex: none;
-  margin-right: 6px;
-  padding: 2px 4px;
-  border-radius: 4px;
+  display: grid;
+  place-items: center;
+  width: 22px;
+  height: 22px;
+  border-radius: var(--radius-sm);
   color: var(--text-faint);
 }
 
@@ -2147,11 +2174,18 @@ async function removeSubmodule(one: Submodule) {
   color: var(--text);
 }
 
+/* A row is inset from the pane's edge with small rounded corners; hovering
+   and choosing fill it, and nothing else about it moves. */
 .row {
   display: flex;
   align-items: center;
   gap: 6px;
-  padding: 3px 10px 3px var(--indent);
+  min-height: 26px;
+  margin: 0 var(--inset);
+  padding: 2px 6px 2px var(--indent);
+  border-radius: var(--radius-sm);
+  font-size: 12.5px;
+  color: var(--text);
   cursor: default;
   user-select: none;
 }
@@ -2165,17 +2199,22 @@ async function removeSubmodule(one: Submodule) {
 }
 
 .row.on .name {
-  color: var(--text);
   font-weight: 600;
 }
 
-/* Sits where the next branch would, and reads as a note rather than as one
+/* Sits where the next branch would, and reads as a link rather than as one
    more branch: the list carries on below it once it is asked to. */
 .row.more {
-  width: 100%;
+  width: calc(100% - var(--inset) * 2);
   padding-left: var(--indent-2);
   cursor: pointer;
-  font-style: italic;
+  font-size: 12px;
+  color: var(--accent);
+}
+
+.row.more:hover {
+  background: none;
+  text-decoration: underline;
 }
 
 /* Dimmed on purpose: the branch is still listed, still right-clickable, and
@@ -2193,28 +2232,31 @@ async function removeSubmodule(one: Submodule) {
   opacity: 0.75;
 }
 
+/* Something is being dragged over it: outlined in the accent, the colour a
+   focused field wears, so it reads as "this is where it will land". */
 .row.drop {
-  outline: 1px solid var(--accent);
-  outline-offset: -1px;
-  background: color-mix(in srgb, var(--accent) 16%, transparent);
+  background: var(--bg-active);
+  box-shadow: inset 0 0 0 1px var(--accent);
 }
 
 /* A folder is a button, so it has to be talked out of looking like one. */
 .row.folder {
-  width: 100%;
+  width: calc(100% - var(--inset) * 2);
   background: none;
   border: 0;
   font: inherit;
-  color: inherit;
+  font-size: 12.5px;
+  color: var(--text-dim);
   text-align: left;
 }
 
 .row.folder:hover {
   background: var(--bg-hover);
+  color: var(--text);
 }
 
 .row.folder .glyph {
-  color: var(--text-dim);
+  color: var(--text-faint);
 }
 
 /* Two lines of text against one mark. The mark lines up with the name, not
@@ -2247,71 +2289,85 @@ async function removeSubmodule(one: Submodule) {
   color: var(--text-faint);
 }
 
+/* The branch you are on: its glyph in the accent, the same mark the toolbar
+   puts beside the branch name. */
 .glyph.current {
   color: var(--accent);
 }
 
 .glyph.remote {
-  color: var(--purple-soft);
+  color: var(--info);
 }
 
 .glyph.tag {
-  color: var(--amber);
+  color: var(--warning);
 }
 
 .glyph.pr {
-  color: var(--green);
+  color: var(--success);
 }
 
-/* A stash gathered up with the others, as opposed to the one being read. */
+/* A stash gathered up with the others, as opposed to the one being read: an
+   outline rather than a fill, so it cannot be mistaken for the row on screen. */
 .row.ticked {
-  background: color-mix(in srgb, var(--accent) 12%, transparent);
-  box-shadow: inset 2px 0 0 var(--accent);
+  background: var(--bg-hover);
+  box-shadow: inset 0 0 0 1px var(--accent);
 }
 
+/* What to do with the stashes gathered up: a bordered strip under them. */
 .picked-bar {
   display: flex;
   align-items: center;
   gap: 6px;
-  margin: 4px 8px 0;
-  padding: 5px 8px;
-  border-radius: var(--radius-sm);
-  background: var(--bg-raised);
-  border: 1px solid var(--line-soft);
-  font-size: 11px;
+  margin: 6px var(--inset) 0;
+  padding: 4px 4px 4px 10px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  background: var(--bg);
+  font-size: 12px;
+  font-weight: 500;
 }
 
 .pick-btn {
-  padding: 1px 7px;
-  border-radius: 4px;
-  font-size: 11px;
+  min-height: 24px;
+  padding: 2px 9px;
+  border-radius: var(--radius-sm);
+  font-size: 11.5px;
   font-weight: 600;
   background: var(--accent);
   color: var(--on-accent);
 }
 
+.pick-btn:hover:not(:disabled) {
+  background: var(--accent-hover);
+}
+
 .pick-btn:disabled {
-  opacity: 0.4;
+  opacity: 0.45;
   cursor: default;
 }
 
 .pick-btn.ghost {
-  background: none;
-  color: var(--text-dim);
+  background: var(--bg);
+  color: var(--text);
   border: 1px solid var(--line);
-  font-weight: 400;
+  font-weight: 500;
+}
+
+.pick-btn.ghost:hover {
+  background: var(--bg-hover);
 }
 
 /* A submodule says where it stands in its own colour: nothing when it is
    where the repository put it, and the warning colours when it is not. */
 .glyph.moved,
 .meta.moved {
-  color: var(--amber);
+  color: var(--warning);
 }
 
 .glyph.conflicted,
 .meta.conflicted {
-  color: var(--red);
+  color: var(--danger);
 }
 
 .glyph.absent {
@@ -2321,7 +2377,8 @@ async function removeSubmodule(one: Submodule) {
 /* The heading's count turns amber while any of them is adrift, so a collapsed
    section still says there is something to do. */
 .count.adrift {
-  color: var(--amber);
+  background: var(--warning-bg);
+  color: var(--warning-soft);
 }
 
 .name {
@@ -2337,39 +2394,36 @@ async function removeSubmodule(one: Submodule) {
 }
 
 .meta {
-  font-size: 10px;
+  font-size: 11px;
+  color: var(--text-faint);
 }
 
 .when {
   margin-left: auto;
   padding-left: 8px;
-  font-size: 10px;
+  font-size: 11px;
   flex: none;
 }
 
+/* Ahead and behind, as small coloured counts: green for work to push, the
+   accent for work to pull. Text rather than filled badges, so a list of
+   branches does not turn into a column of blobs. */
 .tick {
   display: inline-flex;
   align-items: center;
   gap: 1px;
-  margin-left: 3px;
+  flex: none;
+  margin-left: 2px;
   font-size: 11px;
   font-weight: 600;
   font-variant-numeric: tabular-nums;
-  flex: none;
 }
 
-/* Lucide draws on a padded 24-unit grid, so centring the icon box against the
-   digit leaves the stroke sitting high and crowding it. Nudge the glyph rather
-   than the box. */
-.tick svg {
-  transform: translate(-1px, 1px);
+.tick.up {
+  color: var(--success);
 }
 
-.up {
-  color: var(--green);
-}
-
-.down {
+.tick.down {
   color: var(--accent);
 }
 
@@ -2378,19 +2432,22 @@ async function removeSubmodule(one: Submodule) {
   opacity: 0.5;
 }
 
-/* Quieter than the ahead/behind ticks beside it: this says what a branch is,
+/* Quieter than the ahead/behind counts beside it: this says what a branch is,
    not that something needs doing about it. */
 .trunk-mark {
   flex: none;
   opacity: 0.55;
 }
 
+/* The name of a remote over its branches: a small label, not another row. */
 .remote-name {
   display: flex;
   align-items: center;
   gap: 6px;
-  padding: 5px 10px 2px var(--indent);
-  font-size: 11px;
+  margin: 0 var(--inset);
+  padding: 4px 6px 2px var(--indent);
+  font-size: 11.5px;
+  font-weight: 600;
   color: var(--text-faint);
 }
 
@@ -2399,23 +2456,18 @@ async function removeSubmodule(one: Submodule) {
   color: var(--text-dim);
 }
 
+/* Empty states read as a quiet sentence under the heading, lined up with the
+   names above. */
 .none,
 .err {
-  padding: 3px 12px 5px var(--indent);
-  font-size: 11.5px;
-  margin: 0;
+  margin: 0 var(--inset);
+  padding: 2px 6px 6px var(--indent);
+  font-size: 12px;
+  line-height: 1.45;
+  color: var(--text-faint);
 }
 
 .err {
-  color: var(--red);
-}
-/* A heading that follows a grip has had its rule drawn for it, so it drops the
-   one it would otherwise carry. Last in the sheet, to outrank the rule above
-   that gives every heading but the first a line of its own. */
-.scroll > .grip + .toggle,
-.scroll > .grip + .head-row {
-  margin-top: 0;
-  padding-top: 0;
-  border-top: none;
+  color: var(--danger-soft);
 }
 </style>

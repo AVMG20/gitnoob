@@ -112,6 +112,10 @@ scripts
 
 `app/assets/css/themes.css` and `app/composables/themeList.ts` are generated from `scripts/theme/palette.mjs` by `npm run theme`. Edit the palette, not the output. A test regenerates both and fails if the checked-in files drifted, and checks every theme against WCAG contrast ratios.
 
+The default is Porcelain by day and Graphite by night: "Match system" in Settings → Appearance follows the OS between the two while the window is open (`useTheme.ts`). They have ladders of their own in the palette, with slightly crisper body text (`text`) and softer lines (`lines`) than the rest.
+
+The window is built like a workbench. Panes meet edge to edge, and the resize handles are the one-pixel hairlines between them. The chrome round the work is `--canvas`: the toolbar, the sidebar and the inspector (`app.vue` paints every `aside` in the body with it). The work itself is `--bg`: the graph, a diff, a review (every `section`). The tab strip is `--deep`, one step further, so the open tab can run into the toolbar below it. A component that sits in that grid should not paint its own background.
+
 ## Content security policy
 
 `app.security.csp` in `tauri.conf.json` is `default-src 'self'`, with `img-src` opened to `data:` and `https:` for avatars and screenshots in PR descriptions, and `connect-src` opened to `ipc: http://ipc.localhost` so calls can reach the backend at all.

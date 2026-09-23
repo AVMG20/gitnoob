@@ -6,6 +6,9 @@
  */
 
 export type ThemeId =
+  | 'porcelain'
+  | 'graphite'
+  | 'graphite-deep'
   | 'fjord'
   | 'slate'
   | 'pine'
@@ -37,14 +40,35 @@ export interface Theme {
 }
 
 /** The one the app opens with, and the one `:root` carries. */
-export const DEFAULT_THEME: ThemeId = 'fjord'
+export const DEFAULT_THEME: ThemeId = 'porcelain'
 
 export const THEMES: Theme[] = [
+  {
+    id: 'porcelain',
+    name: 'Porcelain',
+    kind: 'Light',
+    note: 'The default by day: white pages, cool grey chrome, and a calm blue.',
+    swatch: ['#ffffff', '#306ce2', '#262626']
+  },
+  {
+    id: 'graphite',
+    name: 'Graphite',
+    kind: 'Semi-dark',
+    note: 'The default by night: a neutral charcoal with the same blue.',
+    swatch: ['#1c1e21', '#5088f2', '#e8ebf2']
+  },
+  {
+    id: 'graphite-deep',
+    name: 'Graphite Deep',
+    kind: 'Semi-dark',
+    note: 'Between Graphite and Mono: the same window, a step darker.',
+    swatch: ['#121417', '#5088f2', '#dde1e7']
+  },
   {
     id: 'fjord',
     name: 'Fjord',
     kind: 'Semi-dark',
-    note: 'The default: a blue-grey window that keeps out of the way.',
+    note: 'A blue-grey window that keeps out of the way.',
     swatch: ['#121b24', '#42addf', '#d5e1ec']
   },
   {

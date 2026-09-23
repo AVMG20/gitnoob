@@ -63,31 +63,48 @@ const redo = computed(() => store.history.redo)
 
 .menu {
   position: absolute;
-  right: 96px;
-  top: 74px;
+  /* Under the history button: the tab strip and the toolbar are 38 and 52
+     pixels, and the button sits left of settings and the profile. */
+  right: 150px;
+  top: 84px;
   width: 380px;
   max-height: 60vh;
   overflow-y: auto;
   padding: 4px;
-  background: var(--bg-raised);
-  border: 1px solid var(--line);
-  border-radius: 9px;
-  box-shadow: 0 16px 40px var(--shadow-strong);
+  background: var(--bg);
+  border-radius: var(--radius-lg);
+  box-shadow: var(--shadow-pop);
+  animation: pop-in 0.08s ease-out;
+}
+
+@keyframes pop-in {
+  from {
+    opacity: 0;
+    transform: translateY(-3px);
+  }
 }
 
 .item {
   display: flex;
   align-items: center;
-  gap: 9px;
+  gap: 8px;
   width: 100%;
-  padding: 5px 9px;
-  border-radius: 6px;
+  min-height: 26px;
+  padding: 3px 8px;
+  border-radius: var(--radius-sm);
   text-align: left;
   font-size: 12.5px;
 }
 
+/* Filled in the accent under the pointer, as a native menu marks its row. */
 .item:hover:not(:disabled) {
-  background: var(--bg-active);
+  background: var(--accent);
+  color: var(--on-accent);
+}
+
+.item:hover:not(:disabled) .faint,
+.item:hover:not(:disabled) .warn {
+  color: var(--on-accent);
 }
 
 .item:disabled {
@@ -116,7 +133,7 @@ const redo = computed(() => store.history.redo)
 
 .empty,
 .note {
-  padding: 4px 10px 8px;
+  padding: 4px 8px 8px;
   font-size: 11.5px;
   margin: 0;
 }
@@ -129,7 +146,7 @@ const redo = computed(() => store.history.redo)
 
 .divider {
   height: 1px;
-  margin: 5px 6px;
-  background: var(--line);
+  margin: 4px 6px;
+  background: var(--line-soft);
 }
 </style>

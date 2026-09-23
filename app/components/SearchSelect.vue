@@ -181,17 +181,19 @@ watch(query, () => (active.value = 0))
   align-items: center;
   gap: 6px;
   width: 100%;
-  padding: 5px 8px;
+  min-height: 30px;
+  padding: 4px 8px 4px 9px;
   background: var(--bg);
   border: 1px solid var(--line);
-  border-radius: 5px;
+  border-radius: var(--radius-sm);
   color: var(--text);
   font-size: 12.5px;
   text-align: left;
+  transition: border-color 0.1s;
 }
 
 .face:hover:not(.off) {
-  border-color: var(--accent);
+  border-color: color-mix(in srgb, var(--line) 60%, var(--text-faint));
 }
 
 .face.off {
@@ -232,20 +234,18 @@ watch(query, () => (active.value = 0))
   flex-direction: column;
   max-height: 300px;
   min-width: 200px;
-  background: var(--bg-panel);
-  border: 1px solid var(--line);
-  border-radius: 7px;
-  box-shadow: 0 12px 30px var(--shadow-strong);
+  background: var(--bg);
+  border-radius: var(--radius-lg);
+  box-shadow: var(--shadow-pop);
   overflow: hidden;
 }
 
 .search {
   display: flex;
   align-items: center;
-  gap: 6px;
-  padding: 0 8px;
-  border-bottom: 1px solid var(--line);
-  background: var(--bg-raised);
+  gap: 7px;
+  padding: 0 10px;
+  border-bottom: 1px solid var(--line-soft);
 }
 
 .search input {
@@ -253,16 +253,18 @@ watch(query, () => (active.value = 0))
   min-width: 0;
   border: none;
   background: none;
-  padding: 6px 0;
+  padding: 8px 0;
   font-size: 12.5px;
 }
 
 .search input:focus {
   outline: none;
+  box-shadow: none;
 }
 
 .select-list {
   overflow-y: auto;
+  padding: 4px;
 }
 
 .row {
@@ -270,23 +272,34 @@ watch(query, () => (active.value = 0))
   align-items: center;
   gap: 7px;
   width: 100%;
-  padding: 5px 9px;
+  min-height: 26px;
+  padding: 3px 8px;
+  border-radius: var(--radius-sm);
   text-align: left;
   font-size: 12.5px;
   color: var(--text);
 }
 
+/* The row the keys or the pointer are on, filled in the accent as a native
+   list marks it. */
 .row.active {
-  background: var(--bg-hover);
+  background: var(--accent);
+  color: var(--on-accent);
+}
+
+.row.active .tick,
+.row.active .row-note {
+  color: var(--on-accent);
 }
 
 .row.on {
   color: var(--text);
+  font-weight: 600;
 }
 
 .tick {
   flex: none;
-  color: var(--green);
+  color: var(--text);
 }
 
 .tick-space {

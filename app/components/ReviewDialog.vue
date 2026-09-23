@@ -385,7 +385,7 @@ const ready = computed(
   display: flex;
   align-items: flex-end;
   gap: 10px;
-  margin-bottom: 12px;
+  margin-bottom: 14px;
 }
 
 .end {
@@ -395,15 +395,14 @@ const ready = computed(
 
 .label {
   display: block;
-  margin-bottom: 4px;
-  font-size: 11px;
-  letter-spacing: 0.06em;
-  text-transform: uppercase;
-  color: var(--text-faint);
+  margin-bottom: 5px;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text-dim);
 }
 
 .field {
-  margin-bottom: 12px;
+  margin-bottom: 14px;
 }
 
 .head {
@@ -422,12 +421,19 @@ const ready = computed(
   display: flex;
   align-items: center;
   gap: 5px;
-  padding: 3px 8px;
-  font-size: 11.5px;
+  min-height: 24px;
+  padding: 2px 8px;
+  border-radius: var(--radius);
+  font-size: 12px;
 }
 
 .write:not(:disabled) {
-  color: var(--purple);
+  color: var(--info-soft);
+}
+
+.write:hover:not(:disabled) {
+  color: var(--info-soft);
+  background: var(--info-bg);
 }
 
 .field input,
@@ -474,20 +480,21 @@ const ready = computed(
 .hint {
   display: block;
   margin: 10px 0;
-  font-size: 11px;
+  font-size: 11.5px;
   line-height: 1.5;
 }
 
 .inline {
   margin-left: 6px;
-  padding: 1px 7px;
+  min-height: 24px;
+  padding: 1px 10px;
 }
 
 .bad {
-  color: var(--red);
+  color: var(--danger);
 }
 
 .warn {
-  color: var(--amber);
+  color: var(--warning-soft);
 }
 </style>

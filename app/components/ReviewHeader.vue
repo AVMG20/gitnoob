@@ -332,10 +332,17 @@ function more(event: MouseEvent) {
 </template>
 
 <style scoped>
+/*
+ * The head of a review, as chrome: the tone of the toolbar it stands in for,
+ * with a hairline under it. Three lines — what it is, whose it is and where it
+ * goes, and the pages with the two actions at the far end. The pages are tabs
+ * with an underline, sitting on the hairline, the way a forge draws them.
+ */
 .review-header {
   display: flex;
   flex-direction: column;
-  background: var(--bg-panel);
+  padding-top: 8px;
+  background: var(--canvas);
   border-bottom: 1px solid var(--line);
 }
 
@@ -344,79 +351,80 @@ function more(event: MouseEvent) {
   align-items: center;
   gap: 8px;
   min-width: 0;
-  padding: 0 16px;
+  padding: 0 14px;
 }
 
 .title-line {
-  gap: 6px;
-  padding-top: 7px;
+  gap: 8px;
 }
 
-/* The three lines share one left edge: the arrow, the face and the first
-   tab all start at the same 12px, whatever padding their own control has. */
+/* The lines share one left edge: the arrow, the face and the first tab all
+   start at the same place, whatever padding their own control has. */
 .back {
-  padding: 3px 8px;
-  margin-left: -8px;
-  font-size: 12px;
+  padding: 3px 8px 3px 6px;
+  margin-left: -6px;
+  font-size: 12.5px;
 }
 
 .number {
   flex: none;
-  font-size: 12px;
+  font-size: 13px;
   color: var(--text-faint);
 }
 
 .title {
   margin: 0;
-  font-size: 14.5px;
-  font-weight: 600;
-  line-height: 1.25;
+  font-size: 17px;
+  font-weight: 650;
+  letter-spacing: -0.01em;
+  line-height: 1.3;
   min-width: 0;
 }
 
 /* The state, said in the colour it means: this is the first thing a reader
-   checks and the last thing they should have to hunt for. */
+   checks and the last thing they should have to hunt for. Round, as a forge
+   draws it. */
 .state {
   flex: none;
-  padding: 2px 8px;
-  border-radius: 999px;
-  font-size: 10px;
-  font-weight: 700;
-  text-transform: uppercase;
-  letter-spacing: 0.05em;
-  border: 1px solid var(--line);
-  color: var(--text-faint);
+  padding: 1px 9px;
+  border-radius: var(--radius-pill);
+  font-size: 11.5px;
+  font-weight: 600;
+  text-transform: capitalize;
+  background: var(--bg-raised);
+  color: var(--text-dim);
+  border: 1px solid transparent;
 }
 
 .state.open {
-  color: var(--green-soft);
-  background: color-mix(in srgb, var(--green) 14%, transparent);
-  border-color: color-mix(in srgb, var(--green) 40%, transparent);
+  color: var(--success-soft);
+  background: var(--success-bg);
+  border-color: var(--success-line);
 }
 
 .state.draft {
-  color: var(--amber-soft);
-  background: color-mix(in srgb, var(--amber) 14%, transparent);
-  border-color: color-mix(in srgb, var(--amber) 40%, transparent);
+  color: var(--warning-soft);
+  background: var(--warning-bg);
+  border-color: var(--warning-line);
 }
 
 .state.merged {
-  color: var(--purple-soft);
-  background: color-mix(in srgb, var(--purple) 14%, transparent);
-  border-color: color-mix(in srgb, var(--purple) 40%, transparent);
+  color: var(--info-soft);
+  background: var(--info-bg);
+  border-color: color-mix(in srgb, var(--info) 35%, transparent);
 }
 
 .state.closed {
-  color: var(--red-soft);
-  background: color-mix(in srgb, var(--red) 14%, transparent);
-  border-color: color-mix(in srgb, var(--red) 40%, transparent);
+  color: var(--danger-soft);
+  background: var(--danger-bg);
+  border-color: var(--danger-line);
 }
 
 /* A hairline between the review's own actions and the app's. */
 .sep {
   width: 1px;
-  height: 16px;
-  margin: 0 3px;
+  height: 18px;
+  margin: 0 4px;
   background: var(--line);
 }
 
@@ -424,10 +432,10 @@ function more(event: MouseEvent) {
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  width: 26px;
-  height: 26px;
-  border-radius: 6px;
-  color: var(--text-faint);
+  width: 28px;
+  height: 28px;
+  border-radius: var(--radius);
+  color: var(--text-dim);
 }
 
 .icon:hover:not(:disabled) {
@@ -436,13 +444,13 @@ function more(event: MouseEvent) {
 }
 
 .icon:disabled {
-  opacity: 0.4;
+  opacity: 0.45;
 }
 
 .meta-line {
   padding-top: 3px;
-  padding-bottom: 7px;
-  font-size: 11.5px;
+  padding-bottom: 6px;
+  font-size: 12px;
   color: var(--text-dim);
   flex-wrap: wrap;
   gap: 6px;
@@ -457,93 +465,102 @@ function more(event: MouseEvent) {
   color: var(--text-faint);
 }
 
+/* Where it goes: from one branch to another, as a tag. */
 .branches {
   display: inline-flex;
   align-items: center;
-  gap: 5px;
+  gap: 4px;
   min-width: 0;
   max-width: 460px;
+  padding: 0 6px;
+  min-height: 18px;
+  border-radius: var(--radius-sm);
+  background: var(--bg-raised);
   font-size: 11px;
   color: var(--text-dim);
 }
 
 .plus {
-  color: var(--green);
+  color: var(--success);
+  font-weight: 600;
 }
 
 .minus {
-  color: var(--red);
+  color: var(--danger);
+  font-weight: 600;
 }
 
 .open-threads {
-  color: var(--amber-soft);
+  color: var(--warning-soft);
+  font-weight: 600;
 }
 
-/* The tabs carry the counts, so the pages say what is in them before they are
-   opened; the actions sit at the far end, weighted by how big a step each is. */
-/* The pages and the two big actions are a row of their own business, so a
-   hairline separates them from what the review is. */
+/* The pages, as tabs standing on the header's bottom line, carrying their
+   counts so a page says what is in it before it is opened; the actions sit at
+   the far end, weighted by how big a step each is. */
 .tabs-line {
   gap: 8px;
-  padding-top: 5px;
   padding-bottom: 6px;
-  border-top: 1px solid var(--line-soft);
 }
 
 .tabs {
   display: flex;
+  align-self: stretch;
   gap: 2px;
   min-width: 0;
-  margin-left: -10px;
+  margin-bottom: -7px;
 }
 
 .tab {
   display: inline-flex;
   align-items: center;
   gap: 6px;
-  padding: 4px 10px;
-  border-radius: 6px;
-  font-size: 12px;
+  min-height: 34px;
+  padding: 0 10px;
+  border-bottom: 2px solid transparent;
+  font-size: 12.5px;
+  font-weight: 500;
   color: var(--text-dim);
   white-space: nowrap;
 }
 
 .tab:hover {
   color: var(--text);
-  background: var(--bg-hover);
+  border-bottom-color: var(--line);
 }
 
 .tab.on {
   color: var(--text);
-  background: var(--bg-active);
+  border-bottom-color: var(--accent);
   font-weight: 600;
 }
 
 .count {
-  padding: 0 5px;
-  border-radius: 8px;
+  padding: 0 6px;
+  min-height: 16px;
+  line-height: 16px;
+  border-radius: var(--radius-pill);
   background: var(--bg-raised);
-  font-size: 10px;
+  font-size: 10.5px;
   font-weight: 600;
   font-variant-numeric: tabular-nums;
   color: var(--text-dim);
 }
 
 .tab.on .count {
-  background: var(--shadow);
   color: var(--text);
 }
 
 .tone-good {
-  color: var(--green);
+  color: var(--success);
 }
 
 .tone-bad {
-  color: var(--red);
+  color: var(--danger);
 }
 
 .tone-wait {
-  color: var(--amber);
+  color: var(--warning);
 }
 
 .tone-none {
@@ -551,37 +568,33 @@ function more(event: MouseEvent) {
 }
 
 .finish {
-  padding: 4px 10px;
-  font-size: 12px;
+  font-size: 12.5px;
 }
 
 /* Amber while remarks are held back: the count is what is owed rather than
    what has already been said. */
 .made.waiting {
-  background: color-mix(in srgb, var(--amber) 22%, transparent);
-  color: var(--amber-soft);
+  background: var(--warning-bg);
+  color: var(--warning-soft);
 }
 
 .made {
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  min-width: 16px;
+  min-width: 18px;
   height: 16px;
-  padding: 0 4px;
-  border-radius: 8px;
+  padding: 0 5px;
+  border-radius: var(--radius-pill);
   background: var(--bg-raised);
   font-size: 10.5px;
   font-weight: 700;
   font-variant-numeric: tabular-nums;
 }
 
-/* The one big step on the page, drawn like one. */
+/* The one big step on the page. */
 .act {
-  padding: 5px 14px;
-  font-size: 12.5px;
-  min-width: 104px;
-  justify-content: center;
+  min-width: 96px;
 }
 
 .grow {

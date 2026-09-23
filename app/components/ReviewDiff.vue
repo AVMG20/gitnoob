@@ -257,17 +257,19 @@ function draftKey(line: DiffLine) {
      a gap above the header and the header itself over the first two lines. */
   top: 0;
   z-index: 2;
-  padding: 3px 10px;
+  padding: 5px 14px;
   color: var(--text-faint);
-  background: var(--bg-raised);
+  background: var(--surface);
   border-top: 1px solid var(--line-soft);
   border-bottom: 1px solid var(--line-soft);
+  font-family: var(--mono);
   font-size: 11px;
 }
 
 .diff-line {
+  position: relative;
   display: grid;
-  grid-template-columns: 42px 42px 14px minmax(0, 1fr) 22px;
+  grid-template-columns: 42px 42px 14px minmax(0, 1fr);
   align-items: center;
   width: max-content;
   min-width: 100%;
@@ -300,7 +302,7 @@ function draftKey(line: DiffLine) {
 }
 
 .diff-line.add .sign {
-  color: var(--green-soft);
+  color: var(--success-soft);
 }
 
 .diff-line.del {
@@ -314,28 +316,33 @@ function draftKey(line: DiffLine) {
 }
 
 .diff-line.del .sign {
-  color: var(--red-soft);
+  color: var(--danger-soft);
 }
 
-/* The review's whole gesture: a round accent chip that surfaces on the line
-   under the pointer. It borrows the app's own accent rather than drawing a
-   boxed form control on every row. */
+/* The review's whole gesture: a small blue square with a plus that surfaces on
+   the line under the pointer, as a forge draws it. It sits in the gutter, on
+   the edge between the line numbers and the code, where the pointer already is
+   when you are reading a line by its number. It used to be at the far end of
+   the row, which on a wide window was a trip across the screen for every
+   comment. Laid over the row rather than given a column of its own, so the
+   code does not move sideways to make room for it: centred on the line
+   between the second number column (42 + 42) and the sign. */
 .line-add {
-  justify-self: end;
-  align-self: center;
+  position: absolute;
+  top: 0;
+  left: 75px;
+  z-index: 1;
   display: inline-flex;
   align-items: center;
   justify-content: center;
   width: 18px;
   height: 18px;
-  margin-right: 4px;
-  border-radius: 50%;
+  border-radius: var(--radius-sm);
   background: var(--accent);
   color: var(--on-accent);
   font-size: 13px;
-  font-weight: 500;
+  font-weight: 600;
   line-height: 1;
-  box-shadow: 0 1px 4px var(--shadow);
   opacity: 0;
   transform: scale(0.8);
   transition: opacity 0.1s, transform 0.1s;
@@ -354,8 +361,10 @@ function draftKey(line: DiffLine) {
    written — indented to sit under the code column rather than under the
    numbers, and pinned to it when the patch is scrolled sideways. */
 .pending {
-  border-left: 2px dashed var(--amber);
-  padding: 2px 0 2px 10px;
+  padding: 8px 12px;
+  border-radius: var(--radius);
+  background: var(--warning-bg);
+  border: 1px solid var(--warning-line);
 }
 
 .pending-head {
@@ -371,17 +380,17 @@ function draftKey(line: DiffLine) {
 }
 
 .pending .chip {
-  padding: 1px 7px;
-  border-radius: 999px;
-  border: 1px solid color-mix(in srgb, var(--amber) 45%, transparent);
-  color: var(--amber-soft);
-  font-size: 10px;
+  padding: 1px 6px;
+  border-radius: var(--radius-sm);
+  background: var(--bg);
+  color: var(--warning-soft);
+  font-size: 10.5px;
   font-weight: 600;
 }
 
 .pending .quiet {
-  padding: 1px 6px;
-  border-radius: 4px;
+  padding: 2px 8px;
+  border-radius: var(--radius-sm);
   color: var(--text-faint);
   font-size: 11px;
 }
@@ -406,8 +415,12 @@ function draftKey(line: DiffLine) {
   margin-left: 98px;
   margin-right: 12px;
   max-width: min(760px, calc(100% - 110px));
-  padding: 6px 12px;
-  border-top: 1px solid var(--line-soft);
-  background: var(--bg-deep);
+  margin-top: 6px;
+  margin-bottom: 6px;
+  padding: 10px 12px;
+  border-radius: var(--radius-lg);
+  background: var(--bg);
+  border: 1px solid var(--line);
+  font-family: var(--font);
 }
 </style>

@@ -64,8 +64,6 @@ const pending = computed(() => (showWorking.value ? 0 : conflicts.value || dirty
   flex-direction: column;
   min-width: 0;
   min-height: 0;
-  background: var(--bg-panel);
-  border-left: 1px solid var(--line);
   overflow: hidden;
 }
 
@@ -82,9 +80,10 @@ const pending = computed(() => (showWorking.value ? 0 : conflicts.value || dirty
   align-items: center;
   gap: 7px;
   width: 100%;
-  padding: 7px 12px;
+  min-height: 36px;
+  padding: 5px 8px 5px 12px;
   border-bottom: 1px solid var(--line);
-  font-size: 11.5px;
+  font-size: 12px;
   font-weight: 600;
   text-align: left;
   /* The accent, not the amber it started in. Having uncommitted work is the
@@ -93,11 +92,11 @@ const pending = computed(() => (showWorking.value ? 0 : conflicts.value || dirty
      on the case where nothing is the matter. Amber is left for the conflicts
      below, where it is earned. */
   color: var(--accent-soft);
-  background: color-mix(in srgb, var(--accent) 14%, transparent);
+  background: var(--primary-bg);
 }
 
 .pending:hover {
-  background: color-mix(in srgb, var(--accent) 22%, transparent);
+  background: color-mix(in srgb, var(--accent) 18%, var(--bg));
 }
 
 .pending.bad {
@@ -113,19 +112,20 @@ const pending = computed(() => (showWorking.value ? 0 : conflicts.value || dirty
   flex: none;
 }
 
-/* Pushed to the far end and outlined: the banner is a sentence and this is the
+/* Pushed to the far end and bordered: the banner is a sentence and this is the
    button at the end of it, not another word in the sentence. */
 .go {
   flex: none;
   margin-left: auto;
-  padding: 1px 7px;
-  border-radius: 4px;
-  font-size: 10.5px;
-  box-shadow: inset 0 0 0 1px currentColor;
-  opacity: 0.8;
+  padding: 1px 9px;
+  border-radius: var(--radius-sm);
+  font-size: 11.5px;
+  background: var(--bg);
+  color: var(--text);
+  border: 1px solid var(--line);
 }
 
 .pending:hover .go {
-  opacity: 1;
+  border-color: currentColor;
 }
 </style>

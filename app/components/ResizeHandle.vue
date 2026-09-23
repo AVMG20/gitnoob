@@ -16,26 +16,36 @@ const { layout, start, reset } = usePanes()
 </template>
 
 <style scoped>
+/* A column handle is the hairline between two panes. It is one pixel wide in
+   the layout and reaches three either side of itself for the pointer, and it
+   turns the accent while it is being held or hovered. */
 .handle {
   position: relative;
-  width: 5px;
-  margin: 0 -2px;
-  /* Positioned, because the handle overlaps its neighbours by its own margin
-     and `z-index` says nothing about a static box: without this the pane on the
-     later side of it takes the pointer over that overlap. */
+  width: 1px;
+  /* Positioned, because `z-index` says nothing about a static box: without it
+     the pane on the later side takes the pointer over the reach. */
   z-index: 5;
   cursor: col-resize;
-  background: transparent;
+  background: var(--line);
   transition: background 0.12s;
+}
+
+.handle::before {
+  content: '';
+  position: absolute;
+  inset: 0 -3px;
 }
 
 /* The one edge that moves up and down rather than side to side. */
 .handle.row {
   width: auto;
-  height: 5px;
-  margin: -2px 0;
+  height: 1px;
   flex: none;
   cursor: row-resize;
+}
+
+.handle.row::before {
+  inset: -3px 0;
 }
 
 .handle:hover,

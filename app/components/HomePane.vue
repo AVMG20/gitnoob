@@ -683,12 +683,14 @@ function choose(repo: RepoCard) {
 </template>
 
 <style scoped>
+/* On the page, like the welcome page: the heading is type, and every block
+   under it is a bordered panel with a header row, the way an inspector is. */
 .home {
   flex: 1;
   min-height: 0;
   overflow: auto;
-  background: var(--bg);
   color: var(--text);
+  background: var(--bg);
 }
 
 /* One column down the middle, so the page has an edge to line up against
@@ -697,18 +699,18 @@ function choose(repo: RepoCard) {
   display: flex;
   flex-direction: column;
   min-height: 100%;
-  max-width: 1280px;
+  max-width: 1100px;
   margin: 0 auto;
-  padding: 26px 30px 34px;
+  padding: 22px 28px 28px;
 }
 
-/* The greeting gets the room the sections below it get: it was sitting a
-   third of the distance from the figures that everything else keeps. */
+/* The greeting keeps the same distance from the panels that they keep from
+   each other. */
 .top {
   display: flex;
   align-items: flex-end;
   gap: 16px;
-  margin-bottom: 26px;
+  margin-bottom: 14px;
 }
 
 .titles {
@@ -718,51 +720,65 @@ function choose(repo: RepoCard) {
 
 h1 {
   margin: 0;
-  font-size: 21px;
-  font-weight: 600;
-  letter-spacing: -0.015em;
+  font-size: 18px;
+  font-weight: 650;
+  line-height: 1.25;
 }
 
 .sub {
-  margin: 4px 0 0;
+  margin: 2px 0 0;
   font-size: 12.5px;
-  color: var(--text-faint);
+  color: var(--text-dim);
 }
 
 .sub-flag {
-  color: var(--accent-soft);
+  color: var(--warning-soft);
+  font-weight: 600;
 }
 
 .controls {
   display: flex;
-  flex-direction: column;
-  align-items: flex-end;
-  gap: 7px;
+  align-items: center;
+  gap: 6px;
 }
 
 .actions {
   display: flex;
-  gap: 7px;
+  align-items: center;
+  gap: 6px;
 }
 
+/* The app's own two, settings and profile, sit after the page's buttons in
+   the same row, divided from them by a hairline rather than stacked. */
+.actions.app {
+  order: 2;
+  padding-left: 6px;
+  border-left: 1px solid var(--line);
+}
+
+/* Outlined buttons on the page, the same height as every other control. */
 .actions .btn {
   display: flex;
   align-items: center;
   gap: 6px;
-  padding: 6px 11px;
+  padding: 3px 10px;
   border: 1px solid var(--line);
-  border-radius: 7px;
-  color: var(--text-dim);
-  font-size: 12.5px;
+  background: var(--bg);
+  color: var(--text);
 }
 
-/* Square, like the toolbar's own icon buttons: a lone glyph in a button with
-   a word's worth of padding round it reads as a button missing its word. */
+/* Square: a lone glyph in a button with a word's worth of padding round it
+   reads as a button missing its word. */
 .actions .btn.icon {
-  padding: 6px 8px;
+  width: var(--control-h);
+  padding: 0;
 }
 
-.actions .btn:hover {
+.actions.app .btn.icon {
+  border-color: transparent;
+}
+
+.actions .btn:hover:not(:disabled) {
   background: var(--bg-hover);
   color: var(--text);
 }
@@ -778,31 +794,32 @@ h1 {
 }
 
 .oops {
-  margin: 0 0 16px;
-  padding: 9px 11px;
-  border: 1px solid var(--danger-line);
-  border-radius: 7px;
+  margin: 0 0 12px;
+  padding: 8px 12px;
+  border-radius: var(--radius);
   background: var(--danger-bg);
-  color: var(--red-soft);
+  border: 1px solid var(--danger-line);
+  color: var(--danger-soft);
   font-size: 12px;
 }
 
 /*
- * The week as a line of type, under a rule.
+ * The week as a line of type, in a panel of its own.
  *
- * A panel round every block turned the page into a stack of boxes; four
- * figures spread across the width turned it into a dashboard. Set as one
- * sentence they are what they are — a note about the week — and the year below
- * them is the same note at a longer range.
+ * Four figures spread across the width turned it into a dashboard of tiles.
+ * Set as one sentence they are what they are — a note about the week — and the
+ * year below them is the same note at a longer range.
  */
 .summary {
   display: flex;
   flex-wrap: wrap;
   align-items: baseline;
   gap: 4px 10px;
-  margin: 0 0 18px;
-  padding: 0 2px 18px;
-  border-bottom: 1px solid var(--line-soft);
+  margin: 0 0 12px;
+  padding: 10px 14px;
+  border-radius: var(--radius-lg);
+  border: 1px solid var(--line-soft);
+  background: var(--surface);
   font-size: 12.5px;
   color: var(--text-dim);
 }
@@ -817,20 +834,19 @@ h1 {
   display: inline-flex;
   align-items: center;
   gap: 1px;
-  font-size: 15px;
-  font-weight: 600;
-  letter-spacing: -0.01em;
+  font-size: 14px;
+  font-weight: 650;
   color: var(--text);
   font-variant-numeric: tabular-nums;
 }
 
 /* The same green and red the diffs use for lines gained and lost. */
 .figure.up {
-  color: var(--green);
+  color: var(--success-soft);
 }
 
 .figure.down {
-  color: var(--red);
+  color: var(--danger-soft);
 }
 
 /* Lucide draws on a padded 24-unit grid, so the arrow carries a sliver of its
@@ -844,48 +860,50 @@ h1 {
 }
 
 /*
- * The two lists are panels; everything above them is read straight off the
- * sheet.
- *
- * A list of rows wants an edge to line up against, and the block that says
- * something is wrong wants to be a thing on the page rather than another
- * paragraph of it. The tips below it need neither, so they get neither.
+ * Every block is a bordered panel with a header row: the lists, what is
+ * waiting, the tips, the year. Only the greeting and the footnote are read
+ * straight off the page. The rows inside run edge to edge with hairlines
+ * between them.
  */
 .projects,
-.look {
-  padding: 12px 14px 14px;
+.look,
+.tips {
   border: 1px solid var(--line-soft);
-  border-radius: var(--radius);
-  background: var(--bg-panel);
+  border-radius: var(--radius-lg);
+  background: var(--bg);
+  overflow: hidden;
 }
 
 .side > section + section {
-  margin-top: 20px;
-  padding: 0 2px;
+  margin-top: 12px;
 }
 
 .head {
   display: flex;
   align-items: center;
-  gap: 9px;
-  margin-bottom: 12px;
+  gap: 8px;
+  min-height: 36px;
+  padding: 4px 8px 4px 12px;
+  background: var(--surface);
+  border-bottom: 1px solid var(--line-soft);
 }
 
 .head-title {
-  font-size: 11px;
-  letter-spacing: 0.07em;
-  text-transform: uppercase;
-  color: var(--text-faint);
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text);
 }
 
-/* The number beside a heading, so the card says how much is in it before it
+/* The number beside a heading, so the panel says how much is in it before it
    is read. */
 .count {
-  padding: 1px 7px;
-  border-radius: 999px;
+  padding: 0 6px;
+  border-radius: var(--radius-pill);
   background: var(--bg-raised);
   color: var(--text-dim);
   font-size: 10.5px;
+  font-weight: 600;
+  line-height: 16px;
   font-variant-numeric: tabular-nums;
 }
 
@@ -902,10 +920,9 @@ h1 {
 .columns {
   display: grid;
   grid-template-columns: minmax(0, 1.55fr) minmax(300px, 1fr);
-  gap: 26px;
+  gap: 12px;
   align-items: start;
   margin-bottom: 12px;
-  padding: 0 2px;
 }
 
 .rows {
@@ -918,14 +935,18 @@ h1 {
    own columns so they line up down the list however long a name runs. */
 .row {
   display: grid;
-  grid-template-columns: 22px minmax(0, 1fr) auto 84px 18px;
+  grid-template-columns: 24px minmax(0, 1fr) auto 76px 20px;
   align-items: center;
-  gap: 11px;
-  padding: 8px 8px;
-  margin: 0 -8px;
-  border-radius: var(--radius-sm);
+  gap: 10px;
+  min-height: 42px;
+  padding: 5px 8px 5px 12px;
+  border-top: 1px solid var(--line-soft);
   font-size: 12.5px;
   cursor: pointer;
+}
+
+.row:first-child {
+  border-top: none;
 }
 
 .row:hover {
@@ -941,13 +962,13 @@ h1 {
 .mark {
   display: grid;
   place-items: center;
-  width: 22px;
-  height: 22px;
-  border-radius: var(--radius-sm);
+  width: 24px;
+  height: 24px;
+  border-radius: var(--radius);
   background: color-mix(in srgb, var(--mark) 16%, transparent);
   color: var(--mark);
   font-size: 11px;
-  font-weight: 600;
+  font-weight: 650;
 }
 
 .about {
@@ -977,8 +998,8 @@ h1 {
   gap: 4px;
   flex: none;
   max-width: 45%;
-  padding: 1px 6px;
-  border-radius: 5px;
+  padding: 0 5px;
+  border-radius: var(--radius-sm);
   background: var(--bg-raised);
   color: var(--text-dim);
   font-family: var(--mono);
@@ -1016,15 +1037,15 @@ h1 {
 }
 
 .tally.dirty svg {
-  color: var(--amber);
+  color: var(--warning);
 }
 
 .tally.ahead svg {
-  color: var(--green-soft);
+  color: var(--success-soft);
 }
 
 .tally.behind svg {
-  color: var(--accent);
+  color: var(--info);
 }
 
 .when {
@@ -1034,19 +1055,30 @@ h1 {
   white-space: nowrap;
 }
 
-/* A tab that is open says so in the accent, without a box round it: the strip
-   above already draws the box. Named under .when, because a bare .live also
-   matched the row it was on and turned every open project blue. */
+/* A tab that is open says so with a small green dot. Named under .when,
+   because a bare .live also matched the row it was on. */
 .when .live {
-  color: var(--accent-soft);
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  color: var(--success-soft);
+  font-weight: 600;
+}
+
+.when .live::before {
+  content: '';
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--success);
 }
 
 .drop {
   display: grid;
   place-items: center;
-  width: 18px;
-  height: 18px;
-  border-radius: 4px;
+  width: 20px;
+  height: 20px;
+  border-radius: var(--radius-sm);
   color: var(--text-faint);
   opacity: 0;
 }
@@ -1061,22 +1093,38 @@ h1 {
 }
 
 .drop-space {
-  width: 18px;
+  width: 20px;
 }
 
+/* A small bordered field in the header row, the halo on the field rather
+   than on the bare input inside it. */
 .find {
   display: flex;
   align-items: center;
   gap: 6px;
-  padding: 3px 8px;
+  height: 24px;
+  padding: 0 8px;
   border: 1px solid var(--line);
-  border-radius: 6px;
+  border-radius: var(--radius-sm);
+  background: var(--bg);
   color: var(--text-faint);
+  transition:
+    border-color 0.1s,
+    box-shadow 0.1s;
 }
 
-.find input {
+.find:focus-within {
+  border-color: var(--ring);
+  box-shadow: var(--focus);
+}
+
+.find input,
+.find input:hover,
+.find input:focus {
+  padding: 0;
   border: none;
   background: transparent;
+  box-shadow: none;
   font-size: 12px;
   width: 120px;
   color: var(--text);
@@ -1084,7 +1132,7 @@ h1 {
 
 .empty {
   margin: 0;
-  padding: 6px 2px 2px;
+  padding: 10px 12px;
   font-size: 12.5px;
   color: var(--text-faint);
 }
@@ -1093,7 +1141,7 @@ h1 {
   display: flex;
   align-items: flex-start;
   gap: 9px;
-  padding: 8px 0;
+  padding: 8px 10px 8px 12px;
   font-size: 12.5px;
   color: var(--text-dim);
   border-top: 1px solid var(--line-soft);
@@ -1116,15 +1164,15 @@ h1 {
 /* The pen the project list uses for the same count, in the same amber: one
    thing said twice on one page should not be said in two colours. */
 .line-icon.dirty {
-  color: var(--amber);
+  color: var(--warning);
 }
 
 .line-icon.ahead {
-  color: var(--green);
+  color: var(--success);
 }
 
 .line-icon.gone {
-  color: var(--red);
+  color: var(--danger);
 }
 
 .line-body {
@@ -1147,16 +1195,21 @@ h1 {
   text-overflow: ellipsis;
 }
 
+/* A small outlined button at the end of the line: the next step, not a link
+   in the sentence. */
 .link {
   flex: none;
   font-size: 11.5px;
-  color: var(--primary-soft);
-  padding: 2px 7px;
-  border-radius: 5px;
+  font-weight: 500;
+  color: var(--text);
+  padding: 1px 8px;
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--line);
+  background: var(--bg);
 }
 
 .link:hover {
-  background: var(--bg-active);
+  background: var(--bg-hover);
 }
 
 .tips .head-title {
@@ -1166,9 +1219,9 @@ h1 {
 .shuffle {
   display: grid;
   place-items: center;
-  width: 22px;
-  height: 22px;
-  border-radius: 5px;
+  width: 24px;
+  height: 24px;
+  border-radius: var(--radius-sm);
   color: var(--text-faint);
 }
 
@@ -1190,8 +1243,8 @@ h1 {
   white-space: nowrap;
   border: 1px solid var(--line);
   border-bottom-width: 2px;
-  border-radius: 5px;
-  background: var(--bg-raised);
+  border-radius: var(--radius-sm);
+  background: var(--bg);
   color: var(--text);
   font-size: 11px;
   font-family: inherit;
@@ -1210,13 +1263,17 @@ h1 {
 
 .year {
   position: relative;
-  padding: 0 2px 20px;
-  margin-bottom: 20px;
-  border-bottom: 1px solid var(--line-soft);
+  padding: 0 14px 10px;
+  margin-bottom: 12px;
+  border: 1px solid var(--line-soft);
+  border-radius: var(--radius-lg);
+  background: var(--bg);
+  overflow: hidden;
 }
 
 .year .head {
-  margin-bottom: 14px;
+  margin: 0 -14px 12px;
+  padding-right: 14px;
 }
 
 .legend {
@@ -1230,8 +1287,8 @@ h1 {
 /* The key's squares are not days, so they are not `.cell`: the grid below is
    the year, and counting it is how the year is checked. */
 .swatch {
-  width: 9px;
-  height: 9px;
+  width: 10px;
+  height: 10px;
   border-radius: 2px;
   background: var(--bg-raised);
 }
@@ -1290,14 +1347,14 @@ h1 {
   transform: translate(-50%, -100%);
   margin-top: -7px;
   padding: 3px 8px;
-  border: 1px solid var(--line);
   border-radius: var(--radius-sm);
-  background: var(--bg-raised);
+  background: var(--bg);
   color: var(--text);
   font-size: 11px;
+  font-weight: 500;
   white-space: nowrap;
   pointer-events: none;
-  box-shadow: 0 4px 12px var(--shadow);
+  box-shadow: var(--shadow-pop);
   z-index: 2;
 }
 
@@ -1331,7 +1388,7 @@ h1 {
 .ghost {
   display: inline-block;
   height: 10px;
-  border-radius: 4px;
+  border-radius: var(--radius-sm);
   background: var(--bg-raised);
   animation: breathe 1.5s ease-in-out infinite;
 }
@@ -1365,11 +1422,16 @@ h1 {
    shunt the row under it. */
 .ghost-row {
   display: grid;
-  grid-template-columns: 22px minmax(0, 1fr) auto 84px 18px;
+  grid-template-columns: 24px minmax(0, 1fr) auto 76px 20px;
   align-items: center;
-  gap: 11px;
-  padding: 8px;
-  margin: 0 -8px;
+  gap: 10px;
+  min-height: 42px;
+  padding: 5px 8px 5px 12px;
+  border-top: 1px solid var(--line-soft);
+}
+
+.ghost-row:first-child {
+  border-top: none;
 }
 
 .ghost-row .about {
@@ -1377,9 +1439,9 @@ h1 {
 }
 
 .mark-ghost {
-  width: 22px;
-  height: 22px;
-  border-radius: var(--radius-sm);
+  width: 24px;
+  height: 24px;
+  border-radius: var(--radius);
 }
 
 /* The second line of a row is a path or a place, set smaller than the first. */
@@ -1398,7 +1460,7 @@ h1 {
   display: flex;
   align-items: flex-start;
   gap: 9px;
-  padding: 8px 0;
+  padding: 8px 10px 8px 12px;
   border-top: 1px solid var(--line-soft);
 }
 
@@ -1431,8 +1493,8 @@ h1 {
    as they are swapped. */
 .footnote {
   margin-top: auto;
-  padding-top: 22px;
-  border-top: 1px solid var(--line-soft);
+  padding: 18px 2px 0;
+  text-align: center;
   font-size: 11.5px;
   line-height: 1.6;
   color: var(--text-faint);

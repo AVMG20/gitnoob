@@ -16,7 +16,8 @@ import {
   Sparkles,
   Trash2,
   User,
-  Users
+  Users,
+  X
 } from 'lucide-vue-next'
 import {
   DEFAULT_HOSTS,
@@ -33,7 +34,7 @@ import { useForge } from '~/composables/useForge'
 import { useAi } from '~/composables/useAi'
 import { useGit } from '~/composables/useGit'
 import { describeKey, useSsh } from '~/composables/useSsh'
-import { useTheme } from '~/composables/useTheme'
+import { SYSTEM_PAIR, useTheme } from '~/composables/useTheme'
 import { SHORTCUTS, SHORTCUT_GROUPS, keyLabel } from '~/composables/useShortcuts'
 import { useColumns } from '~/composables/useColumns'
 import { useUpdates } from '~/composables/useUpdates'
@@ -47,7 +48,13 @@ const forge = useForge()
 const ssh = useSsh()
 const ai = useAi()
 const git = useGit()
-const { theme, themes, setTheme, contrast, contrasts, setContrast } = useTheme()
+const { choice, themes, setTheme, contrast, contrasts, setContrast } = useTheme()
+
+/** Porcelain and Graphite, for the card that follows the system between them. */
+const systemSwatch = computed(() => [
+  themes.find((one) => one.id === SYSTEM_PAIR.light)!.swatch,
+  themes.find((one) => one.id === SYSTEM_PAIR.dark)!.swatch
+])
 
 /** How many themes are in a group, so the sentence above cannot go stale. */
 const themeCount = (kind: string) => themes.filter((one) => one.kind === kind).length
@@ -376,7 +383,7 @@ onMounted(async () => {
       </nav>
 
       <div class="content">
-        <button class="close" @click="config.closeSettings()">✕</button>
+        <button class="close" title="Close" @click="config.closeSettings()"><X :size="16" /></button>
 
         <!-- Profiles -->
         <section v-if="section === 'profiles'">
@@ -751,11 +758,32 @@ onMounted(async () => {
           </p>
 
           <div class="themes">
+            <!-- The default: Porcelain by day and Graphite by night, following
+                 whatever the system is set to. -->
+            <button
+              class="theme"
+              :class="{ on: choice === 'system' }"
+              @click="setTheme('system')"
+            >
+              <span class="swatch split">
+                <span
+                  v-for="(one, at) in systemSwatch"
+                  :key="at"
+                  class="half"
+                  :style="{ background: one[0] }"
+                >
+                  <span class="chip" :style="{ background: one[1] }"></span>
+                </span>
+              </span>
+              <span class="theme-name">Match system</span>
+              <span class="faint small">Porcelain or Graphite</span>
+              <Check v-if="choice === 'system'" :size="13" class="tick" />
+            </button>
             <button
               v-for="one in themes"
               :key="one.id"
               class="theme"
-              :class="{ on: one.id === theme }"
+              :class="{ on: one.id === choice }"
               @click="setTheme(one.id)"
             >
               <span class="swatch" :style="{ background: one.swatch[0] }">
@@ -764,7 +792,7 @@ onMounted(async () => {
               </span>
               <span class="theme-name">{{ one.name }}</span>
               <span class="faint small">{{ one.kind }}</span>
-              <Check v-if="one.id === theme" :size="13" class="tick" />
+              <Check v-if="one.id === choice" :size="13" class="tick" />
             </button>
           </div>
 
@@ -1092,61 +1120,86 @@ onMounted(async () => {
   display: grid;
   place-items: center;
   background: var(--overlay);
+  animation: fade-in 0.1s ease-out;
 }
 
+/* A preferences window more than a dialog: the sections down the left in the
+   chrome's tone, the page itself on the right. */
 .panel {
   display: grid;
-  grid-template-columns: 208px minmax(0, 1fr);
-  width: 860px;
+  grid-template-columns: 200px minmax(0, 1fr);
+  width: 880px;
   max-width: calc(100vw - 40px);
-  height: 640px;
+  height: 660px;
   max-height: calc(100vh - 60px);
-  background: var(--bg-panel);
-  border: 1px solid var(--line);
-  border-radius: 11px;
+  background: var(--bg);
+  border-radius: 10px;
   overflow: hidden;
-  box-shadow: 0 22px 60px var(--shadow-strong);
+  box-shadow: var(--shadow-pop);
+  animation: rise-in 0.1s ease-out;
+}
+
+@keyframes fade-in {
+  from {
+    opacity: 0;
+  }
+}
+
+@keyframes rise-in {
+  from {
+    opacity: 0;
+    transform: scale(0.985);
+  }
 }
 
 .nav {
-  background: var(--bg-deep);
+  background: var(--canvas);
   border-right: 1px solid var(--line);
-  padding: 12px 8px;
+  padding: 14px 8px;
   display: flex;
   flex-direction: column;
-  gap: 2px;
+  gap: 1px;
 }
 
 .nav-title {
-  padding: 0 10px 10px;
-  font-size: 15px;
-  font-weight: 600;
+  padding: 0 8px 10px;
+  font-size: 13px;
+  font-weight: 650;
+  color: var(--text-dim);
 }
 
 .nav-item {
   display: flex;
   align-items: center;
-  gap: 9px;
-  padding: 7px 10px;
-  border-radius: 6px;
-  color: var(--text-dim);
+  gap: 8px;
+  min-height: 28px;
+  padding: 3px 8px;
+  border-radius: var(--radius);
+  color: var(--text);
+  font-weight: 500;
   text-align: left;
+}
+
+.nav-item svg {
+  color: var(--text-faint);
 }
 
 .nav-item:hover {
   background: var(--bg-hover);
-  color: var(--text);
 }
 
 .nav-item.on {
   background: var(--bg-active);
-  color: var(--text);
   font-weight: 600;
+}
+
+.nav-item.on svg {
+  color: var(--accent);
 }
 
 .nav-note {
   margin: auto 0 0;
-  padding: 10px;
+  padding: 8px;
   font-size: 11px;
   line-height: 1.5;
 }
@@ -1154,16 +1207,19 @@ onMounted(async () => {
 .content {
   position: relative;
   overflow-y: auto;
-  padding: 18px 22px 26px;
+  padding: 20px 26px 28px;
 }
 
 .close {
   position: absolute;
-  right: 12px;
-  top: 12px;
+  right: 10px;
+  top: 10px;
+  display: grid;
+  place-items: center;
+  width: 28px;
+  height: 28px;
   color: var(--text-faint);
-  padding: 4px 7px;
-  border-radius: 5px;
+  border-radius: var(--radius);
 }
 
 .close:hover {
@@ -1174,51 +1230,66 @@ onMounted(async () => {
 h2 {
   margin: 0 0 4px;
   font-size: 17px;
+  font-weight: 650;
 }
 
 h3 {
-  margin: 0 0 12px;
-  font-size: 13.5px;
+  margin: 0 0 10px;
+  font-size: 13px;
+  font-weight: 600;
 }
 
 .intro {
-  margin: 0 0 18px;
+  margin: 0 0 16px;
   font-size: 12.5px;
-  max-width: 62ch;
-  line-height: 1.55;
+  max-width: 64ch;
+  line-height: 1.5;
 }
 
+/* One bordered list, its rows divided by hairlines inside it. */
 .list {
   display: flex;
   flex-direction: column;
-  gap: 5px;
+  border: 1px solid var(--line-soft);
+  border-radius: var(--radius-lg);
+  overflow: hidden;
 }
 
 .themes {
   display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(150px, 1fr));
-  gap: 10px;
+  grid-template-columns: repeat(auto-fill, minmax(140px, 1fr));
+  gap: 8px;
 }
 
+/* A theme: a picture of it, its name, and a ring in the accent round the one
+   you have. */
 .theme {
   position: relative;
   display: flex;
   flex-direction: column;
   align-items: flex-start;
-  gap: 4px;
-  padding: 9px 10px;
-  background: var(--bg-raised);
-  border: 1px solid var(--line);
-  border-radius: 8px;
+  gap: 1px;
+  padding: 6px 6px 8px;
+  background: var(--bg);
+  border: 1px solid var(--line-soft);
+  border-radius: var(--radius-lg);
   text-align: left;
+  transition: border-color 0.1s;
 }
 
 .theme:hover {
-  background: var(--bg-hover);
+  border-color: var(--line);
 }
 
-.theme.on {
-  border-color: var(--accent);
+.theme.on,
+.theme.on:hover {
+  border-color: var(--primary);
+  box-shadow: 0 0 0 1px var(--primary);
+}
+
+.theme > .faint.small,
+.theme > .theme-name {
+  padding: 0 3px;
 }
 
 .swatch {
@@ -1226,16 +1297,32 @@ h3 {
   align-items: center;
   gap: 5px;
   width: 100%;
-  height: 34px;
+  height: 40px;
+  margin-bottom: 5px;
+  padding: 0 8px;
+  border-radius: var(--radius);
+  box-shadow: inset 0 0 0 1px var(--border-soft);
+}
+
+/* Half the Porcelain card and half the Graphite one. */
+.swatch.split {
+  padding: 0;
+  gap: 0;
+  overflow: hidden;
+}
+
+.half {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  height: 100%;
   padding: 0 7px;
-  border-radius: 5px;
-  border: 1px solid var(--line);
 }
 
 .chip {
-  width: 16px;
-  height: 9px;
-  border-radius: 3px;
+  width: 18px;
+  height: 8px;
+  border-radius: 2px;
 }
 
 .chip.text {
@@ -1249,23 +1336,30 @@ h3 {
 
 .tick {
   position: absolute;
-  right: 8px;
-  top: 8px;
-  color: var(--accent);
+  right: 11px;
+  top: 11px;
+  padding: 2px;
+  box-sizing: content-box;
+  border-radius: var(--radius-pill);
+  color: var(--primary-fg);
+  background: var(--primary);
 }
 
 .entry {
   display: flex;
   align-items: center;
-  gap: 11px;
-  padding: 9px 11px;
-  background: var(--bg-raised);
-  border: 1px solid var(--line);
-  border-radius: 8px;
+  gap: 10px;
+  padding: 9px 12px;
+  background: var(--bg);
 }
 
-.entry.active {
-  border-color: color-mix(in srgb, var(--accent) 50%, transparent);
+.entry + .entry {
+  border-top: 1px solid var(--line-soft);
+}
+
+.entry.active .entry-icon {
+  color: var(--accent);
+  opacity: 1;
 }
 
 .entry-icon {
@@ -1290,8 +1384,12 @@ h3 {
 }
 
 .tiny {
-  font-size: 11.5px;
-  padding: 3px 8px;
+  min-height: 24px;
+  font-size: 12px;
+  padding: 1px 9px;
+  border-radius: var(--radius-sm);
+  color: var(--text);
+  background: var(--bg);
   border: 1px solid var(--line);
 }
 
@@ -1304,11 +1402,11 @@ h3 {
 }
 
 .editor {
-  margin-top: 20px;
-  padding: 15px;
-  border: 1px solid var(--line);
-  border-radius: 9px;
-  background: var(--bg-raised);
+  margin-top: 16px;
+  padding: 16px;
+  border-radius: var(--radius-lg);
+  background: var(--canvas);
+  border: 1px solid var(--line-soft);
 }
 
 .field {
@@ -1325,10 +1423,9 @@ h3 {
   align-items: center;
   gap: 5px;
   margin-bottom: 5px;
-  font-size: 11px;
-  letter-spacing: 0.06em;
-  text-transform: uppercase;
-  color: var(--text-faint);
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text-dim);
 }
 
 .field input[type='text'],
@@ -1336,6 +1433,12 @@ h3 {
 .field select,
 .field textarea {
   width: 100%;
+}
+
+.field input[type='text'],
+.field input[type='password'] {
+  height: 30px;
+  padding: 4px 9px;
 }
 
 /* Instructions to a model are prose, but prose with its line breaks meant, so
@@ -1350,17 +1453,20 @@ h3 {
 /* A sentence that does something, inside a sentence that does not. */
 .link {
   padding: 0;
-  color: var(--accent);
+  color: var(--text);
+  font-weight: 500;
+  color: var(--accent-soft);
   text-decoration: underline;
   text-underline-offset: 2px;
 }
 
 select {
-  padding: 6px 8px;
+  height: 30px;
+  padding: 4px 26px 4px 9px;
   color: var(--text);
-  background: var(--bg);
+  background-color: var(--bg);
   border: 1px solid var(--line);
-  border-radius: 5px;
+  border-radius: var(--radius-sm);
 }
 
 
@@ -1401,8 +1507,8 @@ select {
 
 .hint {
   display: block;
-  margin-top: 5px;
-  font-size: 11px;
+  margin-top: 6px;
+  font-size: 11.5px;
   line-height: 1.5;
 }
 
@@ -1421,31 +1527,38 @@ select {
   color: var(--red);
 }
 
+/* A segmented control: one bordered strip, the chosen segment raised in it. */
 .choices {
-  display: flex;
-  gap: 6px;
+  display: inline-flex;
+  gap: 2px;
+  padding: 2px;
+  border-radius: var(--radius);
+  background: var(--canvas);
+  border: 1px solid var(--line);
 }
 
 .choice {
   display: flex;
   align-items: center;
   gap: 6px;
-  padding: 6px 10px;
-  border: 1px solid var(--line);
-  border-radius: 6px;
+  min-height: 24px;
+  padding: 2px 12px;
+  border-radius: var(--radius-sm);
   color: var(--text-dim);
   font-size: 12.5px;
+  font-weight: 500;
 }
 
 .choice:hover {
-  background: var(--bg-hover);
   color: var(--text);
 }
 
-.choice.on {
-  border-color: var(--accent);
+.choice.on,
+.choice.on:hover {
   color: var(--text);
-  background: color-mix(in srgb, var(--accent) 12%, transparent);
+  background: var(--bg);
+  box-shadow: 0 0 0 1px var(--line), 0 1px 2px var(--shadow);
+  font-weight: 600;
 }
 
 .editor-actions {
@@ -1456,11 +1569,17 @@ select {
 
 .check {
   display: flex;
-  gap: 10px;
-  margin-bottom: 16px;
+  gap: 9px;
+  margin-bottom: 12px;
   cursor: pointer;
-  font-size: 12.5px;
+  font-size: 13px;
+  font-weight: 500;
   max-width: 66ch;
+}
+
+.check .block,
+.check .sub {
+  font-weight: 400;
 }
 
 .check input {
@@ -1480,12 +1599,18 @@ select {
   margin-bottom: 18px;
 }
 
+/* A group is one rounded list, its rows divided by hairlines inside it. */
+.keys-group {
+  padding: 0 12px;
+  border-radius: var(--radius-lg);
+  border: 1px solid var(--line-soft);
+}
+
 .keys-group h3 {
-  font-size: 11px;
-  letter-spacing: 0.06em;
-  text-transform: uppercase;
-  color: var(--text-faint);
-  margin: 0 0 6px;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text-dim);
+  margin: 8px 0 4px;
 }
 
 .keys-row {
@@ -1493,20 +1618,22 @@ select {
   grid-template-columns: 96px 1fr 190px;
   gap: 12px;
   align-items: baseline;
-  padding: 5px 0;
-  border-top: 1px solid var(--line);
+  padding: 6px 0;
+  border-top: 1px solid var(--line-soft);
   font-size: 12.5px;
 }
 
+/* Written as a key cap: a box with a heavier bottom edge. */
 .keys {
   font-family: inherit;
-  font-size: 11.5px;
+  font-size: 11px;
   font-weight: 600;
   text-align: center;
-  padding: 2px 6px;
-  border-radius: 4px;
+  padding: 1px 6px;
+  border-radius: var(--radius-sm);
+  background: var(--bg);
   border: 1px solid var(--line);
-  background: var(--bg-raised);
+  border-bottom-width: 2px;
   color: var(--text);
   white-space: nowrap;
 }
@@ -1521,7 +1648,8 @@ select {
 
 .sub {
   font-size: 13px;
-  margin: 22px 0 4px;
+  font-weight: 600;
+  margin: 24px 0 4px;
 }
 
 /* The four column names sit in a row: they are one choice, not four settings
@@ -1540,11 +1668,11 @@ select {
    so only the token colours come from the syntax theme. */
 .preview {
   margin: 10px 0 18px;
-  padding: 10px 12px;
+  padding: 8px 10px;
   overflow-x: auto;
-  background: var(--bg-raised);
-  border: 1px solid var(--line);
-  border-radius: 7px;
+  background: var(--bg);
+  border: 1px solid var(--line-soft);
+  border-radius: var(--radius);
 }
 
 .preview-line {
@@ -1559,32 +1687,38 @@ select {
 /* The sizes read as one row of steps rather than as a list, so which way is
    bigger is the direction the eye already travels. */
 .sizes {
-  display: flex;
+  display: inline-flex;
   flex-wrap: wrap;
-  gap: 6px;
+  gap: 2px;
+  padding: 2px;
   margin-bottom: 18px;
+  border-radius: var(--radius);
+  background: var(--canvas);
+  border: 1px solid var(--line);
 }
 
+/* A segmented control: the chosen step raised out of the strip. */
 .size {
-  min-width: 62px;
-  padding: 6px 10px;
-  font-size: 12px;
+  min-width: 64px;
+  padding: 4px 12px;
+  font-size: 12.5px;
+  font-weight: 500;
+  line-height: 1.3;
   text-align: center;
   color: var(--text-dim);
-  background: var(--bg-raised);
-  border: 1px solid var(--line);
-  border-radius: 6px;
+  border-radius: var(--radius-sm);
 }
 
 .size:hover {
   color: var(--text);
-  border-color: var(--text-faint);
 }
 
-.size.on {
+.size.on,
+.size.on:hover {
   color: var(--text);
-  background: var(--bg-active);
-  border-color: var(--accent);
+  background: var(--bg);
+  box-shadow: 0 0 0 1px var(--line), 0 1px 2px var(--shadow);
+  font-weight: 600;
 }
 
 .cols .check {
@@ -1600,7 +1734,7 @@ select {
   height: 6px;
   margin-left: auto;
   border-radius: 50%;
-  background: var(--accent);
+  background: var(--danger);
 }
 
 .version-row {
@@ -1631,9 +1765,9 @@ select {
 .offer {
   margin: 12px 0 18px;
   padding: 12px 14px;
-  border: 1px solid color-mix(in srgb, var(--accent) 50%, transparent);
-  border-radius: 8px;
-  background: color-mix(in srgb, var(--accent) 10%, transparent);
+  border-radius: var(--radius-lg);
+  background: var(--canvas);
+  border: 1px solid var(--line-soft);
 }
 
 .offer-head {
@@ -1669,14 +1803,14 @@ select {
   flex: 1;
   min-width: 0;
   height: 4px;
-  border-radius: 2px;
-  background: var(--bg-hover);
+  border-radius: var(--radius-pill);
+  background: var(--bg-raised);
 }
 
 .progress .bar {
   width: 0;
   height: 100%;
-  border-radius: 2px;
+  border-radius: var(--radius-pill);
   background: var(--accent);
   transition: width 0.2s linear;
 }

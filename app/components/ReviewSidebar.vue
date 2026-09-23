@@ -371,41 +371,49 @@ watch(
 </template>
 
 <style scoped>
+/* The facts beside a review, as one column of sections with a hairline
+   between each, the way a forge lays out its sidebar. No boxes: the column is
+   quiet next to the conversation. */
 .about {
   display: flex;
   flex-direction: column;
-  gap: 8px;
   min-width: 0;
 }
 
 .card {
-  background: var(--bg-panel);
-  border: 1px solid var(--line-soft);
-  border-radius: 8px;
-  padding: 10px 12px;
+  padding: 12px 0;
+  background: none;
+  border: none;
+  border-radius: 0;
+}
+
+.card + .card {
+  border-top: 1px solid var(--line-soft);
+}
+
+.card:first-child {
+  padding-top: 0;
 }
 
 .head {
   display: flex;
   align-items: center;
   gap: 6px;
-  margin-bottom: 7px;
+  margin-bottom: 8px;
 }
 
 h4 {
   margin: 0;
   flex: 1;
-  font-size: 10.5px;
-  font-weight: 700;
-  letter-spacing: 0.07em;
-  text-transform: uppercase;
-  color: var(--text-faint);
+  font-size: 11.5px;
+  font-weight: 600;
+  color: var(--text-dim);
 }
 
 .edit {
   display: inline-flex;
   padding: 3px;
-  border-radius: 4px;
+  border-radius: var(--radius-sm);
   color: var(--text-faint);
 }
 
@@ -427,8 +435,6 @@ h4 {
 
 .fact + .fact {
   margin-top: 8px;
-  padding-top: 8px;
-  border-top: 1px solid var(--line-soft);
 }
 
 .checks:hover {
@@ -436,15 +442,15 @@ h4 {
 }
 
 .checks.good {
-  color: var(--green-soft);
+  color: var(--success-soft);
 }
 
 .checks.bad {
-  color: var(--red-soft);
+  color: var(--danger-soft);
 }
 
 .checks.wait {
-  color: var(--amber-soft);
+  color: var(--warning-soft);
 }
 
 .grow {
@@ -452,7 +458,7 @@ h4 {
 }
 
 .good {
-  color: var(--green);
+  color: var(--success);
 }
 
 /* Named apart from the picker's own list: a scoped rule reaches the root of a
@@ -473,12 +479,12 @@ h4 {
 }
 
 .hint {
-  margin: 0 0 7px;
-  font-size: 10.5px;
+  margin: 0 0 8px;
+  font-size: 11.5px;
 }
 
 .small {
-  font-size: 10.5px;
+  font-size: 11px;
 }
 
 .named li {
@@ -492,15 +498,15 @@ h4 {
 .name {
   flex: 1;
   min-width: 0;
-  color: var(--text-dim);
+  color: var(--text);
 }
 
 .verdict.good {
-  color: var(--green);
+  color: var(--success);
 }
 
 .verdict.bad {
-  color: var(--red);
+  color: var(--danger);
 }
 
 .verdict.none {
@@ -508,7 +514,7 @@ h4 {
 }
 
 .waiting {
-  font-size: 10.5px;
+  font-size: 11px;
 }
 
 .labels,
@@ -518,46 +524,56 @@ h4 {
   gap: 4px;
 }
 
+/* A label, tinted in its own colour on the forge (see `chipStyle`). */
 .label {
   display: inline-flex;
   align-items: center;
   gap: 4px;
-  padding: 2px 7px;
-  border-radius: 999px;
+  min-height: 20px;
+  padding: 0 6px;
+  border-radius: var(--radius-sm);
+  background: var(--bg-raised);
   border: 1px solid var(--line);
-  font-size: 10.5px;
+  font-size: 11px;
+  font-weight: 500;
   color: var(--text-dim);
 }
 
 .label.pick {
   opacity: 0.55;
   cursor: pointer;
+  transition: opacity 0.12s;
 }
 
 .label.pick:hover,
 .label.pick.on {
   opacity: 1;
-  background: var(--bg-hover);
+  color: var(--text);
+}
+
+.label.pick.on {
+  border-color: var(--text-faint);
 }
 
 .editing {
   display: flex;
   justify-content: flex-end;
   gap: 6px;
-  margin-top: 8px;
+  margin-top: 10px;
 }
 
 .tiny {
-  padding: 3px 9px;
-  font-size: 11px;
+  min-height: 24px;
+  padding: 2px 10px;
+  font-size: 11.5px;
 }
 
 .facts {
   display: grid;
-  grid-template-columns: 68px 1fr;
-  gap: 5px 10px;
+  grid-template-columns: 72px 1fr;
+  gap: 7px 10px;
   margin: 0;
-  font-size: 11.5px;
+  font-size: 12px;
   align-items: baseline;
 }
 
@@ -573,19 +589,21 @@ h4 {
 
 .none {
   margin: 0;
-  font-size: 11.5px;
+  font-size: 12px;
 }
 
 .forge-link {
   display: inline-flex;
   align-items: center;
   gap: 5px;
-  margin-top: 9px;
-  font-size: 11px;
-  color: var(--text-faint);
+  margin-top: 10px;
+  font-size: 11.5px;
+  color: var(--accent-soft);
 }
 
 .forge-link:hover {
-  color: var(--accent);
+  color: var(--accent-soft);
+  text-decoration: underline;
+  text-underline-offset: 2px;
 }
 </style>

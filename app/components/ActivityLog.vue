@@ -189,29 +189,53 @@ async function take(match: string) {
 </template>
 
 <style scoped>
+/*
+ * A status bar along the bottom of the window, in the chrome tone: the last
+ * thing git did, how many lines the log holds, and the way to a prompt.
+ * Opened, the log is a panel on the page above the bar, with the hairline
+ * handle along its top edge and the prompt at its foot; the bar stays at the
+ * very bottom, where it was.
+ */
 .console {
   display: flex;
   flex-direction: column;
   min-height: 0;
+  background: var(--canvas);
   border-top: 1px solid var(--line);
-  background: var(--bg-panel);
+}
+
+/* The handle is the hairline while the log is open. */
+.console.open {
+  border-top: none;
 }
 
 .strip-row {
+  order: 10;
   display: flex;
-  align-items: stretch;
+  align-items: center;
   flex: none;
+  gap: 2px;
+  height: 24px;
+  padding: 0 4px 0 2px;
+  background: var(--canvas);
+}
+
+.console.open .strip-row {
+  border-top: 1px solid var(--line);
 }
 
 .strip {
   display: flex;
   align-items: center;
-  gap: 8px;
+  gap: 7px;
   flex: 1;
   min-width: 0;
-  padding: 4px 12px;
-  font-size: 12px;
+  height: 20px;
+  padding: 0 8px;
+  border-radius: var(--radius-sm);
+  font-size: 11.5px;
   text-align: left;
+  color: var(--text-dim);
 }
 
 .strip:hover {
@@ -221,7 +245,7 @@ async function take(match: string) {
 .chev {
   flex: none;
   color: var(--text-faint);
-  transition: transform 0.12s;
+  transition: transform 0.15s;
 }
 
 .chev.down {
@@ -229,11 +253,13 @@ async function take(match: string) {
 }
 
 .term {
-  display: flex;
-  align-items: center;
-  padding: 0 10px;
+  display: grid;
+  place-items: center;
+  flex: none;
+  width: 22px;
+  height: 20px;
+  border-radius: var(--radius-sm);
   color: var(--text-faint);
-  border-left: 1px solid var(--line-soft);
 }
 
 .term:hover {
@@ -248,19 +274,19 @@ async function take(match: string) {
 }
 
 .line.error {
-  color: var(--red);
+  color: var(--danger-soft);
 }
 
 .line.command,
 .entry.command .text {
-  color: var(--accent);
+  color: var(--text);
 }
 
 /* A command that came back non-zero: still the command line, in the colour of
    what happened to it. What went wrong is said in a notice, not here. */
 .line.failed,
 .entry.failed .text {
-  color: var(--red-soft);
+  color: var(--danger-soft);
 }
 
 .line.output {
@@ -275,18 +301,48 @@ async function take(match: string) {
   color: var(--text-faint);
 }
 
+/* Working: a small pulsing dot ahead of the word, so the line reads as alive
+   rather than as another message. */
 .busy {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
   flex: 1;
-  color: var(--accent);
+  color: var(--text);
 }
 
+.busy::before {
+  content: '';
+  width: 6px;
+  height: 6px;
+  border-radius: var(--radius-pill);
+  background: var(--accent);
+  animation: pulse 1s ease-in-out infinite;
+}
+
+@keyframes pulse {
+  50% {
+    opacity: 0.3;
+  }
+}
+
+/* How many lines the log holds. */
 .count {
-  font-size: 11px;
+  flex: none;
+  min-width: 18px;
+  padding: 0 5px;
+  border-radius: var(--radius-pill);
+  background: var(--bg-raised);
+  font-size: 10.5px;
+  font-weight: 600;
+  line-height: 16px;
+  text-align: center;
+  font-variant-numeric: tabular-nums;
 }
 
 /*
- * The transcript. Oldest at the top, so it is read downwards and the newest
- * line is the one nearest the prompt.
+ * The transcript, on the page. Oldest at the top, so it is read downwards and
+ * the newest line is the one nearest the prompt.
  *
  * As tall as the handle above it says, and never taller than the window can
  * spare. Written as `flex: 1` with a height it took its size from its own
@@ -298,18 +354,22 @@ async function take(match: string) {
   min-height: 0;
   max-height: 60vh;
   overflow-y: auto;
-  border-top: 1px solid var(--line-soft);
+  padding: 4px 0;
+  background: var(--bg);
 }
 
 .entry {
   display: flex;
-  gap: 10px;
-  padding: 3px 12px;
-  border-bottom: 1px solid var(--line-soft);
+  gap: 12px;
+  padding: 1px 12px;
+}
+
+.entry:hover {
+  background: var(--bg-hover);
 }
 
 .entry.error .text {
-  color: var(--red);
+  color: var(--danger-soft);
 }
 
 /* What a typed command printed, as it printed it: a shade quieter than the
@@ -322,6 +382,8 @@ async function take(match: string) {
   flex: none;
   font-family: var(--mono);
   font-size: 11px;
+  line-height: 1.6;
+  font-variant-numeric: tabular-nums;
 }
 
 .text {
@@ -329,14 +391,16 @@ async function take(match: string) {
   flex: 1;
   min-width: 0;
   font-family: var(--mono);
-  font-size: 11px;
+  font-size: 12px;
+  line-height: 1.5;
   white-space: pre-wrap;
   word-break: break-word;
   color: var(--text-dim);
 }
 
 .pad {
-  padding: 8px 12px;
+  margin: 0;
+  padding: 6px 12px;
   font-size: 12px;
 }
 
@@ -349,16 +413,16 @@ async function take(match: string) {
   overflow-y: auto;
   padding: 6px 12px;
   border-top: 1px solid var(--line-soft);
-  background: var(--bg-raised);
+  background: var(--bg);
 }
 
 .offer {
-  padding: 1px 6px;
-  border-radius: 4px;
+  padding: 1px 7px;
+  border-radius: var(--radius-sm);
   font-family: var(--mono);
   font-size: 11px;
   color: var(--text-dim);
-  border: 1px solid var(--line-soft);
+  background: var(--bg-raised);
 }
 
 .offer:hover {
@@ -366,41 +430,40 @@ async function take(match: string) {
   color: var(--text);
 }
 
-/* The line you type on, at the very bottom and darker than the transcript
-   above it — the one part of the window that is a terminal. */
+/* The line you type on, at the foot of the log: a bordered field, the one
+   part of the window that is a terminal. */
 .prompt-row {
   display: flex;
   align-items: center;
   gap: 4px;
   flex: none;
-  padding: 6px 12px;
-  border-top: 1px solid var(--line);
-  background: var(--bg-deep);
+  padding: 6px 12px 8px;
+  background: var(--bg);
+}
+
+.prompt-row > .prompt,
+.git {
+  line-height: 26px;
 }
 
 .git {
   font-family: var(--mono);
-  font-size: 11px;
-  color: var(--accent);
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text);
 }
 
 .input {
   flex: 1;
   min-width: 0;
-  padding: 2px 4px;
-  background: none;
-  border: none;
-  outline: none;
+  height: 26px;
+  padding: 2px 8px;
   font-family: var(--mono);
-  font-size: 11px;
-  color: var(--text);
-}
-
-.input::placeholder {
-  color: var(--text-faint);
+  font-size: 12px;
 }
 
 .input:disabled {
   color: var(--text-faint);
+  background: var(--bg-raised);
 }
 </style>

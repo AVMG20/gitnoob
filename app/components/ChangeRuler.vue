@@ -138,10 +138,9 @@ onBeforeUnmount(() => {
 .ruler {
   position: relative;
   flex: none;
-  width: 11px;
+  width: 12px;
   cursor: pointer;
-  background: var(--bg-panel);
-  border-left: 1px solid var(--line-soft);
+  border-left: 1px solid var(--line);
 }
 
 /* Nothing to point at: the strip stays as a plain edge rather than a control
@@ -152,8 +151,9 @@ onBeforeUnmount(() => {
 
 .mark {
   position: absolute;
-  left: 2px;
-  right: 2px;
+  left: 3px;
+  right: 3px;
+  min-height: 2px;
   border-radius: 1px;
 }
 
@@ -189,10 +189,9 @@ onBeforeUnmount(() => {
 /* The one being worked on: the full width of the strip, and outlined so it
    reads as the current place even where it sits among a run of its neighbours. */
 .mark.now {
-  left: 0;
-  right: 0;
-  box-shadow: 0 0 0 1px var(--text);
-  border-radius: 2px;
+  left: 1px;
+  right: 1px;
+  box-shadow: 0 0 0 1.5px var(--text);
 }
 
 /* Where you are now, drawn behind the marks so it never hides one. */
@@ -201,6 +200,7 @@ onBeforeUnmount(() => {
   left: 0;
   right: 0;
   min-height: 6px;
-  background: var(--bg-hover);
+  background: var(--bg-raised);
+  border-radius: 3px;
 }
 </style>

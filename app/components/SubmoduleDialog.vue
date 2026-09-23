@@ -112,12 +112,18 @@ async function submit() {
 }
 
 .label {
-  font-size: 11px;
-  color: var(--text-faint);
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text-dim);
+}
+
+.field input {
+  height: 30px;
+  padding: 4px 9px;
 }
 
 .hint {
-  font-size: 11px;
+  font-size: 11.5px;
 }
 
 .bad {
