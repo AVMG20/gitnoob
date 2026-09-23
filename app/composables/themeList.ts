@@ -8,6 +8,7 @@
 export type ThemeId =
   | 'porcelain'
   | 'graphite'
+  | 'graphite-deep'
   | 'fjord'
   | 'slate'
   | 'pine'
@@ -55,6 +56,13 @@ export const THEMES: Theme[] = [
     kind: 'Semi-dark',
     note: 'The default by night: a neutral charcoal with the same blue.',
     swatch: ['#1c1e21', '#5088f2', '#e8ebf2']
+  },
+  {
+    id: 'graphite-deep',
+    name: 'Graphite Deep',
+    kind: 'Semi-dark',
+    note: 'Between Graphite and Mono: the same window, a step darker.',
+    swatch: ['#121417', '#5088f2', '#dde1e7']
   },
   {
     id: 'fjord',

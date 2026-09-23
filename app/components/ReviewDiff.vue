@@ -267,8 +267,9 @@ function draftKey(line: DiffLine) {
 }
 
 .diff-line {
+  position: relative;
   display: grid;
-  grid-template-columns: 42px 42px 14px minmax(0, 1fr) 22px;
+  grid-template-columns: 42px 42px 14px minmax(0, 1fr);
   align-items: center;
   width: max-content;
   min-width: 100%;
@@ -319,17 +320,23 @@ function draftKey(line: DiffLine) {
 }
 
 /* The review's whole gesture: a small blue square with a plus that surfaces on
-   the line under the pointer, as a forge draws it. It borrows the app's own
-   accent rather than drawing a boxed form control on every row. */
+   the line under the pointer, as a forge draws it. It sits in the gutter, on
+   the edge between the line numbers and the code, where the pointer already is
+   when you are reading a line by its number. It used to be at the far end of
+   the row, which on a wide window was a trip across the screen for every
+   comment. Laid over the row rather than given a column of its own, so the
+   code does not move sideways to make room for it: centred on the line
+   between the second number column (42 + 42) and the sign. */
 .line-add {
-  justify-self: end;
-  align-self: center;
+  position: absolute;
+  top: 0;
+  left: 75px;
+  z-index: 1;
   display: inline-flex;
   align-items: center;
   justify-content: center;
   width: 18px;
   height: 18px;
-  margin-right: 4px;
   border-radius: var(--radius-sm);
   background: var(--accent);
   color: var(--on-accent);

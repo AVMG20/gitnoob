@@ -198,6 +198,21 @@ const THEMES = [
     text: { fg: 14 }
   },
   {
+    name: 'graphite-deep',
+    label: 'Graphite Deep',
+    family: 'dark',
+    ladder: 'graphite',
+    note: 'Between Graphite and Mono: the same window, a step darker.',
+    bg: { l: 0.19, c: 0.006, h: 262 },
+    primary: { l: 0.64, c: 0.17, h: 262 },
+    danger: { l: 0.66, c: 0.18, h: 22 },
+    success: { l: 0.74, c: 0.15, h: 150 },
+    warning: { l: 0.8, c: 0.14, h: 75 },
+    info: { l: 0.7, c: 0.16, h: 305 },
+    lines: 0.9,
+    text: { fg: 14 }
+  },
+  {
     name: 'fjord',
     label: 'Fjord',
     family: 'dark',
