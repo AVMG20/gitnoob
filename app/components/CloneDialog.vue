@@ -146,15 +146,15 @@ async function submit() {
 
 .label {
   display: block;
-  margin-bottom: 4px;
-  font-size: 11px;
-  letter-spacing: 0.06em;
-  text-transform: uppercase;
-  color: var(--text-faint);
+  margin-bottom: 6px;
+  font-size: 12px;
+  font-weight: 550;
+  color: var(--text-dim);
 }
 
 .field input {
   width: 100%;
+  padding: 8px 12px;
 }
 
 .dest {
@@ -165,7 +165,7 @@ async function submit() {
 .hint {
   display: block;
   margin-top: 4px;
-  font-size: 11px;
+  font-size: 11.5px;
 }
 
 .hint.faint {

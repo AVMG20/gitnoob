@@ -98,6 +98,7 @@ onMounted(async () => {
 <style scoped>
 .target {
   display: flex;
+  align-items: center;
   gap: 9px;
   margin: 0 0 4px;
   font-size: 13px;
@@ -110,14 +111,15 @@ onMounted(async () => {
 
 .block {
   margin-top: 14px;
-  padding: 11px;
-  border: 1px solid var(--line);
-  border-radius: 7px;
+  padding: 12px 14px;
+  background: var(--surface);
+  border-radius: var(--radius);
 }
 
 .block-head {
   font-size: 12.5px;
-  margin-bottom: 5px;
+  font-weight: 600;
+  margin-bottom: 6px;
 }
 
 .commits {
@@ -137,6 +139,15 @@ onMounted(async () => {
   border-top: 1px solid var(--line-soft);
 }
 
+.target .mono {
+  flex: none;
+  padding: 0 7px;
+  border-radius: var(--radius-pill);
+  background: var(--bg-raised);
+  font-size: 11.5px;
+  line-height: 20px;
+}
+
 .commits li:first-child {
   border-top: none;
 }
@@ -153,7 +164,7 @@ onMounted(async () => {
   gap: 8px;
   margin: 12px 0 0;
   padding: 9px 11px;
-  border-radius: 7px;
+  border-radius: var(--radius);
   font-size: 12px;
   line-height: 1.5;
   color: var(--amber-soft);

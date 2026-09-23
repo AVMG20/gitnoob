@@ -64,15 +64,22 @@ const redo = computed(() => store.history.redo)
 .menu {
   position: absolute;
   right: 96px;
-  top: 74px;
+  top: 96px;
   width: 380px;
   max-height: 60vh;
   overflow-y: auto;
-  padding: 4px;
-  background: var(--bg-raised);
-  border: 1px solid var(--line);
-  border-radius: 9px;
-  box-shadow: 0 16px 40px var(--shadow-strong);
+  padding: 5px;
+  background: var(--bg);
+  border-radius: var(--radius);
+  box-shadow: var(--shadow-pop);
+  animation: pop-in 0.12s ease-out;
+}
+
+@keyframes pop-in {
+  from {
+    opacity: 0;
+    transform: translateY(-3px);
+  }
 }
 
 .item {
@@ -80,14 +87,15 @@ const redo = computed(() => store.history.redo)
   align-items: center;
   gap: 9px;
   width: 100%;
-  padding: 5px 9px;
-  border-radius: 6px;
+  min-height: 30px;
+  padding: 5px 10px;
+  border-radius: var(--radius-sm);
   text-align: left;
-  font-size: 12.5px;
+  font-size: 13px;
 }
 
 .item:hover:not(:disabled) {
-  background: var(--bg-active);
+  background: var(--bg-hover);
 }
 
 .item:disabled {
@@ -129,7 +137,7 @@ const redo = computed(() => store.history.redo)
 
 .divider {
   height: 1px;
-  margin: 5px 6px;
-  background: var(--line);
+  margin: 5px 8px;
+  background: var(--line-soft);
 }
 </style>

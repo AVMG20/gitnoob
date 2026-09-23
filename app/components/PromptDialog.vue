@@ -50,21 +50,21 @@ const value = ref(props.initial ?? '')
 
 .label {
   display: block;
-  margin-bottom: 5px;
-  font-size: 11px;
-  letter-spacing: 0.06em;
-  text-transform: uppercase;
-  color: var(--text-faint);
+  margin-bottom: 6px;
+  font-size: 12px;
+  font-weight: 550;
+  color: var(--text-dim);
 }
 
 input {
   width: 100%;
+  padding: 8px 12px;
 }
 
 .hint {
   display: block;
   margin-top: 6px;
-  font-size: 11px;
+  font-size: 11.5px;
   line-height: 1.5;
 }
 </style>

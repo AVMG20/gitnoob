@@ -371,41 +371,41 @@ watch(
 </template>
 
 <style scoped>
+/* The facts beside a review, as soft grey tiles: filled rather than outlined,
+   so the column reads as one quiet block next to the conversation. */
 .about {
   display: flex;
   flex-direction: column;
-  gap: 8px;
+  gap: 10px;
   min-width: 0;
 }
 
 .card {
-  background: var(--bg-panel);
-  border: 1px solid var(--line-soft);
-  border-radius: 8px;
-  padding: 10px 12px;
+  background: var(--surface);
+  border-radius: var(--radius);
+  box-shadow: none;
+  padding: 12px 14px;
 }
 
 .head {
   display: flex;
   align-items: center;
   gap: 6px;
-  margin-bottom: 7px;
+  margin-bottom: 9px;
 }
 
 h4 {
   margin: 0;
   flex: 1;
-  font-size: 10.5px;
-  font-weight: 700;
-  letter-spacing: 0.07em;
-  text-transform: uppercase;
-  color: var(--text-faint);
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text-dim);
 }
 
 .edit {
   display: inline-flex;
-  padding: 3px;
-  border-radius: 4px;
+  padding: 4px;
+  border-radius: var(--radius-pill);
   color: var(--text-faint);
 }
 
@@ -426,8 +426,8 @@ h4 {
 }
 
 .fact + .fact {
-  margin-top: 8px;
-  padding-top: 8px;
+  margin-top: 10px;
+  padding-top: 10px;
   border-top: 1px solid var(--line-soft);
 }
 
@@ -436,15 +436,15 @@ h4 {
 }
 
 .checks.good {
-  color: var(--green-soft);
+  color: var(--success-soft);
 }
 
 .checks.bad {
-  color: var(--red-soft);
+  color: var(--danger-soft);
 }
 
 .checks.wait {
-  color: var(--amber-soft);
+  color: var(--warning-soft);
 }
 
 .grow {
@@ -452,7 +452,7 @@ h4 {
 }
 
 .good {
-  color: var(--green);
+  color: var(--success);
 }
 
 /* Named apart from the picker's own list: a scoped rule reaches the root of a
@@ -461,7 +461,7 @@ h4 {
 .named {
   display: flex;
   flex-direction: column;
-  gap: 7px;
+  gap: 9px;
   margin: 0;
   padding: 0;
   list-style: none;
@@ -473,12 +473,12 @@ h4 {
 }
 
 .hint {
-  margin: 0 0 7px;
-  font-size: 10.5px;
+  margin: 0 0 8px;
+  font-size: 11.5px;
 }
 
 .small {
-  font-size: 10.5px;
+  font-size: 11px;
 }
 
 .named li {
@@ -492,15 +492,15 @@ h4 {
 .name {
   flex: 1;
   min-width: 0;
-  color: var(--text-dim);
+  color: var(--text);
 }
 
 .verdict.good {
-  color: var(--green);
+  color: var(--success);
 }
 
 .verdict.bad {
-  color: var(--red);
+  color: var(--danger);
 }
 
 .verdict.none {
@@ -508,56 +508,64 @@ h4 {
 }
 
 .waiting {
-  font-size: 10.5px;
+  font-size: 11px;
 }
 
 .labels,
 .pick-labels {
   display: flex;
   flex-wrap: wrap;
-  gap: 4px;
+  gap: 5px;
 }
 
 .label {
   display: inline-flex;
   align-items: center;
-  gap: 4px;
-  padding: 2px 7px;
-  border-radius: 999px;
-  border: 1px solid var(--line);
-  font-size: 10.5px;
+  gap: 5px;
+  padding: 2px 9px;
+  border-radius: var(--radius-pill);
+  background: var(--bg);
+  box-shadow: inset 0 0 0 1px var(--line-soft);
+  font-size: 11px;
+  font-weight: 500;
   color: var(--text-dim);
 }
 
 .label.pick {
   opacity: 0.55;
   cursor: pointer;
+  transition: opacity 0.12s;
 }
 
 .label.pick:hover,
 .label.pick.on {
   opacity: 1;
-  background: var(--bg-hover);
+  color: var(--text);
+}
+
+.label.pick.on {
+  box-shadow: inset 0 0 0 1px var(--text-faint);
 }
 
 .editing {
   display: flex;
   justify-content: flex-end;
   gap: 6px;
-  margin-top: 8px;
+  margin-top: 10px;
 }
 
 .tiny {
-  padding: 3px 9px;
-  font-size: 11px;
+  min-height: 26px;
+  padding: 3px 12px;
+  font-size: 11.5px;
 }
 
 .facts {
   display: grid;
-  grid-template-columns: 68px 1fr;
-  gap: 5px 10px;
+  grid-template-columns: 72px 1fr;
+  gap: 7px 10px;
   margin: 0;
-  font-size: 11.5px;
+  font-size: 12px;
   align-items: baseline;
 }
 
@@ -573,19 +581,21 @@ h4 {
 
 .none {
   margin: 0;
-  font-size: 11.5px;
+  font-size: 12px;
 }
 
 .forge-link {
   display: inline-flex;
   align-items: center;
   gap: 5px;
-  margin-top: 9px;
-  font-size: 11px;
-  color: var(--text-faint);
+  margin-top: 10px;
+  font-size: 11.5px;
+  color: var(--text-dim);
 }
 
 .forge-link:hover {
-  color: var(--accent);
+  color: var(--text);
+  text-decoration: underline;
+  text-underline-offset: 2px;
 }
 </style>

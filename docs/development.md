@@ -112,6 +112,10 @@ scripts
 
 `app/assets/css/themes.css` and `app/composables/themeList.ts` are generated from `scripts/theme/palette.mjs` by `npm run theme`. Edit the palette, not the output. A test regenerates both and fails if the checked-in files drifted, and checks every theme against WCAG contrast ratios.
 
+The default is Studio: Studio Light and Studio Dark, picked by "Match system" in Settings → Appearance, which follows the OS between them while the window is open (`useTheme.ts`). They have ladders of their own in the palette, softer lines (`lines`) and crisper body text (`text`) than the rest, and ink rather than a colour for the accent, so anything that needs a hue to mean something should use the success, warning, danger or info tokens rather than `--accent`.
+
+The window is built as cards on a canvas. `--canvas` is the window's own background; every panel in the body is a card on it (`--bg`, `--radius-lg`, `--shadow-card`), set once in `app.vue`, with `--gutter` between them. The resize handles are the gutters. A component that sits in that grid should not paint its own background or edge.
+
 ## Content security policy
 
 `app.security.csp` in `tauri.conf.json` is `default-src 'self'`, with `img-src` opened to `data:` and `https:` for avatars and screenshots in PR descriptions, and `connect-src` opened to `ipc: http://ipc.localhost` so calls can reach the backend at all.

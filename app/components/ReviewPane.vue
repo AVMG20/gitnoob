@@ -440,7 +440,6 @@ watch(
   height: 100%;
   min-width: 0;
   min-height: 0;
-  background: var(--bg);
 }
 
 .page {
@@ -460,11 +459,12 @@ watch(
 }
 
 .warn {
-  margin: 10px 16px 0;
-  padding: 6px 10px;
-  border-left: 2px solid var(--amber);
-  color: var(--amber);
-  font-size: 11.5px;
+  margin: 12px 20px 0;
+  padding: 8px 12px;
+  border-radius: var(--radius);
+  background: var(--warning-bg);
+  color: var(--warning-soft);
+  font-size: 12px;
 }
 
 /* One file, filling the page it is read in. */
@@ -482,10 +482,10 @@ watch(
   flex-direction: column;
   align-items: center;
   justify-content: flex-start;
-  gap: 10px;
-  padding: 22px 16px 40px;
+  gap: 12px;
+  padding: 28px 16px 48px;
   border-top: 1px solid var(--line-soft);
-  font-size: 11.5px;
+  font-size: 12px;
 }
 
 .fileend .mono {
@@ -493,25 +493,35 @@ watch(
   color: var(--text-dim);
 }
 
+/* The step to the next file, as the page's one filled button. */
 .fileend .next {
   display: inline-flex;
   align-items: center;
-  gap: 7px;
-  padding: 4px 12px;
-  border: 1px solid var(--line);
-  border-radius: 999px;
-  font-size: 11.5px;
-  color: var(--text-dim);
+  gap: 8px;
+  min-height: 34px;
+  padding: 6px 18px;
+  border-radius: var(--radius-pill);
+  background: var(--primary);
+  color: var(--primary-fg);
+  font-size: 12.5px;
+  font-weight: 600;
+  transition: background 0.12s;
 }
 
 .fileend .next:hover {
-  color: var(--green-soft);
-  border-color: color-mix(in srgb, var(--green) 45%, transparent);
+  background: var(--primary-hover);
+}
+
+.fileend .next kbd {
+  background: color-mix(in srgb, var(--primary-fg) 16%, transparent);
+  border-color: transparent;
+  color: inherit;
+  opacity: 0.8;
 }
 
 kbd {
-  padding: 0 4px;
-  border-radius: 3px;
+  padding: 1px 5px;
+  border-radius: 4px;
   background: var(--bg-raised);
   border: 1px solid var(--line-soft);
   font-family: var(--mono);
@@ -529,19 +539,20 @@ kbd {
   display: flex;
   align-items: center;
   gap: 6px;
-  padding: 5px 10px;
-  background: var(--bg-panel);
-  border-bottom: 1px solid var(--line);
-  font-size: 11px;
+  padding: 7px 14px;
+  background: color-mix(in srgb, var(--bg) 88%, transparent);
+  backdrop-filter: blur(8px);
+  border-bottom: 1px solid var(--line-soft);
+  font-size: 12px;
 }
 
 .filebar .viewed {
   flex: none;
   display: inline-flex;
   align-items: center;
-  gap: 5px;
-  font-size: 11px;
-  color: var(--text-faint);
+  gap: 6px;
+  font-size: 12px;
+  color: var(--text-dim);
   cursor: pointer;
   user-select: none;
 }
@@ -557,9 +568,12 @@ kbd {
 
 .filebar .step {
   display: inline-flex;
-  padding: 2px 4px;
-  border-radius: 4px;
-  color: var(--text-faint);
+  align-items: center;
+  justify-content: center;
+  width: 26px;
+  height: 26px;
+  border-radius: var(--radius-pill);
+  color: var(--text-dim);
 }
 
 .filebar .step:hover:not(:disabled) {
@@ -583,17 +597,23 @@ kbd {
 .filebar .next {
   display: inline-flex;
   align-items: center;
-  gap: 5px;
-  padding: 2px 10px;
-  border: 1px solid var(--line);
-  border-radius: 999px;
-  font-size: 11px;
-  color: var(--text-dim);
+  gap: 6px;
+  min-height: 28px;
+  padding: 3px 14px;
+  border-radius: var(--radius-pill);
+  background: var(--primary);
+  color: var(--primary-fg);
+  font-size: 12px;
+  font-weight: 600;
+  transition: background 0.12s;
 }
 
 .filebar .next:hover:not(:disabled) {
-  color: var(--green-soft);
-  border-color: color-mix(in srgb, var(--green) 45%, transparent);
+  background: var(--primary-hover);
+}
+
+.filebar .next:disabled {
+  opacity: 0.4;
 }
 
 .commits-page {
@@ -602,7 +622,7 @@ kbd {
   width: 100%;
   max-width: 900px;
   margin: 0 auto;
-  padding: 12px 0 40px;
+  padding: 16px 20px 48px;
 }
 
 /* A commit is a face, what it says, and where to find it again: the hash
@@ -611,10 +631,11 @@ kbd {
 .commit-row {
   display: flex;
   align-items: center;
-  gap: 10px;
-  padding: 7px 16px;
-  border-bottom: 1px solid var(--line-soft);
-  font-size: 12px;
+  gap: 12px;
+  padding: 9px 12px;
+  border-radius: var(--radius);
+  font-size: 12.5px;
+  transition: background 0.12s;
 }
 
 .commit-row:hover {
@@ -626,11 +647,11 @@ kbd {
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  width: 20px;
-  height: 20px;
+  width: 26px;
+  height: 26px;
   border-radius: 50%;
-  color: #fff;
-  font-size: 8.5px;
+  color: white;
+  font-size: 10px;
   font-weight: 600;
   line-height: 1;
   user-select: none;
@@ -650,25 +671,26 @@ kbd {
 }
 
 .by {
-  font-size: 11px;
+  font-size: 11.5px;
 }
 
 .sha {
   flex: none;
-  padding: 1px 6px;
-  border-radius: 4px;
-  color: var(--accent-soft);
+  padding: 2px 9px;
+  border-radius: var(--radius-pill);
+  background: var(--bg-raised);
+  color: var(--text-dim);
 }
 
 .sha:hover {
-  background: var(--bg-hover);
-  color: var(--accent);
+  background: var(--bg-active);
+  color: var(--text);
 }
 
 .none {
   margin: 0;
-  padding: 12px 16px;
-  font-size: 12px;
+  padding: 20px;
+  font-size: 12.5px;
 }
 
 .tally {
@@ -682,35 +704,37 @@ kbd {
 
 /* What has not gone out yet leads, in the colour of something unfinished. */
 .tally.waiting {
-  color: var(--amber-soft);
+  color: var(--warning-soft);
 }
 
 .tally.waiting .glyph {
-  color: var(--amber);
+  color: var(--warning);
 }
 
 .tally .glyph {
-  color: var(--accent);
+  color: var(--text-faint);
 }
 
 .already {
   display: flex;
   align-items: center;
   gap: 8px;
-  margin: 0 0 10px;
-  padding: 7px 10px;
-  border-radius: 6px;
+  margin: 0 0 12px;
+  padding: 9px 12px;
+  border-radius: var(--radius);
   background: var(--bg-raised);
-  font-size: 12px;
+  font-size: 12.5px;
   color: var(--text-dim);
 }
 
 .already.good {
-  color: var(--green-soft);
+  background: var(--success-bg);
+  color: var(--success-soft);
 }
 
 .already.bad {
-  color: var(--red-soft);
+  background: var(--danger-bg);
+  color: var(--danger-soft);
 }
 
 .open-left {
@@ -721,18 +745,26 @@ kbd {
 .summary {
   width: 100%;
   font-family: var(--font);
-  font-size: 12px;
+  font-size: 12.5px;
   resize: vertical;
 }
 
 /* The verdicts, tinted towards what they say, matching the composer's. */
 .verdict.approve:not(:disabled) {
-  color: var(--green-soft);
-  border-color: color-mix(in srgb, var(--green) 45%, transparent);
+  color: var(--success-soft);
+  box-shadow: inset 0 0 0 1px var(--success-line);
+}
+
+.verdict.approve:hover:not(:disabled) {
+  background: var(--success-bg);
 }
 
 .verdict.request:not(:disabled) {
-  color: var(--red-soft);
-  border-color: color-mix(in srgb, var(--red) 45%, transparent);
+  color: var(--danger-soft);
+  box-shadow: inset 0 0 0 1px var(--danger-line);
+}
+
+.verdict.request:hover:not(:disabled) {
+  background: var(--danger-bg);
 }
 </style>

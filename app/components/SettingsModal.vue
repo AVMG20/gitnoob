@@ -16,7 +16,8 @@ import {
   Sparkles,
   Trash2,
   User,
-  Users
+  Users,
+  X
 } from 'lucide-vue-next'
 import {
   DEFAULT_HOSTS,
@@ -33,7 +34,7 @@ import { useForge } from '~/composables/useForge'
 import { useAi } from '~/composables/useAi'
 import { useGit } from '~/composables/useGit'
 import { describeKey, useSsh } from '~/composables/useSsh'
-import { useTheme } from '~/composables/useTheme'
+import { SYSTEM_PAIR, useTheme } from '~/composables/useTheme'
 import { SHORTCUTS, SHORTCUT_GROUPS, keyLabel } from '~/composables/useShortcuts'
 import { useColumns } from '~/composables/useColumns'
 import { useUpdates } from '~/composables/useUpdates'
@@ -47,7 +48,13 @@ const forge = useForge()
 const ssh = useSsh()
 const ai = useAi()
 const git = useGit()
-const { theme, themes, setTheme, contrast, contrasts, setContrast } = useTheme()
+const { choice, themes, setTheme, contrast, contrasts, setContrast } = useTheme()
+
+/** The Studio pair, for the card that follows the system between them. */
+const systemSwatch = computed(() => [
+  themes.find((one) => one.id === SYSTEM_PAIR.light)!.swatch,
+  themes.find((one) => one.id === SYSTEM_PAIR.dark)!.swatch
+])
 
 /** How many themes are in a group, so the sentence above cannot go stale. */
 const themeCount = (kind: string) => themes.filter((one) => one.kind === kind).length
@@ -376,7 +383,7 @@ onMounted(async () => {
       </nav>
 
       <div class="content">
-        <button class="close" @click="config.closeSettings()">✕</button>
+        <button class="close" title="Close" @click="config.closeSettings()"><X :size="16" /></button>
 
         <!-- Profiles -->
         <section v-if="section === 'profiles'">
@@ -751,11 +758,32 @@ onMounted(async () => {
           </p>
 
           <div class="themes">
+            <!-- The default: Studio, light by day and dark by night, following
+                 whatever the system is set to. -->
+            <button
+              class="theme"
+              :class="{ on: choice === 'system' }"
+              @click="setTheme('system')"
+            >
+              <span class="swatch split">
+                <span
+                  v-for="(one, at) in systemSwatch"
+                  :key="at"
+                  class="half"
+                  :style="{ background: one[0] }"
+                >
+                  <span class="chip" :style="{ background: one[1] }"></span>
+                </span>
+              </span>
+              <span class="theme-name">Match system</span>
+              <span class="faint small">Studio, light or dark</span>
+              <Check v-if="choice === 'system'" :size="13" class="tick" />
+            </button>
             <button
               v-for="one in themes"
               :key="one.id"
               class="theme"
-              :class="{ on: one.id === theme }"
+              :class="{ on: one.id === choice }"
               @click="setTheme(one.id)"
             >
               <span class="swatch" :style="{ background: one.swatch[0] }">
@@ -764,7 +792,7 @@ onMounted(async () => {
               </span>
               <span class="theme-name">{{ one.name }}</span>
               <span class="faint small">{{ one.kind }}</span>
-              <Check v-if="one.id === theme" :size="13" class="tick" />
+              <Check v-if="one.id === choice" :size="13" class="tick" />
             </button>
           </div>
 
@@ -1092,45 +1120,67 @@ onMounted(async () => {
   display: grid;
   place-items: center;
   background: var(--overlay);
+  backdrop-filter: blur(3px);
+  animation: fade-in 0.14s ease-out;
 }
 
+/* A settings page more than a dialog: a quiet column of sections on the left,
+   the page itself on the right, one card round both. */
 .panel {
   display: grid;
-  grid-template-columns: 208px minmax(0, 1fr);
-  width: 860px;
+  grid-template-columns: 220px minmax(0, 1fr);
+  width: 900px;
   max-width: calc(100vw - 40px);
-  height: 640px;
+  height: 680px;
   max-height: calc(100vh - 60px);
-  background: var(--bg-panel);
-  border: 1px solid var(--line);
-  border-radius: 11px;
+  background: var(--bg);
+  border-radius: var(--radius-lg);
   overflow: hidden;
-  box-shadow: 0 22px 60px var(--shadow-strong);
+  box-shadow: var(--shadow-pop);
+  animation: rise-in 0.16s ease-out;
+}
+
+@keyframes fade-in {
+  from {
+    opacity: 0;
+  }
+}
+
+@keyframes rise-in {
+  from {
+    opacity: 0;
+    transform: translateY(4px) scale(0.99);
+  }
 }
 
 .nav {
-  background: var(--bg-deep);
-  border-right: 1px solid var(--line);
-  padding: 12px 8px;
+  background: var(--surface);
+  padding: 18px 12px;
   display: flex;
   flex-direction: column;
   gap: 2px;
 }
 
 .nav-title {
-  padding: 0 10px 10px;
-  font-size: 15px;
-  font-weight: 600;
+  padding: 0 12px 14px;
+  font-size: 17px;
+  font-weight: 650;
+  letter-spacing: -0.015em;
 }
 
 .nav-item {
   display: flex;
   align-items: center;
-  gap: 9px;
-  padding: 7px 10px;
-  border-radius: 6px;
+  gap: 10px;
+  min-height: 34px;
+  padding: 6px 12px;
+  border-radius: var(--radius-pill);
   color: var(--text-dim);
+  font-weight: 500;
   text-align: left;
+  transition:
+    background 0.12s,
+    color 0.12s;
 }
 
 .nav-item:hover {
@@ -1146,24 +1196,27 @@ onMounted(async () => {
 
 .nav-note {
   margin: auto 0 0;
-  padding: 10px;
-  font-size: 11px;
-  line-height: 1.5;
+  padding: 12px;
+  font-size: 11.5px;
+  line-height: 1.55;
 }
 
 .content {
   position: relative;
   overflow-y: auto;
-  padding: 18px 22px 26px;
+  padding: 28px 36px 36px;
 }
 
 .close {
   position: absolute;
-  right: 12px;
-  top: 12px;
+  right: 14px;
+  top: 14px;
+  display: grid;
+  place-items: center;
+  width: 32px;
+  height: 32px;
   color: var(--text-faint);
-  padding: 4px 7px;
-  border-radius: 5px;
+  border-radius: var(--radius-pill);
 }
 
 .close:hover {
@@ -1172,18 +1225,22 @@ onMounted(async () => {
 }
 
 h2 {
-  margin: 0 0 4px;
-  font-size: 17px;
+  margin: 0 0 6px;
+  font-size: 22px;
+  font-weight: 650;
+  letter-spacing: -0.02em;
 }
 
 h3 {
   margin: 0 0 12px;
-  font-size: 13.5px;
+  font-size: 14px;
+  font-weight: 600;
+  letter-spacing: -0.01em;
 }
 
 .intro {
-  margin: 0 0 18px;
-  font-size: 12.5px;
+  margin: 0 0 22px;
+  font-size: 13px;
   max-width: 62ch;
   line-height: 1.55;
 }
@@ -1191,34 +1248,45 @@ h3 {
 .list {
   display: flex;
   flex-direction: column;
-  gap: 5px;
+  gap: 6px;
 }
 
 .themes {
   display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(150px, 1fr));
-  gap: 10px;
+  grid-template-columns: repeat(auto-fill, minmax(156px, 1fr));
+  gap: 12px;
 }
 
+/* A theme is picked like a product off a shelf: a picture of it, its name,
+   and a ring in ink round the one you have. */
 .theme {
   position: relative;
   display: flex;
   flex-direction: column;
   align-items: flex-start;
-  gap: 4px;
-  padding: 9px 10px;
-  background: var(--bg-raised);
-  border: 1px solid var(--line);
-  border-radius: 8px;
+  gap: 3px;
+  padding: 8px 8px 10px;
+  background: var(--bg);
+  border-radius: var(--radius);
+  box-shadow: var(--shadow-card);
   text-align: left;
+  transition: box-shadow 0.12s;
 }
 
 .theme:hover {
-  background: var(--bg-hover);
+  box-shadow:
+    0 0 0 1px var(--border),
+    0 4px 12px -4px var(--shadow);
 }
 
-.theme.on {
-  border-color: var(--accent);
+.theme.on,
+.theme.on:hover {
+  box-shadow: 0 0 0 2px var(--primary);
+}
+
+.theme > .faint.small,
+.theme > .theme-name {
+  padding: 0 4px;
 }
 
 .swatch {
@@ -1226,16 +1294,32 @@ h3 {
   align-items: center;
   gap: 5px;
   width: 100%;
-  height: 34px;
+  height: 52px;
+  margin-bottom: 6px;
+  padding: 0 10px;
+  border-radius: var(--radius-sm);
+  box-shadow: inset 0 0 0 1px var(--border-soft);
+}
+
+/* Half the Studio Light card and half the Studio Dark one. */
+.swatch.split {
+  padding: 0;
+  gap: 0;
+  overflow: hidden;
+}
+
+.half {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  height: 100%;
   padding: 0 7px;
-  border-radius: 5px;
-  border: 1px solid var(--line);
 }
 
 .chip {
-  width: 16px;
-  height: 9px;
-  border-radius: 3px;
+  width: 20px;
+  height: 10px;
+  border-radius: var(--radius-pill);
 }
 
 .chip.text {
@@ -1249,23 +1333,26 @@ h3 {
 
 .tick {
   position: absolute;
-  right: 8px;
-  top: 8px;
-  color: var(--accent);
+  right: 14px;
+  top: 14px;
+  padding: 2px;
+  box-sizing: content-box;
+  border-radius: var(--radius-pill);
+  color: var(--primary-fg);
+  background: var(--primary);
 }
 
 .entry {
   display: flex;
   align-items: center;
-  gap: 11px;
-  padding: 9px 11px;
-  background: var(--bg-raised);
-  border: 1px solid var(--line);
-  border-radius: 8px;
+  gap: 12px;
+  padding: 12px 14px;
+  background: var(--surface);
+  border-radius: var(--radius);
 }
 
 .entry.active {
-  border-color: color-mix(in srgb, var(--accent) 50%, transparent);
+  box-shadow: inset 0 0 0 1.5px var(--primary);
 }
 
 .entry-icon {
@@ -1290,9 +1377,13 @@ h3 {
 }
 
 .tiny {
-  font-size: 11.5px;
-  padding: 3px 8px;
-  border: 1px solid var(--line);
+  min-height: 28px;
+  font-size: 12px;
+  padding: 3px 12px;
+  border-radius: var(--radius-pill);
+  color: var(--text);
+  background: var(--bg);
+  box-shadow: inset 0 0 0 1px var(--line);
 }
 
 .tiny.danger {
@@ -1305,10 +1396,9 @@ h3 {
 
 .editor {
   margin-top: 20px;
-  padding: 15px;
-  border: 1px solid var(--line);
-  border-radius: 9px;
-  background: var(--bg-raised);
+  padding: 20px;
+  border-radius: var(--radius-lg);
+  background: var(--surface);
 }
 
 .field {
@@ -1324,11 +1414,10 @@ h3 {
   display: flex;
   align-items: center;
   gap: 5px;
-  margin-bottom: 5px;
-  font-size: 11px;
-  letter-spacing: 0.06em;
-  text-transform: uppercase;
-  color: var(--text-faint);
+  margin-bottom: 6px;
+  font-size: 12px;
+  font-weight: 550;
+  color: var(--text-dim);
 }
 
 .field input[type='text'],
@@ -1336,6 +1425,11 @@ h3 {
 .field select,
 .field textarea {
   width: 100%;
+}
+
+.field input[type='text'],
+.field input[type='password'] {
+  padding: 8px 12px;
 }
 
 /* Instructions to a model are prose, but prose with its line breaks meant, so
@@ -1350,17 +1444,18 @@ h3 {
 /* A sentence that does something, inside a sentence that does not. */
 .link {
   padding: 0;
-  color: var(--accent);
+  color: var(--text);
+  font-weight: 550;
   text-decoration: underline;
   text-underline-offset: 2px;
 }
 
 select {
-  padding: 6px 8px;
+  padding: 7px 28px 7px 12px;
   color: var(--text);
-  background: var(--bg);
+  background-color: var(--bg);
   border: 1px solid var(--line);
-  border-radius: 5px;
+  border-radius: var(--radius-sm);
 }
 
 
@@ -1401,8 +1496,8 @@ select {
 
 .hint {
   display: block;
-  margin-top: 5px;
-  font-size: 11px;
+  margin-top: 6px;
+  font-size: 11.5px;
   line-height: 1.5;
 }
 
@@ -1430,11 +1525,13 @@ select {
   display: flex;
   align-items: center;
   gap: 6px;
-  padding: 6px 10px;
-  border: 1px solid var(--line);
-  border-radius: 6px;
+  min-height: 32px;
+  padding: 5px 14px;
+  border-radius: var(--radius-pill);
+  box-shadow: inset 0 0 0 1px var(--line);
   color: var(--text-dim);
   font-size: 12.5px;
+  font-weight: 500;
 }
 
 .choice:hover {
@@ -1442,10 +1539,12 @@ select {
   color: var(--text);
 }
 
-.choice.on {
-  border-color: var(--accent);
-  color: var(--text);
-  background: color-mix(in srgb, var(--accent) 12%, transparent);
+/* The chosen one is filled in ink, like a size picked on a product page. */
+.choice.on,
+.choice.on:hover {
+  color: var(--primary-fg);
+  background: var(--primary);
+  box-shadow: none;
 }
 
 .editor-actions {
@@ -1459,8 +1558,14 @@ select {
   gap: 10px;
   margin-bottom: 16px;
   cursor: pointer;
-  font-size: 12.5px;
+  font-size: 13px;
+  font-weight: 500;
   max-width: 66ch;
+}
+
+.check .block,
+.check .sub {
+  font-weight: 400;
 }
 
 .check input {
@@ -1480,12 +1585,18 @@ select {
   margin-bottom: 18px;
 }
 
+/* A group is one rounded list, its rows divided by hairlines inside it. */
+.keys-group {
+  padding: 2px 14px;
+  border-radius: var(--radius);
+  background: var(--surface);
+}
+
 .keys-group h3 {
-  font-size: 11px;
-  letter-spacing: 0.06em;
-  text-transform: uppercase;
-  color: var(--text-faint);
-  margin: 0 0 6px;
+  font-size: 12.5px;
+  font-weight: 600;
+  color: var(--text-dim);
+  margin: 10px 0 4px;
 }
 
 .keys-row {
@@ -1493,9 +1604,9 @@ select {
   grid-template-columns: 96px 1fr 190px;
   gap: 12px;
   align-items: baseline;
-  padding: 5px 0;
-  border-top: 1px solid var(--line);
-  font-size: 12.5px;
+  padding: 8px 0;
+  border-top: 1px solid var(--line-soft);
+  font-size: 13px;
 }
 
 .keys {
@@ -1503,10 +1614,12 @@ select {
   font-size: 11.5px;
   font-weight: 600;
   text-align: center;
-  padding: 2px 6px;
-  border-radius: 4px;
-  border: 1px solid var(--line);
-  background: var(--bg-raised);
+  padding: 2px 8px;
+  border-radius: var(--radius-sm);
+  background: var(--bg);
+  box-shadow:
+    0 0 0 1px var(--border-soft),
+    0 1px 0 var(--border);
   color: var(--text);
   white-space: nowrap;
 }
@@ -1520,8 +1633,10 @@ select {
 }
 
 .sub {
-  font-size: 13px;
-  margin: 22px 0 4px;
+  font-size: 14px;
+  font-weight: 600;
+  letter-spacing: -0.01em;
+  margin: 30px 0 4px;
 }
 
 /* The four column names sit in a row: they are one choice, not four settings
@@ -1542,9 +1657,8 @@ select {
   margin: 10px 0 18px;
   padding: 10px 12px;
   overflow-x: auto;
-  background: var(--bg-raised);
-  border: 1px solid var(--line);
-  border-radius: 7px;
+  background: var(--surface);
+  border-radius: var(--radius);
 }
 
 .preview-line {
@@ -1565,26 +1679,37 @@ select {
   margin-bottom: 18px;
 }
 
+/* Steps picked the way a size is on a product page: outlined pills, the
+   chosen one filled in ink. */
 .size {
-  min-width: 62px;
-  padding: 6px 10px;
-  font-size: 12px;
+  min-width: 64px;
+  padding: 7px 14px;
+  font-size: 12.5px;
+  font-weight: 500;
   text-align: center;
-  color: var(--text-dim);
-  background: var(--bg-raised);
-  border: 1px solid var(--line);
-  border-radius: 6px;
+  color: var(--text);
+  background: var(--bg);
+  box-shadow: inset 0 0 0 1px var(--line);
+  border-radius: var(--radius-pill);
+  transition:
+    background 0.12s,
+    box-shadow 0.12s;
 }
 
 .size:hover {
-  color: var(--text);
-  border-color: var(--text-faint);
+  box-shadow: inset 0 0 0 1px var(--text-faint);
 }
 
-.size.on {
-  color: var(--text);
-  background: var(--bg-active);
-  border-color: var(--accent);
+.size.on,
+.size.on:hover {
+  color: var(--primary-fg);
+  background: var(--primary);
+  box-shadow: none;
+}
+
+.size.on .faint {
+  color: inherit;
+  opacity: 0.7;
 }
 
 .cols .check {
@@ -1600,7 +1725,7 @@ select {
   height: 6px;
   margin-left: auto;
   border-radius: 50%;
-  background: var(--accent);
+  background: var(--danger);
 }
 
 .version-row {
@@ -1630,10 +1755,10 @@ select {
 
 .offer {
   margin: 12px 0 18px;
-  padding: 12px 14px;
-  border: 1px solid color-mix(in srgb, var(--accent) 50%, transparent);
-  border-radius: 8px;
-  background: color-mix(in srgb, var(--accent) 10%, transparent);
+  padding: 16px 18px;
+  border-radius: var(--radius);
+  background: var(--surface);
+  box-shadow: inset 0 0 0 1px var(--border-soft);
 }
 
 .offer-head {
@@ -1668,15 +1793,15 @@ select {
 .progress .track {
   flex: 1;
   min-width: 0;
-  height: 4px;
-  border-radius: 2px;
-  background: var(--bg-hover);
+  height: 6px;
+  border-radius: var(--radius-pill);
+  background: var(--bg-raised);
 }
 
 .progress .bar {
   width: 0;
   height: 100%;
-  border-radius: 2px;
+  border-radius: var(--radius-pill);
   background: var(--accent);
   transition: width 0.2s linear;
 }

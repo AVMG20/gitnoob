@@ -149,8 +149,8 @@ onMounted(async () => {
   color: var(--red-soft);
   background: var(--danger-bg);
   border: 1px solid var(--danger-line);
-  border-radius: 7px;
-  padding: 8px 10px;
+  border-radius: var(--radius);
+  padding: 10px 12px;
 }
 
 .ack {

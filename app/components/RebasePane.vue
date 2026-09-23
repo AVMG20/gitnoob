@@ -305,36 +305,50 @@ async function saveMessage() {
 </template>
 
 <style scoped>
+/* A card of its own in the shell's grid: nothing painted behind it here. */
 .rebase {
   display: flex;
   flex-direction: column;
   min-width: 0;
-  background: var(--bg);
 }
 
 .head {
   display: flex;
   align-items: center;
-  gap: 10px;
-  padding: 8px 14px;
-  background: var(--bg-panel);
-  border-bottom: 1px solid var(--line);
+  gap: 12px;
+  padding: 14px 14px 14px 18px;
+  border-bottom: 1px solid var(--line-soft);
 }
 
+/* The branch glyph in a soft round tile, the way a storefront badges a
+   section. */
 .mark {
-  color: var(--accent);
   flex: none;
+  box-sizing: content-box;
+  padding: 8px;
+  border-radius: var(--radius);
+  background: var(--bg-raised);
+  color: var(--text);
 }
 
 .titles h2 {
   margin: 0;
-  font-size: 13px;
-  font-weight: 600;
+  font-size: 15px;
+  font-weight: 650;
+  letter-spacing: -0.01em;
+}
+
+.titles h2 .mono {
+  padding: 1px 7px;
+  border-radius: var(--radius-pill);
+  background: var(--bg-raised);
+  font-size: 12.5px;
+  font-weight: 500;
 }
 
 .sub {
-  margin: 0;
-  font-size: 11px;
+  margin: 2px 0 0;
+  font-size: 12px;
 }
 
 .grow {
@@ -342,14 +356,16 @@ async function saveMessage() {
 }
 
 .icon {
-  padding: 4px 6px;
+  width: 32px;
+  padding: 0;
+  border-radius: var(--radius-pill);
 }
 
 .body {
   flex: 1;
   min-height: 0;
   display: grid;
-  grid-template-columns: minmax(0, 1fr) 280px;
+  grid-template-columns: minmax(0, 1fr) 290px;
 }
 
 .list-side {
@@ -362,10 +378,15 @@ async function saveMessage() {
   display: flex;
   align-items: center;
   gap: 8px;
-  padding: 6px 14px;
-  font-size: 11px;
-  color: var(--text-faint);
-  border-bottom: 1px solid var(--line-soft);
+  padding: 10px 18px 4px;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text-dim);
+}
+
+.listhead .faint {
+  font-weight: 400;
+  font-size: 11.5px;
 }
 
 .todo {
@@ -373,25 +394,29 @@ async function saveMessage() {
   min-height: 0;
   list-style: none;
   margin: 0;
-  padding: 6px 8px;
+  padding: 6px 10px 10px;
   overflow-y: auto;
 }
 
+/* Each commit is a rounded row; the plan reads as a list of cards rather
+   than a table. */
 .row {
   display: flex;
   align-items: center;
-  gap: 9px;
-  height: 30px;
-  padding: 0 9px;
-  margin-bottom: 2px;
-  border-radius: var(--radius-sm);
-  border: 1px solid transparent;
-  background: var(--bg-panel);
+  gap: 10px;
+  height: 38px;
+  padding: 0 10px;
+  margin-bottom: 4px;
+  border-radius: var(--radius);
+  background: var(--surface);
+  transition:
+    background 0.12s,
+    box-shadow 0.12s;
 }
 
 .row:hover {
-  background: var(--bg-raised);
-  border-color: var(--line-soft);
+  background: var(--bg);
+  box-shadow: var(--shadow-card);
 }
 
 /* The row being dragged stays put, faded, so nothing jumps under the pointer. */
@@ -401,16 +426,16 @@ async function saveMessage() {
 
 /* Where it would land. */
 .slot {
-  height: 30px;
-  margin-bottom: 2px;
-  border-radius: var(--radius-sm);
+  height: 38px;
+  margin-bottom: 4px;
+  border-radius: var(--radius);
   background: var(--bg-hover);
-  border: 1px dashed var(--line);
+  border: 1.5px dashed var(--line);
 }
 
 .row.here {
-  border-color: var(--warning-line);
   background: var(--warning-bg);
+  box-shadow: inset 0 0 0 1px var(--warning-line);
 }
 
 .grip {
@@ -432,16 +457,22 @@ async function saveMessage() {
   cursor: grabbing;
 }
 
+/* What happens to the commit, as a pill in the colour of the outcome. It
+   opens a menu, and the chevron-free pill is the whole affordance. */
 .act {
   flex: none;
-  width: 76px;
-  padding: 2px 8px;
-  border-radius: 4px;
-  font-family: var(--mono);
-  font-size: 11px;
+  width: 72px;
+  padding: 3px 10px;
+  border-radius: var(--radius-pill);
+  font-size: 11.5px;
   font-weight: 600;
-  text-align: left;
-  border: 1px solid transparent;
+  text-align: center;
+  text-transform: capitalize;
+  transition: box-shadow 0.12s;
+}
+
+.act:hover:not(:disabled) {
+  box-shadow: 0 0 0 3px color-mix(in srgb, currentColor 16%, transparent);
 }
 
 .act:disabled {
@@ -449,34 +480,29 @@ async function saveMessage() {
 }
 
 .act-pick {
-  background: var(--primary-bg);
-  color: var(--accent);
-  border-color: var(--primary-line);
+  background: var(--bg-raised);
+  color: var(--text);
 }
 
 .act-reword {
   background: var(--info-bg);
   color: var(--purple-soft);
-  border-color: color-mix(in srgb, var(--purple) 40%, transparent);
 }
 
 .act-squash,
 .act-fixup {
   background: var(--success-bg);
   color: var(--green-soft);
-  border-color: var(--success-line);
 }
 
 .act-edit {
   background: var(--warning-bg);
   color: var(--amber-soft);
-  border-color: var(--warning-line);
 }
 
 .act-drop {
   background: var(--danger-bg);
   color: var(--red-soft);
-  border-color: var(--danger-line);
 }
 
 .hash {
@@ -488,7 +514,8 @@ async function saveMessage() {
 .msg {
   flex: 1;
   min-width: 0;
-  font-size: 12px;
+  font-size: 13px;
+  font-weight: 500;
 }
 
 .row.gone .msg,
@@ -499,36 +526,36 @@ async function saveMessage() {
 
 /* A folded commit is tied to the one above it by a rail down the left. */
 .row.melded {
-  margin-left: 18px;
+  margin-left: 20px;
   position: relative;
 }
 
 .row.melded::before {
   content: '';
   position: absolute;
-  left: -11px;
-  top: -3px;
+  left: -13px;
+  top: -5px;
   bottom: 50%;
-  width: 9px;
+  width: 10px;
   border-left: 1.5px solid var(--success-line);
   border-bottom: 1.5px solid var(--success-line);
-  border-bottom-left-radius: 5px;
+  border-bottom-left-radius: 6px;
 }
 
 .chip {
   flex: none;
-  padding: 0 5px;
-  border-radius: 3px;
-  font-size: 10px;
+  padding: 1px 8px;
+  border-radius: var(--radius-pill);
+  font-size: 10.5px;
+  font-weight: 500;
   background: var(--warning-bg);
   color: var(--amber-soft);
-  border: 1px solid var(--warning-line);
 }
 
 .who,
 .when {
   flex: none;
-  font-size: 11px;
+  font-size: 11.5px;
 }
 
 .when {
@@ -536,38 +563,42 @@ async function saveMessage() {
   text-align: right;
 }
 
+/* The outcome, as a summary card down the side, the way a basket sits beside
+   the thing being bought. */
 .outcome {
-  border-left: 1px solid var(--line-soft);
-  padding: 12px 14px;
+  margin: 10px 10px 10px 0;
+  padding: 16px 16px 14px;
+  border-radius: var(--radius-lg);
   overflow-y: auto;
-  background: var(--bg-panel);
+  background: var(--surface);
 }
 
 .outcome h3 {
-  margin: 0 0 2px;
-  font-size: 12px;
+  margin: 0;
+  font-size: 13px;
+  font-weight: 650;
 }
 
 .pv {
   list-style: none;
-  margin: 10px 0 0;
+  margin: 12px 0 0;
   padding: 0;
 }
 
 .pv li {
   display: flex;
   align-items: baseline;
-  gap: 9px;
-  padding: 4px 0;
-  font-size: 12px;
+  gap: 10px;
+  padding: 5px 0;
+  font-size: 12.5px;
 }
 
 .node {
   flex: none;
-  width: 7px;
-  height: 7px;
-  border-radius: 50%;
-  background: var(--accent);
+  width: 8px;
+  height: 8px;
+  border-radius: var(--radius-pill);
+  background: var(--lane-1);
 }
 
 .pv .base .node {
@@ -583,27 +614,29 @@ async function saveMessage() {
 }
 
 .tag {
-  font-family: var(--mono);
-  font-size: 10px;
+  font-size: 11px;
   color: var(--text-faint);
 }
 
 .tally {
-  margin-top: 12px;
-  padding-top: 10px;
+  margin-top: 14px;
+  padding-top: 12px;
   border-top: 1px solid var(--line-soft);
-  font-size: 11px;
+  font-size: 12px;
   color: var(--text-dim);
+}
+
+.tally strong {
+  color: var(--text);
 }
 
 .foot,
 .strip {
   display: flex;
   align-items: center;
-  gap: 9px;
-  padding: 10px 14px;
-  background: var(--bg-panel);
-  border-top: 1px solid var(--line);
+  gap: 10px;
+  padding: 12px 14px 12px 18px;
+  border-top: 1px solid var(--line-soft);
 }
 
 .cmd {
@@ -613,52 +646,72 @@ async function saveMessage() {
 
 .refusal {
   font-size: 12px;
-  color: var(--red);
+  color: var(--red-soft);
 }
 
 .warn-line {
   font-size: 12px;
-  color: var(--amber);
+  color: var(--amber-soft);
 }
 
 .strip {
-  font-size: 12px;
+  margin: 0 10px 10px;
+  padding: 10px 12px 10px 14px;
+  border-top: none;
+  border-radius: var(--radius);
+  font-size: 12.5px;
   color: var(--amber-soft);
   background: var(--warning-bg);
-  border-top: 1px solid var(--warning-line);
+  box-shadow: inset 0 0 0 1px var(--warning-line);
 }
 
 .pill {
   flex: none;
-  padding: 1px 7px;
-  border-radius: 999px;
+  padding: 1px 8px;
+  border-radius: var(--radius-pill);
   font-size: 11px;
   background: color-mix(in srgb, var(--warning-line) 55%, transparent);
+  color: inherit;
 }
 
 .msgbox {
   flex: 1;
   min-width: 0;
-  padding: 3px 8px;
-  font-size: 12px;
+  padding: 4px 10px;
+  font-size: 12.5px;
 }
 
+/* Ink on the warning strip, the way the toolbar's banners do it. */
 .tiny {
-  font-size: 11px;
-  padding: 2px 8px;
-  background: var(--amber);
-  color: #1a1206;
+  min-height: 28px;
+  font-size: 12px;
+  padding: 3px 14px;
+  border-radius: var(--radius-pill);
+  background: var(--text);
+  color: var(--bg);
   font-weight: 600;
 }
 
+.strip .tiny:hover:not(:disabled) {
+  background: var(--text);
+  color: var(--bg);
+  opacity: 0.88;
+}
+
 .tiny.ghost {
-  background: none;
-  color: var(--amber-soft);
-  border: 1px solid var(--warning-line);
+  background: transparent;
+  color: inherit;
+  box-shadow: inset 0 0 0 1px var(--warning-line);
+}
+
+.strip .tiny.ghost:hover:not(:disabled) {
+  background: color-mix(in srgb, currentColor 10%, transparent);
+  color: inherit;
+  opacity: 1;
 }
 
 .none {
-  padding: 10px 12px;
-  font-size: 12px;
+  padding: 14px 12px;
+  font-size: 12.5px;
 }
 </style>

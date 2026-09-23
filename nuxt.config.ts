@@ -2,7 +2,7 @@ export default defineNuxtConfig({
   // Tauri serves the built files from disk, so there is no server to render on.
   ssr: false,
   devtools: { enabled: false },
-  css: ['~/assets/css/main.css'],
+  css: ['@fontsource-variable/inter', '~/assets/css/main.css'],
   app: {
     head: {
       title: 'gitnoob',

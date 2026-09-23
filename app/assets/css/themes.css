@@ -7,10 +7,205 @@
  * this app runs in is whatever the user's distribution shipped.
  */
 
-/* Fjord — The default: a blue-grey window that keeps out of the way. */
+/* Studio Light — The default by day: white cards on a soft grey, and ink for the buttons. */
 :root,
+[data-theme='studio-light'] {
+  --bg: #ffffff;
+  --canvas: #eeeeee;
+  --surface: #fafafa;
+  --raised: #f2f2f2;
+  --deep: #f8f8f8;
+  --hover: #f5f5f5;
+  --active: #efefef;
+  --fg: #1c1c1c;
+  --fg-muted: #5d5d5d;
+  --fg-subtle: #767676;
+  --border: #dadada;
+  --border-soft: #ececec;
+  --ring: #17181b;
+  --primary: #17181b;
+  --primary-fg: #ffffff;
+  --primary-hover: #0a0b0e;
+  --primary-soft: #050608;
+  --primary-bg: #e3e3e4;
+  --primary-line: #b5b5b6;
+  --danger: #d73d47;
+  --danger-fg: #ffffff;
+  --danger-hover: #c12535;
+  --danger-soft: #b7162d;
+  --danger-bg: #fae8e9;
+  --danger-line: #f2c1c4;
+  --success: #028844;
+  --success-soft: #036a34;
+  --success-bg: #e1f1e9;
+  --success-line: #aed9c3;
+  --warning: #cf8105;
+  --warning-soft: #aa6a05;
+  --warning-bg: #f9f0e1;
+  --warning-line: #f0d7af;
+  --info: #735fe9;
+  --info-soft: #5c42ca;
+  --info-bg: #eeecfc;
+  --diff-add-bg: #e1f1e9;
+  --diff-add-line: #aed9c3;
+  --diff-del-bg: #fae8e9;
+  --diff-del-line: #f2c1c4;
+  --diff-ours: #3771d1;
+  --diff-theirs: #735fe9;
+  --scrollbar: #cecece;
+  --scrollbar-hover: #aeaeae;
+  --overlay: rgba(34, 34, 34, 0.3);
+  --shadow: rgba(0, 0, 0, 0.07);
+  --shadow-strong: rgba(0, 0, 0, 0.14);
+  --lane-1: #3771d1;
+  --lane-2: #887405;
+  --lane-3: #028b51;
+  --lane-4: #bf4258;
+  --lane-5: #8459c3;
+  --lane-6: #09848f;
+  --lane-7: #b54481;
+  --lane-8: #568502;
+  --lane-9: #be4a1b;
+  --lane-10: #5b68d0;
+  --bg-panel: var(--surface);
+  --bg-raised: var(--raised);
+  --bg-hover: var(--hover);
+  --bg-active: var(--active);
+  --bg-deep: var(--deep);
+  --line: var(--border);
+  --line-soft: var(--border-soft);
+  --text: var(--fg);
+  --text-dim: var(--fg-muted);
+  --text-faint: var(--fg-subtle);
+  --accent: var(--primary);
+  --on-accent: var(--primary-fg);
+  --accent-hover: var(--primary-hover);
+  --accent-soft: var(--primary-soft);
+  --red: var(--danger);
+  --on-danger: var(--danger-fg);
+  --red-soft: var(--danger-soft);
+  --green: var(--success);
+  --green-soft: var(--success-soft);
+  --amber: var(--warning);
+  --amber-soft: var(--warning-soft);
+  --purple: var(--info);
+  --purple-soft: var(--info-soft);
+}
+:root[data-contrast='cosy'],
+[data-theme='studio-light'][data-contrast='cosy'] {
+  --fg-muted: #6a6a6a;
+  --fg-subtle: #898989;
+  --border: #e8e8e8;
+  --border-soft: #f4f4f4;
+}
+:root[data-contrast='high'],
+[data-theme='studio-light'][data-contrast='high'] {
+  --fg-muted: #4c4c4c;
+  --fg-subtle: #606060;
+  --border: #b7b7b7;
+  --border-soft: #d5d5d5;
+}
+
+/* Studio Dark — The default by night: charcoal cards on near-black, and white for the buttons. */
+[data-theme='studio-dark'] {
+  --bg: #1b1c1e;
+  --canvas: #0e0e10;
+  --surface: #1f2022;
+  --raised: #262628;
+  --deep: #17181a;
+  --hover: #232426;
+  --active: #303133;
+  --fg: #eff1f5;
+  --fg-muted: #9ea0a4;
+  --fg-subtle: #828387;
+  --border: #37383a;
+  --border-soft: #2a2b2d;
+  --ring: #f0f2f4;
+  --primary: #f0f2f4;
+  --primary-fg: #0c0d0f;
+  --primary-hover: #ffffff;
+  --primary-soft: #ffffff;
+  --primary-bg: #393a3c;
+  --primary-line: #636567;
+  --danger: #f36164;
+  --danger-fg: #1b0606;
+  --danger-hover: #ff7e7d;
+  --danger-soft: #ff8f8d;
+  --danger-bg: #392628;
+  --danger-line: #643336;
+  --success: #58c97d;
+  --success-soft: #87e3a1;
+  --success-bg: #24342b;
+  --success-line: #30573e;
+  --warning: #f2af48;
+  --warning-soft: #ffd295;
+  --warning-bg: #393124;
+  --warning-line: #644e2c;
+  --info: #968dfd;
+  --info-soft: #b3b1ff;
+  --info-bg: #2c2c3d;
+  --diff-add-bg: #24342b;
+  --diff-add-line: #30573e;
+  --diff-del-bg: #392628;
+  --diff-del-line: #643336;
+  --diff-ours: #6da4ff;
+  --diff-theirs: #968dfd;
+  --scrollbar: #3b3c3e;
+  --scrollbar-hover: #535457;
+  --overlay: rgba(3, 4, 5, 0.55);
+  --shadow: rgba(0, 0, 0, 0.4);
+  --shadow-strong: rgba(0, 0, 0, 0.6);
+  --lane-1: #6da4ff;
+  --lane-2: #bfa403;
+  --lane-3: #40c07b;
+  --lane-4: #f37988;
+  --lane-5: #b48df4;
+  --lane-6: #09bac9;
+  --lane-7: #e97ab2;
+  --lane-8: #85b749;
+  --lane-9: #f28058;
+  --lane-10: #8b9bff;
+  --bg-panel: var(--surface);
+  --bg-raised: var(--raised);
+  --bg-hover: var(--hover);
+  --bg-active: var(--active);
+  --bg-deep: var(--deep);
+  --line: var(--border);
+  --line-soft: var(--border-soft);
+  --text: var(--fg);
+  --text-dim: var(--fg-muted);
+  --text-faint: var(--fg-subtle);
+  --accent: var(--primary);
+  --on-accent: var(--primary-fg);
+  --accent-hover: var(--primary-hover);
+  --accent-soft: var(--primary-soft);
+  --red: var(--danger);
+  --on-danger: var(--danger-fg);
+  --red-soft: var(--danger-soft);
+  --green: var(--success);
+  --green-soft: var(--success-soft);
+  --amber: var(--warning);
+  --amber-soft: var(--warning-soft);
+  --purple: var(--info);
+  --purple-soft: var(--info-soft);
+}
+[data-theme='studio-dark'][data-contrast='cosy'] {
+  --fg-muted: #8f9195;
+  --fg-subtle: #707175;
+  --border: #2d2e30;
+  --border-soft: #242527;
+}
+[data-theme='studio-dark'][data-contrast='high'] {
+  --fg-muted: #b6b7bc;
+  --fg-subtle: #9a9ca0;
+  --border: #4f5053;
+  --border-soft: #3b3b3e;
+}
+
+/* Fjord — A blue-grey window that keeps out of the way. */
 [data-theme='fjord'] {
   --bg: #121b24;
+  --canvas: #0a131c;
   --surface: #17212a;
   --raised: #1e2932;
   --deep: #0d171f;
@@ -90,14 +285,12 @@
   --purple: var(--info);
   --purple-soft: var(--info-soft);
 }
-:root[data-contrast='cosy'],
 [data-theme='fjord'][data-contrast='cosy'] {
   --fg-muted: #86919b;
   --fg-subtle: #67717b;
   --border: #26333f;
-  --border-soft: #000000;
+  --border-soft: #1c2731;
 }
-:root[data-contrast='high'],
 [data-theme='fjord'][data-contrast='high'] {
   --fg-muted: #abb7c1;
   --fg-subtle: #909ca6;
@@ -108,6 +301,7 @@
 /* Slate — Cooler and greyer, with a brighter blue. */
 [data-theme='slate'] {
   --bg: #15181b;
+  --canvas: #0d1013;
   --surface: #1b1e21;
   --raised: #222528;
   --deep: #111317;
@@ -191,7 +385,7 @@
   --fg-muted: #898f96;
   --fg-subtle: #696f76;
   --border: #2d3035;
-  --border-soft: #000000;
+  --border-soft: #212529;
 }
 [data-theme='slate'][data-contrast='high'] {
   --fg-muted: #adb4bb;
@@ -203,6 +397,7 @@
 /* Pine — A green-grey window; the accent is a deep teal. */
 [data-theme='pine'] {
   --bg: #0e1311;
+  --canvas: #070b09;
   --surface: #141917;
   --raised: #1a201d;
   --deep: #0a0f0d;
@@ -298,6 +493,7 @@
 /* Dusk — Warm grey, with a violet accent. */
 [data-theme='dusk'] {
   --bg: #1c1a1d;
+  --canvas: #141215;
   --surface: #222024;
   --raised: #29272b;
   --deep: #171519;
@@ -381,7 +577,7 @@
   --fg-muted: #938f97;
   --fg-subtle: #736f77;
   --border: #343136;
-  --border-soft: #000000;
+  --border-soft: #28262a;
 }
 [data-theme='dusk'][data-contrast='high'] {
   --fg-muted: #b9b4bd;
@@ -393,6 +589,7 @@
 /* Plum — A purple-tinted window and a pink accent. */
 [data-theme='plum'] {
   --bg: #1a1619;
+  --canvas: #120e12;
   --surface: #201c1f;
   --raised: #272326;
   --deep: #151115;
@@ -476,7 +673,7 @@
   --fg-muted: #938b92;
   --fg-subtle: #736c73;
   --border: #332e32;
-  --border-soft: #000000;
+  --border-soft: #272227;
 }
 [data-theme='plum'][data-contrast='high'] {
   --fg-muted: #b9b0b8;
@@ -488,6 +685,7 @@
 /* Moss — An olive window with a lime accent. */
 [data-theme='moss'] {
   --bg: #181a15;
+  --canvas: #10120e;
   --surface: #1e201b;
   --raised: #242722;
   --deep: #131511;
@@ -571,7 +769,7 @@
   --fg-muted: #8c9187;
   --fg-subtle: #6c7168;
   --border: #2f322c;
-  --border-soft: #000000;
+  --border-soft: #242621;
 }
 [data-theme='moss'][data-contrast='high'] {
   --fg-muted: #b2b6ad;
@@ -583,6 +781,7 @@
 /* Ink — Nearly black, with a colder blue. */
 [data-theme='ink'] {
   --bg: #0c0f13;
+  --canvas: #05080c;
   --surface: #111519;
   --raised: #181c20;
   --deep: #080b0f;
@@ -678,6 +877,7 @@
 /* Obsidian — Neutral charcoal, no colour in the ground at all. */
 [data-theme='obsidian'] {
   --bg: #09090a;
+  --canvas: #040404;
   --surface: #0e0e10;
   --raised: #151516;
   --deep: #060606;
@@ -773,6 +973,7 @@
 /* Mono — Grey, and one colour: everything that is not meaning is grey. */
 [data-theme='mono'] {
   --bg: #0a0a0a;
+  --canvas: #040404;
   --surface: #101010;
   --raised: #161616;
   --deep: #060606;
@@ -811,7 +1012,7 @@
   --diff-add-line: #244833;
   --diff-del-bg: #241316;
   --diff-del-line: #53242c;
-  --diff-ours: #e5e5e7;
+  --diff-ours: #988df9;
   --diff-theirs: #a97bf0;
   --scrollbar: #2c2c2c;
   --scrollbar-hover: #464646;
@@ -868,6 +1069,7 @@
 /* Void — Pure black, with a cyan accent. */
 [data-theme='void'] {
   --bg: #000000;
+  --canvas: #000000;
   --surface: #0b0b0b;
   --raised: #151515;
   --deep: #000000;
@@ -963,6 +1165,7 @@
 /* Jade — Black, lit green — the additions move yellow to stay apart from it. */
 [data-theme='jade'] {
   --bg: #000000;
+  --canvas: #000000;
   --surface: #0b0b0b;
   --raised: #151515;
   --deep: #000000;
@@ -1058,6 +1261,7 @@
 /* Crimson — Black, lit red — a deletion keeps a redder red to stay apart. */
 [data-theme='crimson'] {
   --bg: #000000;
+  --canvas: #000000;
   --surface: #0b0b0b;
   --raised: #151515;
   --deep: #000000;
@@ -1153,6 +1357,7 @@
 /* Ember — Black, lit amber — a warning moves yellower to stay apart. */
 [data-theme='ember'] {
   --bg: #000000;
+  --canvas: #000000;
   --surface: #0b0b0b;
   --raised: #151515;
   --deep: #000000;
@@ -1248,6 +1453,7 @@
 /* Paper — Plain white, blue accent. */
 [data-theme='paper'] {
   --bg: #ffffff;
+  --canvas: #f3f3f3;
   --surface: #f8f8f8;
   --raised: #eeeeee;
   --deep: #f0f0f0;
@@ -1343,6 +1549,7 @@
 /* Mist — A cool off-white, easier on the eyes than plain white. */
 [data-theme='mist'] {
   --bg: #eff1f5;
+  --canvas: #e3e5e9;
   --surface: #e8eaee;
   --raised: #dfe0e4;
   --deep: #e0e2e6;
@@ -1438,6 +1645,7 @@
 /* Sand — Warm paper, for people who find white screens cold. */
 [data-theme='sand'] {
   --bg: #faf7ef;
+  --canvas: #efece3;
   --surface: #f3f0e7;
   --raised: #eae7de;
   --deep: #ebe8e0;
@@ -1533,6 +1741,7 @@
 /* Frost — Pale blue paper with a teal accent. */
 [data-theme='frost'] {
   --bg: #f2fbfe;
+  --canvas: #e7f0f2;
   --surface: #ebf4f6;
   --raised: #e2ebed;
   --deep: #e3ecef;
@@ -1628,6 +1837,7 @@
 /* Lilac — Pale violet paper, purple accent. */
 [data-theme='lilac'] {
   --bg: #fbf9fe;
+  --canvas: #f1ecf6;
   --surface: #f5f1fa;
   --raised: #ece7f1;
   --deep: #ede9f3;

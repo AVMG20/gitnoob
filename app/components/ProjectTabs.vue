@@ -175,45 +175,53 @@ function onDrop(target: string) {
 </template>
 
 <style scoped>
+/* The strip is part of the canvas. Tabs are pills; the open one is a small
+   white card lifted off it, the same stuff the panels below are made of. */
 .strip {
   display: flex;
-  align-items: stretch;
-  gap: 2px;
-  padding: 0 6px 0 4px;
-  background: var(--bg-deep);
-  border-bottom: 1px solid var(--line);
-  min-height: 38px;
+  align-items: center;
+  gap: 4px;
+  padding: 8px calc(var(--gutter) + 4px) 6px;
+  min-height: 46px;
 }
 
 /* Clear of the window controls, which the config parks at x: 13. */
 .strip.lights {
-  padding-left: 78px;
+  padding-left: 80px;
 }
 
 .icon {
   display: grid;
   place-items: center;
+  flex: none;
   width: 30px;
-  color: var(--text-faint);
-  border-radius: 5px;
-  margin: 4px 0;
+  height: 30px;
+  color: var(--text-dim);
+  border-radius: var(--radius-pill);
+  transition:
+    background 0.12s,
+    color 0.12s;
 }
 
 .icon:hover {
   color: var(--text);
-  background: var(--bg-hover);
+  background: color-mix(in srgb, var(--text) 7%, transparent);
 }
 
 /* Marked the way an open tab is, because that is what it is while it is up. */
 .icon.on {
   color: var(--text);
-  background: var(--bg-active);
+  background: var(--bg);
+  box-shadow: var(--shadow-card);
 }
 
 .tabs {
   display: flex;
-  align-items: stretch;
-  gap: 2px;
+  align-items: center;
+  gap: 4px;
+  min-width: 0;
+  margin-left: 6px;
+  padding: 2px;
   overflow-x: auto;
 }
 
@@ -228,22 +236,28 @@ function onDrop(target: string) {
   display: flex;
   align-items: center;
   gap: 7px;
-  padding: 0 8px 0 11px;
-  max-width: 190px;
+  height: 30px;
+  padding: 0 6px 0 12px;
+  max-width: 200px;
+  flex: none;
+  border-radius: var(--radius-pill);
   color: var(--text-dim);
-  border-top: 2px solid transparent;
+  font-weight: 500;
   white-space: nowrap;
+  transition:
+    background 0.12s,
+    color 0.12s;
 }
 
 .tab:hover {
-  background: var(--bg-hover);
+  background: color-mix(in srgb, var(--text) 7%, transparent);
   color: var(--text);
 }
 
 .tab.on {
-  background: var(--bg-panel);
+  background: var(--bg);
+  box-shadow: var(--shadow-card);
   color: var(--text);
-  border-top-color: var(--accent);
   font-weight: 600;
 }
 
@@ -253,7 +267,7 @@ function onDrop(target: string) {
 
 .tab-icon {
   flex: none;
-  opacity: 0.65;
+  opacity: 0.6;
 }
 
 .tab-name {
@@ -264,20 +278,20 @@ function onDrop(target: string) {
 .close {
   display: grid;
   place-items: center;
-  width: 17px;
-  height: 17px;
-  border-radius: 4px;
+  width: 18px;
+  height: 18px;
+  border-radius: var(--radius-pill);
   opacity: 0;
   flex: none;
 }
 
 .tab:hover .close,
 .tab.on .close {
-  opacity: 0.55;
+  opacity: 0.5;
 }
 
 .close:hover {
   opacity: 1;
-  background: var(--bg-active);
+  background: var(--bg-hover);
 }
 </style>

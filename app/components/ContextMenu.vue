@@ -147,16 +147,23 @@ onUnmounted(() => window.removeEventListener('keydown', onKey))
      run long, so the ceiling is generous but still leaves the fit() nudge room
      to keep the menu inside the window. */
   max-width: min(560px, calc(100vw - 24px));
-  padding: 4px;
-  background: var(--bg-raised);
-  border: 1px solid var(--line);
-  border-radius: 8px;
-  box-shadow: 0 12px 34px var(--shadow-strong);
+  padding: 5px;
+  background: var(--bg);
+  border-radius: var(--radius);
+  box-shadow: var(--shadow-pop);
+  animation: pop-in 0.12s ease-out;
+}
+
+@keyframes pop-in {
+  from {
+    opacity: 0;
+    transform: scale(0.98);
+  }
 }
 
 .title {
-  padding: 6px 9px 5px;
-  font-size: 11px;
+  padding: 7px 10px 5px;
+  font-size: 11.5px;
   color: var(--text-faint);
   border-top: 1px solid var(--line-soft);
   margin-top: 4px;
@@ -168,10 +175,11 @@ onUnmounted(() => window.removeEventListener('keydown', onKey))
   align-items: center;
   gap: 9px;
   width: 100%;
-  padding: 5px 9px;
-  border-radius: 5px;
+  min-height: 30px;
+  padding: 5px 10px;
+  border-radius: var(--radius-sm);
   text-align: left;
-  font-size: 12.5px;
+  font-size: 13px;
   color: var(--text);
 }
 
@@ -191,11 +199,10 @@ onUnmounted(() => window.removeEventListener('keydown', onKey))
   min-width: 232px;
   max-width: min(560px, calc(100vw - 24px));
   margin-left: -3px;
-  padding: 4px;
-  background: var(--bg-raised);
-  border: 1px solid var(--line);
-  border-radius: 8px;
-  box-shadow: 0 12px 34px var(--shadow-strong);
+  padding: 5px;
+  background: var(--bg);
+  border-radius: var(--radius);
+  box-shadow: var(--shadow-pop);
 }
 
 .submenu.flip {
@@ -206,11 +213,15 @@ onUnmounted(() => window.removeEventListener('keydown', onKey))
 }
 
 .item:hover:not(:disabled) {
-  background: var(--bg-active);
+  background: var(--bg-hover);
 }
 
 .item.danger {
   color: var(--red-soft);
+}
+
+.item.danger:hover:not(:disabled) {
+  background: var(--danger-bg);
 }
 
 .item.off {
@@ -219,7 +230,7 @@ onUnmounted(() => window.removeEventListener('keydown', onKey))
 
 .icon {
   flex: none;
-  opacity: 0.75;
+  opacity: 0.6;
 }
 
 .label {
@@ -233,14 +244,15 @@ onUnmounted(() => window.removeEventListener('keydown', onKey))
 }
 
 .hint {
-  font-size: 10.5px;
+  margin-left: 12px;
+  font-size: 11px;
   color: var(--text-faint);
   white-space: nowrap;
 }
 
 .divider {
   height: 1px;
-  margin: 4px 6px;
-  background: var(--line);
+  margin: 5px 8px;
+  background: var(--line-soft);
 }
 </style>

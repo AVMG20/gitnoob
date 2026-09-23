@@ -63,22 +63,61 @@ onUnmounted(() => window.removeEventListener('keydown', onKey))
 </template>
 
 <style scoped>
+/*
+ * The resolver takes the window, but as a sheet laid over it rather than a
+ * page swapped in: the repository stays visible, blurred, round its edge, so
+ * it is clear this is a step you finish and come back out of.
+ */
 .overlay {
   position: fixed;
-  inset: 0;
   z-index: 55;
   display: grid;
   grid-template-rows: auto minmax(0, 1fr);
   background: var(--bg);
+  /* The sheet is the element itself, inset from the window by a gutter; the
+     shadow's spread paints the dimmed, blurred backdrop round it. */
+  inset: calc(var(--gutter) * 2);
+  border-radius: var(--radius-lg);
+  box-shadow:
+    var(--shadow-pop),
+    0 0 0 100vmax var(--overlay);
+  overflow: hidden;
+}
+
+/* The blur has to come from something behind the sheet, and the sheet's own
+   shadow cannot carry a filter, so a fixed layer under it does. */
+.overlay::before {
+  content: '';
+  position: fixed;
+  inset: 0;
+  z-index: -1;
+  backdrop-filter: blur(3px);
+  pointer-events: none;
 }
 
 .bar {
   display: flex;
   align-items: center;
   gap: 10px;
-  padding: 8px 12px;
-  background: var(--bg-panel);
-  border-bottom: 1px solid var(--line);
+  min-height: 52px;
+  padding: 10px 12px 10px 18px;
+  border-bottom: 1px solid var(--line-soft);
+}
+
+.bar strong {
+  font-size: 15px;
+  font-weight: 650;
+  letter-spacing: -0.01em;
+}
+
+/* The count of what is left, as a soft pill beside the title. */
+.bar .faint {
+  padding: 1px 9px;
+  border-radius: var(--radius-pill);
+  background: var(--warning-bg);
+  color: var(--warning-soft);
+  font-size: 11.5px;
+  font-weight: 600;
 }
 
 .warn {
@@ -89,7 +128,24 @@ onUnmounted(() => window.removeEventListener('keydown', onKey))
   flex: 1;
 }
 
+/* Aborting throws away the whole merge or rebase, so it is an outlined pill
+   rather than a word that looks like every other button in the bar. */
+.bar .btn:not(.icon) {
+  border-radius: var(--radius-pill);
+  padding: 5px 14px;
+  color: var(--text);
+  box-shadow: inset 0 0 0 1px var(--line);
+}
+
+.bar .btn:not(.icon):hover:not(:disabled) {
+  color: var(--red-soft);
+  background: var(--danger-bg);
+  box-shadow: inset 0 0 0 1px var(--danger-line);
+}
+
 .icon {
-  padding: 4px 6px;
+  width: 32px;
+  padding: 0;
+  border-radius: var(--radius-pill);
 }
 </style>

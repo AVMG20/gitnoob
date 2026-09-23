@@ -100,17 +100,17 @@ onMounted(() => {
 
 <style scoped>
 .picker {
-  border: 1px solid var(--line);
-  border-radius: 8px;
+  border-radius: var(--radius);
+  box-shadow: var(--shadow-card);
+  background: var(--bg);
   overflow: hidden;
 }
 
 .bar {
   display: flex;
   gap: 6px;
-  padding: 7px;
-  border-bottom: 1px solid var(--line);
-  background: var(--bg-raised);
+  padding: 8px;
+  border-bottom: 1px solid var(--line-soft);
 }
 
 .search {
@@ -118,36 +118,42 @@ onMounted(() => {
   display: flex;
   align-items: center;
   gap: 6px;
-  padding: 0 8px;
-  background: var(--bg);
-  border: 1px solid var(--line);
-  border-radius: 5px;
+  padding: 0 10px;
+  background: var(--surface);
+  border-radius: var(--radius-pill);
 }
 
 .search input {
   flex: 1;
   border: none;
   background: none;
-  padding: 5px 0;
+  padding: 6px 0;
 }
 
 .search input:focus {
   outline: none;
+  box-shadow: none;
 }
 
 .sort,
 .tiny {
-  font-size: 11.5px;
-  padding: 4px 7px;
-  background: var(--bg);
-  border: 1px solid var(--line);
-  border-radius: 5px;
+  font-size: 12px;
+  padding: 4px 10px;
+  min-height: 30px;
+  background: var(--surface);
+  border: none;
+  border-radius: var(--radius-pill);
   color: var(--text);
+}
+
+.sort {
+  padding-right: 28px;
 }
 
 .list {
   max-height: 330px;
   overflow-y: auto;
+  padding: 4px;
 }
 
 .row {
@@ -155,9 +161,9 @@ onMounted(() => {
   align-items: center;
   gap: 9px;
   width: 100%;
-  padding: 6px 10px;
+  padding: 7px 10px;
+  border-radius: var(--radius-sm);
   text-align: left;
-  border-bottom: 1px solid var(--line-soft);
 }
 
 .row:hover {
@@ -169,7 +175,7 @@ onMounted(() => {
 }
 
 .tick {
-  color: var(--green);
+  color: var(--text);
   flex: none;
 }
 
@@ -230,9 +236,9 @@ onMounted(() => {
 
 .foot {
   margin: 0;
-  padding: 6px 10px;
-  font-size: 11px;
-  border-top: 1px solid var(--line);
-  background: var(--bg-raised);
+  padding: 8px 12px;
+  font-size: 11.5px;
+  border-top: 1px solid var(--line-soft);
+  background: var(--surface);
 }
 </style>

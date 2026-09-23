@@ -58,14 +58,13 @@ async function discard() {
 
 .paths {
   margin: 0;
-  padding: 8px 10px;
+  padding: 10px 12px;
   list-style: none;
   max-height: 160px;
   overflow: auto;
   font-size: 11.5px;
   color: var(--text-dim);
-  background: var(--bg-deep);
-  border: 1px solid var(--line-soft);
-  border-radius: 6px;
+  background: var(--surface);
+  border-radius: var(--radius);
 }
 </style>

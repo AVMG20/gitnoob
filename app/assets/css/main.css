@@ -4,20 +4,35 @@
  *
  * Nothing here should name a colour. Reach for a token — `--surface` for a
  * panel, `--fg-muted` for text that is not the point, `--diff-add-bg` for the
- * green behind a line somebody added — and every one of the eighteen themes
- * gets it right by itself.
+ * green behind a line somebody added — and every theme gets it right by itself.
+ *
+ * The shape is a storefront's more than an IDE's: the panels are cards resting
+ * on a canvas, space does the grouping that lines used to, corners are round,
+ * and the one thing on a screen you are meant to press is filled in ink.
  */
 @import './themes.css';
 
 /* The tokens that are not colours: the shape of a corner, the height of a row,
-   the two typefaces. A theme may restate the radius; none of them restates the
-   rest. */
+   the two typefaces, the two depths. A theme may restate the radius; none of
+   them restates the rest. */
 :root {
-  --radius: 7px;
-  --radius-sm: 5px;
-  --row-h: 27px;
-  --font: -apple-system, BlinkMacSystemFont, 'Segoe UI', system-ui, sans-serif;
-  --mono: ui-monospace, SFMono-Regular, 'SF Mono', Menlo, Consolas, monospace;
+  --radius: 10px;
+  --radius-sm: 7px;
+  --radius-lg: 14px;
+  --radius-pill: 999px;
+  --row-h: 30px;
+  /* The gap between two cards, and between a card and the window's edge. */
+  --gutter: 8px;
+  --font: 'Inter Variable', -apple-system, BlinkMacSystemFont, 'Segoe UI', system-ui, sans-serif;
+  --mono: ui-monospace, SFMono-Regular, 'SF Mono', 'Cascadia Code', Menlo, Consolas, monospace;
+  /* A card sits a hair above the canvas; a popover floats clear of it. Both are
+     a shadow and a hairline together, so a card on a light canvas still has an
+     edge where the shadow is too soft to show one. */
+  --shadow-card: 0 0 0 1px var(--border-soft), 0 1px 2px var(--shadow);
+  --shadow-pop: 0 0 0 1px var(--border-soft), 0 4px 8px -2px var(--shadow),
+    0 18px 40px -8px var(--shadow-strong);
+  /* The focus halo: the ring colour, thinned out over whatever is behind. */
+  --focus: 0 0 0 3px color-mix(in srgb, var(--ring) 22%, transparent);
 }
 
 * {
@@ -43,51 +58,91 @@ body,
 }
 
 body {
-  background: var(--bg);
+  background: var(--canvas);
   color: var(--text);
-  font: 13px/1.45 var(--font);
+  font: 13px/1.5 var(--font);
+  /* Inter's alternates that read as a product rather than a document: open
+     digits and a flat-topped 1. */
+  font-feature-settings: 'cv11', 'ss01', 'ss03';
+  letter-spacing: -0.003em;
   overflow: hidden;
   -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+::selection {
+  background: color-mix(in srgb, var(--ring) 24%, transparent);
 }
 
 button {
   font: inherit;
+  letter-spacing: inherit;
   color: inherit;
   background: none;
   border: none;
   cursor: pointer;
 }
 
+:focus-visible {
+  outline: none;
+  box-shadow: var(--focus);
+}
+
 input,
 textarea,
 select {
   font: inherit;
+  letter-spacing: inherit;
   color: var(--text);
   background: var(--bg);
   border: 1px solid var(--line);
-  border-radius: 5px;
-  padding: 5px 8px;
+  border-radius: var(--radius-sm);
+  padding: 6px 10px;
+  transition:
+    border-color 0.12s,
+    box-shadow 0.12s;
+}
+
+input::placeholder,
+textarea::placeholder {
+  color: var(--text-faint);
+}
+
+input:hover:not(:disabled):not(:focus),
+textarea:hover:not(:disabled):not(:focus),
+select:hover:not(:disabled):not(:focus) {
+  border-color: color-mix(in srgb, var(--line) 60%, var(--text-faint));
 }
 
 input:focus,
 textarea:focus,
 select:focus {
   outline: none;
-  border-color: var(--accent);
+  border-color: var(--ring);
+  box-shadow: var(--focus);
+}
+
+/* Boxes and radios are not text fields: no padding, no halo box around them,
+   and the fill the platform gives them is the theme's ink. */
+input[type='checkbox'],
+input[type='radio'] {
+  padding: 0;
+  accent-color: var(--primary);
+  box-shadow: none;
 }
 
 /* A select is drawn by the platform unless it is told not to be, and the
    platform's is white — under a dark theme it was the one bright rectangle in
    the window. The arrow goes with the platform's own drawing, so it is redrawn
    here as a chevron in the text colour, and the padding on the right leaves it
-   room. `color-scheme` below is what carries the theme into the popup list,
+   room. `color-scheme` above is what carries the theme into the popup list,
    which is a real menu and not ours to style. */
 select {
   appearance: none;
-  padding-right: 26px;
+  padding-right: 28px;
   background-image: linear-gradient(45deg, transparent 50%, currentcolor 50%),
     linear-gradient(135deg, currentcolor 50%, transparent 50%);
-  background-position: calc(100% - 15px) calc(50% + 1px), calc(100% - 10px) calc(50% + 1px);
+  background-position: calc(100% - 16px) calc(50% + 1px), calc(100% - 11px) calc(50% + 1px);
   background-size: 5px 5px, 5px 5px;
   background-repeat: no-repeat;
   cursor: pointer;
@@ -139,10 +194,11 @@ textarea {
   background: transparent;
 }
 
+/* A thin rounded bar floating in a wider track: easy to hit, light to look at. */
 ::-webkit-scrollbar-thumb {
   background: var(--scrollbar);
-  border-radius: 5px;
-  border: 2px solid transparent;
+  border-radius: var(--radius-pill);
+  border: 3px solid transparent;
   background-clip: content-box;
 }
 
@@ -155,14 +211,28 @@ textarea {
   background: transparent;
 }
 
+/* Buttons.
+ *
+ * Plain `.btn` is the quiet one: text on nothing, a soft fill under the
+ * pointer. The ones that carry a decision are pills — ink for the thing you
+ * came to do, red for the thing you cannot take back, an outline for the
+ * alternative beside them. */
 .btn {
   display: inline-flex;
   align-items: center;
+  justify-content: center;
   gap: 6px;
-  padding: 5px 10px;
-  border-radius: 5px;
+  min-height: 30px;
+  padding: 5px 11px;
+  border-radius: var(--radius-sm);
   color: var(--text-dim);
+  font-weight: 500;
   white-space: nowrap;
+  transition:
+    background 0.12s,
+    color 0.12s,
+    box-shadow 0.12s,
+    transform 0.08s;
 }
 
 .btn:hover:not(:disabled) {
@@ -170,9 +240,20 @@ textarea {
   color: var(--text);
 }
 
+.btn:active:not(:disabled) {
+  transform: translateY(0.5px);
+}
+
 .btn:disabled {
   opacity: 0.4;
   cursor: default;
+}
+
+.btn-primary,
+.btn-danger,
+.btn-ghost {
+  padding: 6px 16px;
+  border-radius: var(--radius-pill);
 }
 
 .btn-primary {
@@ -198,12 +279,26 @@ textarea {
 }
 
 .btn-ghost {
-  border: 1px solid var(--line);
+  color: var(--text);
+  box-shadow: inset 0 0 0 1px var(--line);
+}
+
+.btn-ghost:hover:not(:disabled) {
+  background: var(--bg-hover);
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--line) 50%, var(--text-faint));
+}
+
+/* A card: the one surface everything in the window is built from. */
+.card {
+  background: var(--bg);
+  border-radius: var(--radius-lg);
+  box-shadow: var(--shadow-card);
 }
 
 .mono {
   font-family: var(--mono);
   font-size: 12px;
+  letter-spacing: 0;
 }
 
 .dim {
@@ -220,26 +315,31 @@ textarea {
   white-space: nowrap;
 }
 
+/* A heading over a group of rows. Sentence case and a little weight, where it
+   used to be spaced-out capitals: a label, not a sign. */
 .section-title {
   display: flex;
   align-items: center;
   gap: 6px;
-  padding: 6px 10px;
-  font-size: 11px;
+  padding: 8px 12px 4px;
+  font-size: 12px;
   font-weight: 600;
-  letter-spacing: 0.08em;
-  text-transform: uppercase;
-  color: var(--text-faint);
+  letter-spacing: 0;
+  color: var(--text-dim);
   user-select: none;
 }
 
 .pill {
-  padding: 1px 6px;
-  border-radius: 9px;
-  font-size: 10px;
+  display: inline-flex;
+  align-items: center;
+  padding: 1px 7px;
+  border-radius: var(--radius-pill);
+  font-size: 10.5px;
   font-weight: 600;
+  line-height: 1.5;
   background: var(--bg-raised);
   color: var(--text-dim);
+  font-variant-numeric: tabular-nums;
 }
 
 /* Syntax colours come from Shiki.
@@ -268,7 +368,7 @@ textarea {
 .md-body {
   color: var(--text);
   font-size: 12.5px;
-  line-height: 1.55;
+  line-height: 1.6;
   min-width: 0;
   overflow-wrap: anywhere;
 }
@@ -282,7 +382,7 @@ textarea {
 }
 
 .md-body p {
-  margin: 6px 0;
+  margin: 8px 0;
 }
 
 /* Headings inside a comment are noise at full size: they step down in weight
@@ -294,8 +394,9 @@ textarea {
 .md-body h4,
 .md-body h5,
 .md-body h6 {
-  margin: 14px 0 6px;
-  font-weight: 600;
+  margin: 16px 0 6px;
+  font-weight: 650;
+  letter-spacing: -0.01em;
   line-height: 1.35;
   color: var(--text);
 }
@@ -320,24 +421,23 @@ textarea {
 
 .md-body h1,
 .md-body h2 {
-  padding-bottom: 4px;
+  padding-bottom: 5px;
   border-bottom: 1px solid var(--line-soft);
 }
 
 .md-body code {
   font-family: var(--mono);
   background: var(--bg-raised);
-  padding: 1px 4px;
-  border-radius: 3px;
+  padding: 1px 5px;
+  border-radius: 5px;
   font-size: 11px;
 }
 
 .md-body pre {
-  background: var(--bg-deep);
-  border: 1px solid var(--line-soft);
-  border-radius: 5px;
-  padding: 8px 10px;
-  margin: 8px 0;
+  background: var(--surface);
+  border-radius: var(--radius);
+  padding: 10px 14px;
+  margin: 10px 0;
   overflow-x: auto;
 }
 
@@ -350,9 +450,9 @@ textarea {
 }
 
 .md-body blockquote {
-  border-left: 2px solid var(--line);
-  margin: 8px 0;
-  padding: 2px 10px;
+  border-left: 3px solid var(--line);
+  margin: 10px 0;
+  padding: 2px 12px;
   color: var(--text-dim);
 }
 
@@ -387,8 +487,8 @@ textarea {
   margin-right: 6px;
   vertical-align: -1px;
   border: 1px solid var(--line);
-  border-radius: 3px;
-  background: var(--bg-deep);
+  border-radius: 4px;
+  background: var(--bg);
 }
 
 .md-body .task-box.done {
@@ -413,7 +513,7 @@ textarea {
 
 .md-body table {
   border-collapse: collapse;
-  margin: 8px 0;
+  margin: 10px 0;
   font-size: 12px;
   display: block;
   width: max-content;
@@ -424,19 +524,19 @@ textarea {
 .md-body th,
 .md-body td {
   border: 1px solid var(--line-soft);
-  padding: 4px 9px;
+  padding: 5px 10px;
   text-align: left;
 }
 
 .md-body th {
-  background: var(--bg-raised);
+  background: var(--surface);
   font-weight: 600;
 }
 
 .md-body img {
   max-width: 100%;
   height: auto;
-  border-radius: 5px;
+  border-radius: var(--radius-sm);
   margin: 4px 0;
   vertical-align: middle;
 }
@@ -447,14 +547,25 @@ textarea {
   margin: 12px 0;
 }
 
+/* Links are underlined rather than coloured: with ink as the accent, the
+   underline is what says a word can be followed. */
 .md-body a {
-  color: var(--accent);
+  color: var(--text);
+  text-decoration: underline;
+  text-decoration-color: var(--text-faint);
+  text-underline-offset: 2px;
+}
+
+.md-body a:hover {
+  text-decoration-color: currentColor;
 }
 
 .md-body .mention,
 .md-body .ref {
-  color: var(--accent-soft);
-  background: color-mix(in srgb, var(--accent) 12%, transparent);
-  border-radius: 3px;
-  padding: 0 3px;
+  color: var(--text);
+  font-weight: 550;
+  text-decoration: none;
+  background: var(--bg-raised);
+  border-radius: var(--radius-pill);
+  padding: 0 6px;
 }

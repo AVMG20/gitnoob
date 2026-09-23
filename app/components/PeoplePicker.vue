@@ -169,13 +169,13 @@ watch(query, () => (active.value = 0))
 .chip {
   display: flex;
   align-items: center;
-  gap: 5px;
+  gap: 6px;
   max-width: 180px;
-  padding: 2px 3px 2px 3px;
-  background: var(--bg-raised);
-  border: 1px solid var(--line);
-  border-radius: 11px;
-  font-size: 11.5px;
+  padding: 2px 4px 2px 2px;
+  background: var(--bg);
+  box-shadow: inset 0 0 0 1px var(--line-soft);
+  border-radius: var(--radius-pill);
+  font-size: 12px;
 }
 
 .face {
@@ -188,7 +188,7 @@ watch(query, () => (active.value = 0))
   border-radius: 50%;
   font-size: 8px;
   font-weight: 600;
-  color: #0d1116;
+  color: black;
 }
 
 .face.small {
@@ -209,7 +209,7 @@ watch(query, () => (active.value = 0))
 }
 
 .drop:hover {
-  color: var(--red);
+  color: var(--danger);
   background: var(--bg-hover);
 }
 
@@ -217,15 +217,18 @@ watch(query, () => (active.value = 0))
   display: flex;
   align-items: center;
   gap: 4px;
-  padding: 3px 8px;
+  padding: 3px 10px;
   border: 1px dashed var(--line);
-  border-radius: 11px;
+  border-radius: var(--radius-pill);
   color: var(--text-dim);
-  font-size: 11.5px;
+  font-size: 12px;
+  transition:
+    border-color 0.12s,
+    color 0.12s;
 }
 
 .add:hover {
-  border-color: var(--accent);
+  border-color: var(--text-faint);
   color: var(--text);
 }
 
@@ -240,20 +243,19 @@ watch(query, () => (active.value = 0))
   display: flex;
   flex-direction: column;
   max-height: 300px;
-  background: var(--bg-panel);
-  border: 1px solid var(--line);
-  border-radius: 7px;
-  box-shadow: 0 12px 30px var(--shadow-strong);
+  background: var(--bg);
+  border-radius: var(--radius);
+  box-shadow: var(--shadow-pop);
   overflow: hidden;
 }
 
 .search {
   display: flex;
   align-items: center;
-  gap: 6px;
-  padding: 0 8px;
-  border-bottom: 1px solid var(--line);
-  background: var(--bg-raised);
+  gap: 7px;
+  padding: 0 12px;
+  border-bottom: 1px solid var(--line-soft);
+  color: var(--text-faint);
 }
 
 .search input {
@@ -261,24 +263,27 @@ watch(query, () => (active.value = 0))
   min-width: 0;
   border: none;
   background: none;
-  padding: 6px 0;
-  font-size: 12.5px;
+  padding: 9px 0;
+  font-size: 13px;
 }
 
 .search input:focus {
   outline: none;
+  box-shadow: none;
 }
 
 .select-list {
   overflow-y: auto;
+  padding: 4px;
 }
 
 .row {
   display: flex;
   align-items: center;
-  gap: 7px;
+  gap: 8px;
   width: 100%;
-  padding: 4px 9px;
+  padding: 6px 8px;
+  border-radius: var(--radius-sm);
   text-align: left;
   font-size: 12.5px;
   color: var(--text);
@@ -290,7 +295,7 @@ watch(query, () => (active.value = 0))
 
 .tick {
   flex: none;
-  color: var(--green);
+  color: var(--text);
 }
 
 .tick-space {
@@ -316,6 +321,6 @@ watch(query, () => (active.value = 0))
 }
 
 .bad {
-  color: var(--red);
+  color: var(--danger);
 }
 </style>

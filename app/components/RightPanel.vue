@@ -64,8 +64,6 @@ const pending = computed(() => (showWorking.value ? 0 : conflicts.value || dirty
   flex-direction: column;
   min-width: 0;
   min-height: 0;
-  background: var(--bg-panel);
-  border-left: 1px solid var(--line);
   overflow: hidden;
 }
 
@@ -81,10 +79,11 @@ const pending = computed(() => (showWorking.value ? 0 : conflicts.value || dirty
   display: flex;
   align-items: center;
   gap: 7px;
-  width: 100%;
-  padding: 7px 12px;
-  border-bottom: 1px solid var(--line);
-  font-size: 11.5px;
+  width: calc(100% - 16px);
+  margin: 8px 8px 0;
+  padding: 8px 10px 8px 12px;
+  border-radius: var(--radius);
+  font-size: 12px;
   font-weight: 600;
   text-align: left;
   /* The accent, not the amber it started in. Having uncommitted work is the
@@ -118,14 +117,15 @@ const pending = computed(() => (showWorking.value ? 0 : conflicts.value || dirty
 .go {
   flex: none;
   margin-left: auto;
-  padding: 1px 7px;
-  border-radius: 4px;
-  font-size: 10.5px;
-  box-shadow: inset 0 0 0 1px currentColor;
-  opacity: 0.8;
+  padding: 2px 10px;
+  border-radius: var(--radius-pill);
+  font-size: 11px;
+  background: var(--bg);
+  color: var(--text);
+  box-shadow: var(--shadow-card);
 }
 
 .pending:hover .go {
-  opacity: 1;
+  box-shadow: var(--shadow-card), var(--focus);
 }
 </style>

@@ -82,39 +82,35 @@ function refresh() {
   width: 100%;
   max-width: 900px;
   margin: 0 auto;
-  padding: 14px 22px 48px;
+  padding: 20px 24px 56px;
 }
 
+/* How the checks add up, as a tinted banner in the colour of the verdict. */
 .head {
   display: flex;
   align-items: center;
-  gap: 9px;
-  padding: 10px 13px;
-  border: 1px solid var(--line-soft);
-  border-left-width: 3px;
-  border-radius: 8px;
-  background: var(--bg-panel);
-  font-size: 12.5px;
+  gap: 10px;
+  padding: 12px 16px;
+  border-radius: var(--radius);
+  background: var(--surface);
+  font-size: 13px;
+  font-weight: 550;
   color: var(--text-dim);
 }
 
 .head.good {
-  border-left-color: var(--green);
-  color: var(--green-soft);
+  background: var(--success-bg);
+  color: var(--success-soft);
 }
 
 .head.bad {
-  border-left-color: var(--red);
-  color: var(--red-soft);
+  background: var(--danger-bg);
+  color: var(--danger-soft);
 }
 
 .head.wait {
-  border-left-color: var(--amber);
-  color: var(--amber-soft);
-}
-
-.head.none {
-  border-left-color: var(--line);
+  background: var(--warning-bg);
+  color: var(--warning-soft);
 }
 
 .grow {
@@ -124,11 +120,11 @@ function refresh() {
 .list {
   display: flex;
   flex-direction: column;
-  margin: 10px 0 0;
+  margin: 12px 0 0;
   padding: 0;
   list-style: none;
-  border: 1px solid var(--line-soft);
-  border-radius: 8px;
+  border-radius: var(--radius);
+  box-shadow: var(--shadow-card);
   overflow: hidden;
 }
 
@@ -136,9 +132,9 @@ function refresh() {
   display: flex;
   align-items: center;
   gap: 10px;
-  padding: 8px 12px;
-  font-size: 12px;
-  background: var(--bg-panel);
+  padding: 10px 14px;
+  font-size: 12.5px;
+  background: var(--bg);
   min-width: 0;
 }
 
@@ -157,17 +153,17 @@ function refresh() {
 
 .mark.good,
 .state.good {
-  color: var(--green);
+  color: var(--success);
 }
 
 .mark.bad,
 .state.bad {
-  color: var(--red);
+  color: var(--danger);
 }
 
 .mark.wait,
 .state.wait {
-  color: var(--amber);
+  color: var(--warning);
 }
 
 .mark.none,
@@ -180,34 +176,38 @@ function refresh() {
   color: var(--text);
 }
 
+/* The state as a small tinted pill beside the name. */
 .state {
   flex: none;
+  padding: 1px 8px;
+  border-radius: var(--radius-pill);
+  background: color-mix(in srgb, currentColor 12%, transparent);
   font-size: 10.5px;
-  text-transform: uppercase;
-  letter-spacing: 0.04em;
+  font-weight: 600;
+  text-transform: capitalize;
 }
 
 .detail {
   flex: 1;
   min-width: 0;
   text-align: right;
-  font-size: 11px;
+  font-size: 11.5px;
 }
 
 .open {
   flex: none;
-  padding: 3px;
-  border-radius: 4px;
+  padding: 4px;
+  border-radius: var(--radius-pill);
   color: var(--text-faint);
 }
 
 .open:hover {
-  color: var(--accent);
-  background: var(--bg-hover);
+  color: var(--text);
+  background: var(--bg-active);
 }
 
 .none {
-  margin: 12px 0 0;
-  font-size: 12px;
+  margin: 14px 0 0;
+  font-size: 12.5px;
 }
 </style>

@@ -1331,8 +1331,12 @@ onUnmounted(() => window.removeEventListener('keydown', onKey))
    the bottom of the window instead of scrolling. Every box between here and a
    pane's own scrollbar has to be allowed to be shorter than its contents. */
 .conflicts {
+  /* Our side and theirs, one colour each everywhere below. The theme decides
+     both; where its accent is ink, ours is the trunk's lane instead. */
+  --ours: var(--diff-ours);
+  --theirs: var(--diff-theirs);
   display: grid;
-  grid-template-columns: 210px minmax(0, 1fr);
+  grid-template-columns: 230px minmax(0, 1fr);
   grid-template-rows: minmax(0, 1fr);
   min-width: 0;
   min-height: 0;
@@ -1348,28 +1352,39 @@ onUnmounted(() => window.removeEventListener('keydown', onKey))
 
 .clear h3 {
   margin: 0 0 6px;
+  font-size: 16px;
+  font-weight: 650;
+  letter-spacing: -0.01em;
 }
 
 .clear p {
   margin: 0;
   max-width: 340px;
-  font-size: 12px;
+  font-size: 12.5px;
 }
 
 .rail {
-  border-right: 1px solid var(--line);
-  background: var(--bg-panel);
+  padding: 6px 8px;
+  border-right: 1px solid var(--line-soft);
+  background: var(--surface);
   overflow-y: auto;
+}
+
+.rail .section-title {
+  padding: 6px;
 }
 
 .rail-file {
   width: 100%;
   display: flex;
   align-items: center;
-  gap: 8px;
-  padding: 5px 10px;
+  gap: 9px;
+  margin-bottom: 2px;
+  padding: 6px 10px;
+  border-radius: var(--radius-sm);
   text-align: left;
-  font-size: 12px;
+  font-size: 12.5px;
+  font-weight: 500;
 }
 
 .rail-text {
@@ -1381,10 +1396,11 @@ onUnmounted(() => window.removeEventListener('keydown', onKey))
 
 .rail-file .dot {
   flex: none;
-  width: 6px;
-  height: 6px;
-  border-radius: 50%;
+  width: 7px;
+  height: 7px;
+  border-radius: var(--radius-pill);
   background: var(--amber);
+  box-shadow: 0 0 0 3px var(--warning-bg);
 }
 
 .rail-file:hover {
@@ -1392,11 +1408,13 @@ onUnmounted(() => window.removeEventListener('keydown', onKey))
 }
 
 .rail-file.on {
-  background: var(--bg-active);
+  background: var(--bg);
+  box-shadow: var(--shadow-card);
 }
 
 .rail-file .small {
-  font-size: 10px;
+  font-size: 10.5px;
+  font-weight: 400;
   max-width: 100%;
 }
 
@@ -1412,60 +1430,70 @@ onUnmounted(() => window.removeEventListener('keydown', onKey))
 .guide {
   display: flex;
   align-items: center;
-  gap: 6px;
+  flex-wrap: wrap;
+  gap: 8px;
   flex: none;
-  padding: 6px 10px;
-  border-bottom: 1px solid var(--line);
-  background: var(--bg-panel);
+  padding: 8px 14px;
+  border-bottom: 1px solid var(--line-soft);
+}
+
+.toolbar {
+  min-height: 50px;
 }
 
 .guide {
-  background: var(--bg-raised);
+  background: var(--surface);
 }
 
 .file-name {
-  max-width: 260px;
+  max-width: 280px;
+  font-family: var(--font);
+  font-size: 13.5px;
+  font-weight: 600;
+  letter-spacing: -0.005em;
   color: var(--text);
 }
 
 .chip {
-  padding: 1px 7px;
-  border: 1px solid var(--line);
-  border-radius: 9px;
-  font-size: 10.5px;
+  padding: 1px 9px;
+  border-radius: var(--radius-pill);
+  font-size: 11px;
+  font-weight: 500;
+  background: var(--bg-raised);
   color: var(--text-dim);
   white-space: nowrap;
 }
 
 .chip.mixed {
   color: var(--amber-soft);
-  border-color: color-mix(in srgb, var(--amber) 45%, transparent);
+  background: var(--warning-bg);
 }
 
 .chip.edited-chip {
-  color: var(--purple);
-  border-color: color-mix(in srgb, var(--purple) 45%, transparent);
+  color: var(--purple-soft);
+  background: var(--info-bg);
 }
 
 /* How much of the file has been answered, which is the one thing a count of
    conflicts cannot say. */
 .progress {
-  width: 90px;
-  height: 4px;
-  border-radius: 3px;
-  background: var(--line);
+  width: 96px;
+  height: 6px;
+  border-radius: var(--radius-pill);
+  background: var(--bg-raised);
   overflow: hidden;
 }
 
 .progress .fill {
   display: block;
   height: 100%;
+  border-radius: var(--radius-pill);
   background: var(--green);
   transition: width 0.15s ease-out;
 }
 
 .stat {
-  font-size: 11px;
+  font-size: 11.5px;
   color: var(--text-faint);
   white-space: nowrap;
 }
@@ -1480,18 +1508,26 @@ onUnmounted(() => window.removeEventListener('keydown', onKey))
 
 .sep {
   width: 1px;
-  height: 16px;
-  background: var(--line);
-  margin: 0 3px;
+  height: 18px;
+  background: var(--line-soft);
+  margin: 0 2px;
 }
 
+/* The bar's buttons are pills, at a size that still fits two rows of them. */
 .tiny {
-  font-size: 11px;
-  padding: 3px 7px;
+  min-height: 28px;
+  font-size: 12px;
+  padding: 4px 12px;
+  border-radius: var(--radius-pill);
 }
 
 .ghosty {
-  border: 1px solid var(--line);
+  color: var(--text);
+  box-shadow: inset 0 0 0 1px var(--line);
+}
+
+.btn-primary.tiny {
+  padding: 4px 16px;
 }
 
 .check {
@@ -1503,7 +1539,13 @@ onUnmounted(() => window.removeEventListener('keydown', onKey))
 }
 
 .ai {
-  color: var(--purple);
+  color: var(--purple-soft);
+  background: var(--info-bg);
+}
+
+.btn.ai:hover:not(:disabled) {
+  color: var(--purple-soft);
+  background: color-mix(in srgb, var(--info) 22%, transparent);
 }
 
 /* --- walking the conflicts */
@@ -1511,17 +1553,18 @@ onUnmounted(() => window.removeEventListener('keydown', onKey))
   display: flex;
   align-items: center;
   gap: 2px;
-  padding: 1px 3px;
-  border: 1px solid var(--line);
-  border-radius: 6px;
-  background: var(--bg-panel);
+  padding: 2px;
+  border-radius: var(--radius-pill);
+  background: var(--bg);
+  box-shadow: var(--shadow-card);
 }
 
 .step {
   display: grid;
   place-items: center;
-  padding: 2px 4px;
-  border-radius: 4px;
+  width: 24px;
+  height: 24px;
+  border-radius: var(--radius-pill);
   color: var(--text-dim);
 }
 
@@ -1536,7 +1579,7 @@ onUnmounted(() => window.removeEventListener('keydown', onKey))
 
 .place {
   padding: 0 4px;
-  font-size: 11px;
+  font-size: 12px;
   color: var(--text-dim);
   white-space: nowrap;
 }
@@ -1545,65 +1588,68 @@ onUnmounted(() => window.removeEventListener('keydown', onKey))
   color: var(--text);
 }
 
-/* The one answer for the region being worked on: four states, one of them on. */
+/* The one answer for the whole file: four states in a segmented pill, the lit
+   one lifted out as a small card in its side's colour. */
 .seg-group {
   display: flex;
-  border: 1px solid var(--line);
-  border-radius: 6px;
-  overflow: hidden;
+  gap: 2px;
+  padding: 2px;
+  border-radius: var(--radius-pill);
+  background: var(--bg-raised);
 }
 
 .seg {
-  padding: 3px 9px;
-  font-size: 11px;
-  color: var(--text-faint);
-  border-right: 1px solid var(--line);
-}
-
-.seg:last-child {
-  border-right: none;
+  padding: 3px 12px;
+  border-radius: var(--radius-pill);
+  font-size: 12px;
+  font-weight: 500;
+  color: var(--text-dim);
+  transition:
+    background 0.12s,
+    color 0.12s;
 }
 
 .seg:hover {
-  background: var(--bg-hover);
   color: var(--text);
 }
 
+.seg.on {
+  background: var(--bg);
+  box-shadow: var(--shadow-card);
+  font-weight: 600;
+}
+
 .seg.ours.on {
-  background: color-mix(in srgb, var(--accent) 26%, transparent);
-  color: var(--accent-soft);
+  color: var(--ours);
 }
 
 .seg.theirs.on {
-  background: color-mix(in srgb, var(--purple) 26%, transparent);
   color: var(--purple-soft);
 }
 
 .seg.both.on {
-  background: color-mix(in srgb, var(--green) 24%, transparent);
   color: var(--green-soft);
 }
 
 .seg.none.on {
-  background: color-mix(in srgb, var(--red) 24%, transparent);
   color: var(--red-soft);
 }
 
 /* The one thing the panes cannot say, said above them. */
 .explain {
-  margin: 0;
+  margin: 10px 14px 0;
   flex: none;
-  padding: 8px 12px;
-  font-size: 12px;
+  padding: 10px 14px;
+  font-size: 12.5px;
   line-height: 1.55;
   color: var(--text-dim);
-  background: var(--bg-panel);
-  border-bottom: 1px solid var(--line);
+  background: var(--info-bg);
+  border-radius: var(--radius);
 }
 
 .gone {
-  padding: 14px 12px;
-  font-size: 12px;
+  padding: 18px 16px;
+  font-size: 12.5px;
   font-style: italic;
   color: var(--text-faint);
 }
@@ -1614,7 +1660,7 @@ onUnmounted(() => window.removeEventListener('keydown', onKey))
   flex: 1;
   min-height: 0;
   overflow: hidden;
-  border-bottom: 1px solid var(--line);
+  border-bottom: 1px solid var(--line-soft);
 }
 
 .pane {
@@ -1624,29 +1670,38 @@ onUnmounted(() => window.removeEventListener('keydown', onKey))
   grid-template-rows: auto minmax(0, 1fr);
   flex: 1 1 0;
   min-width: 0;
-  border-right: 1px solid var(--line);
+  border-right: 1px solid var(--line-soft);
 }
 
 .pane-head {
   display: flex;
   align-items: center;
-  gap: 7px;
-  padding: 4px 10px;
-  font-size: 11px;
+  gap: 8px;
+  padding: 7px 12px;
+  font-size: 11.5px;
   border-bottom: 1px solid var(--line-soft);
-  background: var(--bg-raised);
 }
 
+/* The side's name, led by a dot in its own colour. */
 .tag {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
   font-weight: 600;
-  letter-spacing: 0.05em;
-  text-transform: uppercase;
+}
+
+.tag::before {
+  content: '';
+  width: 8px;
+  height: 8px;
+  border-radius: var(--radius-pill);
+  background: var(--side, var(--green));
 }
 
 /* Each side keeps one colour throughout — heading, chunk edge, taken lines —
    so which pane you are looking at is never a matter of reading the label. */
 .side-ours .tag {
-  color: var(--accent-soft);
+  color: var(--ours);
 }
 
 .side-theirs .tag {
@@ -1658,11 +1713,11 @@ onUnmounted(() => window.removeEventListener('keydown', onKey))
 }
 
 .side-ours {
-  --side: var(--accent);
+  --side: var(--ours);
 }
 
 .side-theirs {
-  --side: var(--purple);
+  --side: var(--theirs);
 }
 
 .side-base {
@@ -1736,17 +1791,17 @@ onUnmounted(() => window.removeEventListener('keydown', onKey))
   height: 22px;
   padding: 0 8px 0 6px;
   font-family: var(--font);
-  font-size: 10.5px;
+  font-size: 11px;
   cursor: pointer;
   user-select: none;
-  background: color-mix(in srgb, var(--side) 18%, var(--bg-raised));
-  border-top: 1px solid color-mix(in srgb, var(--side) 55%, transparent);
+  background: color-mix(in srgb, var(--side) 12%, var(--bg));
+  border-top: 1px solid color-mix(in srgb, var(--side) 35%, transparent);
   border-left: 3px solid var(--side);
   color: var(--text);
 }
 
 .head.off {
-  background: var(--bg-raised);
+  background: var(--surface);
   border-left-color: var(--line);
   color: var(--text-faint);
 }
@@ -1765,8 +1820,8 @@ onUnmounted(() => window.removeEventListener('keydown', onKey))
 
 /* The region being worked on, marked in every pane at once. */
 .head.now {
-  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--side) 65%, transparent);
-  background: color-mix(in srgb, var(--side) 30%, var(--bg-raised));
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--side) 60%, transparent);
+  background: color-mix(in srgb, var(--side) 22%, var(--bg));
   color: var(--text);
 }
 
@@ -1831,21 +1886,24 @@ onUnmounted(() => window.removeEventListener('keydown', onKey))
   display: inline-flex;
   align-items: center;
   gap: 3px;
-  padding: 0 5px;
-  border: 1px solid var(--line);
-  border-radius: 8px;
-  font-size: 9.5px;
+  padding: 0 7px;
+  border-radius: var(--radius-pill);
+  font-size: 10px;
+  font-weight: 500;
   color: var(--text-dim);
+  background: var(--bg);
+  box-shadow: inset 0 0 0 1px var(--line);
 }
 
 .pill-btn:hover:not(:disabled) {
   color: var(--text);
-  border-color: var(--text-faint);
+  box-shadow: inset 0 0 0 1px var(--text-faint);
 }
 
 .pill-btn.ai {
-  color: var(--purple);
-  border-color: color-mix(in srgb, var(--purple) 45%, transparent);
+  color: var(--purple-soft);
+  background: var(--info-bg);
+  box-shadow: none;
 }
 
 .pill-btn:disabled {
@@ -1876,18 +1934,18 @@ onUnmounted(() => window.removeEventListener('keydown', onKey))
 .out-head {
   display: flex;
   align-items: center;
-  gap: 7px;
+  gap: 8px;
   width: 100%;
-  padding: 4px 10px;
+  padding: 8px 14px;
   text-align: left;
-  font-size: 11px;
-  background: var(--bg-raised);
+  font-size: 12px;
+  background: var(--surface);
   border-bottom: 1px solid var(--line-soft);
   cursor: pointer;
 }
 
 .out-head:hover {
-  background: var(--bg-active);
+  background: var(--bg-hover);
 }
 
 .out-head .tag {
@@ -1900,8 +1958,11 @@ onUnmounted(() => window.removeEventListener('keydown', onKey))
 
 .edited {
   margin-left: auto;
-  font-size: 10.5px;
-  color: var(--purple);
+  padding: 1px 9px;
+  border-radius: var(--radius-pill);
+  font-size: 11px;
+  color: var(--purple-soft);
+  background: var(--info-bg);
 }
 
 .out-body {
@@ -1926,17 +1987,18 @@ onUnmounted(() => window.removeEventListener('keydown', onKey))
   display: inline-flex;
   align-items: center;
   gap: 5px;
-  color: var(--accent);
+  color: var(--purple-soft);
+  background: var(--info-bg);
 }
 
 .out-body .from-ours {
-  border-left-color: var(--accent);
-  background: color-mix(in srgb, var(--accent) 12%, transparent);
+  border-left-color: var(--ours);
+  background: color-mix(in srgb, var(--ours) 12%, transparent);
 }
 
 .out-body .from-theirs {
-  border-left-color: var(--purple);
-  background: color-mix(in srgb, var(--purple) 12%, transparent);
+  border-left-color: var(--theirs);
+  background: color-mix(in srgb, var(--theirs) 12%, transparent);
 }
 
 .out-body .from-edit {

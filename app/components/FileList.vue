@@ -83,7 +83,9 @@ watch(
  * back, less one step, and then a little more so the nesting reads.
  */
 function indent(depth: number, file = false) {
-  return 12 + depth * STEP + (file ? 8 : 0)
+  // The row is inset 6px into the card, so 8 here lines its text up with the
+  // heading over the list.
+  return 8 + depth * STEP + (file ? 8 : 0)
 }
 
 const STEP = 16
@@ -254,15 +256,21 @@ function counted(tally: Tally) {
   overflow-y: auto;
   flex: 1;
   min-height: 0;
+  padding: 2px 0 6px;
 }
 
+/* Rows are pills inset from the card's edge, so a hover or a selection reads as
+   a thing picked up rather than a stripe painted across the panel. */
 .row {
   display: flex;
   align-items: center;
-  gap: 6px;
-  width: 100%;
-  padding: 3px 12px 3px 12px;
-  font-size: 12px;
+  gap: 7px;
+  width: calc(100% - 12px);
+  min-height: 28px;
+  margin: 0 6px;
+  padding: 3px 10px 3px 8px;
+  border-radius: var(--radius-sm);
+  font-size: 12.5px;
   text-align: left;
   cursor: default;
 }
@@ -273,6 +281,10 @@ function counted(tally: Tally) {
 
 .row.on {
   background: var(--bg-active);
+}
+
+.row.on .name {
+  font-weight: 550;
 }
 
 .chev,
@@ -345,23 +357,19 @@ function counted(tally: Tally) {
   color: var(--amber-soft);
 }
 
-.act.clash {
-  border-color: var(--warning-line);
-  color: var(--amber-soft);
-}
-
-/* The same ghost button the panel heads use, so a row's button belongs to this
-   window rather than to the one it was borrowed from. */
+/* A small pill that appears on the row under the pointer. */
 .act {
   display: none;
   flex: none;
-  padding: 1px 7px;
-  margin: -2px 0;
-  border: 1px solid var(--line);
-  border-radius: 4px;
-  background: var(--bg-raised);
-  color: var(--text-dim);
+  padding: 1px 9px;
+  margin: -2px -4px -2px 0;
+  border-radius: var(--radius-pill);
+  background: var(--bg);
+  box-shadow: var(--shadow-card);
+  color: var(--text);
   font-size: 11px;
+  font-weight: 500;
+  line-height: 18px;
   white-space: nowrap;
 }
 
@@ -370,8 +378,13 @@ function counted(tally: Tally) {
 }
 
 .act:hover {
-  background: var(--bg-hover);
-  color: var(--text);
+  box-shadow: var(--shadow-card), var(--focus);
+}
+
+.act.clash {
+  background: var(--warning-bg);
+  box-shadow: inset 0 0 0 1px var(--warning-line);
+  color: var(--amber-soft);
 }
 
 /* Shrinks four times faster than the name beside it: which file this is
@@ -383,7 +396,7 @@ function counted(tally: Tally) {
   flex: 0 4 auto;
   min-width: 0;
   max-width: 50%;
-  font-size: 10.5px;
+  font-size: 11px;
   color: var(--text-faint);
 }
 
@@ -392,14 +405,19 @@ function counted(tally: Tally) {
   flex: none;
 }
 
-.plus {
-  color: var(--green);
+.plus,
+.minus {
   font-size: 11px;
+  font-weight: 550;
+  font-variant-numeric: tabular-nums;
+}
+
+.plus {
+  color: var(--success-soft);
 }
 
 .minus {
-  color: var(--red);
-  font-size: 11px;
+  color: var(--danger-soft);
 }
 
 .remarks {
@@ -407,19 +425,23 @@ function counted(tally: Tally) {
   display: inline-flex;
   align-items: center;
   gap: 3px;
-  color: var(--accent-soft);
+  padding: 0 6px;
+  border-radius: var(--radius-pill);
+  background: var(--bg-raised);
+  color: var(--text-dim);
   font-size: 10.5px;
   font-weight: 600;
+  line-height: 17px;
 }
 
 .seen {
   flex: none;
-  color: var(--text-faint);
+  color: var(--success-soft);
 }
 
 .none {
-  padding: 5px 12px 7px;
-  font-size: 11.5px;
+  padding: 6px 14px 8px;
+  font-size: 12px;
   margin: 0;
 }
 </style>

@@ -305,12 +305,12 @@ async function save() {
 .conversation {
   display: grid;
   grid-template-columns: minmax(0, 1fr) 264px;
-  gap: 18px;
+  gap: 24px;
   align-items: start;
   width: 100%;
   max-width: 1180px;
   margin: 0 auto;
-  padding: 16px 22px 64px;
+  padding: 20px 24px 72px;
 }
 
 @media (max-width: 940px) {
@@ -323,21 +323,22 @@ async function save() {
   min-width: 0;
   display: flex;
   flex-direction: column;
-  gap: 9px;
+  gap: 12px;
 }
 
+/* A comment is a soft card lifted off the page. */
 .card {
-  background: var(--bg-panel);
-  border: 1px solid var(--line-soft);
-  border-radius: 8px;
-  padding: 12px 14px;
+  background: var(--bg);
+  border-radius: var(--radius);
+  box-shadow: var(--shadow-card);
+  padding: 14px 16px;
 }
 
 .meta {
   display: flex;
   align-items: center;
   gap: 8px;
-  font-size: 12px;
+  font-size: 12.5px;
   min-width: 0;
 }
 
@@ -351,8 +352,8 @@ async function save() {
 }
 
 .quiet {
-  padding: 3px;
-  border-radius: 4px;
+  padding: 4px;
+  border-radius: var(--radius-pill);
   color: var(--text-faint);
 }
 
@@ -394,9 +395,9 @@ async function save() {
 .event {
   display: flex;
   align-items: flex-start;
-  gap: 9px;
-  padding: 2px 4px 2px 0;
-  font-size: 12px;
+  gap: 10px;
+  padding: 2px 4px 2px 6px;
+  font-size: 12.5px;
   color: var(--text-dim);
 }
 
@@ -404,8 +405,8 @@ async function save() {
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  width: 22px;
-  height: 22px;
+  width: 24px;
+  height: 24px;
   border-radius: 50%;
   background: var(--bg-raised);
   color: var(--text-faint);
@@ -413,11 +414,13 @@ async function save() {
 }
 
 .event.good .glyph {
-  color: var(--green);
+  background: var(--success-bg);
+  color: var(--success);
 }
 
 .event.bad .glyph {
-  color: var(--red);
+  background: var(--danger-bg);
+  color: var(--danger);
 }
 
 .event .what {
@@ -441,21 +444,21 @@ async function save() {
 }
 
 /* Where the review has ended up: the one card that is about doing rather than
-   reading, so it is the one card with a filled button on it. */
-.standing {
-  border-left: 3px solid var(--line);
-}
-
+   reading, so it is the one card with a filled button on it, and the one
+   tinted with what it says. */
 .standing.good {
-  border-left-color: var(--green);
+  background: var(--success-bg);
+  box-shadow: 0 0 0 1px var(--success-line);
 }
 
 .standing.bad {
-  border-left-color: var(--red);
+  background: var(--danger-bg);
+  box-shadow: 0 0 0 1px var(--danger-line);
 }
 
 .standing.wait {
-  border-left-color: var(--amber);
+  background: var(--warning-bg);
+  box-shadow: 0 0 0 1px var(--warning-line);
 }
 
 .verdict-line {
@@ -471,15 +474,15 @@ async function save() {
 }
 
 .standing.good .verdict-line .glyph {
-  color: var(--green);
+  color: var(--success);
 }
 
 .standing.bad .verdict-line .glyph {
-  color: var(--red);
+  color: var(--danger);
 }
 
 .standing.wait .verdict-line .glyph {
-  color: var(--amber);
+  color: var(--warning);
 }
 
 .words {
@@ -488,27 +491,26 @@ async function save() {
   display: flex;
   flex-direction: column;
   gap: 2px;
-  font-size: 12.5px;
+  font-size: 13px;
 }
 
 .words .faint {
-  font-size: 11.5px;
+  font-size: 12px;
 }
 
 .go {
   flex: none;
-  padding: 5px 14px;
-  font-size: 12.5px;
+  font-size: 13px;
 }
 
 .left {
   display: flex;
   align-items: center;
   gap: 5px;
-  margin: 9px 0 0;
-  padding-top: 9px;
+  margin: 12px 0 0;
+  padding-top: 10px;
   border-top: 1px solid var(--line-soft);
-  font-size: 11.5px;
+  font-size: 12px;
 }
 
 .empty {
@@ -521,6 +523,6 @@ async function save() {
    attribute, and three components draw one. Where the description sits is all
    this component has to say about it. */
 .md-body {
-  margin-top: 9px;
+  margin-top: 10px;
 }
 </style>

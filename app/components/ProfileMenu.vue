@@ -169,30 +169,37 @@ async function pick(id: string) {
   display: flex;
   align-items: center;
   gap: 7px;
-  padding: 5px 9px;
-  border-radius: 6px;
-  background: var(--bg-raised);
-  border: 1px solid var(--line);
+  height: 32px;
+  padding: 0 10px 0 5px;
+  border-radius: var(--radius-pill);
+  background: var(--bg);
+  box-shadow: var(--shadow-card);
   color: var(--text);
   max-width: 200px;
+  transition: box-shadow 0.12s;
+}
+
+/* No face and no logo still leaves the pill balanced round its label. */
+.pill-btn > svg:first-child {
+  margin-left: 5px;
 }
 
 .pill-btn:hover,
 .pill-btn.on {
-  background: var(--bg-active);
+  box-shadow: var(--shadow-card), var(--focus);
 }
 
 .face {
-  width: 17px;
-  height: 17px;
+  width: 22px;
+  height: 22px;
   border-radius: 50%;
   object-fit: cover;
   flex: none;
 }
 
 .face.big {
-  width: 22px;
-  height: 22px;
+  width: 34px;
+  height: 34px;
 }
 
 /* A profile whose forge has no picture still gets a round slot, so the names
@@ -224,21 +231,28 @@ async function pick(id: string) {
   top: calc(100% + 6px);
   z-index: 41;
   width: 320px;
-  padding: 4px;
-  background: var(--bg-raised);
-  border: 1px solid var(--line);
-  border-radius: 9px;
-  box-shadow: 0 16px 40px var(--shadow-strong);
+  padding: 5px;
+  background: var(--bg);
+  border-radius: var(--radius);
+  box-shadow: var(--shadow-pop);
+  animation: pop-in 0.12s ease-out;
+}
+
+@keyframes pop-in {
+  from {
+    opacity: 0;
+    transform: translateY(-3px);
+  }
 }
 
 .current {
   display: flex;
   align-items: center;
   gap: 10px;
-  padding: 8px 10px;
-  margin: 0 2px 6px;
-  border-radius: 7px;
-  background: var(--bg-panel);
+  padding: 10px 12px;
+  margin: 0 0 6px;
+  border-radius: var(--radius-sm);
+  background: var(--surface);
 }
 
 .grow {
@@ -275,18 +289,19 @@ async function pick(id: string) {
   align-items: center;
   gap: 9px;
   width: 100%;
-  padding: 6px 10px;
-  border-radius: 6px;
+  min-height: 30px;
+  padding: 5px 10px;
+  border-radius: var(--radius-sm);
   text-align: left;
-  font-size: 12.5px;
+  font-size: 13px;
 }
 
 .item:hover {
-  background: var(--bg-active);
+  background: var(--bg-hover);
 }
 
 .tick {
-  color: var(--green);
+  color: var(--text);
   flex: none;
 }
 
@@ -297,7 +312,7 @@ async function pick(id: string) {
 
 .divider {
   height: 1px;
-  margin: 5px 6px;
-  background: var(--line);
+  margin: 5px 8px;
+  background: var(--line-soft);
 }
 </style>

@@ -49,7 +49,7 @@ const style = computed(() => ({
   align-items: center;
   justify-content: center;
   border-radius: 50%;
-  color: #fff;
+  color: white;
   font-weight: 600;
   line-height: 1;
   user-select: none;
@@ -71,15 +71,15 @@ const style = computed(() => ({
   width: 8px;
   height: 8px;
   border-radius: 50%;
-  border: 1.5px solid var(--bg-panel);
+  border: 2px solid var(--bg);
 }
 
 .badge.approved {
-  background: var(--green);
+  background: var(--success);
 }
 
 .badge.changes_requested {
-  background: var(--red);
+  background: var(--danger);
 }
 
 .badge.commented,

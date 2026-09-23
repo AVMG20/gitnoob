@@ -6,6 +6,8 @@
  */
 
 export type ThemeId =
+  | 'studio-light'
+  | 'studio-dark'
   | 'fjord'
   | 'slate'
   | 'pine'
@@ -37,14 +39,28 @@ export interface Theme {
 }
 
 /** The one the app opens with, and the one `:root` carries. */
-export const DEFAULT_THEME: ThemeId = 'fjord'
+export const DEFAULT_THEME: ThemeId = 'studio-light'
 
 export const THEMES: Theme[] = [
+  {
+    id: 'studio-light',
+    name: 'Studio Light',
+    kind: 'Light',
+    note: 'The default by day: white cards on a soft grey, and ink for the buttons.',
+    swatch: ['#ffffff', '#17181b', '#1c1c1c']
+  },
+  {
+    id: 'studio-dark',
+    name: 'Studio Dark',
+    kind: 'Semi-dark',
+    note: 'The default by night: charcoal cards on near-black, and white for the buttons.',
+    swatch: ['#1b1c1e', '#f0f2f4', '#eff1f5']
+  },
   {
     id: 'fjord',
     name: 'Fjord',
     kind: 'Semi-dark',
-    note: 'The default: a blue-grey window that keeps out of the way.',
+    note: 'A blue-grey window that keeps out of the way.',
     swatch: ['#121b24', '#42addf', '#d5e1ec']
   },
   {

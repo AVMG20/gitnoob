@@ -169,9 +169,9 @@ async function apply() {
 
 <style scoped>
 .block {
-  padding: 11px;
-  border: 1px solid var(--line);
-  border-radius: 7px;
+  padding: 12px 14px;
+  background: var(--surface);
+  border-radius: var(--radius);
   margin-bottom: 14px;
 }
 
@@ -204,13 +204,12 @@ async function apply() {
 
 .tag {
   flex: none;
-  padding: 0 5px;
-  border-radius: 4px;
-  font-size: 10px;
-  letter-spacing: 0.04em;
+  padding: 0 7px;
+  border-radius: var(--radius-pill);
+  font-size: 10.5px;
+  font-weight: 600;
   color: var(--amber-soft);
   background: var(--warning-bg);
-  border: 1px solid var(--warning-line);
 }
 
 .when {
@@ -234,8 +233,10 @@ async function apply() {
   display: flex;
   align-items: center;
   gap: 5px;
-  padding: 3px 8px;
+  min-height: 26px;
+  padding: 3px 10px;
   margin-bottom: 5px;
+  border-radius: var(--radius-pill);
   font-size: 11.5px;
 }
 
@@ -246,10 +247,9 @@ async function apply() {
 .label {
   display: block;
   margin-bottom: 5px;
-  font-size: 11px;
-  letter-spacing: 0.06em;
-  text-transform: uppercase;
-  color: var(--text-faint);
+  font-size: 12px;
+  font-weight: 550;
+  color: var(--text-dim);
 }
 
 textarea {
@@ -269,8 +269,8 @@ textarea {
   align-items: flex-start;
   gap: 8px;
   margin: 12px 0 0;
-  padding: 9px 11px;
-  border-radius: 7px;
+  padding: 10px 12px;
+  border-radius: var(--radius);
   font-size: 12px;
   line-height: 1.5;
   color: var(--amber-soft);

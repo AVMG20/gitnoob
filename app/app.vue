@@ -156,8 +156,10 @@ const columns = computed(() => {
   // The viewer and a review page take the whole middle; the rebase plan and a
   // stash keep the sidebar, because the sidebar is where the next branch or
   // the next stash is picked from.
-  if (store.viewer || reviewOpen.value) return `minmax(0, 1fr) 5px ${panel}`
-  return `minmax(0, ${layout.sidebar}px) 5px minmax(0, 1fr) 5px ${panel}`
+  // The handles are the gutters between the cards, so they are as wide as one.
+  const gap = 'var(--gutter)'
+  if (store.viewer || reviewOpen.value) return `minmax(0, 1fr) ${gap} ${panel}`
+  return `minmax(0, ${layout.sidebar}px) ${gap} minmax(0, 1fr) ${gap} ${panel}`
 })
 
 /** What every open has to do once the repository itself is in place. */
@@ -458,13 +460,24 @@ onUnmounted(() => {
   min-height: 0;
 }
 
+/* The panels are cards on the canvas, with a gutter between them and round the
+   edge. The resize handles are the gutters themselves. */
 .body {
   display: grid;
   grid-template-columns: minmax(0, 1fr);
+  padding: 0 var(--gutter) var(--gutter);
 }
 
 .body > :deep(*) {
   min-width: 0;
   min-height: 0;
+}
+
+.body > :deep(:not(.handle)) {
+  background: var(--bg);
+  border: none;
+  border-radius: var(--radius-lg);
+  box-shadow: var(--shadow-card);
+  overflow: hidden;
 }
 </style>

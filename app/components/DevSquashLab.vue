@@ -1,7 +1,9 @@
 <script setup lang="ts">
 import { onMounted, ref } from 'vue'
 import GraphList from './GraphList.vue'
-import WorkingChanges from './WorkingChanges.vue'
+import RightPanel from './RightPanel.vue'
+import TitleBar from './TitleBar.vue'
+import ProjectTabs from './ProjectTabs.vue'
 import DiffViewer from './DiffViewer.vue'
 import SideBar from './SideBar.vue'
 import ContextMenu from './ContextMenu.vue'
@@ -277,11 +279,15 @@ onMounted(async () => {
 
 <template>
   <div class="lab">
-    <SideBar class="side" />
-    <!-- Opening a file takes over the middle, the same way the shell does it. -->
-    <DiffViewer v-if="git.store.viewer" class="graph" />
-    <GraphList v-else class="graph" />
-    <WorkingChanges class="work" />
+    <ProjectTabs :home="false" />
+    <TitleBar />
+    <div class="panes">
+      <SideBar class="side" />
+      <!-- Opening a file takes over the middle, the same way the shell does it. -->
+      <DiffViewer v-if="git.store.viewer" class="graph" />
+      <GraphList v-else class="graph" />
+      <RightPanel class="work" />
+    </div>
     <ActivityLog class="console" />
     <ContextMenu />
     <SettingsModal v-if="config.store.settingsOpen" />
@@ -289,26 +295,30 @@ onMounted(async () => {
 </template>
 
 <style scoped>
-/* The three panels side by side with the console under them, which is the
-   shape the window has — the console is sized against what is left. */
+/* The shell's own shape: tabs and toolbar on the canvas, the three panels as
+   cards under them, and the console along the bottom. */
 .lab {
-  display: grid;
-  grid-template-columns: 260px minmax(0, 1fr) 380px;
-  grid-template-rows: minmax(0, 1fr) auto;
+  display: flex;
+  flex-direction: column;
   height: 100vh;
   min-height: 0;
 }
 
-.console {
-  grid-column: 1 / -1;
+.panes {
+  flex: 1;
+  min-height: 0;
+  display: grid;
+  grid-template-columns: 260px minmax(0, 1fr) 380px;
+  gap: var(--gutter);
+  padding: 0 var(--gutter) var(--gutter);
 }
 
-.side,
-.graph,
-.work {
+.panes > * {
   min-width: 0;
   min-height: 0;
-  border-left: 1px solid var(--line);
+  background: var(--bg);
+  border-radius: var(--radius-lg);
+  box-shadow: var(--shadow-card);
   overflow: hidden;
 }
 </style>

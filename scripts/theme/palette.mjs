@@ -36,7 +36,9 @@ const LADDERS = {
     scrollbarHover: 0.25,
     shadow: 0.35,
     shadowStrong: 0.55,
-    overlay: 0.62
+    overlay: 0.62,
+    /** The window behind the panels, which float on it as cards. */
+    canvas: -0.035
   },
   /**
    * The black themes: the page is pure black and cannot be stepped down from,
@@ -56,7 +58,8 @@ const LADDERS = {
     scrollbarHover: 0.3,
     shadow: 0.6,
     shadowStrong: 0.75,
-    overlay: 0.7
+    overlay: 0.7,
+    canvas: 0
   },
   light: {
     surface: -0.022,
@@ -71,7 +74,46 @@ const LADDERS = {
     scrollbarHover: -0.24,
     shadow: 0.14,
     shadowStrong: 0.22,
-    overlay: 0.45
+    overlay: 0.45,
+    canvas: -0.035
+  },
+  /**
+   * The Studio pair. Panels are cards on a canvas a step away from them, so the
+   * steps inside a card are small: a hover is a whisper, a selected row a tint
+   * of the ink the buttons are filled with. Lines are kept soft on purpose (see
+   * `lines` on the themes): space does the grouping here, not rules.
+   */
+  studioDark: {
+    surface: 0.018,
+    raised: 0.045,
+    hover: 0.035,
+    deep: -0.015,
+    active: 0.1,
+    tint: 0.14,
+    tintLine: 0.34,
+    lane: { l: 0.72, c: 0.15 },
+    scrollbar: 0.13,
+    scrollbarHover: 0.22,
+    shadow: 0.4,
+    shadowStrong: 0.6,
+    overlay: 0.55,
+    canvas: -0.06
+  },
+  studioLight: {
+    surface: -0.014,
+    raised: -0.038,
+    hover: -0.03,
+    deep: -0.022,
+    active: 0.07,
+    tint: 0.12,
+    tintLine: 0.32,
+    lane: { l: 0.56, c: 0.16 },
+    scrollbar: -0.15,
+    scrollbarHover: -0.25,
+    shadow: 0.07,
+    shadowStrong: 0.14,
+    overlay: 0.3,
+    canvas: -0.05
   }
 }
 
@@ -124,11 +166,42 @@ const LANE_HUES = [254.6, 73, 155.7, 13.7, 300, 205, 350, 130, 40, 275]
  */
 const THEMES = [
   {
+    name: 'studio-light',
+    label: 'Studio Light',
+    family: 'light',
+    ladder: 'studioLight',
+    default: true,
+    note: 'The default by day: white cards on a soft grey, and ink for the buttons.',
+    bg: { l: 1, c: 0, h: 260 },
+    primary: { l: 0.21, c: 0.006, h: 260 },
+    danger: { l: 0.6, c: 0.19, h: 22 },
+    success: { l: 0.62, c: 0.15, h: 152 },
+    warning: { l: 0.7, c: 0.15, h: 68 },
+    info: { l: 0.58, c: 0.2, h: 285 },
+    lines: 0.62,
+    /** Near-black body text, the way a storefront sets it. */
+    text: { fg: 17 }
+  },
+  {
+    name: 'studio-dark',
+    label: 'Studio Dark',
+    family: 'dark',
+    ladder: 'studioDark',
+    note: 'The default by night: charcoal cards on near-black, and white for the buttons.',
+    bg: { l: 0.225, c: 0.004, h: 270 },
+    primary: { l: 0.96, c: 0.004, h: 260 },
+    danger: { l: 0.68, c: 0.18, h: 22 },
+    success: { l: 0.75, c: 0.15, h: 152 },
+    warning: { l: 0.8, c: 0.14, h: 75 },
+    info: { l: 0.7, c: 0.16, h: 285 },
+    lines: 0.7,
+    text: { fg: 15 }
+  },
+  {
     name: 'fjord',
     label: 'Fjord',
     family: 'dark',
-    default: true,
-    note: 'The default: a blue-grey window that keeps out of the way.',
+    note: 'A blue-grey window that keeps out of the way.',
     bg: { l: 0.2184, c: 0.0223, h: 245.8 },
     primary: { l: 0.7069, c: 0.1201, h: 232.4 },
     danger: { l: 0.6409, c: 0.171, h: 13.7 },

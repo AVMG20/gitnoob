@@ -572,20 +572,22 @@ function fileMenu(event: MouseEvent, path: string) {
 }
 
 .empty {
-  padding: 18px 14px;
-  font-size: 12px;
+  margin: auto;
+  padding: 24px 20px;
+  font-size: 12.5px;
+  text-align: center;
 }
 
 .head {
-  padding: 12px 14px;
-  border-bottom: 1px solid var(--line);
+  padding: 16px 16px 14px;
+  border-bottom: 1px solid var(--line-soft);
 }
 
 .head-top {
   display: flex;
-  align-items: flex-start;
+  align-items: center;
   gap: 8px;
-  margin-bottom: 6px;
+  margin-bottom: 10px;
 }
 
 /* Faded until the pointer is in the panel: changing a message is an occasional
@@ -604,9 +606,9 @@ function fileMenu(event: MouseEvent, path: string) {
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  width: 24px;
-  height: 22px;
-  border-radius: 5px;
+  width: 28px;
+  height: 28px;
+  border-radius: var(--radius-pill);
   color: var(--text-faint);
 }
 
@@ -621,11 +623,18 @@ function fileMenu(event: MouseEvent, path: string) {
 }
 
 .icon-btn.ai:not(:disabled) {
-  color: var(--purple);
+  color: var(--info);
 }
 
+/* Saving is the step that finishes the edit, so it is the filled one. */
 .icon-btn.save:not(:disabled) {
-  color: var(--accent);
+  background: var(--primary);
+  color: var(--primary-fg);
+}
+
+.icon-btn.save:hover:not(:disabled) {
+  background: var(--primary-hover);
+  color: var(--primary-fg);
 }
 
 .details:hover .controls,
@@ -636,49 +645,69 @@ function fileMenu(event: MouseEvent, path: string) {
 
 .field {
   position: relative;
-  margin-bottom: 7px;
+  margin-bottom: 8px;
 }
 
+/* The same soft well the commit box uses, with room for the counter. */
 .field textarea {
   width: 100%;
   display: block;
-  /* Room for the counter in the corner. */
-  padding-right: 38px;
+  padding: 10px 40px 10px 12px;
+  border-color: transparent;
+  border-radius: var(--radius);
+  background: var(--surface);
+  line-height: 1.5;
+}
+
+.field textarea:focus {
+  background: var(--bg);
 }
 
 .counter {
   position: absolute;
-  top: 6px;
-  right: 8px;
+  top: 9px;
+  right: 10px;
+  padding: 0 6px;
+  border-radius: var(--radius-pill);
+  background: var(--bg-raised);
   font-size: 10.5px;
+  line-height: 17px;
   font-variant-numeric: tabular-nums;
   color: var(--text-faint);
   pointer-events: none;
 }
 
 .counter.over {
-  color: var(--amber);
+  background: var(--warning-bg);
+  color: var(--amber-soft);
 }
 
 .warn-line {
   display: flex;
   align-items: center;
   gap: 6px;
-  margin: 0 0 7px;
-  font-size: 11.5px;
-  color: var(--amber);
+  margin: 0 0 8px;
+  padding: 6px 10px;
+  border-radius: var(--radius-sm);
+  font-size: 12px;
+  background: var(--warning-bg);
+  color: var(--amber-soft);
 }
 
+/* The hash as a chip: copied with one click, the copy mark there on hover. */
 .oid {
   display: inline-flex;
   align-items: center;
   gap: 5px;
-  padding: 2px 6px;
-  border-radius: 4px;
+  padding: 2px 9px 2px 7px;
+  border-radius: var(--radius-pill);
+  background: var(--bg-raised);
+  font-size: 11.5px;
 }
 
 .oid:hover {
   background: var(--bg-hover);
+  box-shadow: inset 0 0 0 1px var(--line);
   color: var(--text);
 }
 
@@ -692,15 +721,17 @@ function fileMenu(event: MouseEvent, path: string) {
 
 h3 {
   margin: 0;
-  font-size: 14px;
+  font-size: 15px;
   font-weight: 600;
-  line-height: 1.35;
+  line-height: 1.4;
+  letter-spacing: -0.01em;
 }
 
 .body {
   margin: 8px 0 0;
   font-family: var(--font);
-  font-size: 12px;
+  font-size: 12.5px;
+  line-height: 1.6;
   color: var(--text-dim);
   white-space: pre-wrap;
   word-break: break-word;
@@ -708,42 +739,52 @@ h3 {
   overflow: auto;
 }
 
+/* Who and when, as a byline under the title. */
 .who {
   display: flex;
-  align-items: flex-start;
-  gap: 9px;
-  margin-top: 11px;
+  align-items: center;
+  gap: 10px;
+  margin-top: 14px;
   font-size: 12px;
-  line-height: 1.5;
+  line-height: 1.45;
+}
+
+.who .dim {
+  color: var(--text);
+  font-weight: 550;
 }
 
 .parents {
   display: flex;
   align-items: center;
+  flex-wrap: wrap;
   gap: 6px;
-  margin-top: 9px;
+  margin-top: 12px;
 }
 
 .parent {
   font-size: 11px;
-  color: var(--text-faint);
-  padding: 1px 5px;
-  border-radius: 4px;
+  color: var(--text-dim);
+  padding: 1px 8px;
+  border-radius: var(--radius-pill);
+  background: var(--bg-raised);
 }
 
 .parent:hover {
   background: var(--bg-hover);
-  color: var(--accent);
+  box-shadow: inset 0 0 0 1px var(--line);
+  color: var(--text);
 }
 
 /* The forge's own account of the branch, between what the commit says and what
    it changed: the same reading order as the sidebar row that leads here. */
 .review {
-  padding: 10px 14px 12px;
-  border-bottom: 1px solid var(--line);
-  /* A shade off the panel, so the forge's account reads as a block of its own
-     rather than as more of the commit above it. */
-  background: var(--bg-deep);
+  margin: 12px 12px 0;
+  padding: 12px 14px 14px;
+  border-radius: var(--radius);
+  /* A soft block of its own inside the card, so the forge's account reads as
+     separate from the commit above it. */
+  background: var(--surface);
 }
 
 .review-top {
@@ -757,35 +798,35 @@ h3 {
   font-size: 11px;
 }
 
+/* The state as a filled pill in its own colour, sentence case. */
 .state {
-  padding: 1px 6px;
-  border-radius: 9px;
-  font-size: 10px;
+  padding: 1px 8px;
+  border-radius: var(--radius-pill);
+  font-size: 10.5px;
   font-weight: 600;
-  text-transform: uppercase;
-  letter-spacing: 0.04em;
-  border: 1px solid var(--line);
-  color: var(--text-faint);
+  text-transform: capitalize;
+  background: var(--bg-raised);
+  color: var(--text-dim);
 }
 
 .state.open {
-  color: var(--green);
-  border-color: color-mix(in srgb, var(--green) 45%, transparent);
+  background: var(--success-bg);
+  color: var(--success-soft);
 }
 
 .state.draft {
-  color: var(--amber);
-  border-color: color-mix(in srgb, var(--amber) 45%, transparent);
+  background: var(--warning-bg);
+  color: var(--amber-soft);
 }
 
 .state.merged {
-  color: var(--purple);
-  border-color: color-mix(in srgb, var(--purple) 45%, transparent);
+  background: var(--info-bg);
+  color: var(--info-soft);
 }
 
 .state.closed {
-  color: var(--red);
-  border-color: color-mix(in srgb, var(--red) 45%, transparent);
+  background: var(--danger-bg);
+  color: var(--danger-soft);
 }
 
 /* The branch pair gives way first: it is the one thing on the row that is
@@ -803,9 +844,12 @@ h3 {
 .link {
   margin-left: auto;
   flex: none;
+  display: grid;
+  place-items: center;
+  width: 24px;
+  height: 24px;
   color: var(--text-faint);
-  padding: 2px;
-  border-radius: 4px;
+  border-radius: var(--radius-pill);
 }
 
 .link:hover {
@@ -836,8 +880,8 @@ h3 {
 }
 
 .label {
-  padding: 1px 6px;
-  border-radius: 9px;
+  padding: 1px 8px;
+  border-radius: var(--radius-pill);
   border: 1px solid var(--line);
   font-size: 10.5px;
   color: var(--text-dim);
@@ -905,27 +949,33 @@ h3 {
   text-transform: capitalize;
 }
 
+/* A heading over the file list: how many, how much, and the path/tree pill. */
 .files-head {
   display: flex;
+  align-items: center;
   gap: 10px;
-  padding: 6px 14px;
-  font-size: 11px;
-  color: var(--text-faint);
-  border-bottom: 1px solid var(--line-soft);
+  padding: 12px 14px 6px;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text);
 }
 
 .toggle {
   margin-left: auto;
   display: flex;
-  border: 1px solid var(--line);
-  border-radius: 5px;
-  overflow: hidden;
+  padding: 2px;
+  gap: 1px;
+  border-radius: var(--radius-pill);
+  background: var(--bg-raised);
 }
 
 .seg {
-  padding: 1px 7px;
-  font-size: 10.5px;
-  color: var(--text-faint);
+  padding: 1px 9px;
+  border-radius: var(--radius-pill);
+  font-size: 11px;
+  font-weight: 500;
+  line-height: 18px;
+  color: var(--text-dim);
 }
 
 .seg:hover {
@@ -933,18 +983,24 @@ h3 {
 }
 
 .seg.on {
-  background: var(--bg-active);
+  background: var(--bg);
   color: var(--text);
+  box-shadow: var(--shadow-card);
+}
+
+.plus,
+.minus {
+  font-size: 11.5px;
+  font-weight: 550;
+  font-variant-numeric: tabular-nums;
 }
 
 .plus {
-  color: var(--green);
-  font-size: 11px;
+  color: var(--success-soft);
 }
 
 .minus {
-  color: var(--red);
-  font-size: 11px;
+  color: var(--danger-soft);
 }
 
 
@@ -955,9 +1011,9 @@ h3 {
   align-items: center;
   gap: 8px;
   width: 100%;
-  margin: 12px 0 0;
-  padding: 6px 9px;
-  border-radius: var(--radius-sm);
+  margin: 14px 0 0;
+  padding: 7px 11px;
+  border-radius: var(--radius);
   font-size: 12px;
   text-align: left;
   border: 1px solid transparent;
@@ -1004,8 +1060,8 @@ h3 {
   padding: 8px 10px;
   border: 1px solid var(--line-soft);
   border-top: none;
-  border-radius: 0 0 var(--radius-sm) var(--radius-sm);
-  background: var(--bg-deep);
+  border-radius: 0 0 var(--radius) var(--radius);
+  background: var(--surface);
   font-size: 11px;
 }
 

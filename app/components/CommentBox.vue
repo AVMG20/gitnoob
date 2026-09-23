@@ -155,30 +155,39 @@ function onKey(event: KeyboardEvent) {
 .box {
   display: flex;
   flex-direction: column;
-  gap: 6px;
+  gap: 8px;
 }
 
+/* A clean, roomy field: rounded, filled faintly until it is being typed in. */
 textarea {
   width: 100%;
+  padding: 10px 12px;
+  border-radius: var(--radius);
+  background: var(--surface);
   font-family: var(--font);
-  font-size: 12px;
-  line-height: 1.5;
+  font-size: 12.5px;
+  line-height: 1.55;
   resize: vertical;
 }
 
+textarea:focus {
+  background: var(--bg);
+}
+
 .compact textarea {
-  padding: 4px 7px;
+  padding: 6px 10px;
+  border-radius: var(--radius-sm);
 }
 
 .actions {
   display: flex;
   align-items: center;
-  gap: 6px;
+  gap: 8px;
   flex-wrap: wrap;
 }
 
 .hint {
-  font-size: 10.5px;
+  font-size: 11px;
 }
 
 .grow {

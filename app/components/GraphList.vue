@@ -66,7 +66,7 @@ const naming = useBranchNaming()
 /** Whether to draw author pictures at all, which Settings can turn off. */
 const avatars = computed(() => config.settings.value?.show_avatars !== false)
 
-const ROW = 27
+const ROW = 30
 /**
  * How far apart two parallel lines sit.
  *
@@ -790,14 +790,13 @@ function chipIcon(chip: RefChip) {
  */
 function chipStyle(row: GraphRow, chip: RefChip) {
   if (chip.kind === 'tag') return undefined
+  // The branch you are on is filled solid in its line's colour, with the card
+  // behind it as the text: the one chip in the list the eye should land on.
+  // Every other chip is a soft tint of the same colour, with no edge to it.
+  if (chip.head) return { background: laneColor(row.color), color: 'var(--bg)' }
   return {
-    background: laneTint(row.color, chip.head ? 0.28 : 0.15),
-    color: chip.head ? '#fff' : laneColor(row.color),
-    // An outline rather than a box-shadow, drawn just inside the edge so it
-    // costs no layout: box-shadow is what the hover ring is made of, and an
-    // inline one would win against it and leave the hover with nothing to say.
-    outline: `1px solid ${laneTint(row.color, chip.head ? 0.9 : 0.3)}`,
-    outlineOffset: '-1px'
+    background: laneTint(row.color, 0.14),
+    color: laneColor(row.color)
   }
 }
 
@@ -1822,7 +1821,6 @@ onUnmounted(() => {
      as this is, they were painted over the panel beside it rather than being
      cut off at its own edge. */
   overflow: hidden;
-  background: var(--bg);
   /* Holds the "back to HEAD" pill, which floats over the list rather than
      inside it: a child of the scroller would scroll away with everything else,
      and it is wanted precisely when things have scrolled away. */
@@ -1831,25 +1829,26 @@ onUnmounted(() => {
 
 .to-head {
   position: absolute;
-  right: 14px;
-  bottom: 12px;
+  right: 16px;
+  bottom: 16px;
   z-index: 2;
   display: flex;
   align-items: center;
-  gap: 4px;
-  max-width: 180px;
-  padding: 3px 9px 3px 6px;
-  border-radius: 11px;
-  font-size: 11px;
+  gap: 5px;
+  max-width: 200px;
+  padding: 5px 12px 5px 9px;
+  border-radius: var(--radius-pill);
+  font-size: 11.5px;
   font-weight: 600;
   /* Sits over rows of text, so it needs a ground of its own to be read against.
      The lane tint bound to it is translucent by design and goes on top of this
      as a background image, rather than replacing it. */
-  background-color: var(--bg-panel);
+  background-color: var(--bg);
+  filter: drop-shadow(0 4px 10px var(--shadow-strong));
 }
 
 .to-head:hover {
-  filter: brightness(1.25);
+  filter: drop-shadow(0 4px 10px var(--shadow-strong)) brightness(1.12);
 }
 
 .head {
@@ -1857,21 +1856,31 @@ onUnmounted(() => {
   align-items: center;
   gap: 10px;
   flex: none;
-  padding: 5px 12px 5px 8px;
-  border-bottom: 1px solid var(--line);
+  padding: 10px 12px 6px;
   user-select: none;
 }
 
+/* A rounded field in the card's own well, lit with the focus halo while it
+   is being typed into. */
 .search {
   flex: 1;
   display: flex;
   align-items: center;
   gap: 6px;
   min-width: 0;
-  padding: 0 8px;
-  background: var(--bg-panel);
-  border: 1px solid var(--line);
-  border-radius: 5px;
+  height: 32px;
+  padding: 0 6px 0 12px;
+  background: var(--bg-deep);
+  border: 1px solid var(--line-soft);
+  border-radius: var(--radius-pill);
+  transition:
+    border-color 0.12s,
+    box-shadow 0.12s;
+}
+
+.search:focus-within {
+  border-color: var(--ring);
+  box-shadow: var(--focus);
 }
 
 .search input {
@@ -1880,11 +1889,12 @@ onUnmounted(() => {
   border: none;
   background: none;
   padding: 4px 0;
-  font-size: 12px;
+  font-size: 12.5px;
 }
 
 .search input:focus {
   outline: none;
+  box-shadow: none;
 }
 
 /* The browser's own clear button for a search field, next to ours, offering
@@ -1894,9 +1904,10 @@ onUnmounted(() => {
 }
 
 .count {
-  font-size: 10.5px;
+  font-size: 11px;
   color: var(--text-dim);
   white-space: nowrap;
+  font-variant-numeric: tabular-nums;
 }
 
 .count.none {
@@ -1906,9 +1917,9 @@ onUnmounted(() => {
 .step {
   display: grid;
   place-items: center;
-  width: 18px;
-  height: 18px;
-  border-radius: 4px;
+  width: 24px;
+  height: 24px;
+  border-radius: var(--radius-pill);
   color: var(--text-faint);
 }
 
@@ -1926,12 +1937,16 @@ onUnmounted(() => {
   align-items: center;
   gap: 5px;
   flex: none;
-  padding: 2px 8px;
-  border-radius: 9px;
+  padding: 2px 6px 2px 9px;
+  border-radius: var(--radius-pill);
   font-size: 11px;
   font-weight: 600;
-  color: var(--accent);
-  background: color-mix(in srgb, var(--accent) 16%, transparent);
+  color: var(--primary-fg);
+  background: var(--primary);
+}
+
+.marks:hover {
+  background: var(--primary-hover);
 }
 
 /* The same box as `.row`, so the graph runs through both without a step in
@@ -1970,7 +1985,7 @@ onUnmounted(() => {
   position: absolute;
   left: 0;
   right: 0;
-  height: 27px;
+  height: var(--row-h);
   display: flex;
   align-items: center;
   gap: 10px;
@@ -1990,12 +2005,12 @@ onUnmounted(() => {
 /* A marked row reads as part of a set without competing with the one selected
    row, which is the one the right panel is showing. */
 .row.marked {
-  background: color-mix(in srgb, var(--accent) 13%, transparent);
-  box-shadow: inset 2px 0 0 var(--accent);
+  background: color-mix(in srgb, var(--info) 12%, transparent);
+  box-shadow: inset 3px 0 0 var(--info);
 }
 
 .row.marked.on {
-  background: color-mix(in srgb, var(--accent) 20%, transparent);
+  background: color-mix(in srgb, var(--info) 20%, transparent);
 }
 
 .row.dim {
@@ -2007,9 +2022,9 @@ onUnmounted(() => {
 }
 
 .row.drop {
-  outline: 1px solid var(--accent);
-  outline-offset: -1px;
-  background: color-mix(in srgb, var(--accent) 14%, transparent);
+  outline: 1.5px dashed var(--info);
+  outline-offset: -2px;
+  background: var(--info-bg);
 }
 
 /* The inline branch editor: a chip you can type into, over the start of the
@@ -2023,18 +2038,18 @@ onUnmounted(() => {
   z-index: 7;
   display: inline-flex;
   align-items: center;
-  gap: 4px;
+  gap: 5px;
   width: min(300px, 55%);
-  padding: 0 6px;
-  border-radius: 3px;
+  padding: 0 10px;
+  border-radius: var(--radius-pill);
   outline-offset: -1px;
-  font-size: 11px;
+  font-size: 11.5px;
   font-weight: 600;
   /* Opaque, with the lane's tint laid over it as a background image: the
      tint on its own is mostly see-through, and there is a line, a leader and
      the start of a message underneath it. */
-  background-color: var(--bg-panel);
-  box-shadow: 0 2px 10px var(--shadow);
+  background-color: var(--bg);
+  box-shadow: var(--shadow-pop);
 }
 
 .naming .glyph {
@@ -2061,6 +2076,7 @@ onUnmounted(() => {
 
 .naming .name-box:focus {
   outline: none;
+  box-shadow: none;
 }
 
 .naming.bad {
@@ -2072,15 +2088,15 @@ onUnmounted(() => {
   position: absolute;
   left: 0;
   top: 100%;
-  margin-top: 3px;
-  padding: 2px 7px;
-  border-radius: 3px;
-  font-size: 10.5px;
+  margin-top: 5px;
+  padding: 4px 10px;
+  border-radius: var(--radius-sm);
+  font-size: 11px;
   font-weight: 500;
   white-space: nowrap;
-  color: var(--red);
-  background: var(--bg-panel);
-  box-shadow: 0 2px 8px var(--shadow);
+  color: var(--danger-soft);
+  background: var(--bg);
+  box-shadow: var(--shadow-pop);
 }
 
 .cell {
@@ -2192,9 +2208,9 @@ onUnmounted(() => {
      off its edge meant starting six pixels to the left of the column, which on
      the leftmost column in the window is six pixels off the edge of it. */
   padding: 6px 8px 6px 0;
-  border-radius: 5px;
-  background: var(--bg-hover);
-  box-shadow: 0 3px 14px var(--shadow);
+  border-radius: var(--radius);
+  background: var(--bg);
+  box-shadow: var(--shadow-pop);
 }
 
 /* The last rows in the window have no room below them, so they grow the other
@@ -2207,7 +2223,7 @@ onUnmounted(() => {
 }
 
 .row.on .col-refs.open .refs-set {
-  background: var(--bg-active);
+  background: var(--bg);
 }
 
 /* Stacked, a chip is as wide as its own name; without this each one stretches
@@ -2234,9 +2250,9 @@ onUnmounted(() => {
    not a label competing with the branch beside it. */
 .more-refs {
   flex: none;
-  padding: 0 5px;
-  border-radius: 3px;
-  font-size: 10px;
+  padding: 1px 6px;
+  border-radius: var(--radius-pill);
+  font-size: 10.5px;
   font-weight: 600;
   color: var(--text-faint);
   background: var(--bg-raised);
@@ -2253,12 +2269,11 @@ onUnmounted(() => {
   align-items: center;
   gap: 10px;
   flex: none;
-  padding: 3px 12px 3px 8px;
-  font-size: 10px;
-  letter-spacing: 0.07em;
-  text-transform: uppercase;
+  padding: 10px 12px 8px 8px;
+  font-size: 11.5px;
+  font-weight: 500;
   color: var(--text-faint);
-  border-bottom: 1px solid var(--line);
+  border-bottom: 1px solid var(--line-soft);
   user-select: none;
 }
 
@@ -2279,16 +2294,19 @@ onUnmounted(() => {
   align-items: center;
   gap: 2px;
   padding-left: 10px;
-  background: linear-gradient(to right, transparent, var(--surface) 10px);
+  background: linear-gradient(to right, transparent, var(--bg) 10px);
 }
 
 .tool {
   display: grid;
   place-items: center;
-  width: 22px;
-  height: 20px;
-  border-radius: var(--radius-sm);
+  width: 26px;
+  height: 26px;
+  border-radius: var(--radius-pill);
   color: var(--fg-subtle);
+  transition:
+    background 0.12s,
+    color 0.12s;
 }
 
 .tool:hover {
@@ -2297,7 +2315,8 @@ onUnmounted(() => {
 }
 
 .tool.on {
-  color: var(--primary);
+  color: var(--primary-fg);
+  background: var(--primary);
 }
 
 /* The strip between two headings. It is wider than it looks: a four-pixel
@@ -2316,8 +2335,9 @@ onUnmounted(() => {
 .grip::after {
   content: '';
   position: absolute;
-  inset: 2px auto 2px 4px;
-  width: 1px;
+  inset: 3px auto 3px 3px;
+  width: 3px;
+  border-radius: var(--radius-pill);
   background: var(--text-faint);
   opacity: 0;
 }
@@ -2383,9 +2403,10 @@ onUnmounted(() => {
 }
 
 .mark {
+  padding: 0 1px;
   background: var(--warning-line);
-  border-radius: 2px;
-  color: var(--amber-soft);
+  border-radius: 3px;
+  color: var(--fg);
 }
 
 .col-author {
@@ -2403,12 +2424,13 @@ onUnmounted(() => {
 .chip {
   display: inline-flex;
   align-items: center;
-  gap: 3px;
+  gap: 4px;
   flex: none;
-  padding: 1px 6px;
-  border-radius: 3px;
-  font-size: 10px;
+  padding: 2px 8px;
+  border-radius: var(--radius-pill);
+  font-size: 11px;
   font-weight: 600;
+  line-height: 1.3;
   max-width: 180px;
   overflow: hidden;
   white-space: nowrap;
@@ -2460,17 +2482,15 @@ onUnmounted(() => {
 }
 
 /* A ref that is not the one we are on can be checked out from here, so it
-   answers the pointer: the hand and a lift in brightness say the name is a
-   way in, not a caption. The chip's own colour is left alone — the hover is
-   an outline and a step up in weight, so a branch, a remote and a tag each
-   stay recognisable while lit. */
+   answers the pointer: the hand and a ring in its own colour say the name is
+   a way in, not a caption. The chip's own colour is left alone, so a branch,
+   a remote and a tag each stay recognisable while lit. */
 .chip-live {
   cursor: pointer;
   transition: box-shadow 90ms ease, filter 90ms ease;
 }
 
 .chip-live:hover {
-  filter: brightness(1.28);
   box-shadow: inset 0 0 0 1px currentColor;
 }
 
@@ -2478,12 +2498,12 @@ onUnmounted(() => {
   filter: brightness(1.1);
 }
 
-/* The branch you are on: brighter, outlined, and ticked. Everything else on
-   the same commit stays flat, so the eye lands on this one. */
+/* The branch you are on: filled solid, and ticked. Everything else on the
+   same commit stays a soft tint, so the eye lands on this one. The lane colour
+   is set on the element; this is what a chip without one falls back to. */
 .chip-current {
-  background: color-mix(in srgb, var(--accent) 32%, transparent);
-  color: var(--accent-soft);
-  box-shadow: inset 0 0 0 1px var(--accent);
+  background: var(--primary);
+  color: var(--primary-fg);
 }
 
 /* The tick and the kind glyph either side of the name: a tick for the branch
@@ -2498,8 +2518,8 @@ onUnmounted(() => {
 }
 
 .chip-local {
-  background: color-mix(in srgb, var(--accent) 18%, transparent);
-  color: var(--accent-soft);
+  background: var(--raised);
+  color: var(--fg);
 }
 
 .chip-remote {
@@ -2531,6 +2551,6 @@ onUnmounted(() => {
 .empty {
   display: flex;
   justify-content: center;
-  padding: 14px;
+  padding: 20px;
 }
 </style>

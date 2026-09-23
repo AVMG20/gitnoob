@@ -189,18 +189,33 @@ async function take(match: string) {
 </template>
 
 <style scoped>
+/*
+ * Closed, the console is a quiet line of text on the canvas under the cards.
+ * Open, it becomes a card of its own, inset like the others, with the prompt at
+ * the bottom of it.
+ */
 .console {
   display: flex;
   flex-direction: column;
   min-height: 0;
-  border-top: 1px solid var(--line);
-  background: var(--bg-panel);
+  padding: 0 var(--gutter) 2px;
+}
+
+.console.open {
+  margin: 0 var(--gutter) var(--gutter);
+  padding: 0;
+  background: var(--bg);
+  border-radius: var(--radius-lg);
+  box-shadow: var(--shadow-card);
+  overflow: hidden;
 }
 
 .strip-row {
   display: flex;
-  align-items: stretch;
+  align-items: center;
   flex: none;
+  gap: 2px;
+  min-height: 28px;
 }
 
 .strip {
@@ -209,19 +224,30 @@ async function take(match: string) {
   gap: 8px;
   flex: 1;
   min-width: 0;
-  padding: 4px 12px;
+  padding: 4px 10px;
+  border-radius: var(--radius-pill);
   font-size: 12px;
   text-align: left;
+  color: var(--text-dim);
+  transition: background 0.12s;
 }
 
 .strip:hover {
+  background: color-mix(in srgb, var(--text) 6%, transparent);
+}
+
+.console.open .strip-row {
+  padding: 4px 6px 4px 4px;
+}
+
+.console.open .strip:hover {
   background: var(--bg-hover);
 }
 
 .chev {
   flex: none;
   color: var(--text-faint);
-  transition: transform 0.12s;
+  transition: transform 0.15s;
 }
 
 .chev.down {
@@ -229,16 +255,21 @@ async function take(match: string) {
 }
 
 .term {
-  display: flex;
-  align-items: center;
-  padding: 0 10px;
+  display: grid;
+  place-items: center;
+  flex: none;
+  width: 26px;
+  height: 26px;
+  border-radius: var(--radius-pill);
   color: var(--text-faint);
-  border-left: 1px solid var(--line-soft);
+  transition:
+    background 0.12s,
+    color 0.12s;
 }
 
 .term:hover {
   color: var(--text);
-  background: var(--bg-hover);
+  background: color-mix(in srgb, var(--text) 7%, transparent);
 }
 
 .line {
@@ -248,19 +279,19 @@ async function take(match: string) {
 }
 
 .line.error {
-  color: var(--red);
+  color: var(--danger-soft);
 }
 
 .line.command,
 .entry.command .text {
-  color: var(--accent);
+  color: var(--text);
 }
 
 /* A command that came back non-zero: still the command line, in the colour of
    what happened to it. What went wrong is said in a notice, not here. */
 .line.failed,
 .entry.failed .text {
-  color: var(--red-soft);
+  color: var(--danger-soft);
 }
 
 .line.output {
@@ -275,13 +306,42 @@ async function take(match: string) {
   color: var(--text-faint);
 }
 
+/* Working: a small pulsing dot ahead of the word, so the line reads as alive
+   rather than as another message. */
 .busy {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
   flex: 1;
-  color: var(--accent);
+  color: var(--text);
+  font-weight: 500;
 }
 
+.busy::before {
+  content: '';
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--primary);
+  animation: pulse 1s ease-in-out infinite;
+}
+
+@keyframes pulse {
+  50% {
+    opacity: 0.3;
+  }
+}
+
+/* How many lines the log holds, as a small count chip. */
 .count {
-  font-size: 11px;
+  flex: none;
+  padding: 0 7px;
+  border-radius: var(--radius-pill);
+  background: color-mix(in srgb, var(--text) 6%, transparent);
+  font-size: 10.5px;
+  font-weight: 600;
+  line-height: 18px;
+  font-variant-numeric: tabular-nums;
 }
 
 /*
@@ -298,18 +358,22 @@ async function take(match: string) {
   min-height: 0;
   max-height: 60vh;
   overflow-y: auto;
+  padding: 4px 0;
   border-top: 1px solid var(--line-soft);
 }
 
 .entry {
   display: flex;
-  gap: 10px;
-  padding: 3px 12px;
-  border-bottom: 1px solid var(--line-soft);
+  gap: 12px;
+  padding: 3px 16px;
+}
+
+.entry:hover {
+  background: var(--bg-hover);
 }
 
 .entry.error .text {
-  color: var(--red);
+  color: var(--danger-soft);
 }
 
 /* What a typed command printed, as it printed it: a shade quieter than the
@@ -322,6 +386,7 @@ async function take(match: string) {
   flex: none;
   font-family: var(--mono);
   font-size: 11px;
+  font-variant-numeric: tabular-nums;
 }
 
 .text {
@@ -329,14 +394,15 @@ async function take(match: string) {
   flex: 1;
   min-width: 0;
   font-family: var(--mono);
-  font-size: 11px;
+  font-size: 11.5px;
+  line-height: 1.55;
   white-space: pre-wrap;
   word-break: break-word;
   color: var(--text-dim);
 }
 
 .pad {
-  padding: 8px 12px;
+  padding: 8px 16px;
   font-size: 12px;
 }
 
@@ -347,18 +413,19 @@ async function take(match: string) {
   flex: none;
   max-height: 84px;
   overflow-y: auto;
-  padding: 6px 12px;
+  padding: 8px 16px;
   border-top: 1px solid var(--line-soft);
-  background: var(--bg-raised);
+  background: var(--bg-panel);
 }
 
 .offer {
-  padding: 1px 6px;
-  border-radius: 4px;
+  padding: 2px 9px;
+  border-radius: var(--radius-pill);
   font-family: var(--mono);
   font-size: 11px;
   color: var(--text-dim);
-  border: 1px solid var(--line-soft);
+  background: var(--bg);
+  box-shadow: inset 0 0 0 1px var(--line-soft);
 }
 
 .offer:hover {
@@ -366,33 +433,46 @@ async function take(match: string) {
   color: var(--text);
 }
 
-/* The line you type on, at the very bottom and darker than the transcript
-   above it — the one part of the window that is a terminal. */
+/* The line you type on, at the very bottom of the card: a field in a well,
+   the one part of the window that is a terminal. */
 .prompt-row {
   display: flex;
   align-items: center;
   gap: 4px;
   flex: none;
+  margin: 0 8px 8px;
   padding: 6px 12px;
-  border-top: 1px solid var(--line);
+  border-radius: var(--radius);
   background: var(--bg-deep);
+  box-shadow: inset 0 0 0 1px var(--line-soft);
+  transition: box-shadow 0.12s;
+}
+
+.prompt-row:focus-within {
+  box-shadow:
+    inset 0 0 0 1px var(--ring),
+    var(--focus);
 }
 
 .git {
   font-family: var(--mono);
-  font-size: 11px;
-  color: var(--accent);
+  font-size: 11.5px;
+  font-weight: 600;
+  color: var(--text);
 }
 
-.input {
+.input,
+.input:focus,
+.input:hover {
   flex: 1;
   min-width: 0;
   padding: 2px 4px;
   background: none;
   border: none;
   outline: none;
+  box-shadow: none;
   font-family: var(--mono);
-  font-size: 11px;
+  font-size: 11.5px;
   color: var(--text);
 }
 

@@ -257,9 +257,9 @@ function draftKey(line: DiffLine) {
      a gap above the header and the header itself over the first two lines. */
   top: 0;
   z-index: 2;
-  padding: 3px 10px;
+  padding: 5px 14px;
   color: var(--text-faint);
-  background: var(--bg-raised);
+  background: var(--surface);
   border-top: 1px solid var(--line-soft);
   border-bottom: 1px solid var(--line-soft);
   font-size: 11px;
@@ -300,7 +300,7 @@ function draftKey(line: DiffLine) {
 }
 
 .diff-line.add .sign {
-  color: var(--green-soft);
+  color: var(--success-soft);
 }
 
 .diff-line.del {
@@ -314,12 +314,12 @@ function draftKey(line: DiffLine) {
 }
 
 .diff-line.del .sign {
-  color: var(--red-soft);
+  color: var(--danger-soft);
 }
 
-/* The review's whole gesture: a round accent chip that surfaces on the line
-   under the pointer. It borrows the app's own accent rather than drawing a
-   boxed form control on every row. */
+/* The review's whole gesture: a round ink chip that surfaces on the line under
+   the pointer. It borrows the app's own accent rather than drawing a boxed
+   form control on every row. */
 .line-add {
   justify-self: end;
   align-self: center;
@@ -354,8 +354,10 @@ function draftKey(line: DiffLine) {
    written — indented to sit under the code column rather than under the
    numbers, and pinned to it when the patch is scrolled sideways. */
 .pending {
-  border-left: 2px dashed var(--amber);
-  padding: 2px 0 2px 10px;
+  padding: 8px 12px;
+  border-radius: var(--radius);
+  background: var(--warning-bg);
+  box-shadow: inset 0 0 0 1px var(--warning-line);
 }
 
 .pending-head {
@@ -371,17 +373,17 @@ function draftKey(line: DiffLine) {
 }
 
 .pending .chip {
-  padding: 1px 7px;
-  border-radius: 999px;
-  border: 1px solid color-mix(in srgb, var(--amber) 45%, transparent);
-  color: var(--amber-soft);
-  font-size: 10px;
+  padding: 1px 8px;
+  border-radius: var(--radius-pill);
+  background: var(--bg);
+  color: var(--warning-soft);
+  font-size: 10.5px;
   font-weight: 600;
 }
 
 .pending .quiet {
-  padding: 1px 6px;
-  border-radius: 4px;
+  padding: 2px 8px;
+  border-radius: var(--radius-pill);
   color: var(--text-faint);
   font-size: 11px;
 }
@@ -406,8 +408,12 @@ function draftKey(line: DiffLine) {
   margin-left: 98px;
   margin-right: 12px;
   max-width: min(760px, calc(100% - 110px));
-  padding: 6px 12px;
-  border-top: 1px solid var(--line-soft);
-  background: var(--bg-deep);
+  margin-top: 6px;
+  margin-bottom: 6px;
+  padding: 12px 14px;
+  border-radius: var(--radius);
+  background: var(--bg);
+  box-shadow: var(--shadow-card);
+  font-family: var(--font);
 }
 </style>

@@ -142,22 +142,31 @@ onMounted(async () => {
   justify-items: center;
   padding-top: 12vh;
   background: var(--overlay);
+  backdrop-filter: blur(3px);
 }
 
+/* A command palette: one big field, and the answers under it. */
 .switch {
-  width: min(560px, 92vw);
-  background: var(--bg-panel);
-  border: 1px solid var(--line);
-  border-radius: var(--radius);
-  box-shadow: 0 18px 50px var(--shadow-strong);
+  width: min(600px, 92vw);
+  background: var(--bg);
+  border-radius: var(--radius-lg);
+  box-shadow: var(--shadow-pop);
   overflow: hidden;
+  animation: palette-in 0.14s ease-out;
+}
+
+@keyframes palette-in {
+  from {
+    opacity: 0;
+    transform: translateY(-4px) scale(0.99);
+  }
 }
 
 .search {
   display: flex;
   align-items: center;
-  gap: 8px;
-  padding: 9px 12px;
+  gap: 10px;
+  padding: 14px 18px;
   border-bottom: 1px solid var(--line-soft);
 }
 
@@ -168,22 +177,24 @@ onMounted(async () => {
   background: none;
   border: none;
   outline: none;
-  font-size: 14px;
+  box-shadow: none;
+  font-size: 16px;
+  letter-spacing: -0.01em;
 }
 
 .list {
-  max-height: 340px;
+  max-height: 380px;
   overflow-y: auto;
-  padding: 4px;
+  padding: 6px;
 }
 
 .row {
   display: flex;
   align-items: center;
-  gap: 9px;
+  gap: 11px;
   width: 100%;
-  padding: 5px 8px;
-  border-radius: var(--radius-sm);
+  padding: 7px 12px;
+  border-radius: var(--radius);
   text-align: left;
 }
 
@@ -197,7 +208,11 @@ onMounted(async () => {
 }
 
 .row.on .glyph {
-  color: var(--accent);
+  color: var(--text);
+}
+
+.name {
+  font-weight: 550;
 }
 
 .names {
@@ -208,16 +223,17 @@ onMounted(async () => {
 }
 
 .path {
-  font-size: 10px;
+  font-size: 11px;
 }
 
 .badge {
   flex: none;
-  padding: 1px 6px;
-  border-radius: 999px;
-  font-size: 10px;
-  color: var(--accent);
-  background: color-mix(in srgb, var(--accent) 16%, transparent);
+  padding: 1px 8px;
+  border-radius: var(--radius-pill);
+  font-size: 10.5px;
+  font-weight: 600;
+  color: var(--primary-fg);
+  background: var(--primary);
 }
 
 /* Only on the row under the pointer: a column of crosses beside every past
@@ -225,8 +241,8 @@ onMounted(async () => {
 .drop {
   display: flex;
   flex: none;
-  padding: 2px;
-  border-radius: 4px;
+  padding: 3px;
+  border-radius: var(--radius-pill);
   color: var(--text-faint);
   opacity: 0;
 }
@@ -242,7 +258,8 @@ onMounted(async () => {
 }
 
 .none {
-  padding: 10px 12px;
-  font-size: 12px;
+  margin: 0;
+  padding: 14px 12px;
+  font-size: 12.5px;
 }
 </style>

@@ -181,17 +181,19 @@ watch(query, () => (active.value = 0))
   align-items: center;
   gap: 6px;
   width: 100%;
-  padding: 5px 8px;
+  min-height: 34px;
+  padding: 6px 10px 6px 12px;
   background: var(--bg);
   border: 1px solid var(--line);
-  border-radius: 5px;
+  border-radius: var(--radius-sm);
   color: var(--text);
-  font-size: 12.5px;
+  font-size: 13px;
   text-align: left;
+  transition: border-color 0.12s;
 }
 
 .face:hover:not(.off) {
-  border-color: var(--accent);
+  border-color: color-mix(in srgb, var(--line) 60%, var(--text-faint));
 }
 
 .face.off {
@@ -232,20 +234,18 @@ watch(query, () => (active.value = 0))
   flex-direction: column;
   max-height: 300px;
   min-width: 200px;
-  background: var(--bg-panel);
-  border: 1px solid var(--line);
-  border-radius: 7px;
-  box-shadow: 0 12px 30px var(--shadow-strong);
+  background: var(--bg);
+  border-radius: var(--radius);
+  box-shadow: var(--shadow-pop);
   overflow: hidden;
 }
 
 .search {
   display: flex;
   align-items: center;
-  gap: 6px;
-  padding: 0 8px;
-  border-bottom: 1px solid var(--line);
-  background: var(--bg-raised);
+  gap: 8px;
+  padding: 0 12px;
+  border-bottom: 1px solid var(--line-soft);
 }
 
 .search input {
@@ -253,16 +253,18 @@ watch(query, () => (active.value = 0))
   min-width: 0;
   border: none;
   background: none;
-  padding: 6px 0;
-  font-size: 12.5px;
+  padding: 10px 0;
+  font-size: 13px;
 }
 
 .search input:focus {
   outline: none;
+  box-shadow: none;
 }
 
 .select-list {
   overflow-y: auto;
+  padding: 5px;
 }
 
 .row {
@@ -270,9 +272,11 @@ watch(query, () => (active.value = 0))
   align-items: center;
   gap: 7px;
   width: 100%;
+  min-height: 30px;
   padding: 5px 9px;
+  border-radius: var(--radius-sm);
   text-align: left;
-  font-size: 12.5px;
+  font-size: 13px;
   color: var(--text);
 }
 
@@ -282,11 +286,12 @@ watch(query, () => (active.value = 0))
 
 .row.on {
   color: var(--text);
+  font-weight: 600;
 }
 
 .tick {
   flex: none;
-  color: var(--green);
+  color: var(--text);
 }
 
 .tick-space {
