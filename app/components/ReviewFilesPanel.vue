@@ -235,24 +235,27 @@ function dirMenu(event: MouseEvent, path: string) {
   display: flex;
   align-items: center;
   gap: 10px;
-  padding: 10px 14px 6px;
+  min-height: 36px;
+  padding: 4px 10px 4px 12px;
   font-size: 12px;
   color: var(--text-dim);
 }
 
-/* Path or tree, as a small segmented pill. */
+/* Path or tree, as a small segmented switch. */
 .toggle {
   margin-left: auto;
   display: flex;
   gap: 1px;
-  padding: 2px;
-  border-radius: var(--radius-pill);
+  padding: 1px;
+  border-radius: var(--radius);
+  border: 1px solid var(--line);
   background: var(--bg-raised);
 }
 
 .seg {
-  padding: 1px 9px;
-  border-radius: var(--radius-pill);
+  padding: 0 8px;
+  min-height: 20px;
+  border-radius: var(--radius-sm);
   font-size: 11px;
   color: var(--text-dim);
 }
@@ -263,7 +266,6 @@ function dirMenu(event: MouseEvent, path: string) {
 
 .seg.on {
   background: var(--bg);
-  box-shadow: var(--shadow-card);
   color: var(--text);
   font-weight: 600;
 }
@@ -284,23 +286,21 @@ function dirMenu(event: MouseEvent, path: string) {
 .filters {
   display: flex;
   align-items: center;
-  gap: 4px;
-  padding: 4px 12px 8px;
-  border-bottom: 1px solid var(--line-soft);
+  gap: 2px;
+  padding: 0 8px 6px;
+  border-bottom: 1px solid var(--line);
 }
 
 .chip {
   display: inline-flex;
   align-items: center;
   gap: 5px;
-  padding: 3px 10px;
-  border-radius: var(--radius-pill);
+  min-height: 24px;
+  padding: 0 8px;
+  border-radius: var(--radius);
   font-size: 11.5px;
   font-weight: 500;
   color: var(--text-dim);
-  transition:
-    background 0.12s,
-    color 0.12s;
 }
 
 .chip:hover {
@@ -309,8 +309,9 @@ function dirMenu(event: MouseEvent, path: string) {
 }
 
 .chip.on {
-  color: var(--primary-fg);
-  background: var(--primary);
+  color: var(--accent-soft);
+  background: var(--primary-bg);
+  font-weight: 600;
 }
 
 .chip .n {
@@ -328,7 +329,7 @@ function dirMenu(event: MouseEvent, path: string) {
   justify-content: center;
   width: 24px;
   height: 24px;
-  border-radius: var(--radius-pill);
+  border-radius: var(--radius);
   color: var(--text-dim);
 }
 
@@ -347,13 +348,13 @@ function dirMenu(event: MouseEvent, path: string) {
   display: flex;
   flex-direction: column;
   gap: 6px;
-  padding: 10px 14px 12px;
-  border-top: 1px solid var(--line-soft);
+  padding: 8px 12px 10px;
+  border-top: 1px solid var(--line);
   font-size: 11.5px;
 }
 
 .bar {
-  height: 5px;
+  height: 4px;
   border-radius: var(--radius-pill);
   background: var(--bg-raised);
   overflow: hidden;

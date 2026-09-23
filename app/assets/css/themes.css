@@ -7,57 +7,57 @@
  * this app runs in is whatever the user's distribution shipped.
  */
 
-/* Studio Light — The default by day: white cards on a soft grey, and ink for the buttons. */
+/* Porcelain — The default by day: white pages, cool grey chrome, and a calm blue. */
 :root,
-[data-theme='studio-light'] {
+[data-theme='porcelain'] {
   --bg: #ffffff;
-  --canvas: #eeeeee;
+  --canvas: #f6f6f6;
   --surface: #fafafa;
   --raised: #f2f2f2;
-  --deep: #f8f8f8;
-  --hover: #f5f5f5;
-  --active: #efefef;
-  --fg: #1c1c1c;
+  --deep: #ebebeb;
+  --hover: #eeeeee;
+  --active: #e6edfc;
+  --fg: #262626;
   --fg-muted: #5d5d5d;
   --fg-subtle: #767676;
-  --border: #dadada;
-  --border-soft: #ececec;
-  --ring: #17181b;
-  --primary: #17181b;
+  --border: #d1d1d1;
+  --border-soft: #e7e7e7;
+  --ring: #306ce2;
+  --primary: #306ce2;
   --primary-fg: #ffffff;
-  --primary-hover: #0a0b0e;
-  --primary-soft: #050608;
-  --primary-bg: #e3e3e4;
-  --primary-line: #b5b5b6;
-  --danger: #d73d47;
+  --primary-hover: #1e59cd;
+  --primary-soft: #154fc3;
+  --primary-bg: #e6edfc;
+  --primary-line: #b9cdf5;
+  --danger: #d7333a;
   --danger-fg: #ffffff;
-  --danger-hover: #c12535;
-  --danger-soft: #b7162d;
-  --danger-bg: #fae8e9;
-  --danger-line: #f2c1c4;
-  --success: #028844;
-  --success-soft: #036a34;
-  --success-bg: #e1f1e9;
-  --success-line: #aed9c3;
+  --danger-hover: #c21628;
+  --danger-soft: #b60020;
+  --danger-bg: #fae7e7;
+  --danger-line: #f1babc;
+  --success: #05893e;
+  --success-soft: #026a2e;
+  --success-bg: #e1f1e8;
+  --success-line: #aad7bd;
   --warning: #cf8105;
   --warning-soft: #aa6a05;
   --warning-bg: #f9f0e1;
-  --warning-line: #f0d7af;
-  --info: #735fe9;
-  --info-soft: #5c42ca;
-  --info-bg: #eeecfc;
-  --diff-add-bg: #e1f1e9;
-  --diff-add-line: #aed9c3;
-  --diff-del-bg: #fae8e9;
-  --diff-del-line: #f2c1c4;
-  --diff-ours: #3771d1;
-  --diff-theirs: #735fe9;
-  --scrollbar: #cecece;
-  --scrollbar-hover: #aeaeae;
-  --overlay: rgba(34, 34, 34, 0.3);
-  --shadow: rgba(0, 0, 0, 0.07);
-  --shadow-strong: rgba(0, 0, 0, 0.14);
-  --lane-1: #3771d1;
+  --warning-line: #efd4aa;
+  --info: #914ad0;
+  --info-soft: #762bb2;
+  --info-bg: #f2e9f9;
+  --diff-add-bg: #e1f1e8;
+  --diff-add-line: #aad7bd;
+  --diff-del-bg: #fae7e7;
+  --diff-del-line: #f1babc;
+  --diff-ours: #306ce2;
+  --diff-theirs: #914ad0;
+  --scrollbar: #cacaca;
+  --scrollbar-hover: #ababab;
+  --overlay: rgba(34, 34, 34, 0.35);
+  --shadow: rgba(0, 0, 0, 0.08);
+  --shadow-strong: rgba(0, 0, 0, 0.16);
+  --lane-1: #3d70d1;
   --lane-2: #887405;
   --lane-3: #028b51;
   --lane-4: #bf4258;
@@ -92,79 +92,79 @@
   --purple-soft: var(--info-soft);
 }
 :root[data-contrast='cosy'],
-[data-theme='studio-light'][data-contrast='cosy'] {
+[data-theme='porcelain'][data-contrast='cosy'] {
   --fg-muted: #6a6a6a;
   --fg-subtle: #898989;
-  --border: #e8e8e8;
-  --border-soft: #f4f4f4;
+  --border: #e2e2e2;
+  --border-soft: #f1f1f1;
 }
 :root[data-contrast='high'],
-[data-theme='studio-light'][data-contrast='high'] {
+[data-theme='porcelain'][data-contrast='high'] {
   --fg-muted: #4c4c4c;
   --fg-subtle: #606060;
-  --border: #b7b7b7;
-  --border-soft: #d5d5d5;
+  --border: #a8a8a8;
+  --border-soft: #cacaca;
 }
 
-/* Studio Dark — The default by night: charcoal cards on near-black, and white for the buttons. */
-[data-theme='studio-dark'] {
-  --bg: #1b1c1e;
-  --canvas: #0e0e10;
-  --surface: #1f2022;
-  --raised: #262628;
-  --deep: #17181a;
-  --hover: #232426;
-  --active: #303133;
-  --fg: #eff1f5;
-  --fg-muted: #9ea0a4;
-  --fg-subtle: #828387;
-  --border: #37383a;
-  --border-soft: #2a2b2d;
-  --ring: #f0f2f4;
-  --primary: #f0f2f4;
-  --primary-fg: #0c0d0f;
-  --primary-hover: #ffffff;
-  --primary-soft: #ffffff;
-  --primary-bg: #393a3c;
-  --primary-line: #636567;
-  --danger: #f36164;
+/* Graphite — The default by night: a neutral charcoal with the same blue. */
+[data-theme='graphite'] {
+  --bg: #1c1e21;
+  --canvas: #16181a;
+  --surface: #212326;
+  --raised: #282a2d;
+  --deep: #101214;
+  --hover: #27292c;
+  --active: #26334b;
+  --fg: #e8ebf2;
+  --fg-muted: #9ea2a8;
+  --fg-subtle: #81858b;
+  --border: #3c3e42;
+  --border-soft: #2e3033;
+  --ring: #5088f2;
+  --primary: #5088f2;
+  --primary-fg: #050d1e;
+  --primary-hover: #679cff;
+  --primary-soft: #77a6fe;
+  --primary-bg: #232c3c;
+  --primary-line: #2e4268;
+  --danger: #ec5a5e;
   --danger-fg: #1b0606;
-  --danger-hover: #ff7e7d;
-  --danger-soft: #ff8f8d;
-  --danger-bg: #392628;
-  --danger-line: #643336;
-  --success: #58c97d;
-  --success-soft: #87e3a1;
-  --success-bg: #24342b;
-  --success-line: #30573e;
+  --danger-hover: #ff7172;
+  --danger-soft: #ff8382;
+  --danger-bg: #372629;
+  --danger-line: #633236;
+  --success: #5ac576;
+  --success-soft: #87df9b;
+  --success-bg: #24342c;
+  --success-line: #31573e;
   --warning: #f2af48;
   --warning-soft: #ffd295;
-  --warning-bg: #393124;
-  --warning-line: #644e2c;
-  --info: #968dfd;
-  --info-soft: #b3b1ff;
-  --info-bg: #2c2c3d;
-  --diff-add-bg: #24342b;
-  --diff-add-line: #30573e;
-  --diff-del-bg: #392628;
-  --diff-del-line: #643336;
-  --diff-ours: #6da4ff;
-  --diff-theirs: #968dfd;
-  --scrollbar: #3b3c3e;
-  --scrollbar-hover: #535457;
-  --overlay: rgba(3, 4, 5, 0.55);
+  --warning-bg: #383126;
+  --warning-line: #654f2e;
+  --info: #b682ed;
+  --info-soft: #cea4fe;
+  --info-bg: #302b3c;
+  --diff-add-bg: #24342c;
+  --diff-add-line: #31573e;
+  --diff-del-bg: #372629;
+  --diff-del-line: #633236;
+  --diff-ours: #5088f2;
+  --diff-theirs: #b682ed;
+  --scrollbar: #3c3e42;
+  --scrollbar-hover: #54575b;
+  --overlay: rgba(4, 5, 7, 0.55);
   --shadow: rgba(0, 0, 0, 0.4);
   --shadow-strong: rgba(0, 0, 0, 0.6);
-  --lane-1: #6da4ff;
-  --lane-2: #bfa403;
-  --lane-3: #40c07b;
-  --lane-4: #f37988;
-  --lane-5: #b48df4;
-  --lane-6: #09bac9;
-  --lane-7: #e97ab2;
-  --lane-8: #85b749;
-  --lane-9: #f28058;
-  --lane-10: #8b9bff;
+  --lane-1: #6d9ffe;
+  --lane-2: #bba102;
+  --lane-3: #3cbc78;
+  --lane-4: #ef7685;
+  --lane-5: #b08af0;
+  --lane-6: #0bb6c5;
+  --lane-7: #e577af;
+  --lane-8: #82b346;
+  --lane-9: #ee7d55;
+  --lane-10: #8798fe;
   --bg-panel: var(--surface);
   --bg-raised: var(--raised);
   --bg-hover: var(--hover);
@@ -189,17 +189,17 @@
   --purple: var(--info);
   --purple-soft: var(--info-soft);
 }
-[data-theme='studio-dark'][data-contrast='cosy'] {
-  --fg-muted: #8f9195;
-  --fg-subtle: #707175;
-  --border: #2d2e30;
-  --border-soft: #242527;
+[data-theme='graphite'][data-contrast='cosy'] {
+  --fg-muted: #8f9399;
+  --fg-subtle: #6f7378;
+  --border: #313337;
+  --border-soft: #27292c;
 }
-[data-theme='studio-dark'][data-contrast='high'] {
-  --fg-muted: #b6b7bc;
-  --fg-subtle: #9a9ca0;
-  --border: #4f5053;
-  --border-soft: #3b3b3e;
+[data-theme='graphite'][data-contrast='high'] {
+  --fg-muted: #b6b9bf;
+  --fg-subtle: #9a9ea4;
+  --border: #585b5f;
+  --border-soft: #414346;
 }
 
 /* Fjord — A blue-grey window that keeps out of the way. */

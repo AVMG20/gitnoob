@@ -52,13 +52,14 @@ const value = ref(props.initial ?? '')
   display: block;
   margin-bottom: 6px;
   font-size: 12px;
-  font-weight: 550;
+  font-weight: 600;
   color: var(--text-dim);
 }
 
 input {
   width: 100%;
-  padding: 8px 12px;
+  height: 30px;
+  padding: 4px 9px;
 }
 
 .hint {

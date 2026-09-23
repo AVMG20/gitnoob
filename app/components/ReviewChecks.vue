@@ -82,35 +82,35 @@ function refresh() {
   width: 100%;
   max-width: 900px;
   margin: 0 auto;
-  padding: 20px 24px 56px;
+  padding: 18px 20px 56px;
 }
 
-/* How the checks add up, as a tinted banner in the colour of the verdict. */
+/* The checks are one bordered box: how they add up as its header strip, in
+   the colour of the verdict, and a row for each check under it. */
 .head {
   display: flex;
   align-items: center;
-  gap: 10px;
-  padding: 12px 16px;
-  border-radius: var(--radius);
+  gap: 8px;
+  min-height: 42px;
+  padding: 4px 8px 4px 14px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-lg) var(--radius-lg) 0 0;
   background: var(--surface);
   font-size: 13px;
-  font-weight: 550;
-  color: var(--text-dim);
+  font-weight: 600;
+  color: var(--text);
 }
 
-.head.good {
-  background: var(--success-bg);
-  color: var(--success-soft);
+.head.good > svg {
+  color: var(--success);
 }
 
-.head.bad {
-  background: var(--danger-bg);
-  color: var(--danger-soft);
+.head.bad > svg {
+  color: var(--danger);
 }
 
-.head.wait {
-  background: var(--warning-bg);
-  color: var(--warning-soft);
+.head.wait > svg {
+  color: var(--warning);
 }
 
 .grow {
@@ -120,11 +120,12 @@ function refresh() {
 .list {
   display: flex;
   flex-direction: column;
-  margin: 12px 0 0;
+  margin: 0;
   padding: 0;
   list-style: none;
-  border-radius: var(--radius);
-  box-shadow: var(--shadow-card);
+  border: 1px solid var(--line);
+  border-top: none;
+  border-radius: 0 0 var(--radius-lg) var(--radius-lg);
   overflow: hidden;
 }
 
@@ -132,7 +133,8 @@ function refresh() {
   display: flex;
   align-items: center;
   gap: 10px;
-  padding: 10px 14px;
+  min-height: 32px;
+  padding: 4px 10px 4px 14px;
   font-size: 12.5px;
   background: var(--bg);
   min-width: 0;
@@ -176,11 +178,11 @@ function refresh() {
   color: var(--text);
 }
 
-/* The state as a small tinted pill beside the name. */
+/* The state as a small tinted tag beside the name. */
 .state {
   flex: none;
-  padding: 1px 8px;
-  border-radius: var(--radius-pill);
+  padding: 0 6px;
+  border-radius: var(--radius-sm);
   background: color-mix(in srgb, currentColor 12%, transparent);
   font-size: 10.5px;
   font-weight: 600;
@@ -197,17 +199,22 @@ function refresh() {
 .open {
   flex: none;
   padding: 4px;
-  border-radius: var(--radius-pill);
+  border-radius: var(--radius-sm);
   color: var(--text-faint);
 }
 
 .open:hover {
   color: var(--text);
-  background: var(--bg-active);
+  background: var(--bg-hover);
 }
 
+/* With nothing to list, the sentence closes the box instead. */
 .none {
-  margin: 14px 0 0;
+  margin: 0;
+  padding: 12px 14px;
+  border: 1px solid var(--line);
+  border-top: none;
+  border-radius: 0 0 var(--radius-lg) var(--radius-lg);
   font-size: 12.5px;
 }
 </style>

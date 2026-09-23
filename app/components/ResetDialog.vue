@@ -113,6 +113,7 @@ onMounted(async () => {
   margin-top: 14px;
   padding: 12px 14px;
   background: var(--surface);
+  border: 1px solid var(--line-soft);
   border-radius: var(--radius);
 }
 
@@ -142,7 +143,7 @@ onMounted(async () => {
 .target .mono {
   flex: none;
   padding: 0 7px;
-  border-radius: var(--radius-pill);
+  border-radius: var(--radius-sm);
   background: var(--bg-raised);
   font-size: 11.5px;
   line-height: 20px;

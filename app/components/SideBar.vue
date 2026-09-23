@@ -1942,8 +1942,8 @@ async function removeSubmodule(one: Submodule) {
 </template>
 
 <style scoped>
-/* The sidebar is a card the shell draws, so it paints nothing of its own round
-   the outside. Inside it, space separates the sections rather than rules. */
+/* The sidebar is chrome: the shell paints it in the canvas tone and draws the
+   hairline beside it, so it paints nothing of its own round the outside. */
 .side {
   display: grid;
   /* Stated, so a long branch name scrolls inside the sidebar rather than
@@ -1952,29 +1952,25 @@ async function removeSubmodule(one: Submodule) {
   grid-template-rows: auto minmax(0, 1fr);
 }
 
-/* A filled box rather than an outlined one: it reads as part of the card until
-   it is used, and gets the same focus halo as every other field when it is. */
+/* A field on the page tone, bordered like every other field, with the icon
+   inside it. */
 .filter {
   display: flex;
   align-items: center;
-  gap: 7px;
-  margin: 10px 10px 6px;
-  padding: 0 10px;
-  background: var(--surface);
-  border: 1px solid transparent;
-  border-radius: var(--radius-pill);
+  gap: 6px;
+  height: var(--control-h);
+  margin: 8px 8px 4px;
+  padding: 0 8px;
+  background: var(--bg);
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  color: var(--text-faint);
   transition:
-    border-color 0.12s,
-    box-shadow 0.12s,
-    background 0.12s;
-}
-
-.filter:hover {
-  background: var(--raised);
+    border-color 0.1s,
+    box-shadow 0.1s;
 }
 
 .filter:focus-within {
-  background: var(--bg);
   border-color: var(--ring);
   box-shadow: var(--focus);
 }
@@ -1984,7 +1980,7 @@ async function removeSubmodule(one: Submodule) {
   min-width: 0;
   border: none;
   background: none;
-  padding: 6px 0;
+  padding: 0;
   font-size: 12.5px;
 }
 
@@ -2003,7 +1999,7 @@ async function removeSubmodule(one: Submodule) {
   flex-direction: column;
   min-height: 0;
   overflow-y: auto;
-  padding-bottom: 14px;
+  padding-bottom: 10px;
 }
 
 .scroll > .toggle,
@@ -2014,13 +2010,12 @@ async function removeSubmodule(one: Submodule) {
 /* As tall as what is in it, up to a cap: a section with three merge requests
    takes three rows, and one with forty branches takes the cap and scrolls
    inside itself rather than burying every heading below it. The cap is about
-   eight rows — enough to work in, short enough that the usual five sections fit
+   nine rows — enough to work in, short enough that the usual five sections fit
    an ordinary window without the sidebar scrolling at all. Dragging a divider
    replaces both the height and the cap. */
 .group {
-  padding-top: 2px;
   flex: none;
-  max-height: 260px;
+  max-height: 250px;
   overflow-y: auto;
 }
 
@@ -2032,12 +2027,12 @@ async function removeSubmodule(one: Submodule) {
   max-height: none;
 }
 
-/* The gap under a section is also the handle for resizing it. Nothing is drawn
-   there until the pointer finds it; then a short rounded bar shows in the
-   middle, the same as the handles between the cards. */
+/* The space under a section is also the handle for resizing it: a hairline
+   that turns the accent under the pointer, the same as the lines between the
+   panes. */
 .grip {
   flex: none;
-  height: 14px;
+  height: 9px;
   cursor: row-resize;
   position: relative;
 }
@@ -2045,23 +2040,17 @@ async function removeSubmodule(one: Submodule) {
 .grip::before {
   content: '';
   position: absolute;
-  left: 50%;
-  top: 6px;
-  width: 36px;
-  height: 3px;
-  border-radius: var(--radius-pill);
-  background: var(--text-faint);
-  opacity: 0;
-  transform: translateX(-50%);
-  transition:
-    opacity 0.15s,
-    width 0.15s;
+  left: 10px;
+  right: 10px;
+  top: 4px;
+  height: 1px;
+  background: var(--line-soft);
+  transition: background 0.12s;
 }
 
 .grip:hover::before,
 .grip:active::before {
-  opacity: 0.6;
-  width: 56px;
+  background: var(--accent);
 }
 
 /* The last one has nothing under it to make room for. */
@@ -2071,8 +2060,8 @@ async function removeSubmodule(one: Submodule) {
 
 /* One indent scale for the whole tree. A row's glyph sits in the same column as
    its section's icon, so a name lines up under the name of the thing it belongs
-   to, and a remote's branches step in once more under the remote. The rows are
-   inset from the card's edge by `--inset`, so the indents are measured from
+   to, and a remote's branches step in once more under the remote. Rows are
+   inset from the pane's edge by `--inset`, so the indents are measured from
    inside that. */
 .side {
   --inset: 6px;
@@ -2081,25 +2070,23 @@ async function removeSubmodule(one: Submodule) {
   --indent-2: 36px;
 }
 
-/* A section heading: the name in the text colour, sentence case, with its
-   count as a small pill at the far end. */
+/* A section heading: small, semibold and muted, with the chevron in front and
+   the count at the far end. */
 .toggle {
   width: calc(100% - var(--inset) * 2);
+  min-height: 26px;
   margin: 0 var(--inset);
-  padding: 6px 8px 6px calc(var(--pad) - var(--inset));
+  padding: 3px 6px 3px calc(var(--pad) - var(--inset));
   border-radius: var(--radius-sm);
-  color: var(--text);
-  font-size: 12.5px;
   text-align: left;
-  transition: background 0.12s;
 }
 
 .scroll > .toggle:not(:first-child) {
-  margin-top: 10px;
+  margin-top: 2px;
 }
 
 .toggle:hover {
-  background: var(--bg-hover);
+  color: var(--text);
 }
 
 .mark {
@@ -2110,7 +2097,7 @@ async function removeSubmodule(one: Submodule) {
 .chev {
   flex: none;
   color: var(--text-faint);
-  transition: transform 0.15s;
+  transition: transform 0.12s;
 }
 
 .chev.down {
@@ -2119,14 +2106,14 @@ async function removeSubmodule(one: Submodule) {
 
 .count {
   margin-left: auto;
-  min-width: 20px;
+  min-width: 18px;
   padding: 0 6px;
   border-radius: var(--radius-pill);
   background: var(--bg-raised);
   color: var(--text-dim);
   font-size: 10.5px;
   font-weight: 600;
-  line-height: 18px;
+  line-height: 16px;
   text-align: center;
   font-variant-numeric: tabular-nums;
 }
@@ -2141,7 +2128,7 @@ async function removeSubmodule(one: Submodule) {
 }
 
 .scroll > .head-row:not(:first-child) {
-  margin-top: 10px;
+  margin-top: 2px;
 }
 
 .head-row > .toggle {
@@ -2155,13 +2142,10 @@ async function removeSubmodule(one: Submodule) {
   flex: none;
   display: grid;
   place-items: center;
-  width: 26px;
-  height: 26px;
-  border-radius: var(--radius-pill);
+  width: 22px;
+  height: 22px;
+  border-radius: var(--radius-sm);
   color: var(--text-faint);
-  transition:
-    background 0.12s,
-    color 0.12s;
 }
 
 .head-action:hover:not(:disabled) {
@@ -2190,50 +2174,47 @@ async function removeSubmodule(one: Submodule) {
   color: var(--text);
 }
 
-/* A row is a rounded pill inset from the card's edge; hovering and choosing
-   fill it, and nothing else about it moves. */
+/* A row is inset from the pane's edge with small rounded corners; hovering
+   and choosing fill it, and nothing else about it moves. */
 .row {
   display: flex;
   align-items: center;
-  gap: 7px;
-  min-height: var(--row-h);
+  gap: 6px;
+  min-height: 26px;
   margin: 0 var(--inset);
-  padding: 3px 8px 3px var(--indent);
+  padding: 2px 6px 2px var(--indent);
   border-radius: var(--radius-sm);
-  color: var(--text-dim);
+  font-size: 12.5px;
+  color: var(--text);
   cursor: default;
   user-select: none;
-  transition: background 0.1s;
 }
 
 .row:hover {
   background: var(--bg-hover);
-  color: var(--text);
 }
 
 .row.on {
   background: var(--bg-active);
-  color: var(--text);
 }
 
 .row.on .name {
-  color: var(--text);
   font-weight: 600;
 }
 
-/* Sits where the next branch would, and reads as a note rather than as one
+/* Sits where the next branch would, and reads as a link rather than as one
    more branch: the list carries on below it once it is asked to. */
 .row.more {
   width: calc(100% - var(--inset) * 2);
   padding-left: var(--indent-2);
   cursor: pointer;
   font-size: 12px;
-  font-weight: 500;
-  color: var(--text-faint);
+  color: var(--accent);
 }
 
 .row.more:hover {
-  color: var(--text);
+  background: none;
+  text-decoration: underline;
 }
 
 /* Dimmed on purpose: the branch is still listed, still right-clickable, and
@@ -2251,11 +2232,11 @@ async function removeSubmodule(one: Submodule) {
   opacity: 0.75;
 }
 
-/* Something is being dragged over it: a halo in the ring colour, the same one
-   a focused field wears, so it reads as "this is where it will land". */
+/* Something is being dragged over it: outlined in the accent, the colour a
+   focused field wears, so it reads as "this is where it will land". */
 .row.drop {
   background: var(--bg-active);
-  box-shadow: inset 0 0 0 1.5px var(--ring);
+  box-shadow: inset 0 0 0 1px var(--accent);
 }
 
 /* A folder is a button, so it has to be talked out of looking like one. */
@@ -2264,6 +2245,7 @@ async function removeSubmodule(one: Submodule) {
   background: none;
   border: 0;
   font: inherit;
+  font-size: 12.5px;
   color: var(--text-dim);
   text-align: left;
 }
@@ -2282,8 +2264,8 @@ async function removeSubmodule(one: Submodule) {
    drag it away from what it marks. */
 .row.stash {
   align-items: flex-start;
-  padding-top: 5px;
-  padding-bottom: 5px;
+  padding-top: 4px;
+  padding-bottom: 4px;
 }
 
 .row.stash .glyph {
@@ -2307,10 +2289,10 @@ async function removeSubmodule(one: Submodule) {
   color: var(--text-faint);
 }
 
-/* The branch you are on is marked by its row being filled; the glyph goes to
-   the text colour with it rather than to an accent of its own. */
+/* The branch you are on: its glyph in the accent, the same mark the toolbar
+   puts beside the branch name. */
 .glyph.current {
-  color: var(--text);
+  color: var(--accent);
 }
 
 .glyph.remote {
@@ -2325,35 +2307,35 @@ async function removeSubmodule(one: Submodule) {
   color: var(--success);
 }
 
-/* A stash gathered up with the others, as opposed to the one being read: a
-   ring rather than a fill, so it cannot be mistaken for the row on screen. */
+/* A stash gathered up with the others, as opposed to the one being read: an
+   outline rather than a fill, so it cannot be mistaken for the row on screen. */
 .row.ticked {
   background: var(--bg-hover);
-  box-shadow: inset 0 0 0 1.5px var(--ring);
+  box-shadow: inset 0 0 0 1px var(--accent);
 }
 
-/* What to do with the stashes gathered up: a small card under them. */
+/* What to do with the stashes gathered up: a bordered strip under them. */
 .picked-bar {
   display: flex;
   align-items: center;
   gap: 6px;
-  margin: 8px var(--inset) 0;
-  padding: 6px 6px 6px 12px;
+  margin: 6px var(--inset) 0;
+  padding: 4px 4px 4px 10px;
+  border: 1px solid var(--line);
   border-radius: var(--radius);
-  background: var(--surface);
-  box-shadow: 0 0 0 1px var(--line-soft);
+  background: var(--bg);
   font-size: 12px;
   font-weight: 500;
 }
 
 .pick-btn {
-  padding: 3px 11px;
-  border-radius: var(--radius-pill);
+  min-height: 24px;
+  padding: 2px 9px;
+  border-radius: var(--radius-sm);
   font-size: 11.5px;
   font-weight: 600;
   background: var(--accent);
   color: var(--on-accent);
-  transition: background 0.12s;
 }
 
 .pick-btn:hover:not(:disabled) {
@@ -2361,20 +2343,19 @@ async function removeSubmodule(one: Submodule) {
 }
 
 .pick-btn:disabled {
-  opacity: 0.4;
+  opacity: 0.45;
   cursor: default;
 }
 
 .pick-btn.ghost {
-  background: none;
-  color: var(--text-dim);
-  box-shadow: inset 0 0 0 1px var(--line);
+  background: var(--bg);
+  color: var(--text);
+  border: 1px solid var(--line);
   font-weight: 500;
 }
 
 .pick-btn.ghost:hover {
   background: var(--bg-hover);
-  color: var(--text);
 }
 
 /* A submodule says where it stands in its own colour: nothing when it is
@@ -2424,30 +2405,26 @@ async function removeSubmodule(one: Submodule) {
   flex: none;
 }
 
-/* Ahead and behind, as small pills: green for work to push, ink for work to
-   pull, the same pair the toolbar's buttons carry. */
+/* Ahead and behind, as small coloured counts: green for work to push, the
+   accent for work to pull. Text rather than filled badges, so a list of
+   branches does not turn into a column of blobs. */
 .tick {
   display: inline-flex;
   align-items: center;
   gap: 1px;
   flex: none;
   margin-left: 2px;
-  padding: 1px 6px 1px 4px;
-  border-radius: var(--radius-pill);
-  font-size: 10.5px;
-  font-weight: 650;
-  line-height: 1.3;
+  font-size: 11px;
+  font-weight: 600;
   font-variant-numeric: tabular-nums;
 }
 
 .tick.up {
-  background: var(--success-bg);
-  color: var(--success-soft);
+  color: var(--success);
 }
 
 .tick.down {
-  background: var(--primary-bg);
-  color: var(--text);
+  color: var(--accent);
 }
 
 .no-upstream {
@@ -2455,7 +2432,7 @@ async function removeSubmodule(one: Submodule) {
   opacity: 0.5;
 }
 
-/* Quieter than the ahead/behind pills beside it: this says what a branch is,
+/* Quieter than the ahead/behind counts beside it: this says what a branch is,
    not that something needs doing about it. */
 .trunk-mark {
   flex: none;
@@ -2468,7 +2445,7 @@ async function removeSubmodule(one: Submodule) {
   align-items: center;
   gap: 6px;
   margin: 0 var(--inset);
-  padding: 6px 8px 2px var(--indent);
+  padding: 4px 6px 2px var(--indent);
   font-size: 11.5px;
   font-weight: 600;
   color: var(--text-faint);
@@ -2484,9 +2461,10 @@ async function removeSubmodule(one: Submodule) {
 .none,
 .err {
   margin: 0 var(--inset);
-  padding: 4px 8px 6px var(--indent);
+  padding: 2px 6px 6px var(--indent);
   font-size: 12px;
   line-height: 1.45;
+  color: var(--text-faint);
 }
 
 .err {

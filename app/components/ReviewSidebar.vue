@@ -371,41 +371,49 @@ watch(
 </template>
 
 <style scoped>
-/* The facts beside a review, as soft grey tiles: filled rather than outlined,
-   so the column reads as one quiet block next to the conversation. */
+/* The facts beside a review, as one column of sections with a hairline
+   between each, the way a forge lays out its sidebar. No boxes: the column is
+   quiet next to the conversation. */
 .about {
   display: flex;
   flex-direction: column;
-  gap: 10px;
   min-width: 0;
 }
 
 .card {
-  background: var(--surface);
-  border-radius: var(--radius);
-  box-shadow: none;
-  padding: 12px 14px;
+  padding: 12px 0;
+  background: none;
+  border: none;
+  border-radius: 0;
+}
+
+.card + .card {
+  border-top: 1px solid var(--line-soft);
+}
+
+.card:first-child {
+  padding-top: 0;
 }
 
 .head {
   display: flex;
   align-items: center;
   gap: 6px;
-  margin-bottom: 9px;
+  margin-bottom: 8px;
 }
 
 h4 {
   margin: 0;
   flex: 1;
-  font-size: 12px;
+  font-size: 11.5px;
   font-weight: 600;
   color: var(--text-dim);
 }
 
 .edit {
   display: inline-flex;
-  padding: 4px;
-  border-radius: var(--radius-pill);
+  padding: 3px;
+  border-radius: var(--radius-sm);
   color: var(--text-faint);
 }
 
@@ -426,9 +434,7 @@ h4 {
 }
 
 .fact + .fact {
-  margin-top: 10px;
-  padding-top: 10px;
-  border-top: 1px solid var(--line-soft);
+  margin-top: 8px;
 }
 
 .checks:hover {
@@ -461,7 +467,7 @@ h4 {
 .named {
   display: flex;
   flex-direction: column;
-  gap: 9px;
+  gap: 7px;
   margin: 0;
   padding: 0;
   list-style: none;
@@ -515,17 +521,19 @@ h4 {
 .pick-labels {
   display: flex;
   flex-wrap: wrap;
-  gap: 5px;
+  gap: 4px;
 }
 
+/* A label, tinted in its own colour on the forge (see `chipStyle`). */
 .label {
   display: inline-flex;
   align-items: center;
-  gap: 5px;
-  padding: 2px 9px;
-  border-radius: var(--radius-pill);
-  background: var(--bg);
-  box-shadow: inset 0 0 0 1px var(--line-soft);
+  gap: 4px;
+  min-height: 20px;
+  padding: 0 6px;
+  border-radius: var(--radius-sm);
+  background: var(--bg-raised);
+  border: 1px solid var(--line);
   font-size: 11px;
   font-weight: 500;
   color: var(--text-dim);
@@ -544,7 +552,7 @@ h4 {
 }
 
 .label.pick.on {
-  box-shadow: inset 0 0 0 1px var(--text-faint);
+  border-color: var(--text-faint);
 }
 
 .editing {
@@ -555,8 +563,8 @@ h4 {
 }
 
 .tiny {
-  min-height: 26px;
-  padding: 3px 12px;
+  min-height: 24px;
+  padding: 2px 10px;
   font-size: 11.5px;
 }
 
@@ -590,11 +598,11 @@ h4 {
   gap: 5px;
   margin-top: 10px;
   font-size: 11.5px;
-  color: var(--text-dim);
+  color: var(--accent-soft);
 }
 
 .forge-link:hover {
-  color: var(--text);
+  color: var(--accent-soft);
   text-decoration: underline;
   text-underline-offset: 2px;
 }

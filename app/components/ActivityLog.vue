@@ -190,57 +190,55 @@ async function take(match: string) {
 
 <style scoped>
 /*
- * Closed, the console is a quiet line of text on the canvas under the cards.
- * Open, it becomes a card of its own, inset like the others, with the prompt at
- * the bottom of it.
+ * A status bar along the bottom of the window, in the chrome tone: the last
+ * thing git did, how many lines the log holds, and the way to a prompt.
+ * Opened, the log is a panel on the page above the bar, with the hairline
+ * handle along its top edge and the prompt at its foot; the bar stays at the
+ * very bottom, where it was.
  */
 .console {
   display: flex;
   flex-direction: column;
   min-height: 0;
-  padding: 0 var(--gutter) 2px;
+  background: var(--canvas);
+  border-top: 1px solid var(--line);
 }
 
+/* The handle is the hairline while the log is open. */
 .console.open {
-  margin: 0 var(--gutter) var(--gutter);
-  padding: 0;
-  background: var(--bg);
-  border-radius: var(--radius-lg);
-  box-shadow: var(--shadow-card);
-  overflow: hidden;
+  border-top: none;
 }
 
 .strip-row {
+  order: 10;
   display: flex;
   align-items: center;
   flex: none;
   gap: 2px;
-  min-height: 28px;
+  height: 24px;
+  padding: 0 4px 0 2px;
+  background: var(--canvas);
+}
+
+.console.open .strip-row {
+  border-top: 1px solid var(--line);
 }
 
 .strip {
   display: flex;
   align-items: center;
-  gap: 8px;
+  gap: 7px;
   flex: 1;
   min-width: 0;
-  padding: 4px 10px;
-  border-radius: var(--radius-pill);
-  font-size: 12px;
+  height: 20px;
+  padding: 0 8px;
+  border-radius: var(--radius-sm);
+  font-size: 11.5px;
   text-align: left;
   color: var(--text-dim);
-  transition: background 0.12s;
 }
 
 .strip:hover {
-  background: color-mix(in srgb, var(--text) 6%, transparent);
-}
-
-.console.open .strip-row {
-  padding: 4px 6px 4px 4px;
-}
-
-.console.open .strip:hover {
   background: var(--bg-hover);
 }
 
@@ -258,18 +256,15 @@ async function take(match: string) {
   display: grid;
   place-items: center;
   flex: none;
-  width: 26px;
-  height: 26px;
-  border-radius: var(--radius-pill);
+  width: 22px;
+  height: 20px;
+  border-radius: var(--radius-sm);
   color: var(--text-faint);
-  transition:
-    background 0.12s,
-    color 0.12s;
 }
 
 .term:hover {
   color: var(--text);
-  background: color-mix(in srgb, var(--text) 7%, transparent);
+  background: var(--bg-hover);
 }
 
 .line {
@@ -314,15 +309,14 @@ async function take(match: string) {
   gap: 7px;
   flex: 1;
   color: var(--text);
-  font-weight: 500;
 }
 
 .busy::before {
   content: '';
   width: 6px;
   height: 6px;
-  border-radius: 50%;
-  background: var(--primary);
+  border-radius: var(--radius-pill);
+  background: var(--accent);
   animation: pulse 1s ease-in-out infinite;
 }
 
@@ -332,21 +326,23 @@ async function take(match: string) {
   }
 }
 
-/* How many lines the log holds, as a small count chip. */
+/* How many lines the log holds. */
 .count {
   flex: none;
-  padding: 0 7px;
+  min-width: 18px;
+  padding: 0 5px;
   border-radius: var(--radius-pill);
-  background: color-mix(in srgb, var(--text) 6%, transparent);
+  background: var(--bg-raised);
   font-size: 10.5px;
   font-weight: 600;
-  line-height: 18px;
+  line-height: 16px;
+  text-align: center;
   font-variant-numeric: tabular-nums;
 }
 
 /*
- * The transcript. Oldest at the top, so it is read downwards and the newest
- * line is the one nearest the prompt.
+ * The transcript, on the page. Oldest at the top, so it is read downwards and
+ * the newest line is the one nearest the prompt.
  *
  * As tall as the handle above it says, and never taller than the window can
  * spare. Written as `flex: 1` with a height it took its size from its own
@@ -359,13 +355,13 @@ async function take(match: string) {
   max-height: 60vh;
   overflow-y: auto;
   padding: 4px 0;
-  border-top: 1px solid var(--line-soft);
+  background: var(--bg);
 }
 
 .entry {
   display: flex;
   gap: 12px;
-  padding: 3px 16px;
+  padding: 1px 12px;
 }
 
 .entry:hover {
@@ -386,6 +382,7 @@ async function take(match: string) {
   flex: none;
   font-family: var(--mono);
   font-size: 11px;
+  line-height: 1.6;
   font-variant-numeric: tabular-nums;
 }
 
@@ -394,15 +391,16 @@ async function take(match: string) {
   flex: 1;
   min-width: 0;
   font-family: var(--mono);
-  font-size: 11.5px;
-  line-height: 1.55;
+  font-size: 12px;
+  line-height: 1.5;
   white-space: pre-wrap;
   word-break: break-word;
   color: var(--text-dim);
 }
 
 .pad {
-  padding: 8px 16px;
+  margin: 0;
+  padding: 6px 12px;
   font-size: 12px;
 }
 
@@ -413,19 +411,18 @@ async function take(match: string) {
   flex: none;
   max-height: 84px;
   overflow-y: auto;
-  padding: 8px 16px;
+  padding: 6px 12px;
   border-top: 1px solid var(--line-soft);
-  background: var(--bg-panel);
+  background: var(--bg);
 }
 
 .offer {
-  padding: 2px 9px;
-  border-radius: var(--radius-pill);
+  padding: 1px 7px;
+  border-radius: var(--radius-sm);
   font-family: var(--mono);
   font-size: 11px;
   color: var(--text-dim);
-  background: var(--bg);
-  box-shadow: inset 0 0 0 1px var(--line-soft);
+  background: var(--bg-raised);
 }
 
 .offer:hover {
@@ -433,54 +430,40 @@ async function take(match: string) {
   color: var(--text);
 }
 
-/* The line you type on, at the very bottom of the card: a field in a well,
-   the one part of the window that is a terminal. */
+/* The line you type on, at the foot of the log: a bordered field, the one
+   part of the window that is a terminal. */
 .prompt-row {
   display: flex;
   align-items: center;
   gap: 4px;
   flex: none;
-  margin: 0 8px 8px;
-  padding: 6px 12px;
-  border-radius: var(--radius);
-  background: var(--bg-deep);
-  box-shadow: inset 0 0 0 1px var(--line-soft);
-  transition: box-shadow 0.12s;
+  padding: 6px 12px 8px;
+  background: var(--bg);
 }
 
-.prompt-row:focus-within {
-  box-shadow:
-    inset 0 0 0 1px var(--ring),
-    var(--focus);
+.prompt-row > .prompt,
+.git {
+  line-height: 26px;
 }
 
 .git {
   font-family: var(--mono);
-  font-size: 11.5px;
+  font-size: 12px;
   font-weight: 600;
   color: var(--text);
 }
 
-.input,
-.input:focus,
-.input:hover {
+.input {
   flex: 1;
   min-width: 0;
-  padding: 2px 4px;
-  background: none;
-  border: none;
-  outline: none;
-  box-shadow: none;
+  height: 26px;
+  padding: 2px 8px;
   font-family: var(--mono);
-  font-size: 11.5px;
-  color: var(--text);
-}
-
-.input::placeholder {
-  color: var(--text-faint);
+  font-size: 12px;
 }
 
 .input:disabled {
   color: var(--text-faint);
+  background: var(--bg-raised);
 }
 </style>

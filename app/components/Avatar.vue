@@ -44,7 +44,7 @@ const letters = computed(() => initials(props.name, props.email))
   overflow: hidden;
   color: white;
   /* A hairline inside the circle, so a picture with a white edge still has one
-     on a white card. */
+     on a white page. */
   outline: 1px solid color-mix(in srgb, var(--text) 10%, transparent);
   outline-offset: -1px;
   font-weight: 600;

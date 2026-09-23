@@ -171,6 +171,7 @@ async function apply() {
 .block {
   padding: 12px 14px;
   background: var(--surface);
+  border: 1px solid var(--line-soft);
   border-radius: var(--radius);
   margin-bottom: 14px;
 }
@@ -205,7 +206,7 @@ async function apply() {
 .tag {
   flex: none;
   padding: 0 7px;
-  border-radius: var(--radius-pill);
+  border-radius: var(--radius-sm);
   font-size: 10.5px;
   font-weight: 600;
   color: var(--amber-soft);
@@ -233,10 +234,10 @@ async function apply() {
   display: flex;
   align-items: center;
   gap: 5px;
-  min-height: 26px;
+  min-height: 24px;
   padding: 3px 10px;
   margin-bottom: 5px;
-  border-radius: var(--radius-pill);
+  border-radius: var(--radius-sm);
   font-size: 11.5px;
 }
 
@@ -248,7 +249,7 @@ async function apply() {
   display: block;
   margin-bottom: 5px;
   font-size: 12px;
-  font-weight: 550;
+  font-weight: 600;
   color: var(--text-dim);
 }
 

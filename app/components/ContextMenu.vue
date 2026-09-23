@@ -147,23 +147,23 @@ onUnmounted(() => window.removeEventListener('keydown', onKey))
      run long, so the ceiling is generous but still leaves the fit() nudge room
      to keep the menu inside the window. */
   max-width: min(560px, calc(100vw - 24px));
-  padding: 5px;
+  padding: 4px;
   background: var(--bg);
-  border-radius: var(--radius);
+  border-radius: var(--radius-lg);
   box-shadow: var(--shadow-pop);
-  animation: pop-in 0.12s ease-out;
+  animation: pop-in 0.08s ease-out;
 }
 
 @keyframes pop-in {
   from {
     opacity: 0;
-    transform: scale(0.98);
+    transform: scale(0.99);
   }
 }
 
 .title {
-  padding: 7px 10px 5px;
-  font-size: 11.5px;
+  padding: 5px 8px 3px;
+  font-size: 11px;
   color: var(--text-faint);
   border-top: 1px solid var(--line-soft);
   margin-top: 4px;
@@ -173,13 +173,13 @@ onUnmounted(() => window.removeEventListener('keydown', onKey))
   position: relative;
   display: flex;
   align-items: center;
-  gap: 9px;
+  gap: 8px;
   width: 100%;
-  min-height: 30px;
-  padding: 5px 10px;
+  min-height: 26px;
+  padding: 3px 8px;
   border-radius: var(--radius-sm);
   text-align: left;
-  font-size: 13px;
+  font-size: 12.5px;
   color: var(--text);
 }
 
@@ -199,9 +199,9 @@ onUnmounted(() => window.removeEventListener('keydown', onKey))
   min-width: 232px;
   max-width: min(560px, calc(100vw - 24px));
   margin-left: -3px;
-  padding: 5px;
+  padding: 4px;
   background: var(--bg);
-  border-radius: var(--radius);
+  border-radius: var(--radius-lg);
   box-shadow: var(--shadow-pop);
 }
 
@@ -212,8 +212,17 @@ onUnmounted(() => window.removeEventListener('keydown', onKey))
   margin-right: -3px;
 }
 
+/* The row under the pointer is filled in the accent, the way a native menu
+   marks it, and everything on it turns to the accent's own text colour. */
 .item:hover:not(:disabled) {
-  background: var(--bg-hover);
+  background: var(--accent);
+  color: var(--on-accent);
+}
+
+.item:hover:not(:disabled) .hint,
+.item:hover:not(:disabled) .icon {
+  color: var(--on-accent);
+  opacity: 0.85;
 }
 
 .item.danger {
@@ -221,7 +230,8 @@ onUnmounted(() => window.removeEventListener('keydown', onKey))
 }
 
 .item.danger:hover:not(:disabled) {
-  background: var(--danger-bg);
+  background: var(--red);
+  color: var(--on-danger);
 }
 
 .item.off {
@@ -252,7 +262,7 @@ onUnmounted(() => window.removeEventListener('keydown', onKey))
 
 .divider {
   height: 1px;
-  margin: 5px 8px;
+  margin: 4px 6px;
   background: var(--line-soft);
 }
 </style>

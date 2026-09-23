@@ -112,9 +112,9 @@ scripts
 
 `app/assets/css/themes.css` and `app/composables/themeList.ts` are generated from `scripts/theme/palette.mjs` by `npm run theme`. Edit the palette, not the output. A test regenerates both and fails if the checked-in files drifted, and checks every theme against WCAG contrast ratios.
 
-The default is Studio: Studio Light and Studio Dark, picked by "Match system" in Settings → Appearance, which follows the OS between them while the window is open (`useTheme.ts`). They have ladders of their own in the palette, softer lines (`lines`) and crisper body text (`text`) than the rest, and ink rather than a colour for the accent, so anything that needs a hue to mean something should use the success, warning, danger or info tokens rather than `--accent`.
+The default is Porcelain by day and Graphite by night: "Match system" in Settings → Appearance follows the OS between the two while the window is open (`useTheme.ts`). They have ladders of their own in the palette, with slightly crisper body text (`text`) and softer lines (`lines`) than the rest.
 
-The window is built as cards on a canvas. `--canvas` is the window's own background; every panel in the body is a card on it (`--bg`, `--radius-lg`, `--shadow-card`), set once in `app.vue`, with `--gutter` between them. The resize handles are the gutters. A component that sits in that grid should not paint its own background or edge.
+The window is built like a workbench. Panes meet edge to edge, and the resize handles are the one-pixel hairlines between them. The chrome round the work is `--canvas`: the toolbar, the sidebar and the inspector (`app.vue` paints every `aside` in the body with it). The work itself is `--bg`: the graph, a diff, a review (every `section`). The tab strip is `--deep`, one step further, so the open tab can run into the toolbar below it. A component that sits in that grid should not paint its own background.
 
 ## Content security policy
 

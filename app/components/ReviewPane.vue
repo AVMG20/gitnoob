@@ -460,8 +460,9 @@ watch(
 
 .warn {
   margin: 12px 20px 0;
-  padding: 8px 12px;
+  padding: 7px 12px;
   border-radius: var(--radius);
+  border: 1px solid var(--warning-line);
   background: var(--warning-bg);
   color: var(--warning-soft);
   font-size: 12px;
@@ -484,7 +485,7 @@ watch(
   justify-content: flex-start;
   gap: 12px;
   padding: 28px 16px 48px;
-  border-top: 1px solid var(--line-soft);
+  border-top: 1px solid var(--line);
   font-size: 12px;
 }
 
@@ -498,9 +499,9 @@ watch(
   display: inline-flex;
   align-items: center;
   gap: 8px;
-  min-height: 34px;
-  padding: 6px 18px;
-  border-radius: var(--radius-pill);
+  min-height: 32px;
+  padding: 5px 16px;
+  border-radius: var(--radius);
   background: var(--primary);
   color: var(--primary-fg);
   font-size: 12.5px;
@@ -521,9 +522,10 @@ watch(
 
 kbd {
   padding: 1px 5px;
-  border-radius: 4px;
-  background: var(--bg-raised);
-  border: 1px solid var(--line-soft);
+  border-radius: var(--radius-sm);
+  background: var(--bg);
+  border: 1px solid var(--line);
+  border-bottom-width: 2px;
   font-family: var(--mono);
   font-size: 9.5px;
   color: var(--text-faint);
@@ -531,7 +533,8 @@ kbd {
 
 /* The one bar over a file: where you are, how to read it, how to move on. It
    sticks to the top of the page, since a file worth scrolling is a file whose
-   controls should still be there at the bottom of it. */
+   controls should still be there at the bottom of it. Chrome, like the header
+   above it. */
 .filebar {
   position: sticky;
   top: 0;
@@ -539,10 +542,10 @@ kbd {
   display: flex;
   align-items: center;
   gap: 6px;
-  padding: 7px 14px;
-  background: color-mix(in srgb, var(--bg) 88%, transparent);
-  backdrop-filter: blur(8px);
-  border-bottom: 1px solid var(--line-soft);
+  min-height: 38px;
+  padding: 4px 14px;
+  background: var(--canvas);
+  border-bottom: 1px solid var(--line);
   font-size: 12px;
 }
 
@@ -558,7 +561,7 @@ kbd {
 }
 
 .filebar .viewed:hover {
-  color: var(--text-dim);
+  color: var(--text);
 }
 
 .filebar .viewed input {
@@ -572,7 +575,7 @@ kbd {
   justify-content: center;
   width: 26px;
   height: 26px;
-  border-radius: var(--radius-pill);
+  border-radius: var(--radius);
   color: var(--text-dim);
 }
 
@@ -598,9 +601,9 @@ kbd {
   display: inline-flex;
   align-items: center;
   gap: 6px;
-  min-height: 28px;
-  padding: 3px 14px;
-  border-radius: var(--radius-pill);
+  min-height: var(--control-h);
+  padding: 3px 12px;
+  border-radius: var(--radius);
   background: var(--primary);
   color: var(--primary-fg);
   font-size: 12px;
@@ -625,17 +628,35 @@ kbd {
   padding: 16px 20px 48px;
 }
 
+/* The commits as one bordered list, a row each. */
+.commits-page > .commit-row {
+  border: 1px solid var(--line);
+  border-top-width: 0;
+  border-radius: 0;
+}
+
+.commits-page > .commit-row:first-of-type {
+  border-top-width: 1px;
+  border-radius: var(--radius-lg) var(--radius-lg) 0 0;
+}
+
+.commits-page > .commit-row:last-of-type {
+  border-radius: 0 0 var(--radius-lg) var(--radius-lg);
+}
+
+.commits-page > .commit-row:only-of-type {
+  border-radius: var(--radius-lg);
+}
+
 /* A commit is a face, what it says, and where to find it again: the hash
    moves to the far end where a lookup belongs, not first where a title
    belongs. */
 .commit-row {
   display: flex;
   align-items: center;
-  gap: 12px;
-  padding: 9px 12px;
-  border-radius: var(--radius);
+  gap: 10px;
+  padding: 7px 12px;
   font-size: 12.5px;
-  transition: background 0.12s;
 }
 
 .commit-row:hover {
@@ -647,8 +668,8 @@ kbd {
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  width: 26px;
-  height: 26px;
+  width: 22px;
+  height: 22px;
   border-radius: 50%;
   color: white;
   font-size: 10px;
@@ -676,8 +697,8 @@ kbd {
 
 .sha {
   flex: none;
-  padding: 2px 9px;
-  border-radius: var(--radius-pill);
+  padding: 1px 6px;
+  border-radius: var(--radius-sm);
   background: var(--bg-raised);
   color: var(--text-dim);
 }
@@ -720,20 +741,23 @@ kbd {
   align-items: center;
   gap: 8px;
   margin: 0 0 12px;
-  padding: 9px 12px;
+  padding: 7px 12px;
   border-radius: var(--radius);
-  background: var(--bg-raised);
+  border: 1px solid var(--line);
+  background: var(--surface);
   font-size: 12.5px;
   color: var(--text-dim);
 }
 
 .already.good {
   background: var(--success-bg);
+  border-color: var(--success-line);
   color: var(--success-soft);
 }
 
 .already.bad {
   background: var(--danger-bg);
+  border-color: var(--danger-line);
   color: var(--danger-soft);
 }
 
@@ -752,7 +776,7 @@ kbd {
 /* The verdicts, tinted towards what they say, matching the composer's. */
 .verdict.approve:not(:disabled) {
   color: var(--success-soft);
-  box-shadow: inset 0 0 0 1px var(--success-line);
+  border-color: var(--success-line);
 }
 
 .verdict.approve:hover:not(:disabled) {
@@ -761,7 +785,7 @@ kbd {
 
 .verdict.request:not(:disabled) {
   color: var(--danger-soft);
-  box-shadow: inset 0 0 0 1px var(--danger-line);
+  border-color: var(--danger-line);
 }
 
 .verdict.request:hover:not(:disabled) {

@@ -618,13 +618,14 @@ function fileMenu(event: MouseEvent, path: string, side: 'staged' | 'unstaged', 
 
 .gone-list {
   margin: 0;
-  padding: 8px 12px;
+  padding: 6px 10px;
   list-style: none;
   max-height: 160px;
   overflow: auto;
   font-size: 11.5px;
   color: var(--text-dim);
   background: var(--surface);
+  border: 1px solid var(--line-soft);
   border-radius: var(--radius-sm);
 }
 
@@ -642,12 +643,13 @@ function fileMenu(event: MouseEvent, path: string, side: 'staged' | 'unstaged', 
   align-items: center;
   gap: 3px;
   margin-left: 4px;
-  padding: 1px 7px;
+  padding: 0 6px;
   border-radius: var(--radius-pill);
   background: var(--warning-bg);
   color: var(--amber-soft);
   font-size: 10.5px;
   font-weight: 600;
+  line-height: 16px;
   font-variant-numeric: tabular-nums;
 }
 
@@ -655,8 +657,7 @@ function fileMenu(event: MouseEvent, path: string, side: 'staged' | 'unstaged', 
   box-shadow: inset 0 0 0 1px var(--warning-line);
 }
 
-/* The two lists are grouped by the space between them and their headings;
-   the one rule left is a soft one, where the unstaged list ends. */
+/* The two lists, one above the other, with a hairline where one ends. */
 .group {
   display: flex;
   flex-direction: column;
@@ -664,21 +665,17 @@ function fileMenu(event: MouseEvent, path: string, side: 'staged' | 'unstaged', 
   /* Clip inside the group when the panel is too short, rather than letting one
      group's rows bleed over the next one's header. */
   overflow: hidden;
-  border-radius: var(--radius);
-  transition:
-    background 0.12s,
-    box-shadow 0.12s;
+  transition: background 0.1s;
 }
 
 .group + .group {
-  border-top: 1px solid var(--line-soft);
-  border-radius: 0;
+  border-top: 1px solid var(--line);
 }
 
-/* Somewhere a dragged file can land: a tinted well with a dashed edge. */
+/* Somewhere a dragged file can land: tinted, with an accent edge. */
 .group.drop {
   background: var(--primary-bg);
-  box-shadow: inset 0 0 0 1.5px var(--primary-line);
+  box-shadow: inset 0 0 0 1px var(--primary-line);
 }
 
 .group-head {
@@ -686,52 +683,47 @@ function fileMenu(event: MouseEvent, path: string, side: 'staged' | 'unstaged', 
   align-items: center;
   justify-content: space-between;
   gap: 8px;
-  padding: 6px 10px 2px 0;
+  min-height: 30px;
+  padding: 2px 6px 2px 0;
   flex: none;
 }
 
 .group-head .section-title {
-  padding: 4px 14px;
-  font-size: 13px;
+  padding: 4px 12px;
+  font-size: 12px;
   color: var(--text);
 }
 
-/* The count beside a heading, as a quiet pill. */
+/* The count beside a heading. */
 .num {
   display: inline-flex;
   align-items: center;
-  min-width: 20px;
   justify-content: center;
-  padding: 0 6px;
+  min-width: 18px;
+  padding: 0 5px;
   border-radius: var(--radius-pill);
   background: var(--bg-raised);
   color: var(--text-dim);
   font-size: 10.5px;
   font-weight: 600;
-  line-height: 18px;
+  line-height: 16px;
   font-variant-numeric: tabular-nums;
 }
 
-/* Stage all, unstage all: text buttons, there when wanted and quiet when not. */
+/* Stage all, unstage all: small quiet buttons, there when wanted. */
 .tiny {
   min-height: 24px;
   font-size: 12px;
-  padding: 2px 9px;
-  border-radius: var(--radius-pill);
+  padding: 1px 8px;
+  border-radius: var(--radius-sm);
 }
 
 .tiny.ai {
   gap: 5px;
-  color: var(--text);
-  box-shadow: inset 0 0 0 1px var(--line);
 }
 
 .tiny.ai svg {
   color: var(--info);
-}
-
-.tiny.ai:hover:not(:disabled) {
-  box-shadow: inset 0 0 0 1px var(--info);
 }
 
 .tiny.warn {
@@ -743,45 +735,50 @@ function fileMenu(event: MouseEvent, path: string, side: 'staged' | 'unstaged', 
 .head-tools {
   display: flex;
   align-items: center;
-  gap: 6px;
+  gap: 4px;
 }
 
-/* Path or tree: a small segmented pill, the picked half lifted out of it. */
+/* Path or tree: a small bordered segmented switch. */
 .toggle {
   display: flex;
-  padding: 2px;
-  gap: 1px;
-  border-radius: var(--radius-pill);
-  background: var(--bg-raised);
+  height: 22px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-sm);
+  background: var(--bg);
+  overflow: hidden;
 }
 
 .seg {
-  padding: 1px 9px;
-  border-radius: var(--radius-pill);
+  padding: 0 8px;
   font-size: 11px;
   font-weight: 500;
-  line-height: 18px;
+  line-height: 20px;
   color: var(--text-dim);
   transition:
-    background 0.12s,
-    color 0.12s;
+    background 0.1s,
+    color 0.1s;
+}
+
+.seg + .seg {
+  border-left: 1px solid var(--line);
 }
 
 .seg:hover {
   color: var(--text);
+  background: var(--bg-hover);
 }
 
 .seg.on {
-  background: var(--bg);
+  background: var(--bg-active);
   color: var(--text);
-  box-shadow: var(--shadow-card);
+  font-weight: 600;
 }
 
-/* The commit box closes the card: the message, and under it the one button
-   this whole panel exists for. */
+/* The composer closes the panel: the message, and under it the one button this
+   whole panel exists for. */
 .commit {
-  padding: 12px 12px 12px;
-  border-top: 1px solid var(--line-soft);
+  padding: 10px;
+  border-top: 1px solid var(--line);
 }
 
 .commit-head {
@@ -789,13 +786,13 @@ function fileMenu(event: MouseEvent, path: string, side: 'staged' | 'unstaged', 
   align-items: center;
   justify-content: space-between;
   gap: 8px;
-  margin-bottom: 8px;
+  margin-bottom: 6px;
 }
 
 .amend {
   display: flex;
   align-items: center;
-  gap: 7px;
+  gap: 6px;
   font-size: 12px;
   color: var(--text-dim);
   cursor: pointer;
@@ -807,64 +804,50 @@ function fileMenu(event: MouseEvent, path: string, side: 'staged' | 'unstaged', 
 
 .field {
   position: relative;
-  margin-bottom: 10px;
+  margin-bottom: 8px;
 }
 
-/* A soft well rather than a boxed field; the ring comes on with the caret. */
+/* An editable well on the page colour, so it reads as the place to type. */
 textarea {
   width: 100%;
   display: block;
-  min-height: 84px;
-  padding: 10px 40px 10px 12px;
-  border-color: transparent;
+  min-height: 80px;
+  padding: 7px 40px 7px 9px;
   border-radius: var(--radius);
-  background: var(--surface);
-  line-height: 1.5;
-}
-
-textarea:hover:not(:disabled):not(:focus) {
-  border-color: var(--line-soft);
-}
-
-textarea:focus {
   background: var(--bg);
+  line-height: 1.5;
 }
 
 .counter {
   position: absolute;
-  top: 9px;
-  right: 10px;
-  padding: 0 6px;
-  border-radius: var(--radius-pill);
-  background: var(--bg-raised);
+  top: 8px;
+  right: 9px;
   font-size: 10.5px;
-  line-height: 17px;
+  line-height: 16px;
   font-variant-numeric: tabular-nums;
   color: var(--text-faint);
   pointer-events: none;
 }
 
 .counter.over {
-  background: var(--warning-bg);
   color: var(--amber-soft);
+  font-weight: 600;
 }
 
 .buttons {
   display: flex;
-  gap: 8px;
+  gap: 6px;
 }
 
-/* The hero: a full-width ink pill. */
 .wide {
   flex: 1;
-  min-height: 36px;
+  min-height: 32px;
   justify-content: center;
-  font-size: 13px;
 }
 
 .stash-btn {
   flex: none;
-  min-height: 36px;
+  min-height: 32px;
 }
 
 .warn-line,
@@ -872,18 +855,20 @@ textarea:focus {
   display: flex;
   align-items: center;
   gap: 6px;
-  margin: 0 0 10px;
-  padding: 6px 10px;
+  margin: 0 0 8px;
+  padding: 5px 8px;
   border-radius: var(--radius-sm);
   font-size: 12px;
   background: var(--warning-bg);
   color: var(--amber-soft);
+  border: 1px solid var(--warning-line);
 }
 
 .blocked {
-  margin: 10px 0 0;
+  margin: 8px 0 0;
   padding: 0;
   background: none;
+  border: none;
   color: var(--text-faint);
 }
 
@@ -892,7 +877,7 @@ textarea:focus {
   display: flex;
   align-items: center;
   gap: 5px;
-  margin: 0 0 10px;
+  margin: 0 0 8px;
   padding: 0;
   font-size: 11.5px;
   color: var(--success-soft);

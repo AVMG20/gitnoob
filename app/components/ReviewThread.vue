@@ -307,12 +307,12 @@ function fullWhen(iso: string) {
   min-width: 0;
 }
 
-/* The root speaks with a rounded bar of ink beside it; the answers only line
+/* The root speaks with a bar in the accent beside it; the answers only line
    up under it, connected by a thread of their own. A settled root goes green:
    it is still a conversation, but not one anybody has to act on. */
 .remark.root {
   position: relative;
-  padding-left: 12px;
+  padding-left: 11px;
 }
 
 .remark.root::before {
@@ -321,7 +321,7 @@ function fullWhen(iso: string) {
   left: 0;
   top: 2px;
   bottom: 2px;
-  width: 3px;
+  width: 2px;
   border-radius: var(--radius-pill);
   background: var(--accent);
 }
@@ -333,7 +333,7 @@ function fullWhen(iso: string) {
 .replies {
   margin-left: 20px;
   padding-left: 12px;
-  border-left: 1px solid var(--line-soft);
+  border-left: 1px solid var(--line);
   display: flex;
   flex-direction: column;
   gap: 10px;
@@ -368,8 +368,8 @@ function fullWhen(iso: string) {
   max-width: 260px;
   font-size: 10.5px;
   color: var(--text-dim);
-  padding: 1px 8px;
-  border-radius: var(--radius-pill);
+  padding: 1px 6px;
+  border-radius: var(--radius-sm);
   background: var(--bg-raised);
 }
 
@@ -380,8 +380,8 @@ function fullWhen(iso: string) {
 
 .chip {
   flex: none;
-  padding: 1px 8px;
-  border-radius: var(--radius-pill);
+  padding: 1px 6px;
+  border-radius: var(--radius-sm);
   background: var(--warning-bg);
   color: var(--warning-soft);
   font-size: 10.5px;
@@ -394,16 +394,18 @@ function fullWhen(iso: string) {
   display: inline-flex;
   align-items: center;
   gap: 4px;
-  padding: 2px 10px;
-  border-radius: var(--radius-pill);
-  box-shadow: inset 0 0 0 1px var(--line);
+  min-height: 22px;
+  padding: 1px 8px;
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--line);
+  background: var(--bg);
   color: var(--text-dim);
   font-size: 11px;
   font-weight: 500;
 }
 
 .fold {
-  padding: 2px 6px;
+  padding: 1px 5px;
 }
 
 .resolve:hover,
@@ -415,7 +417,7 @@ function fullWhen(iso: string) {
 .resolve.on {
   color: var(--success-soft);
   background: var(--success-bg);
-  box-shadow: inset 0 0 0 1px var(--success-line);
+  border-color: var(--success-line);
 }
 
 .foot {
@@ -427,7 +429,7 @@ function fullWhen(iso: string) {
   flex: none;
   display: inline-flex;
   padding: 3px;
-  border-radius: var(--radius-pill);
+  border-radius: var(--radius-sm);
   color: var(--text-faint);
   opacity: 0;
 }
@@ -446,9 +448,11 @@ function fullWhen(iso: string) {
   display: inline-flex;
   align-items: center;
   gap: 5px;
-  padding: 3px 12px;
-  border-radius: var(--radius-pill);
-  box-shadow: inset 0 0 0 1px var(--line);
+  min-height: 24px;
+  padding: 2px 10px;
+  border-radius: var(--radius);
+  border: 1px solid var(--line);
+  background: var(--bg);
   color: var(--text-dim);
   font-size: 11.5px;
   font-weight: 500;

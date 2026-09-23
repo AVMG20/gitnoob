@@ -333,17 +333,17 @@ function more(event: MouseEvent) {
 
 <style scoped>
 /*
- * The head of a review, read like the top of a product page: a line back and
- * the tools, then the title large with its state beside it, then who and where
- * as quiet chips, then the pages as a segmented pill with the two big actions
- * at the far end. No rules between them — space does the grouping.
+ * The head of a review, as chrome: the tone of the toolbar it stands in for,
+ * with a hairline under it. Three lines — what it is, whose it is and where it
+ * goes, and the pages with the two actions at the far end. The pages are tabs
+ * with an underline, sitting on the hairline, the way a forge draws them.
  */
 .review-header {
   display: flex;
   flex-direction: column;
-  gap: 2px;
-  padding: 10px 0 12px;
-  border-bottom: 1px solid var(--line-soft);
+  padding-top: 8px;
+  background: var(--canvas);
+  border-bottom: 1px solid var(--line);
 }
 
 .line {
@@ -351,7 +351,7 @@ function more(event: MouseEvent) {
   align-items: center;
   gap: 8px;
   min-width: 0;
-  padding: 0 20px;
+  padding: 0 14px;
 }
 
 .title-line {
@@ -361,10 +361,8 @@ function more(event: MouseEvent) {
 /* The lines share one left edge: the arrow, the face and the first tab all
    start at the same place, whatever padding their own control has. */
 .back {
-  min-height: 28px;
-  padding: 3px 10px 3px 8px;
-  margin-left: -8px;
-  border-radius: var(--radius-pill);
+  padding: 3px 8px 3px 6px;
+  margin-left: -6px;
   font-size: 12.5px;
 }
 
@@ -376,65 +374,68 @@ function more(event: MouseEvent) {
 
 .title {
   margin: 0;
-  font-size: 19px;
+  font-size: 17px;
   font-weight: 650;
-  letter-spacing: -0.018em;
+  letter-spacing: -0.01em;
   line-height: 1.3;
   min-width: 0;
 }
 
 /* The state, said in the colour it means: this is the first thing a reader
-   checks and the last thing they should have to hunt for. */
+   checks and the last thing they should have to hunt for. Round, as a forge
+   draws it. */
 .state {
   flex: none;
-  padding: 3px 10px;
+  padding: 1px 9px;
   border-radius: var(--radius-pill);
-  font-size: 11px;
-  font-weight: 650;
+  font-size: 11.5px;
+  font-weight: 600;
   text-transform: capitalize;
   background: var(--bg-raised);
   color: var(--text-dim);
+  border: 1px solid transparent;
 }
 
 .state.open {
   color: var(--success-soft);
   background: var(--success-bg);
+  border-color: var(--success-line);
 }
 
 .state.draft {
   color: var(--warning-soft);
   background: var(--warning-bg);
+  border-color: var(--warning-line);
 }
 
 .state.merged {
   color: var(--info-soft);
   background: var(--info-bg);
+  border-color: color-mix(in srgb, var(--info) 35%, transparent);
 }
 
 .state.closed {
   color: var(--danger-soft);
   background: var(--danger-bg);
+  border-color: var(--danger-line);
 }
 
 /* A hairline between the review's own actions and the app's. */
 .sep {
   width: 1px;
-  height: 16px;
+  height: 18px;
   margin: 0 4px;
-  background: var(--line-soft);
+  background: var(--line);
 }
 
 .icon {
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  width: 30px;
-  height: 30px;
-  border-radius: var(--radius-pill);
+  width: 28px;
+  height: 28px;
+  border-radius: var(--radius);
   color: var(--text-dim);
-  transition:
-    background 0.12s,
-    color 0.12s;
 }
 
 .icon:hover:not(:disabled) {
@@ -443,16 +444,16 @@ function more(event: MouseEvent) {
 }
 
 .icon:disabled {
-  opacity: 0.4;
+  opacity: 0.45;
 }
 
 .meta-line {
-  padding-top: 6px;
-  padding-bottom: 12px;
+  padding-top: 3px;
+  padding-bottom: 6px;
   font-size: 12px;
   color: var(--text-dim);
   flex-wrap: wrap;
-  gap: 8px;
+  gap: 6px;
 }
 
 .who {
@@ -464,15 +465,16 @@ function more(event: MouseEvent) {
   color: var(--text-faint);
 }
 
-/* Where it goes, as a chip: from one branch to another. */
+/* Where it goes: from one branch to another, as a tag. */
 .branches {
   display: inline-flex;
   align-items: center;
-  gap: 5px;
+  gap: 4px;
   min-width: 0;
   max-width: 460px;
-  padding: 2px 10px;
-  border-radius: var(--radius-pill);
+  padding: 0 6px;
+  min-height: 18px;
+  border-radius: var(--radius-sm);
   background: var(--bg-raised);
   font-size: 11px;
   color: var(--text-dim);
@@ -489,60 +491,56 @@ function more(event: MouseEvent) {
 }
 
 .open-threads {
-  padding: 2px 9px;
-  border-radius: var(--radius-pill);
-  background: var(--warning-bg);
   color: var(--warning-soft);
-  font-weight: 550;
+  font-weight: 600;
 }
 
-/* The pages, as one segmented pill, carrying their counts so a page says what
-   is in it before it is opened; the actions sit at the far end, weighted by
-   how big a step each is. */
+/* The pages, as tabs standing on the header's bottom line, carrying their
+   counts so a page says what is in it before it is opened; the actions sit at
+   the far end, weighted by how big a step each is. */
 .tabs-line {
   gap: 8px;
+  padding-bottom: 6px;
 }
 
 .tabs {
   display: flex;
+  align-self: stretch;
   gap: 2px;
   min-width: 0;
-  padding: 3px;
-  border-radius: var(--radius-pill);
-  background: var(--bg-raised);
+  margin-bottom: -7px;
 }
 
 .tab {
   display: inline-flex;
   align-items: center;
   gap: 6px;
-  min-height: 28px;
-  padding: 3px 12px;
-  border-radius: var(--radius-pill);
+  min-height: 34px;
+  padding: 0 10px;
+  border-bottom: 2px solid transparent;
   font-size: 12.5px;
   font-weight: 500;
   color: var(--text-dim);
   white-space: nowrap;
-  transition:
-    background 0.12s,
-    color 0.12s;
 }
 
 .tab:hover {
   color: var(--text);
+  border-bottom-color: var(--line);
 }
 
 .tab.on {
   color: var(--text);
-  background: var(--bg);
-  box-shadow: var(--shadow-card);
+  border-bottom-color: var(--accent);
   font-weight: 600;
 }
 
 .count {
   padding: 0 6px;
+  min-height: 16px;
+  line-height: 16px;
   border-radius: var(--radius-pill);
-  background: var(--bg-hover);
+  background: var(--bg-raised);
   font-size: 10.5px;
   font-weight: 600;
   font-variant-numeric: tabular-nums;
@@ -550,7 +548,6 @@ function more(event: MouseEvent) {
 }
 
 .tab.on .count {
-  background: var(--bg-raised);
   color: var(--text);
 }
 
@@ -586,7 +583,7 @@ function more(event: MouseEvent) {
   align-items: center;
   justify-content: center;
   min-width: 18px;
-  height: 18px;
+  height: 16px;
   padding: 0 5px;
   border-radius: var(--radius-pill);
   background: var(--bg-raised);
@@ -595,10 +592,9 @@ function more(event: MouseEvent) {
   font-variant-numeric: tabular-nums;
 }
 
-/* The one big step on the page, drawn like one. */
+/* The one big step on the page. */
 .act {
-  min-width: 112px;
-  font-size: 13px;
+  min-width: 96px;
 }
 
 .grow {

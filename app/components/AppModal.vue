@@ -53,8 +53,8 @@ function onScrim() {
 </template>
 
 <style scoped>
-/* The scrim dims the window and softens it, so the dialog is the one sharp
-   thing on screen. */
+/* The scrim dims the window so the dialog is the thing on screen. No blur:
+   what is behind stays readable, which is often why the dialog was opened. */
 .scrim {
   position: fixed;
   inset: 0;
@@ -62,20 +62,21 @@ function onScrim() {
   display: grid;
   place-items: center;
   background: var(--overlay);
-  backdrop-filter: blur(3px);
-  animation: scrim-in 0.14s ease-out;
+  animation: scrim-in 0.1s ease-out;
 }
 
-/* A card lifted off everything, with no rule round it: the shadow is the edge. */
+/* A box with a hairline and a shadow: the head, the body, and the actions in a
+   footer of their own, in the chrome's tone. */
 .modal {
   max-width: calc(100vw - 40px);
   max-height: calc(100vh - 60px);
   display: flex;
   flex-direction: column;
   background: var(--bg);
-  border-radius: var(--radius-lg);
+  border-radius: 10px;
   box-shadow: var(--shadow-pop);
-  animation: modal-in 0.16s ease-out;
+  overflow: hidden;
+  animation: modal-in 0.1s ease-out;
 }
 
 .head {
@@ -83,39 +84,36 @@ function onScrim() {
   align-items: center;
   justify-content: space-between;
   gap: 12px;
-  padding: 18px 16px 4px 22px;
+  min-height: 44px;
+  padding: 8px 8px 8px 18px;
+  border-bottom: 1px solid var(--line-soft);
 }
 
 .head h2 {
   margin: 0;
-  font-size: 16.5px;
+  font-size: 15px;
   font-weight: 650;
-  letter-spacing: -0.015em;
 }
 
 .head .btn {
-  width: 30px;
-  min-height: 30px;
+  width: 28px;
   padding: 0;
-  border-radius: var(--radius-pill);
   color: var(--text-faint);
 }
 
 .content {
-  padding: 12px 22px 20px;
+  padding: 16px 18px 18px;
   overflow: auto;
 }
 
-/* No rule over the actions: the space above them is the separation, and the
-   pills on the right are where the eye ends up anyway. */
 .footer {
   display: flex;
   justify-content: flex-end;
+  align-items: center;
   gap: 8px;
-  padding: 14px 22px 20px;
-  background: var(--bg);
-  border-bottom-left-radius: var(--radius-lg);
-  border-bottom-right-radius: var(--radius-lg);
+  padding: 10px 14px;
+  background: var(--canvas);
+  border-top: 1px solid var(--line-soft);
 }
 
 @keyframes scrim-in {
@@ -127,7 +125,7 @@ function onScrim() {
 @keyframes modal-in {
   from {
     opacity: 0;
-    transform: translateY(4px) scale(0.99);
+    transform: scale(0.985);
   }
 }
 </style>

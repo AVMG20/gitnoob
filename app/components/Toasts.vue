@@ -95,13 +95,13 @@ async function copy(text: string) {
 /* Bottom left, clear of the commit button that owns the bottom right. */
 .toasts {
   position: fixed;
-  left: 16px;
-  bottom: 44px;
+  left: 12px;
+  bottom: 40px;
   z-index: 60;
   display: flex;
   flex-direction: column;
   align-items: flex-start;
-  gap: 8px;
+  gap: 6px;
   /* A stated width rather than one taken from the longest sentence in the
      stack: notices that arrive one after another should not each be a
      different shape, and a fixed flex box shrinks to its content. */
@@ -110,13 +110,13 @@ async function copy(text: string) {
 
 .clear {
   align-self: flex-start;
-  padding: 3px 10px;
+  padding: 2px 8px;
   font-size: 11.5px;
   font-weight: 500;
   color: var(--text-dim);
   background: var(--bg);
   box-shadow: var(--shadow-pop);
-  border-radius: var(--radius-pill);
+  border-radius: var(--radius-sm);
 }
 
 .clear:hover {
@@ -124,21 +124,21 @@ async function copy(text: string) {
   background: var(--bg-hover);
 }
 
-/* A floating card. The icon carries what kind of news it is, so the card
-   itself needs no coloured edge. */
+/* A small box over the window. The icon carries what kind of news it is, so
+   the box itself needs no coloured edge. */
 .toast {
   width: 100%;
-  padding: 11px 12px 11px 14px;
-  border-radius: var(--radius);
+  padding: 8px 8px 8px 11px;
+  border-radius: var(--radius-lg);
   background: var(--bg);
   box-shadow: var(--shadow-pop);
-  animation: toast-in 0.16s ease-out;
+  animation: toast-in 0.12s ease-out;
 }
 
 @keyframes toast-in {
   from {
     opacity: 0;
-    transform: translateY(6px);
+    transform: translateY(4px);
   }
 }
 
@@ -164,7 +164,7 @@ async function copy(text: string) {
 .title {
   flex: 1;
   min-width: 0;
-  font-size: 13px;
+  font-size: 12.5px;
   line-height: 1.45;
   overflow-wrap: anywhere;
 }
@@ -183,7 +183,7 @@ async function copy(text: string) {
 .close {
   flex: none;
   color: var(--text-faint);
-  border-radius: var(--radius-pill);
+  border-radius: var(--radius-sm);
   padding: 2px;
 }
 
@@ -223,7 +223,8 @@ async function copy(text: string) {
   white-space: pre-wrap;
   overflow-wrap: anywhere;
   color: var(--text-dim);
-  background: var(--surface);
+  background: var(--canvas);
+  border: 1px solid var(--line-soft);
   border-radius: var(--radius-sm);
 }
 </style>

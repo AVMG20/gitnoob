@@ -100,8 +100,8 @@ onMounted(() => {
 
 <style scoped>
 .picker {
-  border-radius: var(--radius);
-  box-shadow: var(--shadow-card);
+  border-radius: var(--radius-lg);
+  border: 1px solid var(--line);
   background: var(--bg);
   overflow: hidden;
 }
@@ -118,16 +118,22 @@ onMounted(() => {
   display: flex;
   align-items: center;
   gap: 6px;
-  padding: 0 10px;
-  background: var(--surface);
-  border-radius: var(--radius-pill);
+  padding: 0 8px;
+  background: var(--bg);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-sm);
+}
+
+.search:focus-within {
+  border-color: var(--ring);
+  box-shadow: var(--focus);
 }
 
 .search input {
   flex: 1;
   border: none;
   background: none;
-  padding: 6px 0;
+  padding: 4px 0;
 }
 
 .search input:focus {
@@ -138,11 +144,11 @@ onMounted(() => {
 .sort,
 .tiny {
   font-size: 12px;
-  padding: 4px 10px;
-  min-height: 30px;
-  background: var(--surface);
-  border: none;
-  border-radius: var(--radius-pill);
+  padding: 3px 9px;
+  min-height: var(--control-h);
+  background: var(--bg);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-sm);
   color: var(--text);
 }
 
@@ -159,9 +165,9 @@ onMounted(() => {
 .row {
   display: flex;
   align-items: center;
-  gap: 9px;
+  gap: 8px;
   width: 100%;
-  padding: 7px 10px;
+  padding: 5px 8px;
   border-radius: var(--radius-sm);
   text-align: left;
 }
@@ -236,9 +242,9 @@ onMounted(() => {
 
 .foot {
   margin: 0;
-  padding: 8px 12px;
+  padding: 7px 10px;
   font-size: 11.5px;
   border-top: 1px solid var(--line-soft);
-  background: var(--surface);
+  background: var(--canvas);
 }
 </style>

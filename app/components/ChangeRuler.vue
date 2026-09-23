@@ -140,7 +140,7 @@ onBeforeUnmount(() => {
   flex: none;
   width: 12px;
   cursor: pointer;
-  border-left: 1px solid var(--line-soft);
+  border-left: 1px solid var(--line);
 }
 
 /* Nothing to point at: the strip stays as a plain edge rather than a control
@@ -154,7 +154,7 @@ onBeforeUnmount(() => {
   left: 3px;
   right: 3px;
   min-height: 2px;
-  border-radius: var(--radius-pill);
+  border-radius: 1px;
 }
 
 .mark.added {

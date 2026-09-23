@@ -156,8 +156,9 @@ const columns = computed(() => {
   // The viewer and a review page take the whole middle; the rebase plan and a
   // stash keep the sidebar, because the sidebar is where the next branch or
   // the next stash is picked from.
-  // The handles are the gutters between the cards, so they are as wide as one.
-  const gap = 'var(--gutter)'
+  // The handles are the hairlines between the panes, one pixel wide; each
+  // reaches a few pixels either side of itself for the pointer.
+  const gap = '1px'
   if (store.viewer || reviewOpen.value) return `minmax(0, 1fr) ${gap} ${panel}`
   return `minmax(0, ${layout.sidebar}px) ${gap} minmax(0, 1fr) ${gap} ${panel}`
 })
@@ -460,12 +461,12 @@ onUnmounted(() => {
   min-height: 0;
 }
 
-/* The panels are cards on the canvas, with a gutter between them and round the
-   edge. The resize handles are the gutters themselves. */
+/* The panes meet edge to edge, with the resize handles as the hairlines
+   between them. The sidebar and the inspector are chrome, in the canvas tone;
+   whatever is in the middle — the graph, a diff, a review — is the page. */
 .body {
   display: grid;
   grid-template-columns: minmax(0, 1fr);
-  padding: 0 var(--gutter) var(--gutter);
 }
 
 .body > :deep(*) {
@@ -473,11 +474,11 @@ onUnmounted(() => {
   min-height: 0;
 }
 
-.body > :deep(:not(.handle)) {
+.body > :deep(aside) {
+  background: var(--canvas);
+}
+
+.body > :deep(section) {
   background: var(--bg);
-  border: none;
-  border-radius: var(--radius-lg);
-  box-shadow: var(--shadow-card);
-  overflow: hidden;
 }
 </style>

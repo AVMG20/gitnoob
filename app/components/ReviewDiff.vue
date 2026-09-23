@@ -262,6 +262,7 @@ function draftKey(line: DiffLine) {
   background: var(--surface);
   border-top: 1px solid var(--line-soft);
   border-bottom: 1px solid var(--line-soft);
+  font-family: var(--mono);
   font-size: 11px;
 }
 
@@ -317,9 +318,9 @@ function draftKey(line: DiffLine) {
   color: var(--danger-soft);
 }
 
-/* The review's whole gesture: a round ink chip that surfaces on the line under
-   the pointer. It borrows the app's own accent rather than drawing a boxed
-   form control on every row. */
+/* The review's whole gesture: a small blue square with a plus that surfaces on
+   the line under the pointer, as a forge draws it. It borrows the app's own
+   accent rather than drawing a boxed form control on every row. */
 .line-add {
   justify-self: end;
   align-self: center;
@@ -329,13 +330,12 @@ function draftKey(line: DiffLine) {
   width: 18px;
   height: 18px;
   margin-right: 4px;
-  border-radius: 50%;
+  border-radius: var(--radius-sm);
   background: var(--accent);
   color: var(--on-accent);
   font-size: 13px;
-  font-weight: 500;
+  font-weight: 600;
   line-height: 1;
-  box-shadow: 0 1px 4px var(--shadow);
   opacity: 0;
   transform: scale(0.8);
   transition: opacity 0.1s, transform 0.1s;
@@ -357,7 +357,7 @@ function draftKey(line: DiffLine) {
   padding: 8px 12px;
   border-radius: var(--radius);
   background: var(--warning-bg);
-  box-shadow: inset 0 0 0 1px var(--warning-line);
+  border: 1px solid var(--warning-line);
 }
 
 .pending-head {
@@ -373,8 +373,8 @@ function draftKey(line: DiffLine) {
 }
 
 .pending .chip {
-  padding: 1px 8px;
-  border-radius: var(--radius-pill);
+  padding: 1px 6px;
+  border-radius: var(--radius-sm);
   background: var(--bg);
   color: var(--warning-soft);
   font-size: 10.5px;
@@ -383,7 +383,7 @@ function draftKey(line: DiffLine) {
 
 .pending .quiet {
   padding: 2px 8px;
-  border-radius: var(--radius-pill);
+  border-radius: var(--radius-sm);
   color: var(--text-faint);
   font-size: 11px;
 }
@@ -410,10 +410,10 @@ function draftKey(line: DiffLine) {
   max-width: min(760px, calc(100% - 110px));
   margin-top: 6px;
   margin-bottom: 6px;
-  padding: 12px 14px;
-  border-radius: var(--radius);
+  padding: 10px 12px;
+  border-radius: var(--radius-lg);
   background: var(--bg);
-  box-shadow: var(--shadow-card);
+  border: 1px solid var(--line);
   font-family: var(--font);
 }
 </style>

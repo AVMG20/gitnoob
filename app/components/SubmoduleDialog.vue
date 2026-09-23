@@ -113,12 +113,13 @@ async function submit() {
 
 .label {
   font-size: 12px;
-  font-weight: 550;
+  font-weight: 600;
   color: var(--text-dim);
 }
 
 .field input {
-  padding: 8px 12px;
+  height: 30px;
+  padding: 4px 9px;
 }
 
 .hint {

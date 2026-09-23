@@ -65,8 +65,8 @@ onUnmounted(() => window.removeEventListener('keydown', onKey))
 <style scoped>
 /*
  * The resolver takes the window, but as a sheet laid over it rather than a
- * page swapped in: the repository stays visible, blurred, round its edge, so
- * it is clear this is a step you finish and come back out of.
+ * page swapped in: the repository stays visible, dimmed, round its edge, so it
+ * is clear this is a step you finish and come back out of.
  */
 .overlay {
   position: fixed;
@@ -74,49 +74,43 @@ onUnmounted(() => window.removeEventListener('keydown', onKey))
   display: grid;
   grid-template-rows: auto minmax(0, 1fr);
   background: var(--bg);
-  /* The sheet is the element itself, inset from the window by a gutter; the
-     shadow's spread paints the dimmed, blurred backdrop round it. */
-  inset: calc(var(--gutter) * 2);
-  border-radius: var(--radius-lg);
+  /* The sheet is the element itself, inset from the window; the shadow's
+     spread paints the dimmed backdrop round it. */
+  inset: 16px;
+  border-radius: 10px;
   box-shadow:
     var(--shadow-pop),
     0 0 0 100vmax var(--overlay);
   overflow: hidden;
 }
 
-/* The blur has to come from something behind the sheet, and the sheet's own
-   shadow cannot carry a filter, so a fixed layer under it does. */
-.overlay::before {
-  content: '';
-  position: fixed;
-  inset: 0;
-  z-index: -1;
-  backdrop-filter: blur(3px);
-  pointer-events: none;
-}
-
+/* The bar across the top is chrome, the toolbar's tone, so the sheet has the
+   same shape as the window it sits over. */
 .bar {
   display: flex;
   align-items: center;
-  gap: 10px;
-  min-height: 52px;
-  padding: 10px 12px 10px 18px;
-  border-bottom: 1px solid var(--line-soft);
+  gap: 8px;
+  min-height: 44px;
+  padding: 6px 8px 6px 14px;
+  background: var(--canvas);
+  border-bottom: 1px solid var(--line);
 }
 
 .bar strong {
-  font-size: 15px;
+  font-size: 14px;
   font-weight: 650;
-  letter-spacing: -0.01em;
 }
 
-/* The count of what is left, as a soft pill beside the title. */
+/* The count of what is left, as a count beside the title. */
 .bar .faint {
-  padding: 1px 9px;
+  display: inline-flex;
+  align-items: center;
+  min-height: 18px;
+  padding: 0 7px;
   border-radius: var(--radius-pill);
   background: var(--warning-bg);
   color: var(--warning-soft);
-  font-size: 11.5px;
+  font-size: 11px;
   font-weight: 600;
 }
 
@@ -128,24 +122,23 @@ onUnmounted(() => window.removeEventListener('keydown', onKey))
   flex: 1;
 }
 
-/* Aborting throws away the whole merge or rebase, so it is an outlined pill
-   rather than a word that looks like every other button in the bar. */
+/* Aborting throws away the whole merge or rebase, so it is a bordered button
+   rather than a word that looks like every other one in the bar, and it turns
+   red under the pointer. */
 .bar .btn:not(.icon) {
-  border-radius: var(--radius-pill);
-  padding: 5px 14px;
   color: var(--text);
-  box-shadow: inset 0 0 0 1px var(--line);
+  background: var(--bg);
+  border: 1px solid var(--line);
 }
 
 .bar .btn:not(.icon):hover:not(:disabled) {
   color: var(--red-soft);
   background: var(--danger-bg);
-  box-shadow: inset 0 0 0 1px var(--danger-line);
+  border-color: var(--danger-line);
 }
 
 .icon {
-  width: 32px;
+  width: 28px;
   padding: 0;
-  border-radius: var(--radius-pill);
 }
 </style>

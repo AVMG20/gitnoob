@@ -50,7 +50,7 @@ const ai = useAi()
 const git = useGit()
 const { choice, themes, setTheme, contrast, contrasts, setContrast } = useTheme()
 
-/** The Studio pair, for the card that follows the system between them. */
+/** Porcelain and Graphite, for the card that follows the system between them. */
 const systemSwatch = computed(() => [
   themes.find((one) => one.id === SYSTEM_PAIR.light)!.swatch,
   themes.find((one) => one.id === SYSTEM_PAIR.dark)!.swatch
@@ -758,7 +758,7 @@ onMounted(async () => {
           </p>
 
           <div class="themes">
-            <!-- The default: Studio, light by day and dark by night, following
+            <!-- The default: Porcelain by day and Graphite by night, following
                  whatever the system is set to. -->
             <button
               class="theme"
@@ -776,7 +776,7 @@ onMounted(async () => {
                 </span>
               </span>
               <span class="theme-name">Match system</span>
-              <span class="faint small">Studio, light or dark</span>
+              <span class="faint small">Porcelain or Graphite</span>
               <Check v-if="choice === 'system'" :size="13" class="tick" />
             </button>
             <button
@@ -1120,24 +1120,23 @@ onMounted(async () => {
   display: grid;
   place-items: center;
   background: var(--overlay);
-  backdrop-filter: blur(3px);
-  animation: fade-in 0.14s ease-out;
+  animation: fade-in 0.1s ease-out;
 }
 
-/* A settings page more than a dialog: a quiet column of sections on the left,
-   the page itself on the right, one card round both. */
+/* A preferences window more than a dialog: the sections down the left in the
+   chrome's tone, the page itself on the right. */
 .panel {
   display: grid;
-  grid-template-columns: 220px minmax(0, 1fr);
-  width: 900px;
+  grid-template-columns: 200px minmax(0, 1fr);
+  width: 880px;
   max-width: calc(100vw - 40px);
-  height: 680px;
+  height: 660px;
   max-height: calc(100vh - 60px);
   background: var(--bg);
-  border-radius: var(--radius-lg);
+  border-radius: 10px;
   overflow: hidden;
   box-shadow: var(--shadow-pop);
-  animation: rise-in 0.16s ease-out;
+  animation: rise-in 0.1s ease-out;
 }
 
 @keyframes fade-in {
@@ -1149,74 +1148,78 @@ onMounted(async () => {
 @keyframes rise-in {
   from {
     opacity: 0;
-    transform: translateY(4px) scale(0.99);
+    transform: scale(0.985);
   }
 }
 
 .nav {
-  background: var(--surface);
-  padding: 18px 12px;
+  background: var(--canvas);
+  border-right: 1px solid var(--line);
+  padding: 14px 8px;
   display: flex;
   flex-direction: column;
-  gap: 2px;
+  gap: 1px;
 }
 
 .nav-title {
-  padding: 0 12px 14px;
-  font-size: 17px;
+  padding: 0 8px 10px;
+  font-size: 13px;
   font-weight: 650;
-  letter-spacing: -0.015em;
+  color: var(--text-dim);
 }
 
 .nav-item {
   display: flex;
   align-items: center;
-  gap: 10px;
-  min-height: 34px;
-  padding: 6px 12px;
-  border-radius: var(--radius-pill);
-  color: var(--text-dim);
+  gap: 8px;
+  min-height: 28px;
+  padding: 3px 8px;
+  border-radius: var(--radius);
+  color: var(--text);
   font-weight: 500;
   text-align: left;
-  transition:
-    background 0.12s,
-    color 0.12s;
+}
+
+.nav-item svg {
+  color: var(--text-faint);
 }
 
 .nav-item:hover {
   background: var(--bg-hover);
-  color: var(--text);
 }
 
 .nav-item.on {
   background: var(--bg-active);
-  color: var(--text);
   font-weight: 600;
+}
+
+.nav-item.on svg {
+  color: var(--accent);
 }
 
 .nav-note {
   margin: auto 0 0;
-  padding: 12px;
-  font-size: 11.5px;
-  line-height: 1.55;
+  padding: 8px;
+  font-size: 11px;
+  line-height: 1.5;
 }
 
 .content {
   position: relative;
   overflow-y: auto;
-  padding: 28px 36px 36px;
+  padding: 20px 26px 28px;
 }
 
 .close {
   position: absolute;
-  right: 14px;
-  top: 14px;
+  right: 10px;
+  top: 10px;
   display: grid;
   place-items: center;
-  width: 32px;
-  height: 32px;
+  width: 28px;
+  height: 28px;
   color: var(--text-faint);
-  border-radius: var(--radius-pill);
+  border-radius: var(--radius);
 }
 
 .close:hover {
@@ -1225,68 +1228,68 @@ onMounted(async () => {
 }
 
 h2 {
-  margin: 0 0 6px;
-  font-size: 22px;
+  margin: 0 0 4px;
+  font-size: 17px;
   font-weight: 650;
-  letter-spacing: -0.02em;
 }
 
 h3 {
-  margin: 0 0 12px;
-  font-size: 14px;
+  margin: 0 0 10px;
+  font-size: 13px;
   font-weight: 600;
-  letter-spacing: -0.01em;
 }
 
 .intro {
-  margin: 0 0 22px;
-  font-size: 13px;
-  max-width: 62ch;
-  line-height: 1.55;
+  margin: 0 0 16px;
+  font-size: 12.5px;
+  max-width: 64ch;
+  line-height: 1.5;
 }
 
+/* One bordered list, its rows divided by hairlines inside it. */
 .list {
   display: flex;
   flex-direction: column;
-  gap: 6px;
+  border: 1px solid var(--line-soft);
+  border-radius: var(--radius-lg);
+  overflow: hidden;
 }
 
 .themes {
   display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(156px, 1fr));
-  gap: 12px;
+  grid-template-columns: repeat(auto-fill, minmax(140px, 1fr));
+  gap: 8px;
 }
 
-/* A theme is picked like a product off a shelf: a picture of it, its name,
-   and a ring in ink round the one you have. */
+/* A theme: a picture of it, its name, and a ring in the accent round the one
+   you have. */
 .theme {
   position: relative;
   display: flex;
   flex-direction: column;
   align-items: flex-start;
-  gap: 3px;
-  padding: 8px 8px 10px;
+  gap: 1px;
+  padding: 6px 6px 8px;
   background: var(--bg);
-  border-radius: var(--radius);
-  box-shadow: var(--shadow-card);
+  border: 1px solid var(--line-soft);
+  border-radius: var(--radius-lg);
   text-align: left;
-  transition: box-shadow 0.12s;
+  transition: border-color 0.1s;
 }
 
 .theme:hover {
-  box-shadow:
-    0 0 0 1px var(--border),
-    0 4px 12px -4px var(--shadow);
+  border-color: var(--line);
 }
 
 .theme.on,
 .theme.on:hover {
-  box-shadow: 0 0 0 2px var(--primary);
+  border-color: var(--primary);
+  box-shadow: 0 0 0 1px var(--primary);
 }
 
 .theme > .faint.small,
 .theme > .theme-name {
-  padding: 0 4px;
+  padding: 0 3px;
 }
 
 .swatch {
@@ -1294,14 +1297,14 @@ h3 {
   align-items: center;
   gap: 5px;
   width: 100%;
-  height: 52px;
-  margin-bottom: 6px;
-  padding: 0 10px;
-  border-radius: var(--radius-sm);
+  height: 40px;
+  margin-bottom: 5px;
+  padding: 0 8px;
+  border-radius: var(--radius);
   box-shadow: inset 0 0 0 1px var(--border-soft);
 }
 
-/* Half the Studio Light card and half the Studio Dark one. */
+/* Half the Porcelain card and half the Graphite one. */
 .swatch.split {
   padding: 0;
   gap: 0;
@@ -1317,9 +1320,9 @@ h3 {
 }
 
 .chip {
-  width: 20px;
-  height: 10px;
-  border-radius: var(--radius-pill);
+  width: 18px;
+  height: 8px;
+  border-radius: 2px;
 }
 
 .chip.text {
@@ -1333,8 +1336,8 @@ h3 {
 
 .tick {
   position: absolute;
-  right: 14px;
-  top: 14px;
+  right: 11px;
+  top: 11px;
   padding: 2px;
   box-sizing: content-box;
   border-radius: var(--radius-pill);
@@ -1345,14 +1348,18 @@ h3 {
 .entry {
   display: flex;
   align-items: center;
-  gap: 12px;
-  padding: 12px 14px;
-  background: var(--surface);
-  border-radius: var(--radius);
+  gap: 10px;
+  padding: 9px 12px;
+  background: var(--bg);
 }
 
-.entry.active {
-  box-shadow: inset 0 0 0 1.5px var(--primary);
+.entry + .entry {
+  border-top: 1px solid var(--line-soft);
+}
+
+.entry.active .entry-icon {
+  color: var(--accent);
+  opacity: 1;
 }
 
 .entry-icon {
@@ -1377,13 +1384,13 @@ h3 {
 }
 
 .tiny {
-  min-height: 28px;
+  min-height: 24px;
   font-size: 12px;
-  padding: 3px 12px;
-  border-radius: var(--radius-pill);
+  padding: 1px 9px;
+  border-radius: var(--radius-sm);
   color: var(--text);
   background: var(--bg);
-  box-shadow: inset 0 0 0 1px var(--line);
+  border: 1px solid var(--line);
 }
 
 .tiny.danger {
@@ -1395,10 +1402,11 @@ h3 {
 }
 
 .editor {
-  margin-top: 20px;
-  padding: 20px;
+  margin-top: 16px;
+  padding: 16px;
   border-radius: var(--radius-lg);
-  background: var(--surface);
+  background: var(--canvas);
+  border: 1px solid var(--line-soft);
 }
 
 .field {
@@ -1414,9 +1422,9 @@ h3 {
   display: flex;
   align-items: center;
   gap: 5px;
-  margin-bottom: 6px;
+  margin-bottom: 5px;
   font-size: 12px;
-  font-weight: 550;
+  font-weight: 600;
   color: var(--text-dim);
 }
 
@@ -1429,7 +1437,8 @@ h3 {
 
 .field input[type='text'],
 .field input[type='password'] {
-  padding: 8px 12px;
+  height: 30px;
+  padding: 4px 9px;
 }
 
 /* Instructions to a model are prose, but prose with its line breaks meant, so
@@ -1445,13 +1454,15 @@ h3 {
 .link {
   padding: 0;
   color: var(--text);
-  font-weight: 550;
+  font-weight: 500;
+  color: var(--accent-soft);
   text-decoration: underline;
   text-underline-offset: 2px;
 }
 
 select {
-  padding: 7px 28px 7px 12px;
+  height: 30px;
+  padding: 4px 26px 4px 9px;
   color: var(--text);
   background-color: var(--bg);
   border: 1px solid var(--line);
@@ -1516,35 +1527,38 @@ select {
   color: var(--red);
 }
 
+/* A segmented control: one bordered strip, the chosen segment raised in it. */
 .choices {
-  display: flex;
-  gap: 6px;
+  display: inline-flex;
+  gap: 2px;
+  padding: 2px;
+  border-radius: var(--radius);
+  background: var(--canvas);
+  border: 1px solid var(--line);
 }
 
 .choice {
   display: flex;
   align-items: center;
   gap: 6px;
-  min-height: 32px;
-  padding: 5px 14px;
-  border-radius: var(--radius-pill);
-  box-shadow: inset 0 0 0 1px var(--line);
+  min-height: 24px;
+  padding: 2px 12px;
+  border-radius: var(--radius-sm);
   color: var(--text-dim);
   font-size: 12.5px;
   font-weight: 500;
 }
 
 .choice:hover {
-  background: var(--bg-hover);
   color: var(--text);
 }
 
-/* The chosen one is filled in ink, like a size picked on a product page. */
 .choice.on,
 .choice.on:hover {
-  color: var(--primary-fg);
-  background: var(--primary);
-  box-shadow: none;
+  color: var(--text);
+  background: var(--bg);
+  box-shadow: 0 0 0 1px var(--line), 0 1px 2px var(--shadow);
+  font-weight: 600;
 }
 
 .editor-actions {
@@ -1555,8 +1569,8 @@ select {
 
 .check {
   display: flex;
-  gap: 10px;
-  margin-bottom: 16px;
+  gap: 9px;
+  margin-bottom: 12px;
   cursor: pointer;
   font-size: 13px;
   font-weight: 500;
@@ -1587,16 +1601,16 @@ select {
 
 /* A group is one rounded list, its rows divided by hairlines inside it. */
 .keys-group {
-  padding: 2px 14px;
-  border-radius: var(--radius);
-  background: var(--surface);
+  padding: 0 12px;
+  border-radius: var(--radius-lg);
+  border: 1px solid var(--line-soft);
 }
 
 .keys-group h3 {
-  font-size: 12.5px;
+  font-size: 12px;
   font-weight: 600;
   color: var(--text-dim);
-  margin: 10px 0 4px;
+  margin: 8px 0 4px;
 }
 
 .keys-row {
@@ -1604,22 +1618,22 @@ select {
   grid-template-columns: 96px 1fr 190px;
   gap: 12px;
   align-items: baseline;
-  padding: 8px 0;
+  padding: 6px 0;
   border-top: 1px solid var(--line-soft);
-  font-size: 13px;
+  font-size: 12.5px;
 }
 
+/* Written as a key cap: a box with a heavier bottom edge. */
 .keys {
   font-family: inherit;
-  font-size: 11.5px;
+  font-size: 11px;
   font-weight: 600;
   text-align: center;
-  padding: 2px 8px;
+  padding: 1px 6px;
   border-radius: var(--radius-sm);
   background: var(--bg);
-  box-shadow:
-    0 0 0 1px var(--border-soft),
-    0 1px 0 var(--border);
+  border: 1px solid var(--line);
+  border-bottom-width: 2px;
   color: var(--text);
   white-space: nowrap;
 }
@@ -1633,10 +1647,9 @@ select {
 }
 
 .sub {
-  font-size: 14px;
+  font-size: 13px;
   font-weight: 600;
-  letter-spacing: -0.01em;
-  margin: 30px 0 4px;
+  margin: 24px 0 4px;
 }
 
 /* The four column names sit in a row: they are one choice, not four settings
@@ -1655,9 +1668,10 @@ select {
    so only the token colours come from the syntax theme. */
 .preview {
   margin: 10px 0 18px;
-  padding: 10px 12px;
+  padding: 8px 10px;
   overflow-x: auto;
-  background: var(--surface);
+  background: var(--bg);
+  border: 1px solid var(--line-soft);
   border-radius: var(--radius);
 }
 
@@ -1673,43 +1687,38 @@ select {
 /* The sizes read as one row of steps rather than as a list, so which way is
    bigger is the direction the eye already travels. */
 .sizes {
-  display: flex;
+  display: inline-flex;
   flex-wrap: wrap;
-  gap: 6px;
+  gap: 2px;
+  padding: 2px;
   margin-bottom: 18px;
+  border-radius: var(--radius);
+  background: var(--canvas);
+  border: 1px solid var(--line);
 }
 
-/* Steps picked the way a size is on a product page: outlined pills, the
-   chosen one filled in ink. */
+/* A segmented control: the chosen step raised out of the strip. */
 .size {
   min-width: 64px;
-  padding: 7px 14px;
+  padding: 4px 12px;
   font-size: 12.5px;
   font-weight: 500;
+  line-height: 1.3;
   text-align: center;
-  color: var(--text);
-  background: var(--bg);
-  box-shadow: inset 0 0 0 1px var(--line);
-  border-radius: var(--radius-pill);
-  transition:
-    background 0.12s,
-    box-shadow 0.12s;
+  color: var(--text-dim);
+  border-radius: var(--radius-sm);
 }
 
 .size:hover {
-  box-shadow: inset 0 0 0 1px var(--text-faint);
+  color: var(--text);
 }
 
 .size.on,
 .size.on:hover {
-  color: var(--primary-fg);
-  background: var(--primary);
-  box-shadow: none;
-}
-
-.size.on .faint {
-  color: inherit;
-  opacity: 0.7;
+  color: var(--text);
+  background: var(--bg);
+  box-shadow: 0 0 0 1px var(--line), 0 1px 2px var(--shadow);
+  font-weight: 600;
 }
 
 .cols .check {
@@ -1755,10 +1764,10 @@ select {
 
 .offer {
   margin: 12px 0 18px;
-  padding: 16px 18px;
-  border-radius: var(--radius);
-  background: var(--surface);
-  box-shadow: inset 0 0 0 1px var(--border-soft);
+  padding: 12px 14px;
+  border-radius: var(--radius-lg);
+  background: var(--canvas);
+  border: 1px solid var(--line-soft);
 }
 
 .offer-head {
@@ -1793,7 +1802,7 @@ select {
 .progress .track {
   flex: 1;
   min-width: 0;
-  height: 6px;
+  height: 4px;
   border-radius: var(--radius-pill);
   background: var(--bg-raised);
 }

@@ -421,13 +421,17 @@ const ready = computed(
   display: flex;
   align-items: center;
   gap: 5px;
-  min-height: 26px;
-  padding: 3px 10px;
-  border-radius: var(--radius-pill);
+  min-height: 24px;
+  padding: 2px 8px;
+  border-radius: var(--radius);
   font-size: 12px;
 }
 
 .write:not(:disabled) {
+  color: var(--info-soft);
+}
+
+.write:hover:not(:disabled) {
   color: var(--info-soft);
   background: var(--info-bg);
 }

@@ -2,9 +2,7 @@
 import { computed, ref, watch } from 'vue'
 import {
   Archive,
-  ArrowDown,
   ArrowDownToLine,
-  ArrowUp,
   ArrowUpFromLine,
   ChevronRight,
   Download,
@@ -48,8 +46,8 @@ const { layout } = usePanes()
  * strips stop at the panel's edge instead: they are about the repository and
  * the history, which is what they now sit over.
  */
-// Over the graph card and clear of the panel card, gutters included.
-const bannerRight = computed(() => `calc(${layout.panel}px + var(--gutter) * 2)`)
+// Over the graph and clear of the inspector, whose own head says what is staged.
+const bannerRight = computed(() => `${layout.panel + 1}px`)
 
 /**
  * A release on offer, or on its way in. The button stays through the download
@@ -257,6 +255,7 @@ async function reconcile(rebase: boolean) {
 <template>
   <header class="bar">
     <div class="repo">
+      <div class="where">
       <!-- The trail into a submodule. The project it belongs to is still what
            the tab says, so this is where being somewhere else has to be
            visible — and each step is its own way back out. -->
@@ -288,8 +287,9 @@ async function reconcile(rebase: boolean) {
         </template>
       </template>
       <strong v-else class="name">{{ store.repo?.name }}</strong>
-      <!-- The branch you are on, as a chip: the one fact about the repository
-           that changes under you all day. -->
+      </div>
+      <!-- The branch you are on, under the repository's name: the one fact
+           about it that changes under you all day. -->
       <span class="branch" :class="{ detached: store.repo?.detached }" :title="store.repo?.head">
         <GitBranch :size="12" class="branch-icon" />
         <span class="branch-name">{{ store.repo?.head }}</span>
@@ -351,11 +351,9 @@ async function reconcile(rebase: boolean) {
       >
         <ArrowDownToLine :size="14" /> Pull
         <!-- The counts live on the buttons that act on them: what there is to
-             pull sits on Pull, what there is to push on Push. Icons rather
-             than ↑ and ↓, which crowd the digit so "↑1" reads as "11". -->
-        <span v-if="head?.behind" class="count down">
-          <ArrowDown :size="10" :stroke-width="2.75" />{{ head.behind }}
-        </span>
+             pull sits on Pull, what there is to push on Push, as a badge on
+             the button's icon. -->
+        <span v-if="head?.behind" class="count down">{{ head.behind }}</span>
       </button>
       <button
         class="btn"
@@ -364,9 +362,7 @@ async function reconcile(rebase: boolean) {
         @click="push"
       >
         <ArrowUpFromLine :size="14" /> Push
-        <span v-if="head?.ahead" class="count up">
-          <ArrowUp :size="10" :stroke-width="2.75" />{{ head.ahead }}
-        </span>
+        <span v-if="head?.ahead" class="count up">{{ head.ahead }}</span>
       </button>
 
       <span class="sep" />
@@ -629,9 +625,10 @@ async function reconcile(rebase: boolean) {
 
 <style scoped>
 /*
- * The toolbar sits on the canvas, not on a panel of its own: the repository on
- * the left, the everyday actions in one floating pill in the middle, and the
- * window's own tools on the right.
+ * The toolbar is chrome, the tone of the tab strip's open tab above it. The
+ * repository and branch on the left, the everyday actions in the middle as
+ * icons with their names under them — the shape every git client has taught
+ * people to look for — and the window's own tools on the right.
  */
 .bar {
   position: relative;
@@ -641,21 +638,34 @@ async function reconcile(rebase: boolean) {
   grid-template-columns: 1fr auto 1fr;
   align-items: center;
   gap: 16px;
-  padding: 6px calc(var(--gutter) + 6px) 10px;
+  min-height: 52px;
+  padding: 4px 10px 4px 14px;
+  background: var(--canvas);
+  border-bottom: 1px solid var(--line);
 }
 
+/* Name over branch, two lines that read as one label. */
 .repo {
   display: flex;
+  flex-direction: column;
+  justify-content: center;
+  gap: 1px;
+  min-width: 0;
+}
+
+.where {
+  display: flex;
   align-items: center;
-  gap: 10px;
+  gap: 4px;
   min-width: 0;
 }
 
 .name {
-  font-size: 15px;
+  font-size: 13.5px;
   font-weight: 650;
-  letter-spacing: -0.015em;
   white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 /* The trail. The last step is where you are and carries the way out; the ones
@@ -664,11 +674,16 @@ async function reconcile(rebase: boolean) {
   display: inline-flex;
   align-items: center;
   gap: 5px;
-  padding: 3px 8px;
-  border-radius: var(--radius-pill);
-  font-size: 12.5px;
+  padding: 1px 5px;
+  margin-left: -5px;
+  border-radius: var(--radius-sm);
+  font-size: 13px;
   color: var(--text-dim);
   white-space: nowrap;
+}
+
+.crumb + .sep + .crumb {
+  margin-left: 0;
 }
 
 .crumb.root,
@@ -677,15 +692,13 @@ async function reconcile(rebase: boolean) {
 }
 
 .crumb:not(.here):hover {
-  background: color-mix(in srgb, var(--text) 7%, transparent);
+  background: var(--bg-hover);
   color: var(--text);
 }
 
 .crumb.here {
   color: var(--text);
-  background: var(--bg);
-  box-shadow: var(--shadow-card);
-  font-weight: 600;
+  font-weight: 650;
 }
 
 .sep {
@@ -694,9 +707,8 @@ async function reconcile(rebase: boolean) {
 
 .out {
   display: flex;
-  margin: 0 -3px 0 1px;
   padding: 2px;
-  border-radius: var(--radius-pill);
+  border-radius: var(--radius-sm);
   color: var(--text-faint);
 }
 
@@ -710,19 +722,13 @@ async function reconcile(rebase: boolean) {
   align-items: center;
   gap: 5px;
   min-width: 0;
-  max-width: 280px;
-  padding: 3px 10px 3px 8px;
-  border-radius: var(--radius-pill);
-  background: var(--bg);
-  box-shadow: var(--shadow-card);
   font-size: 12px;
-  font-weight: 550;
-  color: var(--text);
+  color: var(--text-dim);
 }
 
 .branch-icon {
   flex: none;
-  color: var(--text-faint);
+  color: var(--accent);
 }
 
 .branch-name {
@@ -735,30 +741,35 @@ async function reconcile(rebase: boolean) {
   color: var(--amber);
 }
 
-/* The everyday actions, as one segmented pill floating on the canvas. */
+/* The everyday actions: a larger icon with its name under it. */
 .actions {
   display: flex;
   align-items: center;
   justify-content: center;
   gap: 2px;
-  padding: 3px;
-  border-radius: var(--radius-pill);
-  background: var(--bg);
-  box-shadow: var(--shadow-card);
 }
 
 .actions .btn {
-  min-height: 28px;
-  padding: 4px 12px;
-  border-radius: var(--radius-pill);
-  color: var(--text);
-}
-
-.actions .btn svg {
+  position: relative;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 54px;
+  min-height: 0;
+  padding: 5px 8px 4px;
+  font-size: 11px;
+  font-weight: 500;
+  line-height: 1.2;
   color: var(--text-dim);
 }
 
-.actions .btn:hover:not(:disabled) svg {
+.actions .btn svg {
+  width: 18px;
+  height: 18px;
+  color: var(--text);
+  stroke-width: 1.75;
+}
+
+.actions .btn:hover:not(:disabled) {
   color: var(--text);
 }
 
@@ -769,129 +780,112 @@ async function reconcile(rebase: boolean) {
   gap: 2px;
 }
 
-.tools .btn:hover:not(:disabled) {
-  background: color-mix(in srgb, var(--text) 7%, transparent);
-}
-
 .icon-only {
-  width: 32px;
+  width: 30px;
   padding: 0;
-  border-radius: var(--radius-pill);
 }
 
-/* Tinted rather than filled: news, not an alarm, and the pull and push
-   buttons should still be the ones the eye lands on. */
+/* A new version: tinted rather than filled, news and not an alarm. */
 .update {
   margin-right: 4px;
-  border-radius: var(--radius-pill);
-  background: var(--bg);
-  box-shadow: var(--shadow-card);
-  color: var(--text);
+  background: var(--primary-bg);
+  color: var(--accent-soft);
   font-weight: 600;
 }
 
-.tools .update:hover:not(:disabled) {
-  background: var(--bg);
-  color: var(--text);
-  box-shadow: var(--shadow-card), var(--focus);
+.update:hover:not(:disabled) {
+  background: var(--primary-line);
+  color: var(--accent-soft);
 }
 
 .profile {
-  margin-left: 6px;
+  margin-left: 4px;
 }
 
 .sep {
   width: 1px;
-  height: 16px;
+  height: 22px;
   background: var(--line);
-  margin: 0 4px;
+  margin: 0 6px;
 }
 
-/* How many there are to pull or push, sat on the button that does it. */
+.where .sep {
+  width: auto;
+  height: auto;
+  margin: 0;
+  background: none;
+}
+
+/* How many there are to pull or push, as a badge on the button's icon. */
 .count {
-  display: inline-flex;
-  align-items: center;
-  gap: 1px;
-  margin-left: 1px;
-  padding: 2px 6px 2px 4px;
+  position: absolute;
+  top: 1px;
+  left: calc(50% + 6px);
+  min-width: 16px;
+  height: 16px;
+  padding: 0 4px;
   border-radius: var(--radius-pill);
-  font-size: 10.5px;
-  font-weight: 650;
-  line-height: 1;
+  border: 2px solid var(--canvas);
+  box-sizing: content-box;
+  font-size: 9.5px;
+  font-weight: 700;
+  line-height: 16px;
+  text-align: center;
   font-variant-numeric: tabular-nums;
+  background: var(--accent);
+  color: var(--on-accent);
 }
 
-.actions .btn .count svg {
-  color: inherit;
-}
-
-.count.up {
-  background: var(--success-bg);
-  color: var(--success-soft);
-}
-
-.count.down {
-  background: var(--primary);
-  color: var(--primary-fg);
-}
-
-/* Under the toolbar, over the graph card — but never over the panel card,
-   whose own head says what is staged. The right edge is set from its width. */
+/* Under the toolbar, over the graph — but never over the inspector, whose
+   own head says what is staged. The right edge is set from its width. */
 .banners {
   position: absolute;
-  left: calc(var(--gutter) + 8px);
+  left: 0;
   right: 0;
-  top: calc(100% + 8px);
+  top: 100%;
   z-index: 6;
-  display: flex;
-  flex-direction: column;
-  gap: 6px;
-  pointer-events: none;
 }
 
 .banner {
   display: flex;
   align-items: center;
   flex-wrap: wrap;
-  gap: 9px;
-  margin-right: 8px;
-  padding: 8px 10px 8px 14px;
-  border-radius: var(--radius);
-  font-size: 12.5px;
+  gap: 8px;
+  padding: 6px 12px;
+  font-size: 12px;
   color: var(--warning-soft);
   background: var(--warning-bg);
-  box-shadow:
-    0 0 0 1px var(--warning-line),
-    0 8px 24px -8px var(--shadow-strong);
-  pointer-events: auto;
+  border-bottom: 1px solid var(--warning-line);
 }
 
 .tiny {
-  min-height: 26px;
-  font-size: 12px;
-  padding: 3px 12px;
-  border-radius: var(--radius-pill);
-  background: var(--text);
-  color: var(--bg);
+  min-height: 22px;
+  font-size: 11.5px;
+  padding: 1px 8px;
+  border-radius: var(--radius-sm);
+  background: var(--bg);
+  color: var(--text);
+  border: 1px solid var(--warning-line);
   font-weight: 600;
 }
 
 .banner .tiny:hover:not(:disabled) {
-  background: var(--text);
-  color: var(--bg);
-  opacity: 0.88;
+  background: var(--bg);
+  color: var(--text);
+  border-color: currentColor;
 }
 
 .tiny.ghost {
   background: transparent;
   color: inherit;
-  box-shadow: inset 0 0 0 1px var(--warning-line);
+  border-color: transparent;
+  font-weight: 500;
 }
 
 .banner .tiny.ghost:hover:not(:disabled) {
-  background: color-mix(in srgb, currentColor 10%, transparent);
+  background: color-mix(in srgb, currentColor 12%, transparent);
   color: inherit;
-  opacity: 1;
+  border-color: transparent;
 }
 
 /* The rejected-push strip. Two states in one place: the offer, then the
@@ -908,18 +902,13 @@ async function reconcile(rebase: boolean) {
 .banner.danger {
   color: var(--danger-soft);
   background: var(--danger-bg);
-  box-shadow:
-    0 0 0 1px var(--danger-line),
-    0 8px 24px -8px var(--shadow-strong);
-}
-
-.banner.danger .tiny.ghost {
-  box-shadow: inset 0 0 0 1px var(--danger-line);
+  border-bottom-color: var(--danger-line);
 }
 
 .banner .danger-btn,
 .banner .danger-btn:hover:not(:disabled) {
   background: var(--red);
   color: var(--on-danger);
+  border-color: transparent;
 }
 </style>

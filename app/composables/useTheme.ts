@@ -21,14 +21,14 @@ export const CONTRASTS: { id: Contrast; name: string; note: string }[] = [
 
 /**
  * What the settings page lets you pick: one theme, or "whatever the system is
- * doing", which is the Studio pair following the OS between day and night.
+ * doing", which is Porcelain and Graphite following the OS between day and night.
  */
 export type ThemeChoice = ThemeId | 'system'
 
 /** The pair `system` moves between. */
 export const SYSTEM_PAIR: { light: ThemeId; dark: ThemeId } = {
-  light: 'studio-light',
-  dark: 'studio-dark'
+  light: 'porcelain',
+  dark: 'graphite'
 }
 
 const KEY = 'gitnoob.theme'

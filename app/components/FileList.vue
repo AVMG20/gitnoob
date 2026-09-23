@@ -83,7 +83,7 @@ watch(
  * back, less one step, and then a little more so the nesting reads.
  */
 function indent(depth: number, file = false) {
-  // The row is inset 6px into the card, so 8 here lines its text up with the
+  // The row is inset 4px into the panel, so 8 here lines its text up with the
   // heading over the list.
   return 8 + depth * STEP + (file ? 8 : 0)
 }
@@ -256,19 +256,19 @@ function counted(tally: Tally) {
   overflow-y: auto;
   flex: 1;
   min-height: 0;
-  padding: 2px 0 6px;
+  padding: 0 0 4px;
 }
 
-/* Rows are pills inset from the card's edge, so a hover or a selection reads as
-   a thing picked up rather than a stripe painted across the panel. */
+/* Rows are inset a little from the panel's edge with small corners, so a
+   selection reads as a row picked rather than a stripe across the window. */
 .row {
   display: flex;
   align-items: center;
-  gap: 7px;
-  width: calc(100% - 12px);
-  min-height: 28px;
-  margin: 0 6px;
-  padding: 3px 10px 3px 8px;
+  gap: 6px;
+  width: calc(100% - 8px);
+  min-height: 25px;
+  margin: 0 4px;
+  padding: 2px 8px 2px 8px;
   border-radius: var(--radius-sm);
   font-size: 12.5px;
   text-align: left;
@@ -284,7 +284,7 @@ function counted(tally: Tally) {
 }
 
 .row.on .name {
-  font-weight: 550;
+  font-weight: 600;
 }
 
 .chev,
@@ -357,15 +357,15 @@ function counted(tally: Tally) {
   color: var(--amber-soft);
 }
 
-/* A small pill that appears on the row under the pointer. */
+/* A small bordered button that appears on the row under the pointer. */
 .act {
   display: none;
   flex: none;
-  padding: 1px 9px;
+  padding: 0 7px;
   margin: -2px -4px -2px 0;
-  border-radius: var(--radius-pill);
+  border-radius: var(--radius-sm);
   background: var(--bg);
-  box-shadow: var(--shadow-card);
+  border: 1px solid var(--line);
   color: var(--text);
   font-size: 11px;
   font-weight: 500;
@@ -378,12 +378,13 @@ function counted(tally: Tally) {
 }
 
 .act:hover {
-  box-shadow: var(--shadow-card), var(--focus);
+  border-color: var(--accent);
+  color: var(--accent-soft);
 }
 
 .act.clash {
   background: var(--warning-bg);
-  box-shadow: inset 0 0 0 1px var(--warning-line);
+  border-color: var(--warning-line);
   color: var(--amber-soft);
 }
 
@@ -425,13 +426,13 @@ function counted(tally: Tally) {
   display: inline-flex;
   align-items: center;
   gap: 3px;
-  padding: 0 6px;
+  padding: 0 5px;
   border-radius: var(--radius-pill);
   background: var(--bg-raised);
   color: var(--text-dim);
   font-size: 10.5px;
   font-weight: 600;
-  line-height: 17px;
+  line-height: 16px;
 }
 
 .seen {
@@ -440,7 +441,7 @@ function counted(tally: Tally) {
 }
 
 .none {
-  padding: 6px 14px 8px;
+  padding: 4px 12px 8px;
   font-size: 12px;
   margin: 0;
 }

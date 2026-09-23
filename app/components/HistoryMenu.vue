@@ -63,16 +63,18 @@ const redo = computed(() => store.history.redo)
 
 .menu {
   position: absolute;
-  right: 96px;
-  top: 96px;
+  /* Under the history button: the tab strip and the toolbar are 38 and 52
+     pixels, and the button sits left of settings and the profile. */
+  right: 150px;
+  top: 84px;
   width: 380px;
   max-height: 60vh;
   overflow-y: auto;
-  padding: 5px;
+  padding: 4px;
   background: var(--bg);
-  border-radius: var(--radius);
+  border-radius: var(--radius-lg);
   box-shadow: var(--shadow-pop);
-  animation: pop-in 0.12s ease-out;
+  animation: pop-in 0.08s ease-out;
 }
 
 @keyframes pop-in {
@@ -85,17 +87,24 @@ const redo = computed(() => store.history.redo)
 .item {
   display: flex;
   align-items: center;
-  gap: 9px;
+  gap: 8px;
   width: 100%;
-  min-height: 30px;
-  padding: 5px 10px;
+  min-height: 26px;
+  padding: 3px 8px;
   border-radius: var(--radius-sm);
   text-align: left;
-  font-size: 13px;
+  font-size: 12.5px;
 }
 
+/* Filled in the accent under the pointer, as a native menu marks its row. */
 .item:hover:not(:disabled) {
-  background: var(--bg-hover);
+  background: var(--accent);
+  color: var(--on-accent);
+}
+
+.item:hover:not(:disabled) .faint,
+.item:hover:not(:disabled) .warn {
+  color: var(--on-accent);
 }
 
 .item:disabled {
@@ -124,7 +133,7 @@ const redo = computed(() => store.history.redo)
 
 .empty,
 .note {
-  padding: 4px 10px 8px;
+  padding: 4px 8px 8px;
   font-size: 11.5px;
   margin: 0;
 }
@@ -137,7 +146,7 @@ const redo = computed(() => store.history.redo)
 
 .divider {
   height: 1px;
-  margin: 5px 8px;
+  margin: 4px 6px;
   background: var(--line-soft);
 }
 </style>

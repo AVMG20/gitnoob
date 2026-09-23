@@ -310,7 +310,7 @@ async function save() {
   width: 100%;
   max-width: 1180px;
   margin: 0 auto;
-  padding: 20px 24px 72px;
+  padding: 18px 20px 72px;
 }
 
 @media (max-width: 940px) {
@@ -326,12 +326,23 @@ async function save() {
   gap: 12px;
 }
 
-/* A comment is a soft card lifted off the page. */
+/* A comment is a bordered box on the page. */
 .card {
   background: var(--bg);
-  border-radius: var(--radius);
-  box-shadow: var(--shadow-card);
-  padding: 14px 16px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-lg);
+  padding: 12px 14px;
+}
+
+/* The description wears a header strip, the way a forge draws the first
+   comment: who wrote it and when, on the chrome tone, over the body. */
+.description > .meta {
+  margin: -12px -14px 0;
+  padding: 6px 10px 6px 14px;
+  min-height: 36px;
+  background: var(--surface);
+  border-bottom: 1px solid var(--line-soft);
+  border-radius: var(--radius-lg) var(--radius-lg) 0 0;
 }
 
 .meta {
@@ -353,7 +364,7 @@ async function save() {
 
 .quiet {
   padding: 4px;
-  border-radius: var(--radius-pill);
+  border-radius: var(--radius-sm);
   color: var(--text-faint);
 }
 
@@ -391,12 +402,13 @@ async function save() {
   margin-top: 9px;
 }
 
-/* An event is quieter than a card: it happened, it is not being discussed. */
+/* An event is quieter than a card: it happened, it is not being discussed. A
+   single line, indented to sit on the timeline's own edge. */
 .event {
   display: flex;
   align-items: flex-start;
-  gap: 10px;
-  padding: 2px 4px 2px 6px;
+  gap: 8px;
+  padding: 0 4px 0 14px;
   font-size: 12.5px;
   color: var(--text-dim);
 }
@@ -405,21 +417,24 @@ async function save() {
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  width: 24px;
-  height: 24px;
+  width: 22px;
+  height: 22px;
   border-radius: 50%;
   background: var(--bg-raised);
+  border: 1px solid var(--line);
   color: var(--text-faint);
   flex: none;
 }
 
 .event.good .glyph {
   background: var(--success-bg);
+  border-color: var(--success-line);
   color: var(--success);
 }
 
 .event.bad .glyph {
   background: var(--danger-bg);
+  border-color: var(--danger-line);
   color: var(--danger);
 }
 
@@ -443,22 +458,22 @@ async function save() {
   color: var(--text-dim);
 }
 
-/* Where the review has ended up: the one card that is about doing rather than
-   reading, so it is the one card with a filled button on it, and the one
-   tinted with what it says. */
+/* Where the review has ended up: the one box that is about doing rather than
+   reading, so it is the one with a filled button on it, and the one edged in
+   what it says. */
 .standing.good {
-  background: var(--success-bg);
-  box-shadow: 0 0 0 1px var(--success-line);
+  border-color: var(--success-line);
+  box-shadow: inset 3px 0 0 var(--success);
 }
 
 .standing.bad {
-  background: var(--danger-bg);
-  box-shadow: 0 0 0 1px var(--danger-line);
+  border-color: var(--danger-line);
+  box-shadow: inset 3px 0 0 var(--danger);
 }
 
 .standing.wait {
-  background: var(--warning-bg);
-  box-shadow: 0 0 0 1px var(--warning-line);
+  border-color: var(--warning-line);
+  box-shadow: inset 3px 0 0 var(--warning);
 }
 
 .verdict-line {
@@ -500,7 +515,6 @@ async function save() {
 
 .go {
   flex: none;
-  font-size: 13px;
 }
 
 .left {

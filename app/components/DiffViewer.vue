@@ -616,8 +616,8 @@ onUnmounted(() => window.removeEventListener('keydown', onKey))
 </template>
 
 <style scoped>
-/* The viewer is a card of its own in the shell's grid, so it paints nothing
-   behind itself: the card is the shell's. */
+/* The viewer is a pane of the shell's grid and takes the page tone from it, so
+   it paints nothing behind itself. */
 .viewer {
   display: grid;
   /* The column is stated rather than left implicit. An `auto` column is sized
@@ -629,13 +629,16 @@ onUnmounted(() => window.removeEventListener('keydown', onKey))
   min-width: 0;
 }
 
+/* The bar over the file is chrome, the same tone as the toolbar and the
+   sidebar, so the diff under it reads as the page. */
 .bar {
   display: flex;
   align-items: center;
-  gap: 8px;
-  min-height: 48px;
-  padding: 8px 10px 8px 16px;
-  border-bottom: 1px solid var(--line-soft);
+  gap: 6px;
+  min-height: 40px;
+  padding: 5px 8px 5px 12px;
+  background: var(--canvas);
+  border-bottom: 1px solid var(--line);
 }
 
 /* The file's name is what you are looking at; the folders it sits in are
@@ -645,8 +648,7 @@ onUnmounted(() => window.removeEventListener('keydown', onKey))
   align-items: baseline;
   min-width: 0;
   max-width: 46%;
-  font-size: 13px;
-  letter-spacing: -0.005em;
+  font-size: 12.5px;
 }
 
 .dir {
@@ -668,10 +670,11 @@ onUnmounted(() => window.removeEventListener('keydown', onKey))
   color: var(--text);
 }
 
+/* The language and the side are labels, not counts: square-cornered tags. */
 .bar .pill {
+  border-radius: var(--radius-sm);
   font-family: var(--mono);
   font-weight: 500;
-  letter-spacing: 0;
 }
 
 /* Lines added and taken away, read as one small tally. */
@@ -689,45 +692,49 @@ onUnmounted(() => window.removeEventListener('keydown', onKey))
   flex: 1;
 }
 
-/* A segmented pill, the same control the file panel uses for path and tree. */
+/* Diff or file: a bordered segmented switch, the same control the file panel
+   uses for path and tree. */
 .modes {
   display: flex;
   flex: none;
-  gap: 2px;
-  padding: 2px;
-  border-radius: var(--radius-pill);
-  background: var(--bg-raised);
+  height: 24px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-sm);
+  overflow: hidden;
+  background: var(--bg);
 }
 
 .seg {
-  padding: 3px 12px;
-  border-radius: var(--radius-pill);
+  padding: 0 10px;
   font-size: 11.5px;
   font-weight: 500;
   color: var(--text-dim);
-  transition:
-    background 0.12s,
-    color 0.12s;
+}
+
+.seg + .seg {
+  border-left: 1px solid var(--line);
 }
 
 .seg:hover {
   color: var(--text);
+  background: var(--bg-hover);
 }
 
 .seg.on {
-  background: var(--bg);
-  color: var(--text);
-  box-shadow: var(--shadow-card);
+  background: var(--bg-active);
+  color: var(--accent-soft);
+  font-weight: 600;
 }
 
-/* The icon buttons are round; the two that stage or throw away a file are
-   pills with a word on them. */
+/* Everything on the bar is one size smaller than a toolbar button. */
 .bar .btn {
-  border-radius: var(--radius-pill);
+  min-height: 26px;
+  padding: 2px 8px;
+  border-radius: var(--radius-sm);
 }
 
-.tool {
-  width: 30px;
+.bar .tool {
+  width: 26px;
   padding: 0;
 }
 
@@ -735,7 +742,7 @@ onUnmounted(() => window.removeEventListener('keydown', onKey))
    control uses, so the bar has one idea of what "this is on" looks like. */
 .btn.on {
   background: var(--bg-active);
-  color: var(--text);
+  color: var(--accent-soft);
 }
 
 .plus {
@@ -746,8 +753,9 @@ onUnmounted(() => window.removeEventListener('keydown', onKey))
   color: var(--red);
 }
 
+/* Discarding is quiet until the pointer is on it, then it says what it is. */
 .danger {
-  color: var(--red-soft);
+  color: var(--text-dim);
 }
 
 .bar .danger:hover:not(:disabled) {
@@ -755,18 +763,23 @@ onUnmounted(() => window.removeEventListener('keydown', onKey))
   color: var(--red-soft);
 }
 
-/* Staging is the thing this bar is for, so it is the one outlined pill. */
+/* Staging is the thing this bar is for, so it is the one bordered button. */
 .stage {
   color: var(--text);
-  box-shadow: inset 0 0 0 1px var(--line);
+  background: var(--bg);
+  border: 1px solid var(--line);
+}
+
+.bar .stage:hover:not(:disabled) {
+  background: var(--bg-hover);
 }
 
 .divider {
   flex: none;
   width: 1px;
   height: 18px;
-  margin: 0 2px;
-  background: var(--line-soft);
+  margin: 0 3px;
+  background: var(--line);
 }
 
 .pane {
@@ -787,24 +800,19 @@ onUnmounted(() => window.removeEventListener('keydown', onKey))
   display: flex;
   flex-direction: column;
   align-items: center;
-  gap: 8px;
-  padding: 72px 24px;
+  gap: 6px;
+  padding: 64px 24px;
   text-align: center;
 }
 
 .lfs .glyph {
   color: var(--text-faint);
-  padding: 14px;
-  box-sizing: content-box;
-  border-radius: var(--radius-lg);
-  background: var(--surface);
 }
 
 .lfs h3 {
-  margin: 8px 0 0;
-  font-size: 16px;
+  margin: 6px 0 0;
+  font-size: 14px;
   font-weight: 650;
-  letter-spacing: -0.01em;
 }
 
 .lfs p {
@@ -819,6 +827,6 @@ onUnmounted(() => window.removeEventListener('keydown', onKey))
 }
 
 .lfs .btn-primary {
-  margin-top: 10px;
+  margin-top: 8px;
 }
 </style>

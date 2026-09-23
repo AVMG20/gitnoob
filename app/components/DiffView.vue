@@ -508,7 +508,7 @@ function paint(line: DiffLine) {
   padding: 2px 10px 2px 16px;
   color: var(--text-faint);
   background: var(--surface);
-  border-top: 1px solid var(--line-soft);
+  border-top: 1px solid var(--line);
   border-bottom: 1px solid var(--line-soft);
   box-sizing: border-box;
 }
@@ -530,34 +530,37 @@ function paint(line: DiffLine) {
   opacity: 1;
 }
 
-/* Small pills on the hunk's own heading. Outlined at rest; staging fills in
-   ink under the pointer, throwing away fills in red. */
+/* Small bordered buttons on the hunk's own heading. Staging turns the accent
+   under the pointer, throwing away turns red. */
 .hunk-btn {
+  display: inline-flex;
+  align-items: center;
+  height: 20px;
   font-family: var(--font);
   font-size: 11px;
   font-weight: 500;
-  padding: 1px 10px;
-  border-radius: var(--radius-pill);
+  padding: 0 8px;
+  border-radius: var(--radius-sm);
   color: var(--text-dim);
   background: var(--bg);
-  box-shadow: inset 0 0 0 1px var(--line);
+  border: 1px solid var(--line);
   white-space: nowrap;
   transition:
-    background 0.12s,
-    color 0.12s,
-    box-shadow 0.12s;
+    background 0.1s,
+    color 0.1s,
+    border-color 0.1s;
 }
 
 .hunk-btn:hover:not(:disabled) {
   color: var(--on-accent);
   background: var(--accent);
-  box-shadow: inset 0 0 0 1px var(--accent);
+  border-color: var(--accent);
 }
 
 .hunk-btn.danger:hover:not(:disabled) {
   color: var(--on-danger);
   background: var(--red);
-  box-shadow: inset 0 0 0 1px var(--red);
+  border-color: var(--red);
 }
 
 .hunk-btn:disabled {

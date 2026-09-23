@@ -140,33 +140,33 @@ onMounted(async () => {
      grows from the middle of the window moves its own first row as you type. */
   align-content: start;
   justify-items: center;
-  padding-top: 12vh;
+  padding-top: 10vh;
   background: var(--overlay);
-  backdrop-filter: blur(3px);
 }
 
-/* A command palette: one big field, and the answers under it. */
+/* A command palette: one field, and the answers under it. */
 .switch {
-  width: min(600px, 92vw);
+  width: min(560px, 92vw);
   background: var(--bg);
   border-radius: var(--radius-lg);
   box-shadow: var(--shadow-pop);
   overflow: hidden;
-  animation: palette-in 0.14s ease-out;
+  animation: palette-in 0.08s ease-out;
 }
 
 @keyframes palette-in {
   from {
     opacity: 0;
-    transform: translateY(-4px) scale(0.99);
+    transform: translateY(-2px);
   }
 }
 
 .search {
   display: flex;
   align-items: center;
-  gap: 10px;
-  padding: 14px 18px;
+  gap: 8px;
+  height: 38px;
+  padding: 0 12px;
   border-bottom: 1px solid var(--line-soft);
 }
 
@@ -178,28 +178,28 @@ onMounted(async () => {
   border: none;
   outline: none;
   box-shadow: none;
-  font-size: 16px;
-  letter-spacing: -0.01em;
+  font-size: 14px;
 }
 
 .list {
   max-height: 380px;
   overflow-y: auto;
-  padding: 6px;
+  padding: 4px;
 }
 
 .row {
   display: flex;
   align-items: center;
-  gap: 11px;
+  gap: 8px;
   width: 100%;
-  padding: 7px 12px;
-  border-radius: var(--radius);
+  min-height: 30px;
+  padding: 3px 8px;
+  border-radius: var(--radius-sm);
   text-align: left;
 }
 
 .row.active {
-  background: var(--bg-hover);
+  background: var(--bg-active);
 }
 
 .glyph {
@@ -211,29 +211,37 @@ onMounted(async () => {
   color: var(--text);
 }
 
+/* Name and path on one line, the path dimmed after it: one row per
+   repository, so more of them fit before the list has to scroll. */
 .name {
-  font-weight: 550;
+  flex: none;
+  max-width: 50%;
+  font-weight: 600;
 }
 
 .names {
   flex: 1;
   min-width: 0;
   display: flex;
-  flex-direction: column;
+  align-items: baseline;
+  gap: 8px;
 }
 
 .path {
-  font-size: 11px;
+  flex: 1;
+  min-width: 0;
+  font-size: 11.5px;
 }
 
 .badge {
   flex: none;
-  padding: 1px 8px;
-  border-radius: var(--radius-pill);
+  padding: 0 6px;
+  border-radius: var(--radius-sm);
   font-size: 10.5px;
   font-weight: 600;
-  color: var(--primary-fg);
-  background: var(--primary);
+  line-height: 18px;
+  color: var(--accent-soft);
+  background: var(--primary-bg);
 }
 
 /* Only on the row under the pointer: a column of crosses beside every past
@@ -242,7 +250,7 @@ onMounted(async () => {
   display: flex;
   flex: none;
   padding: 3px;
-  border-radius: var(--radius-pill);
+  border-radius: var(--radius-sm);
   color: var(--text-faint);
   opacity: 0;
 }
@@ -259,7 +267,7 @@ onMounted(async () => {
 
 .none {
   margin: 0;
-  padding: 14px 12px;
+  padding: 12px 10px;
   font-size: 12.5px;
 }
 </style>

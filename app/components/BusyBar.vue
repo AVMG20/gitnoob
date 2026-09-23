@@ -22,13 +22,13 @@ const label = computed(() => {
 </template>
 
 <style scoped>
-/* A hairline between the toolbar and the cards, drawn only while something is
-   running. It takes no height of its own, so the cards never jump when it
+/* A line along the top edge of the panes, drawn only while something is
+   running. It takes no height of its own, so the panes never jump when it
    comes and goes. */
 .wrap {
   position: relative;
   height: 2px;
-  margin: -2px calc(var(--gutter) + var(--radius-lg)) 0;
+  margin: 0 0 -2px;
   opacity: 0;
   transition: opacity 0.2s;
   pointer-events: none;
@@ -43,8 +43,7 @@ const label = computed(() => {
   position: absolute;
   inset: 0;
   overflow: hidden;
-  border-radius: var(--radius-pill);
-  background: color-mix(in srgb, var(--primary) 10%, transparent);
+  background: color-mix(in srgb, var(--primary) 12%, transparent);
 }
 
 /* An indeterminate sweep: git gives no progress, so pretending otherwise would
@@ -54,7 +53,6 @@ const label = computed(() => {
   top: 0;
   bottom: 0;
   width: 30%;
-  border-radius: var(--radius-pill);
   background: linear-gradient(90deg, transparent, var(--primary), transparent);
   animation: sweep 1.3s cubic-bezier(0.45, 0, 0.55, 1) infinite;
 }
@@ -68,18 +66,17 @@ const label = computed(() => {
   }
 }
 
-/* What is running, as a small floating chip under the line's right end. */
+/* What is running, as a small tag under the line's right end. */
 .label {
   position: absolute;
-  right: 0;
-  top: 10px;
-  padding: 3px 11px;
-  border-radius: var(--radius-pill);
+  right: 8px;
+  top: 8px;
+  padding: 2px 8px;
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--line);
   font-size: 11.5px;
-  font-weight: 500;
-  color: var(--text);
+  color: var(--text-dim);
   background: var(--bg);
-  box-shadow: var(--shadow-pop);
   white-space: nowrap;
 }
 </style>

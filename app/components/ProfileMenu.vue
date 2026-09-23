@@ -165,41 +165,46 @@ async function pick(id: string) {
   position: relative;
 }
 
+/* The profile, as a button in the toolbar: its face and name, bordered so it
+   reads as the one control there that is about you rather than the repository. */
 .pill-btn {
   display: flex;
   align-items: center;
-  gap: 7px;
-  height: 32px;
-  padding: 0 10px 0 5px;
-  border-radius: var(--radius-pill);
+  gap: 6px;
+  height: var(--control-h);
+  padding: 0 8px 0 4px;
+  border-radius: var(--radius);
+  border: 1px solid var(--line);
   background: var(--bg);
-  box-shadow: var(--shadow-card);
   color: var(--text);
+  font-size: 12.5px;
   max-width: 200px;
-  transition: box-shadow 0.12s;
+  transition:
+    background 0.1s,
+    border-color 0.1s;
 }
 
-/* No face and no logo still leaves the pill balanced round its label. */
+/* No face and no logo still leaves the button balanced round its label. */
 .pill-btn > svg:first-child {
-  margin-left: 5px;
+  margin-left: 4px;
 }
 
 .pill-btn:hover,
 .pill-btn.on {
-  box-shadow: var(--shadow-card), var(--focus);
+  background: var(--bg-hover);
 }
 
 .face {
-  width: 22px;
-  height: 22px;
+  width: 20px;
+  height: 20px;
   border-radius: 50%;
   object-fit: cover;
   flex: none;
 }
 
 .face.big {
-  width: 34px;
-  height: 34px;
+  width: 32px;
+  height: 32px;
 }
 
 /* A profile whose forge has no picture still gets a round slot, so the names
@@ -231,11 +236,11 @@ async function pick(id: string) {
   top: calc(100% + 6px);
   z-index: 41;
   width: 320px;
-  padding: 5px;
+  padding: 4px;
   background: var(--bg);
-  border-radius: var(--radius);
+  border-radius: var(--radius-lg);
   box-shadow: var(--shadow-pop);
-  animation: pop-in 0.12s ease-out;
+  animation: pop-in 0.08s ease-out;
 }
 
 @keyframes pop-in {
@@ -249,10 +254,11 @@ async function pick(id: string) {
   display: flex;
   align-items: center;
   gap: 10px;
-  padding: 10px 12px;
-  margin: 0 0 6px;
-  border-radius: var(--radius-sm);
-  background: var(--surface);
+  padding: 8px 10px;
+  margin: 0 0 4px;
+  border-radius: var(--radius);
+  background: var(--canvas);
+  border: 1px solid var(--line-soft);
 }
 
 .grow {
@@ -269,7 +275,7 @@ async function pick(id: string) {
 }
 
 .rows {
-  padding: 2px 12px 8px;
+  padding: 2px 8px 6px;
 }
 
 .row {
@@ -287,17 +293,19 @@ async function pick(id: string) {
 .item {
   display: flex;
   align-items: center;
-  gap: 9px;
+  gap: 8px;
   width: 100%;
-  min-height: 30px;
-  padding: 5px 10px;
+  min-height: 26px;
+  padding: 3px 8px;
   border-radius: var(--radius-sm);
   text-align: left;
-  font-size: 13px;
+  font-size: 12.5px;
 }
 
+/* Filled in the accent under the pointer, as a native menu marks its row. */
 .item:hover {
-  background: var(--bg-hover);
+  background: var(--accent);
+  color: var(--on-accent);
 }
 
 .tick {
@@ -312,7 +320,7 @@ async function pick(id: string) {
 
 .divider {
   height: 1px;
-  margin: 5px 8px;
+  margin: 4px 6px;
   background: var(--line-soft);
 }
 </style>

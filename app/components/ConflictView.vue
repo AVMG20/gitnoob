@@ -1332,7 +1332,7 @@ onUnmounted(() => window.removeEventListener('keydown', onKey))
    pane's own scrollbar has to be allowed to be shorter than its contents. */
 .conflicts {
   /* Our side and theirs, one colour each everywhere below. The theme decides
-     both; where its accent is ink, ours is the trunk's lane instead. */
+     both: ours is the accent, theirs the info colour. */
   --ours: var(--diff-ours);
   --theirs: var(--diff-theirs);
   display: grid;
@@ -1352,9 +1352,8 @@ onUnmounted(() => window.removeEventListener('keydown', onKey))
 
 .clear h3 {
   margin: 0 0 6px;
-  font-size: 16px;
+  font-size: 14px;
   font-weight: 650;
-  letter-spacing: -0.01em;
 }
 
 .clear p {
@@ -1363,24 +1362,25 @@ onUnmounted(() => window.removeEventListener('keydown', onKey))
   font-size: 12.5px;
 }
 
+/* The list of files is chrome, like the sidebar it stands in for. */
 .rail {
-  padding: 6px 8px;
-  border-right: 1px solid var(--line-soft);
-  background: var(--surface);
+  padding: 4px 6px;
+  border-right: 1px solid var(--line);
+  background: var(--canvas);
   overflow-y: auto;
 }
 
 .rail .section-title {
-  padding: 6px;
+  padding: 6px 6px 4px;
 }
 
 .rail-file {
   width: 100%;
   display: flex;
   align-items: center;
-  gap: 9px;
-  margin-bottom: 2px;
-  padding: 6px 10px;
+  gap: 8px;
+  margin-bottom: 1px;
+  padding: 4px 8px;
   border-radius: var(--radius-sm);
   text-align: left;
   font-size: 12.5px;
@@ -1400,7 +1400,6 @@ onUnmounted(() => window.removeEventListener('keydown', onKey))
   height: 7px;
   border-radius: var(--radius-pill);
   background: var(--amber);
-  box-shadow: 0 0 0 3px var(--warning-bg);
 }
 
 .rail-file:hover {
@@ -1408,8 +1407,7 @@ onUnmounted(() => window.removeEventListener('keydown', onKey))
 }
 
 .rail-file.on {
-  background: var(--bg);
-  box-shadow: var(--shadow-card);
+  background: var(--bg-active);
 }
 
 .rail-file .small {
@@ -1433,12 +1431,12 @@ onUnmounted(() => window.removeEventListener('keydown', onKey))
   flex-wrap: wrap;
   gap: 8px;
   flex: none;
-  padding: 8px 14px;
-  border-bottom: 1px solid var(--line-soft);
+  padding: 6px 12px;
+  border-bottom: 1px solid var(--line);
 }
 
 .toolbar {
-  min-height: 50px;
+  min-height: 42px;
 }
 
 .guide {
@@ -1448,15 +1446,15 @@ onUnmounted(() => window.removeEventListener('keydown', onKey))
 .file-name {
   max-width: 280px;
   font-family: var(--font);
-  font-size: 13.5px;
+  font-size: 13px;
   font-weight: 600;
-  letter-spacing: -0.005em;
   color: var(--text);
 }
 
+/* Labels, so square-cornered tags rather than counts. */
 .chip {
-  padding: 1px 9px;
-  border-radius: var(--radius-pill);
+  padding: 1px 6px;
+  border-radius: var(--radius-sm);
   font-size: 11px;
   font-weight: 500;
   background: var(--bg-raised);
@@ -1477,8 +1475,8 @@ onUnmounted(() => window.removeEventListener('keydown', onKey))
 /* How much of the file has been answered, which is the one thing a count of
    conflicts cannot say. */
 .progress {
-  width: 96px;
-  height: 6px;
+  width: 80px;
+  height: 4px;
   border-radius: var(--radius-pill);
   background: var(--bg-raised);
   overflow: hidden;
@@ -1513,21 +1511,23 @@ onUnmounted(() => window.removeEventListener('keydown', onKey))
   margin: 0 2px;
 }
 
-/* The bar's buttons are pills, at a size that still fits two rows of them. */
+/* The bar's buttons are a size smaller than a toolbar's, so two rows of them
+   still fit. */
 .tiny {
-  min-height: 28px;
+  min-height: 26px;
   font-size: 12px;
-  padding: 4px 12px;
-  border-radius: var(--radius-pill);
+  padding: 2px 10px;
+  border-radius: var(--radius-sm);
 }
 
 .ghosty {
   color: var(--text);
-  box-shadow: inset 0 0 0 1px var(--line);
+  background: var(--bg);
+  border: 1px solid var(--line);
 }
 
 .btn-primary.tiny {
-  padding: 4px 16px;
+  padding: 2px 12px;
 }
 
 .check {
@@ -1545,18 +1545,17 @@ onUnmounted(() => window.removeEventListener('keydown', onKey))
 
 .btn.ai:hover:not(:disabled) {
   color: var(--purple-soft);
-  background: color-mix(in srgb, var(--info) 22%, transparent);
+  background: color-mix(in srgb, var(--info) 22%, var(--bg));
 }
 
 /* --- walking the conflicts */
 .walk {
   display: flex;
   align-items: center;
-  gap: 2px;
-  padding: 2px;
-  border-radius: var(--radius-pill);
+  height: 26px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-sm);
   background: var(--bg);
-  box-shadow: var(--shadow-card);
 }
 
 .step {
@@ -1564,7 +1563,6 @@ onUnmounted(() => window.removeEventListener('keydown', onKey))
   place-items: center;
   width: 24px;
   height: 24px;
-  border-radius: var(--radius-pill);
   color: var(--text-dim);
 }
 
@@ -1588,34 +1586,35 @@ onUnmounted(() => window.removeEventListener('keydown', onKey))
   color: var(--text);
 }
 
-/* The one answer for the whole file: four states in a segmented pill, the lit
-   one lifted out as a small card in its side's colour. */
+/* The one answer for the whole file: four states in a bordered segmented
+   control, the lit one tinted in its side's colour. */
 .seg-group {
   display: flex;
-  gap: 2px;
-  padding: 2px;
-  border-radius: var(--radius-pill);
-  background: var(--bg-raised);
+  height: 26px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-sm);
+  background: var(--bg);
+  overflow: hidden;
 }
 
 .seg {
-  padding: 3px 12px;
-  border-radius: var(--radius-pill);
+  padding: 0 10px;
   font-size: 12px;
   font-weight: 500;
   color: var(--text-dim);
-  transition:
-    background 0.12s,
-    color 0.12s;
+}
+
+.seg + .seg {
+  border-left: 1px solid var(--line);
 }
 
 .seg:hover {
   color: var(--text);
+  background: var(--bg-hover);
 }
 
 .seg.on {
-  background: var(--bg);
-  box-shadow: var(--shadow-card);
+  background: color-mix(in srgb, currentColor 12%, var(--bg));
   font-weight: 600;
 }
 
@@ -1637,14 +1636,13 @@ onUnmounted(() => window.removeEventListener('keydown', onKey))
 
 /* The one thing the panes cannot say, said above them. */
 .explain {
-  margin: 10px 14px 0;
   flex: none;
-  padding: 10px 14px;
+  padding: 8px 12px;
   font-size: 12.5px;
-  line-height: 1.55;
+  line-height: 1.5;
   color: var(--text-dim);
   background: var(--info-bg);
-  border-radius: var(--radius);
+  border-bottom: 1px solid var(--line-soft);
 }
 
 .gone {
@@ -1660,7 +1658,7 @@ onUnmounted(() => window.removeEventListener('keydown', onKey))
   flex: 1;
   min-height: 0;
   overflow: hidden;
-  border-bottom: 1px solid var(--line-soft);
+  border-bottom: 1px solid var(--line);
 }
 
 .pane {
@@ -1670,16 +1668,19 @@ onUnmounted(() => window.removeEventListener('keydown', onKey))
   grid-template-rows: auto minmax(0, 1fr);
   flex: 1 1 0;
   min-width: 0;
-  border-right: 1px solid var(--line-soft);
+  border-right: 1px solid var(--line);
 }
 
+/* Each pane's heading is a strip of chrome over its code. */
 .pane-head {
   display: flex;
   align-items: center;
   gap: 8px;
-  padding: 7px 12px;
+  height: 28px;
+  padding: 0 12px;
   font-size: 11.5px;
-  border-bottom: 1px solid var(--line-soft);
+  background: var(--canvas);
+  border-bottom: 1px solid var(--line);
 }
 
 /* The side's name, led by a dot in its own colour. */
@@ -1687,6 +1688,7 @@ onUnmounted(() => window.removeEventListener('keydown', onKey))
   display: inline-flex;
   align-items: center;
   gap: 6px;
+  font-size: 11.5px;
   font-weight: 600;
 }
 
@@ -1886,24 +1888,25 @@ onUnmounted(() => window.removeEventListener('keydown', onKey))
   display: inline-flex;
   align-items: center;
   gap: 3px;
-  padding: 0 7px;
-  border-radius: var(--radius-pill);
+  height: 16px;
+  padding: 0 6px;
+  border-radius: var(--radius-sm);
   font-size: 10px;
   font-weight: 500;
   color: var(--text-dim);
   background: var(--bg);
-  box-shadow: inset 0 0 0 1px var(--line);
+  border: 1px solid var(--line);
 }
 
 .pill-btn:hover:not(:disabled) {
   color: var(--text);
-  box-shadow: inset 0 0 0 1px var(--text-faint);
+  border-color: var(--text-faint);
 }
 
 .pill-btn.ai {
   color: var(--purple-soft);
   background: var(--info-bg);
-  box-shadow: none;
+  border-color: transparent;
 }
 
 .pill-btn:disabled {
@@ -1936,11 +1939,12 @@ onUnmounted(() => window.removeEventListener('keydown', onKey))
   align-items: center;
   gap: 8px;
   width: 100%;
-  padding: 8px 14px;
+  height: 30px;
+  padding: 0 12px;
   text-align: left;
   font-size: 12px;
-  background: var(--surface);
-  border-bottom: 1px solid var(--line-soft);
+  background: var(--canvas);
+  border-bottom: 1px solid var(--line);
   cursor: pointer;
 }
 
@@ -1958,8 +1962,8 @@ onUnmounted(() => window.removeEventListener('keydown', onKey))
 
 .edited {
   margin-left: auto;
-  padding: 1px 9px;
-  border-radius: var(--radius-pill);
+  padding: 1px 6px;
+  border-radius: var(--radius-sm);
   font-size: 11px;
   color: var(--purple-soft);
   background: var(--info-bg);

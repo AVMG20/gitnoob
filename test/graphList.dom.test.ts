@@ -96,7 +96,7 @@ describe('the top of the commit list', () => {
 
     const box = viewport.element as HTMLElement
     // Twenty rows down, plus the row the working tree takes at the top.
-    const ROW = 30
+    const ROW = 28
     box.scrollTop = ROW + 20 * ROW
     await viewport.trigger('scroll')
     await new Promise((resolve) => requestAnimationFrame(resolve))

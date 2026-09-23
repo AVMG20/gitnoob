@@ -171,10 +171,11 @@ watch(query, () => (active.value = 0))
   align-items: center;
   gap: 6px;
   max-width: 180px;
-  padding: 2px 4px 2px 2px;
+  min-height: 22px;
+  padding: 1px 4px 1px 2px;
   background: var(--bg);
-  box-shadow: inset 0 0 0 1px var(--line-soft);
-  border-radius: var(--radius-pill);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-sm);
   font-size: 12px;
 }
 
@@ -204,7 +205,7 @@ watch(query, () => (active.value = 0))
 .drop {
   display: flex;
   padding: 1px;
-  border-radius: 50%;
+  border-radius: var(--radius-sm);
   color: var(--text-faint);
 }
 
@@ -217,14 +218,12 @@ watch(query, () => (active.value = 0))
   display: flex;
   align-items: center;
   gap: 4px;
-  padding: 3px 10px;
+  min-height: 22px;
+  padding: 1px 8px;
   border: 1px dashed var(--line);
-  border-radius: var(--radius-pill);
+  border-radius: var(--radius-sm);
   color: var(--text-dim);
   font-size: 12px;
-  transition:
-    border-color 0.12s,
-    color 0.12s;
 }
 
 .add:hover {
@@ -244,7 +243,7 @@ watch(query, () => (active.value = 0))
   flex-direction: column;
   max-height: 300px;
   background: var(--bg);
-  border-radius: var(--radius);
+  border-radius: var(--radius-lg);
   box-shadow: var(--shadow-pop);
   overflow: hidden;
 }
@@ -254,7 +253,7 @@ watch(query, () => (active.value = 0))
   align-items: center;
   gap: 7px;
   padding: 0 12px;
-  border-bottom: 1px solid var(--line-soft);
+  border-bottom: 1px solid var(--line);
   color: var(--text-faint);
 }
 
@@ -263,7 +262,7 @@ watch(query, () => (active.value = 0))
   min-width: 0;
   border: none;
   background: none;
-  padding: 9px 0;
+  padding: 8px 0;
   font-size: 13px;
 }
 
@@ -282,7 +281,8 @@ watch(query, () => (active.value = 0))
   align-items: center;
   gap: 8px;
   width: 100%;
-  padding: 6px 8px;
+  min-height: var(--row-h);
+  padding: 3px 8px;
   border-radius: var(--radius-sm);
   text-align: left;
   font-size: 12.5px;
@@ -290,7 +290,7 @@ watch(query, () => (active.value = 0))
 }
 
 .row.active {
-  background: var(--bg-hover);
+  background: var(--bg-active);
 }
 
 .tick {

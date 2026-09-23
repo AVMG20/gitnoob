@@ -295,8 +295,8 @@ onMounted(async () => {
 </template>
 
 <style scoped>
-/* The shell's own shape: tabs and toolbar on the canvas, the three panels as
-   cards under them, and the console along the bottom. */
+/* The shell's own shape: tabs and toolbar, the three panes edge to edge with
+   hairlines between them, and the console along the bottom. */
 .lab {
   display: flex;
   flex-direction: column;
@@ -304,21 +304,27 @@ onMounted(async () => {
   min-height: 0;
 }
 
+/* The one-pixel gaps show the line colour behind them: the hairlines. */
 .panes {
   flex: 1;
   min-height: 0;
   display: grid;
   grid-template-columns: 260px minmax(0, 1fr) 380px;
-  gap: var(--gutter);
-  padding: 0 var(--gutter) var(--gutter);
+  gap: 1px;
+  background: var(--line);
 }
 
 .panes > * {
   min-width: 0;
   min-height: 0;
-  background: var(--bg);
-  border-radius: var(--radius-lg);
-  box-shadow: var(--shadow-card);
   overflow: hidden;
+}
+
+.panes > aside {
+  background: var(--canvas);
+}
+
+.panes > section {
+  background: var(--bg);
 }
 </style>

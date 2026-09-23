@@ -6,9 +6,10 @@
  * panel, `--fg-muted` for text that is not the point, `--diff-add-bg` for the
  * green behind a line somebody added — and every theme gets it right by itself.
  *
- * The shape is a storefront's more than an IDE's: the panels are cards resting
- * on a canvas, space does the grouping that lines used to, corners are round,
- * and the one thing on a screen you are meant to press is filled in ink.
+ * The shape is a workbench: panes meet edge to edge with a hairline between
+ * them, the chrome round the work (tabs, toolbar, sidebar, inspector) is one
+ * tone and the work itself (the graph, a diff) is the page. Rows are compact,
+ * corners are small, and colour is spent on meaning and on the one accent.
  */
 @import './themes.css';
 
@@ -16,23 +17,24 @@
    the two typefaces, the two depths. A theme may restate the radius; none of
    them restates the rest. */
 :root {
-  --radius: 10px;
-  --radius-sm: 7px;
-  --radius-lg: 14px;
+  --radius: 6px;
+  --radius-sm: 4px;
+  --radius-lg: 8px;
+  /* For the few things that are round on purpose: counts, avatars, dots. */
   --radius-pill: 999px;
-  --row-h: 30px;
-  /* The gap between two cards, and between a card and the window's edge. */
-  --gutter: 8px;
+  --row-h: 28px;
+  /* Panes meet; there is no gap between them. */
+  --gutter: 0px;
   --font: 'Inter Variable', -apple-system, BlinkMacSystemFont, 'Segoe UI', system-ui, sans-serif;
   --mono: ui-monospace, SFMono-Regular, 'SF Mono', 'Cascadia Code', Menlo, Consolas, monospace;
-  /* A card sits a hair above the canvas; a popover floats clear of it. Both are
-     a shadow and a hairline together, so a card on a light canvas still has an
-     edge where the shadow is too soft to show one. */
-  --shadow-card: 0 0 0 1px var(--border-soft), 0 1px 2px var(--shadow);
-  --shadow-pop: 0 0 0 1px var(--border-soft), 0 4px 8px -2px var(--shadow),
-    0 18px 40px -8px var(--shadow-strong);
+  /* Panes carry no shadow: a hairline is their edge. Only what floats over them
+     — a menu, a popover, a dialog — casts one. */
+  --shadow-card: none;
+  --shadow-pop: 0 0 0 1px var(--border), 0 8px 24px -4px var(--shadow-strong);
   /* The focus halo: the ring colour, thinned out over whatever is behind. */
-  --focus: 0 0 0 3px color-mix(in srgb, var(--ring) 22%, transparent);
+  --focus: 0 0 0 3px color-mix(in srgb, var(--ring) 28%, transparent);
+  /* The height of a control: a button, a field, a segmented switch. */
+  --control-h: 28px;
 }
 
 * {
@@ -60,23 +62,20 @@ body,
 body {
   background: var(--canvas);
   color: var(--text);
-  font: 13px/1.5 var(--font);
-  /* Inter's alternates that read as a product rather than a document: open
-     digits and a flat-topped 1. */
-  font-feature-settings: 'cv11', 'ss01', 'ss03';
-  letter-spacing: -0.003em;
+  font: 13px/1.45 var(--font);
+  /* Open digits and a flat-topped 1: a hash or a count reads at a glance. */
+  font-feature-settings: 'cv11', 'ss03';
   overflow: hidden;
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
 }
 
 ::selection {
-  background: color-mix(in srgb, var(--ring) 24%, transparent);
+  background: color-mix(in srgb, var(--ring) 30%, transparent);
 }
 
 button {
   font: inherit;
-  letter-spacing: inherit;
   color: inherit;
   background: none;
   border: none;
@@ -92,26 +91,19 @@ input,
 textarea,
 select {
   font: inherit;
-  letter-spacing: inherit;
   color: var(--text);
   background: var(--bg);
   border: 1px solid var(--line);
   border-radius: var(--radius-sm);
-  padding: 6px 10px;
+  padding: 4px 8px;
   transition:
-    border-color 0.12s,
-    box-shadow 0.12s;
+    border-color 0.1s,
+    box-shadow 0.1s;
 }
 
 input::placeholder,
 textarea::placeholder {
   color: var(--text-faint);
-}
-
-input:hover:not(:disabled):not(:focus),
-textarea:hover:not(:disabled):not(:focus),
-select:hover:not(:disabled):not(:focus) {
-  border-color: color-mix(in srgb, var(--line) 60%, var(--text-faint));
 }
 
 input:focus,
@@ -123,7 +115,7 @@ select:focus {
 }
 
 /* Boxes and radios are not text fields: no padding, no halo box around them,
-   and the fill the platform gives them is the theme's ink. */
+   and the platform fills them in the accent. */
 input[type='checkbox'],
 input[type='radio'] {
   padding: 0;
@@ -139,10 +131,10 @@ input[type='radio'] {
    which is a real menu and not ours to style. */
 select {
   appearance: none;
-  padding-right: 28px;
+  padding-right: 26px;
   background-image: linear-gradient(45deg, transparent 50%, currentcolor 50%),
     linear-gradient(135deg, currentcolor 50%, transparent 50%);
-  background-position: calc(100% - 16px) calc(50% + 1px), calc(100% - 11px) calc(50% + 1px);
+  background-position: calc(100% - 15px) calc(50% + 1px), calc(100% - 10px) calc(50% + 1px);
   background-size: 5px 5px, 5px 5px;
   background-repeat: no-repeat;
   cursor: pointer;
@@ -194,11 +186,10 @@ textarea {
   background: transparent;
 }
 
-/* A thin rounded bar floating in a wider track: easy to hit, light to look at. */
 ::-webkit-scrollbar-thumb {
   background: var(--scrollbar);
   border-radius: var(--radius-pill);
-  border: 3px solid transparent;
+  border: 2px solid transparent;
   background-clip: content-box;
 }
 
@@ -213,26 +204,26 @@ textarea {
 
 /* Buttons.
  *
- * Plain `.btn` is the quiet one: text on nothing, a soft fill under the
- * pointer. The ones that carry a decision are pills — ink for the thing you
- * came to do, red for the thing you cannot take back, an outline for the
- * alternative beside them. */
+ * Plain `.btn` is the quiet one: text on nothing, a fill under the pointer.
+ * Primary is the accent, for the one thing a screen is for. Danger is red, for
+ * what cannot be taken back. Ghost is an outlined button on the page, for the
+ * alternative beside either of them. All of them are the same height, so a row
+ * of mixed buttons lines up. */
 .btn {
   display: inline-flex;
   align-items: center;
   justify-content: center;
   gap: 6px;
-  min-height: 30px;
-  padding: 5px 11px;
-  border-radius: var(--radius-sm);
+  min-height: var(--control-h);
+  padding: 3px 10px;
+  border-radius: var(--radius);
   color: var(--text-dim);
   font-weight: 500;
   white-space: nowrap;
   transition:
-    background 0.12s,
-    color 0.12s,
-    box-shadow 0.12s,
-    transform 0.08s;
+    background 0.1s,
+    color 0.1s,
+    border-color 0.1s;
 }
 
 .btn:hover:not(:disabled) {
@@ -240,20 +231,9 @@ textarea {
   color: var(--text);
 }
 
-.btn:active:not(:disabled) {
-  transform: translateY(0.5px);
-}
-
 .btn:disabled {
-  opacity: 0.4;
+  opacity: 0.45;
   cursor: default;
-}
-
-.btn-primary,
-.btn-danger,
-.btn-ghost {
-  padding: 6px 16px;
-  border-radius: var(--radius-pill);
 }
 
 .btn-primary {
@@ -280,25 +260,17 @@ textarea {
 
 .btn-ghost {
   color: var(--text);
-  box-shadow: inset 0 0 0 1px var(--line);
+  background: var(--bg);
+  border: 1px solid var(--line);
 }
 
 .btn-ghost:hover:not(:disabled) {
   background: var(--bg-hover);
-  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--line) 50%, var(--text-faint));
-}
-
-/* A card: the one surface everything in the window is built from. */
-.card {
-  background: var(--bg);
-  border-radius: var(--radius-lg);
-  box-shadow: var(--shadow-card);
 }
 
 .mono {
   font-family: var(--mono);
   font-size: 12px;
-  letter-spacing: 0;
 }
 
 .dim {
@@ -315,31 +287,54 @@ textarea {
   white-space: nowrap;
 }
 
-/* A heading over a group of rows. Sentence case and a little weight, where it
-   used to be spaced-out capitals: a label, not a sign. */
+/* A heading over a group of rows: small, sentence case, semibold, muted. */
 .section-title {
   display: flex;
   align-items: center;
   gap: 6px;
-  padding: 8px 12px 4px;
-  font-size: 12px;
+  padding: 6px 10px;
+  font-size: 11.5px;
   font-weight: 600;
-  letter-spacing: 0;
   color: var(--text-dim);
   user-select: none;
 }
 
+/* A count or a short tag. Round, because it is a number, not a control. */
 .pill {
   display: inline-flex;
   align-items: center;
-  padding: 1px 7px;
+  padding: 0 6px;
+  min-height: 16px;
   border-radius: var(--radius-pill);
   font-size: 10.5px;
   font-weight: 600;
-  line-height: 1.5;
   background: var(--bg-raised);
   color: var(--text-dim);
   font-variant-numeric: tabular-nums;
+}
+
+/* A keyboard key, where a shortcut is written out. */
+.kbd {
+  display: inline-flex;
+  align-items: center;
+  min-width: 18px;
+  height: 18px;
+  padding: 0 4px;
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--line);
+  border-bottom-width: 2px;
+  font-size: 10.5px;
+  font-family: var(--font);
+  color: var(--text-dim);
+  background: var(--bg);
+}
+
+/* A bordered box on the page, for the few things that are boxes: a comment, a
+   stat, a group of settings. */
+.card {
+  background: var(--bg);
+  border: 1px solid var(--line-soft);
+  border-radius: var(--radius-lg);
 }
 
 /* Syntax colours come from Shiki.
@@ -368,7 +363,7 @@ textarea {
 .md-body {
   color: var(--text);
   font-size: 12.5px;
-  line-height: 1.6;
+  line-height: 1.55;
   min-width: 0;
   overflow-wrap: anywhere;
 }
@@ -382,7 +377,7 @@ textarea {
 }
 
 .md-body p {
-  margin: 8px 0;
+  margin: 6px 0;
 }
 
 /* Headings inside a comment are noise at full size: they step down in weight
@@ -394,9 +389,8 @@ textarea {
 .md-body h4,
 .md-body h5,
 .md-body h6 {
-  margin: 16px 0 6px;
+  margin: 14px 0 6px;
   font-weight: 650;
-  letter-spacing: -0.01em;
   line-height: 1.35;
   color: var(--text);
 }
@@ -421,23 +415,24 @@ textarea {
 
 .md-body h1,
 .md-body h2 {
-  padding-bottom: 5px;
+  padding-bottom: 4px;
   border-bottom: 1px solid var(--line-soft);
 }
 
 .md-body code {
   font-family: var(--mono);
   background: var(--bg-raised);
-  padding: 1px 5px;
-  border-radius: 5px;
+  padding: 1px 4px;
+  border-radius: var(--radius-sm);
   font-size: 11px;
 }
 
 .md-body pre {
   background: var(--surface);
+  border: 1px solid var(--line-soft);
   border-radius: var(--radius);
-  padding: 10px 14px;
-  margin: 10px 0;
+  padding: 8px 12px;
+  margin: 8px 0;
   overflow-x: auto;
 }
 
@@ -451,8 +446,8 @@ textarea {
 
 .md-body blockquote {
   border-left: 3px solid var(--line);
-  margin: 10px 0;
-  padding: 2px 12px;
+  margin: 8px 0;
+  padding: 2px 10px;
   color: var(--text-dim);
 }
 
@@ -487,7 +482,7 @@ textarea {
   margin-right: 6px;
   vertical-align: -1px;
   border: 1px solid var(--line);
-  border-radius: 4px;
+  border-radius: 3px;
   background: var(--bg);
 }
 
@@ -513,7 +508,7 @@ textarea {
 
 .md-body table {
   border-collapse: collapse;
-  margin: 10px 0;
+  margin: 8px 0;
   font-size: 12px;
   display: block;
   width: max-content;
@@ -523,8 +518,8 @@ textarea {
 
 .md-body th,
 .md-body td {
-  border: 1px solid var(--line-soft);
-  padding: 5px 10px;
+  border: 1px solid var(--line);
+  padding: 4px 9px;
   text-align: left;
 }
 
@@ -547,25 +542,29 @@ textarea {
   margin: 12px 0;
 }
 
-/* Links are underlined rather than coloured: with ink as the accent, the
-   underline is what says a word can be followed. */
+/* Links in the accent, underlined under the pointer, as a forge draws them. */
 .md-body a {
-  color: var(--text);
-  text-decoration: underline;
-  text-decoration-color: var(--text-faint);
+  color: var(--accent-soft);
+  text-decoration: none;
   text-underline-offset: 2px;
 }
 
 .md-body a:hover {
-  text-decoration-color: currentColor;
+  text-decoration: underline;
 }
 
+/* A mention or an issue reference: the accent, weighted, with no underline
+   until it is pointed at. */
 .md-body .mention,
 .md-body .ref {
-  color: var(--text);
-  font-weight: 550;
+  color: var(--accent-soft);
+  font-weight: 600;
   text-decoration: none;
-  background: var(--bg-raised);
-  border-radius: var(--radius-pill);
-  padding: 0 6px;
+  border-radius: var(--radius-sm);
+  padding: 0 2px;
+}
+
+.md-body .mention:hover,
+.md-body .ref:hover {
+  background: var(--primary-bg);
 }

@@ -16,64 +16,40 @@ const { layout, start, reset } = usePanes()
 </template>
 
 <style scoped>
-/* A column handle is the gutter between two cards, and shows itself as a short
-   rounded bar in the middle of it when the pointer finds it. */
+/* A column handle is the hairline between two panes. It is one pixel wide in
+   the layout and reaches three either side of itself for the pointer, and it
+   turns the accent while it is being held or hovered. */
 .handle {
   position: relative;
-  width: var(--gutter);
-  /* Positioned, because `z-index` says nothing about a static box, and a row
-     handle overlaps its neighbours by its own margin: without this the pane on
-     the later side of it takes the pointer over that overlap. */
+  width: 1px;
+  /* Positioned, because `z-index` says nothing about a static box: without it
+     the pane on the later side takes the pointer over the reach. */
   z-index: 5;
   cursor: col-resize;
-  background: transparent;
+  background: var(--line);
+  transition: background 0.12s;
 }
 
-.handle::after {
+.handle::before {
   content: '';
   position: absolute;
-  left: 50%;
-  top: 50%;
-  width: 3px;
-  height: 36px;
-  border-radius: var(--radius-pill);
-  background: var(--text-faint);
-  opacity: 0;
-  transform: translate(-50%, -50%);
-  transition:
-    opacity 0.15s,
-    height 0.15s,
-    background 0.15s;
+  inset: 0 -3px;
 }
 
-/* The one edge that moves up and down rather than side to side. It lives
-   inside a card rather than between two, so it keeps a thin footprint and
-   borrows the neighbours' space. */
+/* The one edge that moves up and down rather than side to side. */
 .handle.row {
   width: auto;
-  height: 7px;
-  margin: -3px 0;
+  height: 1px;
   flex: none;
   cursor: row-resize;
 }
 
-.handle.row::after {
-  width: 36px;
-  height: 3px;
+.handle.row::before {
+  inset: -3px 0;
 }
 
-.handle:hover::after,
-.handle.active::after {
-  opacity: 0.6;
-}
-
-.handle:not(.row):hover::after,
-.handle:not(.row).active::after {
-  height: 56px;
-}
-
-.handle.active::after {
+.handle:hover,
+.handle.active {
   background: var(--accent);
-  opacity: 1;
 }
 </style>

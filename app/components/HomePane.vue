@@ -683,13 +683,14 @@ function choose(repo: RepoCard) {
 </template>
 
 <style scoped>
-/* Straight on the canvas, like the welcome page: the headings are type on
-   the page and every block under them is a card resting on it. */
+/* On the page, like the welcome page: the heading is type, and every block
+   under it is a bordered panel with a header row, the way an inspector is. */
 .home {
   flex: 1;
   min-height: 0;
   overflow: auto;
   color: var(--text);
+  background: var(--bg);
 }
 
 /* One column down the middle, so the page has an edge to line up against
@@ -698,18 +699,18 @@ function choose(repo: RepoCard) {
   display: flex;
   flex-direction: column;
   min-height: 100%;
-  max-width: 1200px;
+  max-width: 1100px;
   margin: 0 auto;
-  padding: 24px 32px 36px;
+  padding: 22px 28px 28px;
 }
 
-/* The greeting gets the room the sections below it get: it was sitting a
-   third of the distance from the figures that everything else keeps. */
+/* The greeting keeps the same distance from the panels that they keep from
+   each other. */
 .top {
   display: flex;
   align-items: flex-end;
   gap: 16px;
-  margin-bottom: 24px;
+  margin-bottom: 14px;
 }
 
 .titles {
@@ -719,15 +720,14 @@ function choose(repo: RepoCard) {
 
 h1 {
   margin: 0;
-  font-size: 28px;
+  font-size: 18px;
   font-weight: 650;
-  line-height: 1.15;
-  letter-spacing: -0.03em;
+  line-height: 1.25;
 }
 
 .sub {
-  margin: 6px 0 0;
-  font-size: 13.5px;
+  margin: 2px 0 0;
+  font-size: 12.5px;
   color: var(--text-dim);
 }
 
@@ -738,41 +738,49 @@ h1 {
 
 .controls {
   display: flex;
-  flex-direction: column;
-  align-items: flex-end;
-  gap: 7px;
+  align-items: center;
+  gap: 6px;
 }
 
 .actions {
   display: flex;
-  gap: 7px;
+  align-items: center;
+  gap: 6px;
 }
 
-/* White pills on the canvas, the same stuff as the cards below them. */
+/* The app's own two, settings and profile, sit after the page's buttons in
+   the same row, divided from them by a hairline rather than stacked. */
+.actions.app {
+  order: 2;
+  padding-left: 6px;
+  border-left: 1px solid var(--line);
+}
+
+/* Outlined buttons on the page, the same height as every other control. */
 .actions .btn {
   display: flex;
   align-items: center;
   gap: 6px;
-  min-height: 32px;
-  padding: 6px 14px;
-  border-radius: var(--radius-pill);
+  padding: 3px 10px;
+  border: 1px solid var(--line);
   background: var(--bg);
-  box-shadow: var(--shadow-card);
   color: var(--text);
-  font-size: 12.5px;
 }
 
-/* Round, like the toolbar's own icon buttons: a lone glyph in a button with
-   a word's worth of padding round it reads as a button missing its word. */
+/* Square: a lone glyph in a button with a word's worth of padding round it
+   reads as a button missing its word. */
 .actions .btn.icon {
-  width: 32px;
+  width: var(--control-h);
   padding: 0;
 }
 
+.actions.app .btn.icon {
+  border-color: transparent;
+}
+
 .actions .btn:hover:not(:disabled) {
-  background: var(--bg);
+  background: var(--bg-hover);
   color: var(--text);
-  box-shadow: var(--shadow-pop);
 }
 
 .spin {
@@ -786,17 +794,17 @@ h1 {
 }
 
 .oops {
-  margin: 0 0 16px;
-  padding: 10px 14px;
+  margin: 0 0 12px;
+  padding: 8px 12px;
   border-radius: var(--radius);
   background: var(--danger-bg);
-  box-shadow: inset 0 0 0 1px var(--danger-line);
+  border: 1px solid var(--danger-line);
   color: var(--danger-soft);
   font-size: 12px;
 }
 
 /*
- * The week as a line of type, on a card of its own.
+ * The week as a line of type, in a panel of its own.
  *
  * Four figures spread across the width turned it into a dashboard of tiles.
  * Set as one sentence they are what they are — a note about the week — and the
@@ -807,12 +815,12 @@ h1 {
   flex-wrap: wrap;
   align-items: baseline;
   gap: 4px 10px;
-  margin: 0 0 16px;
-  padding: 16px 20px;
+  margin: 0 0 12px;
+  padding: 10px 14px;
   border-radius: var(--radius-lg);
-  background: var(--bg);
-  box-shadow: var(--shadow-card);
-  font-size: 13px;
+  border: 1px solid var(--line-soft);
+  background: var(--surface);
+  font-size: 12.5px;
   color: var(--text-dim);
 }
 
@@ -826,9 +834,8 @@ h1 {
   display: inline-flex;
   align-items: center;
   gap: 1px;
-  font-size: 15px;
-  font-weight: 600;
-  letter-spacing: -0.01em;
+  font-size: 14px;
+  font-weight: 650;
   color: var(--text);
   font-variant-numeric: tabular-nums;
 }
@@ -853,45 +860,50 @@ h1 {
 }
 
 /*
- * Every block is a card: the lists, what is waiting, the tips. Only the
- * greeting and the footnote are read straight off the canvas.
+ * Every block is a bordered panel with a header row: the lists, what is
+ * waiting, the tips, the year. Only the greeting and the footnote are read
+ * straight off the page. The rows inside run edge to edge with hairlines
+ * between them.
  */
 .projects,
 .look,
 .tips {
-  padding: 16px 20px 18px;
+  border: 1px solid var(--line-soft);
   border-radius: var(--radius-lg);
   background: var(--bg);
-  box-shadow: var(--shadow-card);
+  overflow: hidden;
 }
 
 .side > section + section {
-  margin-top: 16px;
+  margin-top: 12px;
 }
 
 .head {
   display: flex;
   align-items: center;
-  gap: 9px;
-  margin-bottom: 12px;
+  gap: 8px;
+  min-height: 36px;
+  padding: 4px 8px 4px 12px;
+  background: var(--surface);
+  border-bottom: 1px solid var(--line-soft);
 }
 
 .head-title {
-  font-size: 14px;
+  font-size: 12px;
   font-weight: 600;
-  letter-spacing: -0.01em;
   color: var(--text);
 }
 
-/* The number beside a heading, so the card says how much is in it before it
+/* The number beside a heading, so the panel says how much is in it before it
    is read. */
 .count {
-  padding: 1px 8px;
+  padding: 0 6px;
   border-radius: var(--radius-pill);
   background: var(--bg-raised);
   color: var(--text-dim);
-  font-size: 11px;
+  font-size: 10.5px;
   font-weight: 600;
+  line-height: 16px;
   font-variant-numeric: tabular-nums;
 }
 
@@ -908,7 +920,7 @@ h1 {
 .columns {
   display: grid;
   grid-template-columns: minmax(0, 1.55fr) minmax(300px, 1fr);
-  gap: 16px;
+  gap: 12px;
   align-items: start;
   margin-bottom: 12px;
 }
@@ -923,15 +935,18 @@ h1 {
    own columns so they line up down the list however long a name runs. */
 .row {
   display: grid;
-  grid-template-columns: 28px minmax(0, 1fr) auto 84px 20px;
+  grid-template-columns: 24px minmax(0, 1fr) auto 76px 20px;
   align-items: center;
-  gap: 12px;
-  padding: 9px 10px;
-  margin: 0 -10px;
-  border-radius: var(--radius);
-  font-size: 13px;
+  gap: 10px;
+  min-height: 42px;
+  padding: 5px 8px 5px 12px;
+  border-top: 1px solid var(--line-soft);
+  font-size: 12.5px;
   cursor: pointer;
-  transition: background 0.12s;
+}
+
+.row:first-child {
+  border-top: none;
 }
 
 .row:hover {
@@ -947,12 +962,12 @@ h1 {
 .mark {
   display: grid;
   place-items: center;
-  width: 28px;
-  height: 28px;
+  width: 24px;
+  height: 24px;
   border-radius: var(--radius);
-  background: color-mix(in srgb, var(--mark) 14%, transparent);
+  background: color-mix(in srgb, var(--mark) 16%, transparent);
   color: var(--mark);
-  font-size: 12px;
+  font-size: 11px;
   font-weight: 650;
 }
 
@@ -983,8 +998,8 @@ h1 {
   gap: 4px;
   flex: none;
   max-width: 45%;
-  padding: 1px 8px;
-  border-radius: var(--radius-pill);
+  padding: 0 5px;
+  border-radius: var(--radius-sm);
   background: var(--bg-raised);
   color: var(--text-dim);
   font-family: var(--mono);
@@ -1040,8 +1055,8 @@ h1 {
   white-space: nowrap;
 }
 
-/* A tab that is open says so with a small green dot, like "in stock". Named
-   under .when, because a bare .live also matched the row it was on. */
+/* A tab that is open says so with a small green dot. Named under .when,
+   because a bare .live also matched the row it was on. */
 .when .live {
   display: inline-flex;
   align-items: center;
@@ -1063,7 +1078,7 @@ h1 {
   place-items: center;
   width: 20px;
   height: 20px;
-  border-radius: var(--radius-pill);
+  border-radius: var(--radius-sm);
   color: var(--text-faint);
   opacity: 0;
 }
@@ -1081,24 +1096,26 @@ h1 {
   width: 20px;
 }
 
-/* A pill-shaped search field in a soft well, the halo on the pill rather than
-   on the bare input inside it. */
+/* A small bordered field in the header row, the halo on the field rather
+   than on the bare input inside it. */
 .find {
   display: flex;
   align-items: center;
   gap: 6px;
-  padding: 4px 12px;
-  border-radius: var(--radius-pill);
-  background: var(--bg-raised);
+  height: 24px;
+  padding: 0 8px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-sm);
+  background: var(--bg);
   color: var(--text-faint);
-  transition: box-shadow 0.12s;
+  transition:
+    border-color 0.1s,
+    box-shadow 0.1s;
 }
 
 .find:focus-within {
-  background: var(--bg);
-  box-shadow:
-    inset 0 0 0 1px var(--ring),
-    var(--focus);
+  border-color: var(--ring);
+  box-shadow: var(--focus);
 }
 
 .find input,
@@ -1115,7 +1132,7 @@ h1 {
 
 .empty {
   margin: 0;
-  padding: 6px 2px 2px;
+  padding: 10px 12px;
   font-size: 12.5px;
   color: var(--text-faint);
 }
@@ -1124,7 +1141,7 @@ h1 {
   display: flex;
   align-items: flex-start;
   gap: 9px;
-  padding: 8px 0;
+  padding: 8px 10px 8px 12px;
   font-size: 12.5px;
   color: var(--text-dim);
   border-top: 1px solid var(--line-soft);
@@ -1178,17 +1195,17 @@ h1 {
   text-overflow: ellipsis;
 }
 
-/* A small pill button at the end of the line: the next step, not a link in
-   the sentence. */
+/* A small outlined button at the end of the line: the next step, not a link
+   in the sentence. */
 .link {
   flex: none;
   font-size: 11.5px;
-  font-weight: 600;
+  font-weight: 500;
   color: var(--text);
-  padding: 3px 11px;
-  border-radius: var(--radius-pill);
-  box-shadow: inset 0 0 0 1px var(--line);
-  transition: background 0.12s;
+  padding: 1px 8px;
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--line);
+  background: var(--bg);
 }
 
 .link:hover {
@@ -1202,9 +1219,9 @@ h1 {
 .shuffle {
   display: grid;
   place-items: center;
-  width: 26px;
-  height: 26px;
-  border-radius: var(--radius-pill);
+  width: 24px;
+  height: 24px;
+  border-radius: var(--radius-sm);
   color: var(--text-faint);
 }
 
@@ -1226,8 +1243,8 @@ h1 {
   white-space: nowrap;
   border: 1px solid var(--line);
   border-bottom-width: 2px;
-  border-radius: 6px;
-  background: var(--bg-panel);
+  border-radius: var(--radius-sm);
+  background: var(--bg);
   color: var(--text);
   font-size: 11px;
   font-family: inherit;
@@ -1246,15 +1263,17 @@ h1 {
 
 .year {
   position: relative;
-  padding: 18px 20px 14px;
-  margin-bottom: 16px;
+  padding: 0 14px 10px;
+  margin-bottom: 12px;
+  border: 1px solid var(--line-soft);
   border-radius: var(--radius-lg);
   background: var(--bg);
-  box-shadow: var(--shadow-card);
+  overflow: hidden;
 }
 
 .year .head {
-  margin-bottom: 14px;
+  margin: 0 -14px 12px;
+  padding-right: 14px;
 }
 
 .legend {
@@ -1270,7 +1289,7 @@ h1 {
 .swatch {
   width: 10px;
   height: 10px;
-  border-radius: 3px;
+  border-radius: 2px;
   background: var(--bg-raised);
 }
 
@@ -1300,7 +1319,7 @@ h1 {
 .cell {
   width: 100%;
   aspect-ratio: 1;
-  border-radius: 3px;
+  border-radius: 2px;
   background: var(--bg-raised);
 }
 
@@ -1327,10 +1346,10 @@ h1 {
   position: absolute;
   transform: translate(-50%, -100%);
   margin-top: -7px;
-  padding: 4px 10px;
-  border-radius: var(--radius-pill);
-  background: var(--primary);
-  color: var(--primary-fg);
+  padding: 3px 8px;
+  border-radius: var(--radius-sm);
+  background: var(--bg);
+  color: var(--text);
   font-size: 11px;
   font-weight: 500;
   white-space: nowrap;
@@ -1369,7 +1388,7 @@ h1 {
 .ghost {
   display: inline-block;
   height: 10px;
-  border-radius: var(--radius-pill);
+  border-radius: var(--radius-sm);
   background: var(--bg-raised);
   animation: breathe 1.5s ease-in-out infinite;
 }
@@ -1403,11 +1422,16 @@ h1 {
    shunt the row under it. */
 .ghost-row {
   display: grid;
-  grid-template-columns: 28px minmax(0, 1fr) auto 84px 20px;
+  grid-template-columns: 24px minmax(0, 1fr) auto 76px 20px;
   align-items: center;
-  gap: 12px;
-  padding: 9px 10px;
-  margin: 0 -10px;
+  gap: 10px;
+  min-height: 42px;
+  padding: 5px 8px 5px 12px;
+  border-top: 1px solid var(--line-soft);
+}
+
+.ghost-row:first-child {
+  border-top: none;
 }
 
 .ghost-row .about {
@@ -1415,8 +1439,8 @@ h1 {
 }
 
 .mark-ghost {
-  width: 28px;
-  height: 28px;
+  width: 24px;
+  height: 24px;
   border-radius: var(--radius);
 }
 
@@ -1436,7 +1460,7 @@ h1 {
   display: flex;
   align-items: flex-start;
   gap: 9px;
-  padding: 8px 0;
+  padding: 8px 10px 8px 12px;
   border-top: 1px solid var(--line-soft);
 }
 
@@ -1469,7 +1493,7 @@ h1 {
    as they are swapped. */
 .footnote {
   margin-top: auto;
-  padding: 22px 2px 0;
+  padding: 18px 2px 0;
   text-align: center;
   font-size: 11.5px;
   line-height: 1.6;

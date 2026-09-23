@@ -158,24 +158,19 @@ function onKey(event: KeyboardEvent) {
   gap: 8px;
 }
 
-/* A clean, roomy field: rounded, filled faintly until it is being typed in. */
+/* A plain bordered field on the page, the global one with room to write in. */
 textarea {
   width: 100%;
-  padding: 10px 12px;
+  padding: 8px 10px;
   border-radius: var(--radius);
-  background: var(--surface);
   font-family: var(--font);
   font-size: 12.5px;
   line-height: 1.55;
   resize: vertical;
 }
 
-textarea:focus {
-  background: var(--bg);
-}
-
 .compact textarea {
-  padding: 6px 10px;
+  padding: 5px 8px;
   border-radius: var(--radius-sm);
 }
 

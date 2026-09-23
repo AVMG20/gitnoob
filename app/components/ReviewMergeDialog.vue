@@ -110,24 +110,28 @@ async function merge() {
   flex-direction: column;
   gap: 3px;
   margin: 0 0 14px;
-  padding: 11px 14px;
+  padding: 9px 12px;
   border-radius: var(--radius);
-  background: var(--bg-raised);
+  border: 1px solid var(--line);
+  background: var(--surface);
   font-size: 13px;
 }
 
 .standing.good {
   background: var(--success-bg);
+  border-color: var(--success-line);
   color: var(--success-soft);
 }
 
 .standing.bad {
   background: var(--danger-bg);
+  border-color: var(--danger-line);
   color: var(--danger-soft);
 }
 
 .standing.wait {
   background: var(--warning-bg);
+  border-color: var(--warning-line);
   color: var(--warning-soft);
 }
 
@@ -141,26 +145,27 @@ async function merge() {
   color: var(--text-dim);
 }
 
-/* The three ways to merge, as selectable cards: the chosen one takes an ink
-   outline, the way a size is picked on a product page. */
+/* The three ways to merge, as one bordered group of radio rows: the chosen
+   one is tinted in the accent. */
 .choices {
   display: flex;
   flex-direction: column;
-  gap: 8px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  overflow: hidden;
 }
 
 .choice {
   display: flex;
   align-items: flex-start;
   gap: 10px;
-  padding: 11px 13px;
-  border-radius: var(--radius);
-  box-shadow: inset 0 0 0 1px var(--line);
+  padding: 9px 12px;
   cursor: pointer;
   font-size: 12.5px;
-  transition:
-    background 0.12s,
-    box-shadow 0.12s;
+}
+
+.choice + .choice {
+  border-top: 1px solid var(--line);
 }
 
 .choice:hover {
@@ -168,8 +173,7 @@ async function merge() {
 }
 
 .choice:has(input:checked) {
-  box-shadow: inset 0 0 0 1.5px var(--primary);
-  background: var(--bg);
+  background: var(--primary-bg);
 }
 
 .choice input {
