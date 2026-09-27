@@ -4,20 +4,20 @@
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>gitnoob — a free, open-source git GUI</title>
-  <meta name="description" content="A free, open-source git GUI for macOS, Windows and Linux. Built with Tauri, Rust and Vue." />
+  <meta name="description" content="Open source, for macOS, Windows and Linux. Built with Tauri, Rust and Vue." />
   <link rel="icon" type="image/png" href="app-icon.png" />
   <meta property="og:title" content="gitnoob" />
   <meta property="og:description" content="A free, open-source git GUI." />
   <meta property="og:image" content="docs/screenshots/main-window.png" />
   <style>
     :root {
-      --bg: #0d1218;
-      --surface: #131b24;
+      --bg: #0b1016;
       --line: #1f2a36;
       --text: #e6edf3;
       --muted: #8b98a7;
       --accent: #3ba3db;
       --accent-hover: #55b3e6;
+      --tilt: 1;
     }
     * { box-sizing: border-box; }
     html { scroll-behavior: smooth; }
@@ -27,76 +27,110 @@
       color: var(--text);
       font: 16px/1.5 Inter, ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
       -webkit-font-smoothing: antialiased;
+      overflow-x: hidden;
     }
-    a { color: inherit; }
+    a { color: inherit; text-decoration: none; }
 
-    /* Hero: the app itself is the background */
-    .hero {
-      position: relative;
-      min-height: 100vh;
-      min-height: 100svh;
-      display: grid;
-      place-items: center;
-      padding: 48px 16px;
-      overflow: hidden;
-      isolation: isolate;
+    /* Navbar */
+    .nav {
+      position: fixed;
+      inset: 0 0 auto;
+      z-index: 10;
+      border-bottom: 1px solid transparent;
+      transition: background .2s, border-color .2s;
     }
-    .hero::before {
-      content: "";
-      position: absolute;
-      inset: -2%;
-      z-index: -2;
-      background: url("docs/screenshots/main-window.png") center top / cover no-repeat;
-      filter: blur(1px) saturate(1.1);
-      transform: scale(1.02);
+    .nav.scrolled {
+      background: rgba(11, 16, 22, .75);
+      backdrop-filter: blur(14px) saturate(1.4);
+      -webkit-backdrop-filter: blur(14px) saturate(1.4);
+      border-bottom-color: var(--line);
     }
-    .hero::after {
-      content: "";
-      position: absolute;
-      inset: 0;
-      z-index: -1;
-      background:
-        radial-gradient(ellipse at center, rgba(13, 18, 24, .5) 0%, rgba(13, 18, 24, .72) 60%, var(--bg) 100%),
-        linear-gradient(to bottom, transparent 70%, var(--bg));
+    .nav-inner {
+      max-width: 1200px;
+      margin: 0 auto;
+      padding: 12px 16px;
+      display: flex;
+      align-items: center;
+      gap: 24px;
     }
-    .hero-inner { text-align: center; max-width: 560px; }
-    .hero img.icon { width: 88px; height: 88px; filter: drop-shadow(0 8px 24px rgba(0,0,0,.5)); }
-    h1 {
-      margin: 20px 0 8px;
-      font-size: clamp(44px, 9vw, 72px);
-      font-weight: 700;
-      letter-spacing: -0.03em;
-      line-height: 1;
-    }
-    .tagline { margin: 0 0 36px; font-size: 19px; color: var(--muted); }
+    .brand { display: flex; align-items: center; gap: 10px; font-weight: 700; font-size: 18px; letter-spacing: -0.01em; }
+    .brand img { width: 30px; height: 30px; }
+    .nav-links { margin-left: auto; display: flex; align-items: center; gap: 22px; font-size: 15px; color: var(--muted); }
+    .nav-links a:not(.download):hover { color: var(--text); }
 
     .download {
       display: inline-flex;
       align-items: center;
-      gap: 10px;
-      padding: 15px 30px;
-      border-radius: 10px;
+      gap: 8px;
+      padding: 9px 16px;
+      border-radius: 8px;
       background: var(--accent);
       color: #fff;
       font-weight: 600;
-      font-size: 17px;
-      text-decoration: none;
-      box-shadow: 0 10px 30px rgba(59, 163, 219, .3);
+      white-space: nowrap;
       transition: background .15s, transform .15s;
     }
     .download:hover { background: var(--accent-hover); transform: translateY(-1px); }
-    .download svg { width: 20px; height: 20px; }
+    .download svg { width: 18px; height: 18px; flex: none; }
+    .download.big { padding: 14px 28px; font-size: 17px; border-radius: 10px; box-shadow: 0 10px 30px rgba(59, 163, 219, .3); }
+
+    /* Hero */
+    .hero {
+      position: relative;
+      padding: 150px 16px 0;
+      text-align: center;
+      isolation: isolate;
+    }
+    /* The screenshot again, blurred into an ambient glow behind everything */
+    .hero::before {
+      content: "";
+      position: absolute;
+      inset: 0;
+      z-index: -1;
+      background: url("docs/screenshots/main-window.png") center 70% / cover no-repeat;
+      filter: blur(60px) saturate(1.8);
+      opacity: .45;
+      -webkit-mask-image: radial-gradient(ellipse 70% 55% at 50% 60%, #000 20%, transparent 75%);
+      mask-image: radial-gradient(ellipse 70% 55% at 50% 60%, #000 20%, transparent 75%);
+    }
+    h1 {
+      margin: 0 auto;
+      max-width: 780px;
+      font-size: clamp(40px, 7vw, 68px);
+      font-weight: 700;
+      letter-spacing: -0.035em;
+      line-height: 1.05;
+    }
+    h1 span { color: var(--muted); }
+    .tagline { margin: 20px auto 36px; max-width: 520px; font-size: 19px; color: var(--muted); }
     .meta { margin-top: 14px; font-size: 14px; color: var(--muted); }
-    .meta a { color: var(--muted); text-decoration: none; border-bottom: 1px solid var(--line); }
+    .meta a { border-bottom: 1px solid var(--line); }
     .meta a:hover { color: var(--text); }
+
+    .stage {
+      max-width: 1200px;
+      margin: 72px auto 0;
+      perspective: 1600px;
+    }
+    .stage img {
+      display: block;
+      width: 100%;
+      height: auto;
+      border-radius: 12px;
+      border: 1px solid #2a3847;
+      box-shadow: 0 40px 120px rgba(0, 0, 0, .6), 0 0 0 1px rgba(255, 255, 255, .03);
+      transform-origin: 50% 0;
+      transform: rotateX(calc(var(--tilt) * 14deg)) scale(calc(1 - var(--tilt) * .04));
+      will-change: transform;
+    }
 
     /* Screenshots */
     .shots {
       max-width: 1120px;
       margin: 0 auto;
-      padding: 32px 16px 96px;
+      padding: 140px 16px 120px;
       display: grid;
-      gap: 96px;
+      gap: 120px;
     }
     figure { margin: 0; }
     figure img {
@@ -107,13 +141,12 @@
       border: 1px solid var(--line);
       box-shadow: 0 30px 80px rgba(0, 0, 0, .5);
     }
-    figcaption {
-      margin-top: 20px;
-      text-align: center;
-      font-size: 18px;
-      color: var(--muted);
-    }
-    figcaption strong { color: var(--text); font-weight: 600; }
+    figcaption { margin-bottom: 28px; text-align: center; }
+    figcaption h2 { margin: 0 0 6px; font-size: clamp(24px, 3.4vw, 34px); letter-spacing: -0.02em; line-height: 1.2; }
+    figcaption p { margin: 0; color: var(--muted); font-size: 17px; }
+
+    .outro { text-align: center; padding: 0 16px 120px; }
+    .outro h2 { margin: 0 0 28px; font-size: clamp(28px, 4.5vw, 44px); letter-spacing: -0.03em; }
 
     footer {
       border-top: 1px solid var(--line);
@@ -122,47 +155,83 @@
       font-size: 14px;
       color: var(--muted);
     }
-    footer a { text-decoration: none; margin: 0 10px; }
+    footer a { margin: 0 10px; }
     footer a:hover { color: var(--text); }
 
-    @media (max-width: 600px) {
+    @media (max-width: 640px) {
+      .nav-links a:not(.download) { display: none; }
+      .download .os { display: none; }
+      .hero { padding-top: 120px; }
       .tagline { font-size: 17px; }
-      .shots { gap: 64px; }
-      figcaption { font-size: 16px; }
+      .stage { margin-top: 48px; }
+      .shots { padding-top: 96px; gap: 88px; }
+    }
+    @media (prefers-reduced-motion: reduce) {
+      :root { --tilt: 0 !important; }
+      html { scroll-behavior: auto; }
     }
   </style>
 </head>
 <body>
-  <header class="hero">
-    <div class="hero-inner">
-      <img class="icon" src="app-icon.png" alt="" />
-      <h1>gitnoob</h1>
-      <p class="tagline">A free, open-source git GUI.</p>
-      <a id="download" class="download" href="https://github.com/AVMG20/gitnoob/releases/latest">
-        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 3v12m0 0-5-5m5 5 5-5M4 21h16"/></svg>
-        <span id="download-label">Download</span>
-      </a>
-      <div class="meta">
-        <span id="version"></span>
-        <a href="https://github.com/AVMG20/gitnoob/releases/latest">All platforms</a>
+  <nav class="nav" id="nav">
+    <div class="nav-inner">
+      <a class="brand" href="#"><img src="app-icon.png" alt="" />gitnoob</a>
+      <div class="nav-links">
+        <a href="#features">Features</a>
+        <a href="https://github.com/AVMG20/gitnoob">GitHub</a>
+        <a class="download" href="https://github.com/AVMG20/gitnoob/releases/latest">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 3v12m0 0-5-5m5 5 5-5M4 21h16"/></svg>
+          <span>Download</span>
+        </a>
       </div>
+    </div>
+  </nav>
+
+  <header class="hero">
+    <h1>A git GUI you don't <span>have to pay for.</span></h1>
+    <p class="tagline">Open source, for macOS, Windows and Linux.</p>
+    <a class="download big" href="https://github.com/AVMG20/gitnoob/releases/latest">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 3v12m0 0-5-5m5 5 5-5M4 21h16"/></svg>
+      <span>Download<span class="os"></span></span>
+    </a>
+    <div class="meta"><span class="version"></span><a href="https://github.com/AVMG20/gitnoob/releases/latest">All platforms</a></div>
+
+    <div class="stage">
+      <img src="docs/screenshots/main-window.png" alt="The gitnoob window: branches on the left, the commit graph in the middle, staged and unstaged changes on the right" width="1680" height="1040" />
     </div>
   </header>
 
-  <main class="shots">
+  <main class="shots" id="features">
     <figure>
+      <figcaption>
+        <h2>Stage by file, hunk or line.</h2>
+        <p>Pick exactly what goes into the commit.</p>
+      </figcaption>
       <img src="docs/screenshots/diff.png" alt="A diff open next to the staged and unstaged file lists" loading="lazy" width="1680" height="1040" />
-      <figcaption><strong>Stage by file, hunk or line.</strong></figcaption>
     </figure>
     <figure>
+      <figcaption>
+        <h2>Conflicts, with checkboxes.</h2>
+        <p>Tick ours, theirs or both. No hand-editing markers.</p>
+      </figcaption>
       <img src="docs/screenshots/conflicts.png" alt="Conflict resolution with checkboxes for ours and theirs" loading="lazy" width="1568" height="731" />
-      <figcaption><strong>Resolve conflicts with checkboxes.</strong></figcaption>
     </figure>
     <figure>
+      <figcaption>
+        <h2>Pull requests, in the app.</h2>
+        <p>Review, comment and merge on GitHub and GitLab.</p>
+      </figcaption>
       <img src="docs/screenshots/review.png" alt="A pull request open for review inside the app" loading="lazy" width="1568" height="731" />
-      <figcaption><strong>Review pull requests without leaving the app.</strong></figcaption>
     </figure>
   </main>
+
+  <section class="outro">
+    <h2>Free, and GPL so it stays that way.</h2>
+    <a class="download big" href="https://github.com/AVMG20/gitnoob/releases/latest">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 3v12m0 0-5-5m5 5 5-5M4 21h16"/></svg>
+      <span>Download<span class="os"></span></span>
+    </a>
+  </section>
 
   <footer>
     <a href="https://github.com/AVMG20/gitnoob">GitHub</a>
@@ -171,8 +240,18 @@
   </footer>
 
   <script>
-    // Point the button straight at the right file from the latest release.
-    // If anything fails it stays a link to the releases page.
+    // Solid navbar once the page moves, and the hero screenshot tilts flat as it scrolls into view.
+    const nav = document.getElementById('nav');
+    const root = document.documentElement;
+    const onScroll = () => {
+      nav.classList.toggle('scrolled', scrollY > 8);
+      root.style.setProperty('--tilt', Math.max(0, 1 - scrollY / (innerHeight * 0.5)).toFixed(3));
+    };
+    addEventListener('scroll', onScroll, { passive: true });
+    onScroll();
+
+    // Point every download button straight at the right file from the latest release.
+    // If anything fails they stay links to the releases page.
     (async () => {
       const ua = navigator.userAgent;
       const os = /Windows/i.test(ua) ? 'windows'
@@ -180,9 +259,9 @@
         : /Linux|X11/i.test(ua) && !/Android/i.test(ua) ? 'linux'
         : null;
       const wanted = {
-        windows: { match: /_x64-setup\.exe$/, label: 'Download for Windows' },
-        mac: { match: /_universal\.dmg$/, label: 'Download for macOS' },
-        linux: { match: /_amd64\.AppImage$/, label: 'Download for Linux' },
+        windows: { match: /_x64-setup\.exe$/, label: ' for Windows' },
+        mac: { match: /_universal\.dmg$/, label: ' for macOS' },
+        linux: { match: /_amd64\.AppImage$/, label: ' for Linux' },
       }[os];
 
       try {
@@ -191,12 +270,12 @@
         });
         if (!res.ok) return;
         const release = await res.json();
-        document.getElementById('version').textContent = release.tag_name + ' · ';
+        document.querySelectorAll('.version').forEach((el) => { el.textContent = release.tag_name + ' · '; });
         if (!wanted) return;
         const asset = release.assets.find((a) => wanted.match.test(a.name));
         if (!asset) return;
-        document.getElementById('download').href = asset.browser_download_url;
-        document.getElementById('download-label').textContent = wanted.label;
+        document.querySelectorAll('a.download').forEach((a) => { a.href = asset.browser_download_url; });
+        document.querySelectorAll('.download .os').forEach((el) => { el.textContent = wanted.label; });
       } catch {}
     })();
   </script>
