@@ -171,7 +171,45 @@ The public half is in `tauri.conf.json` under `plugins.updater.pubkey`. **Do not
 
 With the secrets missing, the build fails instead of publishing unsigned bundles. That is intended.
 
-Nothing is code-signed with an Apple or Windows certificate yet, so first launch needs a click past the warning.
+### Code signing
+
+The updater key above is not code signing. It proves an update came from this project to a copy that is already installed. What stops macOS and Windows warning about the first install is a certificate, and that is separate and optional: each platform signs when its secrets are on the repository and builds unsigned when none of them are. Setting some but not all of them fails the build, on purpose.
+
+**macOS.** This needs the Apple Developer Program, which is $99 a year. With it, the app is signed with a Developer ID and notarized, and opens with the ordinary "downloaded from the internet" prompt instead of being called damaged.
+
+1. Join at developer.apple.com/programs. An individual account is fine; the certificate then carries your own name.
+2. In Xcode → Settings → Accounts → Manage Certificates, add a **Developer ID Application** certificate. Or make one at developer.apple.com → Certificates.
+3. In Keychain Access, find it under My Certificates, right-click → Export, save as `.p12` with a password.
+4. At account.apple.com → Sign-In and Security → App-Specific Passwords, make one for notarization.
+5. Your team id is on developer.apple.com → Account → Membership details.
+
+```sh
+base64 -i DeveloperID.p12 | gh secret set APPLE_CERTIFICATE
+gh secret set APPLE_CERTIFICATE_PASSWORD   # the .p12 password
+gh secret set APPLE_ID                     # the account email
+gh secret set APPLE_PASSWORD               # the app-specific password
+gh secret set APPLE_TEAM_ID
+```
+
+The bundler imports the certificate into a throwaway keychain, signs with the hardened runtime, sends the app to Apple and staples the ticket. Notarization adds a few minutes to the macOS job.
+
+**Windows.** This uses Azure Artifact Signing (it was called Trusted Signing), about $10 a month. It is the cheapest way to sign from CI: Microsoft holds the key, so there is no hardware token to plug into a runner. Identity validation is open to organisations, and to individuals in a limited set of countries; check the current list before paying for anything.
+
+1. In the Azure portal, create an Artifact Signing account, then a Public Trust identity validation, then a certificate profile.
+2. Register an app in Entra ID, give it a client secret, and give it the *Artifact Signing Certificate Profile Signer* role on the account.
+
+```sh
+gh secret set AZURE_TENANT_ID
+gh secret set AZURE_CLIENT_ID
+gh secret set AZURE_CLIENT_SECRET
+gh secret set AZURE_SIGNING_ENDPOINT    # e.g. https://weu.codesigning.azure.net
+gh secret set AZURE_SIGNING_ACCOUNT
+gh secret set AZURE_SIGNING_PROFILE
+```
+
+The workflow installs `artifact-signing-cli` and passes it to Tauri as `bundle.windows.signCommand` in a config that only that build sees, so local builds do not need it.
+
+A signature does not make SmartScreen go quiet straight away. Since 2024 no certificate, EV included, does that. It shows the publisher's name and lets reputation build up as people run it, and until it has, a new release can still get the "unrecognised app" screen.
 
 ### Updating in place
 

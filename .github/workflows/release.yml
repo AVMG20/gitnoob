@@ -18,6 +18,26 @@
 #
 #   TAURI_SIGNING_PRIVATE_KEY           the contents of ~/.tauri/gitnoob.key
 #   TAURI_SIGNING_PRIVATE_KEY_PASSWORD  its password, empty if it has none
+#
+# Code signing is a separate thing and is optional. The updater key proves a
+# bundle came from this project to copies already installed; a certificate is
+# what stops macOS and Windows warning about the first install. Each platform
+# signs when its secrets exist and builds unsigned when none of them do. Some
+# but not all of them is a mistake, and fails the build. docs/development.md
+# has how to get each one.
+#
+#   macOS, Developer ID plus notarization:
+#     APPLE_CERTIFICATE           base64 of the exported Developer ID .p12
+#     APPLE_CERTIFICATE_PASSWORD  the password it was exported with
+#     APPLE_ID                    the Apple account email
+#     APPLE_PASSWORD              an app-specific password for that account
+#     APPLE_TEAM_ID               the ten-character team id
+#
+#   Windows, Azure Artifact Signing:
+#     AZURE_TENANT_ID, AZURE_CLIENT_ID, AZURE_CLIENT_SECRET   the app registration
+#     AZURE_SIGNING_ENDPOINT      e.g. https://weu.codesigning.azure.net
+#     AZURE_SIGNING_ACCOUNT       the signing account name
+#     AZURE_SIGNING_PROFILE       the certificate profile name
 
 name: Release
 
@@ -65,10 +85,16 @@ jobs:
         uses: actions/github-script@v7
         env:
           VERSION: ${{ steps.version.outputs.version }}
+          # Whether the build jobs will sign, so the page does not tell people
+          # to click past a warning they will not see.
+          MAC_SIGNED: ${{ secrets.APPLE_CERTIFICATE != '' }}
+          WINDOWS_SIGNED: ${{ secrets.AZURE_CLIENT_SECRET != '' }}
         with:
           result-encoding: string
           script: |
             const version = process.env.VERSION
+            const mac = process.env.MAC_SIGNED === 'true'
+            const windows = process.env.WINDOWS_SIGNED === 'true'
             const body = [
               'Download the file for your machine below.',
               '',
@@ -76,11 +102,18 @@ jobs:
               `- **Windows** — \`gitnoob_${version}_x64-setup.exe\`.`,
               `- **Linux** — \`gitnoob_${version}_amd64.AppImage\`, or the \`.deb\` or \`.rpm\` beside it.`,
               '',
-              'Nothing here is code-signed yet, so the first launch needs a nudge.',
-              'macOS calls the app damaged or from an unidentified developer: right-click',
-              'it in Applications and choose Open, or run',
-              '`xattr -dr com.apple.quarantine /Applications/gitnoob.app`. Windows SmartScreen',
-              'calls it an unrecognised app: More info, then Run anyway.',
+              mac
+                ? 'The macOS app is signed and notarized by Apple, so it opens like any other download.'
+                : 'The macOS app is not code-signed, so the first launch needs a nudge. macOS ' +
+                  'calls it damaged or from an unidentified developer: right-click it in ' +
+                  'Applications and choose Open, or run ' +
+                  '`xattr -dr com.apple.quarantine /Applications/gitnoob.app`.',
+              '',
+              windows
+                ? 'The Windows installer is signed. SmartScreen can still warn about a new ' +
+                  'release until enough people have run it: More info, then Run anyway.'
+                : 'The Windows installer is not code-signed, so SmartScreen calls it an ' +
+                  'unrecognised app: More info, then Run anyway.',
               '',
               'Already running gitnoob? Settings → Updates will offer this version and',
               'install it in place.'
@@ -188,6 +221,90 @@ jobs:
       - name: Take the version from the tag
         run: node scripts/release.mjs "${{ needs.draft.outputs.version }}" --write-only
 
+      # The bundler signs and notarizes by itself when it finds these in the
+      # environment: it imports the certificate into a throwaway keychain and
+      # reads the identity from it. So the step only decides whether to hand
+      # them over. An empty variable is not the same as an absent one to the
+      # bundler, which is why they go through GITHUB_ENV and not straight into
+      # the build step's env. A certificate without the notarization account
+      # is refused here: a signed app Apple has not notarized is blocked by
+      # Gatekeeper just the same, and nobody would notice until a user did.
+      - name: Apple signing, if there is a certificate
+        if: runner.os == 'macOS'
+        shell: bash
+        env:
+          APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
+          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+        run: |
+          names=(APPLE_CERTIFICATE APPLE_CERTIFICATE_PASSWORD APPLE_ID APPLE_PASSWORD APPLE_TEAM_ID)
+          present=(); missing=()
+          for name in "${names[@]}"; do
+            if [ -n "${!name}" ]; then present+=("$name"); else missing+=("$name"); fi
+          done
+          if [ ${#present[@]} -eq 0 ]; then
+            echo "::warning::No Apple certificate in the secrets. The macOS build is unsigned."
+            exit 0
+          fi
+          if [ ${#missing[@]} -ne 0 ]; then
+            echo "::error::Apple signing is half set up. Missing: ${missing[*]}"
+            exit 1
+          fi
+          for name in "${names[@]}"; do
+            { echo "$name<<__gitnoob_end__"; echo "${!name}"; echo "__gitnoob_end__"; } >> "$GITHUB_ENV"
+          done
+
+      # Windows has no environment variables the bundler looks for, only a
+      # signCommand in the config. Putting that in tauri.conf.json would break
+      # every local build on a machine without the tool, so it goes in an extra
+      # config passed to this build alone. The object form of signCommand keeps
+      # Tauri from splitting arguments on spaces.
+      - name: Windows signing, if there is an account
+        id: windows-signing
+        if: runner.os == 'Windows'
+        shell: bash
+        env:
+          AZURE_TENANT_ID: ${{ secrets.AZURE_TENANT_ID }}
+          AZURE_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID }}
+          AZURE_CLIENT_SECRET: ${{ secrets.AZURE_CLIENT_SECRET }}
+          AZURE_SIGNING_ENDPOINT: ${{ secrets.AZURE_SIGNING_ENDPOINT }}
+          AZURE_SIGNING_ACCOUNT: ${{ secrets.AZURE_SIGNING_ACCOUNT }}
+          AZURE_SIGNING_PROFILE: ${{ secrets.AZURE_SIGNING_PROFILE }}
+        run: |
+          names=(AZURE_TENANT_ID AZURE_CLIENT_ID AZURE_CLIENT_SECRET AZURE_SIGNING_ENDPOINT AZURE_SIGNING_ACCOUNT AZURE_SIGNING_PROFILE)
+          present=(); missing=()
+          for name in "${names[@]}"; do
+            if [ -n "${!name}" ]; then present+=("$name"); else missing+=("$name"); fi
+          done
+          if [ ${#present[@]} -eq 0 ]; then
+            echo "::warning::No Azure signing account in the secrets. The Windows build is unsigned."
+            exit 0
+          fi
+          if [ ${#missing[@]} -ne 0 ]; then
+            echo "::error::Windows signing is half set up. Missing: ${missing[*]}"
+            exit 1
+          fi
+          cargo install artifact-signing-cli --locked
+          for name in AZURE_TENANT_ID AZURE_CLIENT_ID AZURE_CLIENT_SECRET; do
+            { echo "$name<<__gitnoob_end__"; echo "${!name}"; echo "__gitnoob_end__"; } >> "$GITHUB_ENV"
+          done
+          # The tool assumes one exact SDK version and install path for each
+          # of these. Pointing it at what the runner actually has survives the
+          # next image update.
+          signtool=$(ls -d "/c/Program Files (x86)/Windows Kits/10/bin/"10.*/x64/signtool.exe | sort -V | tail -1)
+          echo "SIGNTOOL_PATH=$(cygpath -w "$signtool")" >> "$GITHUB_ENV"
+          echo "AZURE_CLI_PATH=$(cygpath -w "$(command -v az.cmd || command -v az)")" >> "$GITHUB_ENV"
+          config="$(cygpath -m "$RUNNER_TEMP")/windows-signing.json"
+          node -e '
+            const [file, endpoint, account, profile] = process.argv.slice(1)
+            const args = ["-e", endpoint, "-a", account, "-c", profile, "-d", "gitnoob", "%1"]
+            const config = { bundle: { windows: { signCommand: { cmd: "artifact-signing-cli", args } } } }
+            require("fs").writeFileSync(file, JSON.stringify(config))
+          ' "$config" "$AZURE_SIGNING_ENDPOINT" "$AZURE_SIGNING_ACCOUNT" "$AZURE_SIGNING_PROFILE"
+          echo "args=--config $config" >> "$GITHUB_OUTPUT"
+
       - uses: tauri-apps/tauri-action@v0
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -202,7 +319,7 @@ jobs:
           # page, this one is what the app shows before you agree to install.
           # Left unset it is an empty string, and the notes panel shows nothing.
           releaseBody: ${{ needs.draft.outputs.notes }}
-          args: ${{ matrix.args }}
+          args: ${{ matrix.args }} ${{ steps.windows-signing.outputs.args }}
 
   publish:
     name: Publish

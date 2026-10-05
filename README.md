@@ -49,7 +49,7 @@ Download from the [latest release](https://github.com/AVMG20/gitnoob/releases/la
 | Windows | `.exe` or `.msi` |
 | Linux | `.AppImage`, `.deb`, or `.rpm` |
 
-The builds are not code-signed yet, so the first launch needs one extra click. On macOS, right-click the app and choose **Open**. On Windows, click **More info** then **Run anyway**. After that, the app updates itself.
+If a release is not code-signed, its release page says so, and the first launch needs one extra click. On macOS, right-click the app and choose **Open**. On Windows, click **More info** then **Run anyway**. After that, the app updates itself.
 
 Windows gets less testing than macOS and Linux. Bug reports welcome.
 
