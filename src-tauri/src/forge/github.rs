@@ -40,6 +40,44 @@ pub(super) fn github_review(item: &serde_json::Value, current: Option<&str>) -> 
     }
 }
 
+/// A pull request as GitHub's GraphQL search returns it, in the same shape
+/// `github_review` reads from REST.
+pub(super) fn github_found_review(node: &serde_json::Value, current: Option<&str>) -> Review {
+    let source = string(node, &["headRefName"]);
+    let base_repo = string(node, &["baseRepository", "nameWithOwner"]);
+    let head_repo = string(node, &["headRepository", "nameWithOwner"]);
+    let head_from = (!head_repo.is_empty()).then(|| ReviewSource {
+        owner: string(node, &["headRepository", "owner", "login"]),
+        is_fork: head_repo != base_repo,
+        ssh_url: string(node, &["headRepository", "sshUrl"]),
+        https_url: format!("{}.git", string(node, &["headRepository", "url"])),
+        full_name: head_repo,
+    });
+    Review {
+        number: node.get("number").and_then(|v| v.as_i64()).unwrap_or(0),
+        title: string(node, &["title"]),
+        author: string(node, &["author", "login"]),
+        // REST says `open`, GraphQL `OPEN`.
+        state: string(node, &["state"]).to_lowercase(),
+        draft: node
+            .get("isDraft")
+            .and_then(|v| v.as_bool())
+            .unwrap_or(false),
+        is_current: current == Some(source.as_str())
+            && head_from
+                .as_ref()
+                .map(|from| !from.is_fork)
+                .unwrap_or(false),
+        source_branch: source,
+        target_branch: string(node, &["baseRefName"]),
+        url: string(node, &["url"]),
+        updated_at: string(node, &["updatedAt"]),
+        head_sha: string(node, &["headRefOid"]),
+        source: head_from,
+        warning: None,
+    }
+}
+
 /// Hands a freshly opened pull request to its people.
 ///
 /// GitHub takes neither assignees nor reviewers when the pull request is

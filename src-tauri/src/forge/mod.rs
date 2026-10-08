@@ -309,18 +309,148 @@ pub async fn reviews(state: &AppState) -> Result<Vec<Review>, String> {
             .map(|item| github_review(item, call.current_branch.as_deref()))
             .collect());
     }
+    Ok(gitlab_reviews(&http, &base, &call, &items).await)
+}
 
+/// Open reviews the forge finds for what was typed into the filter.
+///
+/// The list only holds the fifty most recent, so on a busy project the one
+/// being looked for is often not in it. This asks the forge instead, and only
+/// for a handful: a number is looked up directly, anything else goes to the
+/// forge's own search over titles and descriptions.
+pub async fn search_reviews(state: &AppState, text: &str) -> Result<Vec<Review>, String> {
+    let call = prepare(state)?;
+    let base = api_base(call.kind, &call.host);
+    let http = client()?;
+    let current = call.current_branch.as_deref();
+
+    match (call.kind, review_query(text)) {
+        (_, ReviewQuery::Empty) => Ok(Vec::new()),
+        (ForgeKind::None, _) => Err("No forge configured".to_string()),
+
+        (ForgeKind::GitHub, ReviewQuery::Number(number)) => {
+            let url = format!("{base}/repos/{}/pulls/{number}", call.slug.full());
+            let response = http
+                .get(url)
+                .bearer_auth(&call.token)
+                .header("Accept", "application/vnd.github+json")
+                .send()
+                .await
+                .map_err(|e| e.to_string())?;
+            // No such pull request is an answer, not a failure.
+            if response.status() == reqwest::StatusCode::NOT_FOUND {
+                return Ok(Vec::new());
+            }
+            if !response.status().is_success() {
+                return Err(describe(response).await);
+            }
+            let item: serde_json::Value = response.json().await.map_err(|e| e.to_string())?;
+            let review = github_review(&item, current);
+            Ok(if review.state == "open" {
+                vec![review]
+            } else {
+                Vec::new()
+            })
+        }
+        (ForgeKind::GitHub, ReviewQuery::Text(words)) => {
+            // REST search hands back issues without their branches, so the
+            // one GraphQL request gets everything a row needs in one go.
+            const QUERY: &str = "query($q:String!){search(query:$q,type:ISSUE,first:20){nodes{\
+                ... on PullRequest{number title state isDraft url updatedAt \
+                headRefName baseRefName headRefOid author{login} \
+                headRepository{nameWithOwner sshUrl url owner{login}} \
+                baseRepository{nameWithOwner}}}}}";
+            let q = format!("repo:{} is:pr is:open {words}", call.slug.full());
+            let data = github_graphql(
+                &http,
+                &call.token,
+                &call.host,
+                QUERY,
+                serde_json::json!({ "q": q }),
+            )
+            .await?;
+            Ok(data
+                .pointer("/search/nodes")
+                .and_then(|v| v.as_array())
+                .map(|nodes| {
+                    nodes
+                        .iter()
+                        .filter(|node| node.get("number").is_some())
+                        .map(|node| github_found_review(node, current))
+                        .collect()
+                })
+                .unwrap_or_default())
+        }
+
+        (ForgeKind::GitLab, query) => {
+            let project = urlencode(&call.slug.full());
+            let url = match query {
+                ReviewQuery::Number(number) => {
+                    format!("{base}/projects/{project}/merge_requests?state=opened&iids[]={number}")
+                }
+                _ => format!(
+                    "{base}/projects/{project}/merge_requests?state=opened&per_page=20&search={}",
+                    urlencode(text.trim())
+                ),
+            };
+            let response = http
+                .get(url)
+                .bearer_auth(&call.token)
+                .send()
+                .await
+                .map_err(|e| e.to_string())?;
+            if !response.status().is_success() {
+                return Err(describe(response).await);
+            }
+            let items: Vec<serde_json::Value> = response.json().await.map_err(|e| e.to_string())?;
+            Ok(gitlab_reviews(&http, &base, &call, &items).await)
+        }
+    }
+}
+
+/// What a filter is asking for: a review by its number, or by its words.
+#[derive(Debug, PartialEq)]
+enum ReviewQuery {
+    Empty,
+    Number(i64),
+    Text(String),
+}
+
+/// Reads the filter the way it is typed: `#12`, `!12` and `12` are all the
+/// review numbered twelve, and anything else is words to search for.
+fn review_query(text: &str) -> ReviewQuery {
+    let text = text.trim();
+    let digits = text.strip_prefix(['#', '!']).unwrap_or(text);
+    if let Ok(number) = digits.parse::<i64>() {
+        if number > 0 {
+            return ReviewQuery::Number(number);
+        }
+    }
+    if text.is_empty() {
+        ReviewQuery::Empty
+    } else {
+        ReviewQuery::Text(text.to_string())
+    }
+}
+
+/// GitLab merge requests as reviews, with the fork each one came from.
+async fn gitlab_reviews(
+    http: &reqwest::Client,
+    base: &str,
+    call: &Call,
+    items: &[serde_json::Value],
+) -> Vec<Review> {
     let mut out = Vec::new();
     // One lookup per fork, not per review: several merge requests from the
     // same fork are the normal shape of a busy project.
     let mut known: HashMap<i64, Option<ReviewSource>> = HashMap::new();
-    for item in &items {
+    for item in items {
         let (mut review, fork) = gitlab_review(item, call.current_branch.as_deref());
         if let Some(id) = fork {
             let source = match known.get(&id) {
                 Some(found) => found.clone(),
                 None => {
-                    let found = gitlab_project(&http, &base, &call.token, id).await;
+                    let found = gitlab_project(http, base, &call.token, id).await;
                     known.insert(id, found.clone());
                     found
                 }
@@ -329,7 +459,7 @@ pub async fn reviews(state: &AppState) -> Result<Vec<Review>, String> {
         }
         out.push(review);
     }
-    Ok(out)
+    out
 }
 /// Everything one review says about itself.
 pub async fn review_detail(state: &AppState, number: i64) -> Result<ReviewDetail, String> {
@@ -2376,6 +2506,60 @@ mod tests {
             gitlab_draft_title("Draft: Add the pane", true),
             "Draft: Add the pane"
         );
+    }
+
+    #[test]
+    fn reads_a_filter_as_a_number_or_as_words() {
+        assert_eq!(review_query("1234"), ReviewQuery::Number(1234));
+        assert_eq!(review_query(" #1234 "), ReviewQuery::Number(1234));
+        assert_eq!(review_query("!56"), ReviewQuery::Number(56));
+        assert_eq!(review_query("#0"), ReviewQuery::Text("#0".into()));
+        assert_eq!(
+            review_query("fix login"),
+            ReviewQuery::Text("fix login".into())
+        );
+        assert_eq!(
+            review_query("#12 crash"),
+            ReviewQuery::Text("#12 crash".into())
+        );
+        assert_eq!(review_query("   "), ReviewQuery::Empty);
+    }
+
+    #[test]
+    fn reads_a_pull_request_from_github_search() {
+        let node = serde_json::json!({
+            "number": 812,
+            "title": "Fix the login crash",
+            "state": "OPEN",
+            "isDraft": true,
+            "url": "https://github.com/team/api/pull/812",
+            "updatedAt": "2026-10-01T10:00:00Z",
+            "headRefName": "fix-login",
+            "baseRefName": "main",
+            "headRefOid": "abc123",
+            "author": { "login": "robin" },
+            "headRepository": {
+                "nameWithOwner": "robin/api",
+                "sshUrl": "git@github.com:robin/api.git",
+                "url": "https://github.com/robin/api",
+                "owner": { "login": "robin" }
+            },
+            "baseRepository": { "nameWithOwner": "team/api" }
+        });
+        let review = github_found_review(&node, Some("fix-login"));
+        assert_eq!(review.number, 812);
+        assert_eq!(review.state, "open");
+        assert!(review.draft);
+        assert_eq!(review.author, "robin");
+        assert_eq!(review.source_branch, "fix-login");
+        assert_eq!(review.target_branch, "main");
+        assert_eq!(review.head_sha, "abc123");
+        // Same branch name, but it lives on a fork: not the one checked out.
+        assert!(!review.is_current);
+        let source = review.source.expect("a fork");
+        assert!(source.is_fork);
+        assert_eq!(source.owner, "robin");
+        assert_eq!(source.https_url, "https://github.com/robin/api.git");
     }
 
     #[test]

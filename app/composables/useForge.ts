@@ -157,6 +157,12 @@ const store = reactive({
   status: null as ForgeStatus | null,
   reviews: [] as Review[],
   loading: false,
+  /** Open reviews the forge found for the filter, beyond the ones listed. */
+  found: [] as Review[],
+  /** The project and filter `found` answers, so a stale answer is not shown. */
+  foundFor: null as string | null,
+  /** The filter a search is out for, so only the latest one lands. */
+  searchingFor: null as string | null,
   error: null as string | null,
   checking: false,
   /** Who the active profile's token belongs to, once asked. */
@@ -188,6 +194,9 @@ const store = reactive({
   loadingRepos: false,
   reposError: null as string | null
 })
+
+/** How many open reviews the list asks for; `forge::reviews` uses the same. */
+export const LISTED = 50
 
 export function useForge() {
   /** Usable means: a forge is chosen, a token is stored, and the remote parsed. */
@@ -271,6 +280,46 @@ export function useForge() {
       store.reviews = []
     } finally {
       store.loading = false
+    }
+  }
+
+  /**
+   * Asks the forge for open reviews matching the filter.
+   *
+   * The list holds the most recent `LISTED` and no more, so the one somebody
+   * types the number of is often further back. A list shorter than that is
+   * already everything open, and the filter alone is the whole answer; the
+   * forge is only asked when there may be more than it holds.
+   */
+  async function searchReviews(query: string) {
+    const text = query.trim()
+    const project = projectId()
+    const wanted = project && text ? `${project}#${text}` : null
+    const worth =
+      !!wanted &&
+      usable.value &&
+      store.reviews.length >= LISTED &&
+      (/^[#!]?\d+$/.test(text) || text.length >= 2)
+    if (!worth) {
+      store.found = []
+      store.foundFor = null
+      store.searchingFor = null
+      return
+    }
+    if (store.foundFor === wanted || store.searchingFor === wanted) return
+    store.searchingFor = wanted
+    try {
+      const found = await invoke<Review[]>('forge_search_reviews', { query: text })
+      if (store.searchingFor !== wanted) return
+      store.found = found
+      store.foundFor = wanted
+    } catch {
+      // The list and the filter still stand; a search that failed adds nothing.
+      if (store.searchingFor !== wanted) return
+      store.found = []
+      store.foundFor = wanted
+    } finally {
+      if (store.searchingFor === wanted) store.searchingFor = null
     }
   }
 
@@ -391,6 +440,8 @@ export function useForge() {
     refreshStatus,
     loadFaces,
     loadReviews,
+    searchReviews,
+    projectId,
     loadReviewDetail,
     loadMembers,
     loadMe,

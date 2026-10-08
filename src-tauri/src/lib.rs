@@ -1346,6 +1346,16 @@ async fn forge_reviews(state: State<'_, AppState>) -> Result<Vec<forge::Review>,
     forge::reviews(&state).await
 }
 
+/// Open reviews the forge finds for the sidebar filter, for the ones beyond
+/// the first fifty the list holds.
+#[tauri::command]
+async fn forge_search_reviews(
+    query: String,
+    state: State<'_, AppState>,
+) -> Result<Vec<forge::Review>, String> {
+    forge::search_reviews(&state, &query).await
+}
+
 /// Everything one review says about itself, asked for when it is opened rather
 /// than on every refresh of the list.
 #[tauri::command]
@@ -1981,6 +1991,7 @@ pub fn run() {
             forge_me,
             forge_check,
             forge_reviews,
+            forge_search_reviews,
             forge_review_detail,
             forge_repos,
             forge_members,

@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, reactive, ref, watch } from 'vue'
+import { computed, onBeforeUnmount, reactive, ref, watch } from 'vue'
 import { invoke } from '~/composables/useInvoke'
 import {
   Archive,
@@ -412,11 +412,49 @@ const stashes = computed(() =>
  * look for a merge request by its number as often as by its title, and by the
  * branch more often than either.
  */
-const reviews = computed(() =>
+const listedReviews = computed(() =>
   forge.store.reviews.filter((review) =>
     match(`${forge.sigil.value}${review.number} ${review.title} ${review.source_branch} ${review.author}`)
   )
 )
+
+/** What the forge is asked about the filter: the project and the words. */
+const reviewSearch = computed(() => {
+  const project = forge.projectId()
+  const text = filter.value.trim()
+  return project && text ? `${project}#${text}` : null
+})
+
+/**
+ * The listed reviews the filter matches, then whatever the forge found for it
+ * beyond those: the list only holds the most recent, and the one being looked
+ * for by its number is as often as not further back.
+ */
+const reviews = computed(() => {
+  const listed = listedReviews.value
+  if (!reviewSearch.value || forge.store.foundFor !== reviewSearch.value) return listed
+  const seen = new Set(listed.map((review) => review.number))
+  return [...listed, ...forge.store.found.filter((review) => !seen.has(review.number))]
+})
+
+/** Set while the forge is being asked about the filter as it reads now. */
+const searchingReviews = computed(
+  () => !!reviewSearch.value && forge.store.searchingFor === reviewSearch.value
+)
+
+// Asked once typing pauses, not on every letter: a search is a request to the
+// forge, and GitHub allows thirty of those a minute.
+let searchTimer: number | undefined
+watch(reviewSearch, () => {
+  window.clearTimeout(searchTimer)
+  const text = filter.value
+  if (!text.trim()) {
+    forge.searchReviews('')
+    return
+  }
+  searchTimer = window.setTimeout(() => forge.searchReviews(text), 400)
+})
+onBeforeUnmount(() => window.clearTimeout(searchTimer))
 
 /**
  * Whether the pull requests section is on the pane at all.
@@ -1730,6 +1768,9 @@ async function removeSubmodule(one: Submodule) {
           </div>
           <p v-if="!forge.usable.value" class="none faint">No remote on this forge to read.</p>
           <p v-else-if="forge.store.error" class="err">{{ forge.store.error }}</p>
+          <p v-else-if="searchingReviews" class="none faint">
+            Searching {{ forge.forgeName.value }}…
+          </p>
           <p v-else-if="!reviews.length" class="none faint">
             {{ forge.store.loading ? 'Loading…' : 'Nothing open.' }}
           </p>
