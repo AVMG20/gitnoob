@@ -456,6 +456,8 @@ export interface StashEntry {
   branch: string | null
   time: number
   files: number
+  /** Whether somebody named it, rather than git or this app. */
+  named?: boolean
 }
 
 /** What a run over several stashes did. */
@@ -624,6 +626,8 @@ const fields = reactive({
   selected: WIP as string,
   detail: null as CommitDetail | null,
   stashes: [] as StashEntry[],
+  /** The name of a stash just put back, for the commit box to start from. */
+  carried: null as string | null,
   history: { undo: [], redo: [] } as Stacks,
   /** Set while the resolver is open on a conflicted file. */
   resolving: null as string | null,
@@ -744,6 +748,7 @@ function clearData() {
   store.hasMore = false
   store.limit = pageSize()
   store.stashes = []
+  store.carried = null
   store.history = { undo: [], redo: [] }
   store.progress = null
 }
@@ -1175,6 +1180,25 @@ export function useGit() {
   const fileText = (path: string, commit?: string | null, side?: 'staged' | 'unstaged' | null) =>
     invoke<string>('file_text', { path, commit: commit ?? null, side: side ?? null })
 
+  /**
+   * Puts stashes back, and hands the commit box the name one of them was given.
+   *
+   * A stash pushed from the commit box is named after the summary that was in
+   * it, and somebody who named a stash well has usually written the commit's
+   * message already. Read before the run, since a pop takes the stash off the
+   * list. Only a name somebody chose: git's own "WIP on" names repeat the last
+   * commit's subject, and more than one named stash gives no one message.
+   */
+  async function carrying<T>(indexes: number[], put: () => Promise<T | null>) {
+    const names = store.stashes
+      .filter((one) => indexes.includes(one.index) && one.named && one.message.trim())
+      .map((one) => one.message.trim())
+    const result = await put()
+    const stopped = (result as StashRun | null)?.stopped
+    if (result && !stopped && names.length === 1) store.carried = names[0] ?? null
+    return result
+  }
+
   async function run<T>(label: string, command: string, args: Record<string, unknown> = {}) {
     const result = await guard(label, () => invoke<T>(command, args))
     // Refresh whether or not it worked. A git command that fails can still have
@@ -1509,8 +1533,10 @@ export function useGit() {
     /** Gives a commit a new message. Answers with the id it now has. */
     reword: (oid: string, message: string) => run<string>('Reword', 'reword', { oid, message }),
     stashPush: (message?: string) => run<string>('Stash', 'stash_push', { message }),
-    stashPop: (index: number) => run<string>('Stash pop', 'stash_pop', { index }),
-    stashApply: (index: number) => run<string>('Stash apply', 'stash_apply', { index }),
+    stashPop: (index: number) =>
+      carrying([index], () => run<string>('Stash pop', 'stash_pop', { index })),
+    stashApply: (index: number) =>
+      carrying([index], () => run<string>('Stash apply', 'stash_apply', { index })),
     /**
      * Several at once, oldest first. `dropAfter` makes it a pop.
      *
@@ -1519,10 +1545,12 @@ export function useGit() {
      * stopped the run.
      */
     stashApplyMany: (indexes: number[], dropAfter = false) =>
-      run<StashRun>(
-        `${dropAfter ? 'Pop' : 'Apply'} ${indexes.length} stashes`,
-        'stash_apply_many',
-        { indexes, dropAfter }
+      carrying(indexes, () =>
+        run<StashRun>(
+          `${dropAfter ? 'Pop' : 'Apply'} ${indexes.length} stashes`,
+          'stash_apply_many',
+          { indexes, dropAfter }
+        )
       ),
     stashDrop: (index: number) => run<string>('Stash drop', 'stash_drop', { index }),
     /** Gives a stash a new description, leaving it where it is in the list. */

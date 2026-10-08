@@ -2256,6 +2256,30 @@ fn with_auto_stash_off_the_switch_says_so_instead_of_helping() {
     assert!(gitnoob_lib::work::stash_list(&state).unwrap().is_empty());
 }
 
+/// A stash somebody named carries a message worth starting a commit from; one
+/// git named after the last commit, or one this app took on its own, does not.
+#[test]
+fn tells_a_named_stash_from_one_git_or_the_app_named() {
+    let sandbox = Sandbox::new("namedstash");
+    sandbox.commit("a.txt", "one\n", "First");
+    let state = sandbox.state();
+
+    sandbox.write("a.txt", "one\nnamed\n");
+    gitnoob_lib::work::stash_push(&state, Some("Fix the login crash"), false).unwrap();
+    sandbox.write("a.txt", "one\nunnamed\n");
+    sandbox.git(&["stash", "push", "-q"]);
+    sandbox.write("a.txt", "one\nauto\n");
+    let auto = format!("{} on main: switch", gitnoob_lib::work::AUTO_STASH);
+    sandbox.git(&["stash", "push", "-q", "-m", &auto]);
+
+    let list = gitnoob_lib::work::stash_list(&state).unwrap();
+    let named: Vec<(&str, bool)> = list.iter().map(|s| (s.message.as_str(), s.named)).collect();
+    assert_eq!(named.len(), 3);
+    assert!(!named[0].1, "the app's own: {named:?}");
+    assert!(!named[1].1, "git's WIP name: {named:?}");
+    assert_eq!(named[2], ("Fix the login crash", true));
+}
+
 #[test]
 fn undoing_a_stash_puts_back_the_one_it_made() {
     let sandbox = Sandbox::new("undostash");

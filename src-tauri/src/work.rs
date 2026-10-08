@@ -513,6 +513,10 @@ pub struct StashEntry {
     pub branch: Option<String>,
     pub time: i64,
     pub files: usize,
+    /// Whether somebody gave it its message. A stash taken without one is
+    /// called after the commit it was taken on, and one this app took on its
+    /// own is called after the reason; neither is a message worth reusing.
+    pub named: bool,
 }
 
 pub fn stash_list(state: &AppState) -> Result<Vec<StashEntry>, String> {
@@ -535,6 +539,7 @@ pub fn stash_list(state: &AppState) -> Result<Vec<StashEntry>, String> {
         // "On main: my message"; pull the branch out and keep the rest.
         let (branch, message) = split_subject(&subject);
         let files = file_count(&root, &oid, index);
+        let named = subject.starts_with("On ") && !is_auto_stash(&subject);
 
         out.push(StashEntry {
             index,
@@ -543,6 +548,7 @@ pub fn stash_list(state: &AppState) -> Result<Vec<StashEntry>, String> {
             branch,
             time,
             files,
+            named,
         });
     }
     Ok(out)

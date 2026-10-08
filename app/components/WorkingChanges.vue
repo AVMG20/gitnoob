@@ -131,6 +131,23 @@ watch(
 )
 
 /**
+ * Starts the box from the name of a stash just put back, while it is empty.
+ *
+ * Whatever was typed is kept: the name is a suggestion, and the box already
+ * holding a message means somebody is writing a different one. Taken either
+ * way, so a name that was not used does not turn up after the next commit.
+ */
+watch(
+  () => store.carried,
+  (carried) => {
+    if (carried === null) return
+    if (!message.value.trim() && !amend.value) message.value = carried
+    store.carried = null
+  },
+  { immediate: true }
+)
+
+/**
  * Whether throwing a conflict away is on offer at all.
  *
  * See `isRunning`. Mid-rebase "what the branch had" is the wrong side of the
