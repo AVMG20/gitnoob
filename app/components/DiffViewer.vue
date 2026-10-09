@@ -1,6 +1,21 @@
 <script setup lang="ts">
 import { computed, nextTick, onBeforeUnmount, onMounted, onUnmounted, ref, watch } from 'vue'
-import { ArrowDownToLine, Check, Copy, FileBox, FolderOpen, History, Minus, Undo2, Users, X } from 'lucide-vue-next'
+import {
+  ArrowDownToLine,
+  CaseSensitive,
+  Check,
+  ChevronDown,
+  ChevronUp,
+  Copy,
+  FileBox,
+  FolderOpen,
+  History,
+  Minus,
+  Search,
+  Undo2,
+  Users,
+  X
+} from 'lucide-vue-next'
 import {
   copyText,
   relativeTime,
@@ -22,6 +37,8 @@ import {
   markedLines,
   patchMarks
 } from '~/composables/useCode'
+import { findIn, type FindMarks } from '~/composables/useFind'
+import { keyLabel, useShortcuts } from '~/composables/useShortcuts'
 
 /** The order Tab walks the views in. */
 const MODES: DiffMode[] = ['diff', 'file']
@@ -126,7 +143,12 @@ async function load(settle = true) {
   await loadText()
   await loadBlame()
   loading.value = false
-  if (settle) await toFirstChange()
+  if (settle) {
+    await toFirstChange()
+    // Another file is another set of matches; the search carries on in it from
+    // wherever the file was opened at.
+    findFrom(null)
+  }
 }
 
 /**
@@ -283,6 +305,7 @@ watch(() => diffMode.mode, async () => {
   await loadText()
   await loadBlame()
   await toFirstChange()
+  findFrom(null)
 })
 
 // Turning the column on is the one thing that asks for a walk of the history,
@@ -305,6 +328,172 @@ const marks = computed(() => {
 function close() {
   store.viewer = null
 }
+
+// --- finding text in the file
+//
+// The views draw only the rows on screen, so the search runs over the rows
+// themselves and each view marks the matches in whatever it draws. It searches
+// the view that is on screen: the whole file in the file view, the lines of the
+// patch in the diff.
+const finding = ref(false)
+const query = ref('')
+const matchCase = ref(false)
+/** Which match the arrows are on, as an index into `hits`. */
+const hit = ref(0)
+const findBox = ref<HTMLInputElement | null>(null)
+/** The row the current match was on, which a longer search starts from. */
+let findRow: number | null = null
+
+/** The rows the view on screen draws, with where each sits down the view. */
+const searched = computed<{ text: string; top: number }[]>(() => {
+  if (pointer.value) return []
+  if (diffMode.mode === 'file') {
+    if (diff.value?.binary || text.value === null) return []
+    const source = text.value.split('\n')
+    // The same last empty piece `markedLines` drops, so a row here is a row there.
+    if (source.length && source[source.length - 1] === '') source.pop()
+    return source.map((line, at) => ({ text: line, top: at * CODE_ROW }))
+  }
+  return diffRows(diff.value?.hunks ?? []).rows.map((row) => ({
+    text: row.line?.content ?? '',
+    top: row.top
+  }))
+})
+
+const hits = computed(() =>
+  finding.value ? findIn(searched.value.map((row) => row.text), query.value, matchCase.value) : []
+)
+
+const findMarks = computed<FindMarks | null>(() => {
+  if (!finding.value || !query.value) return null
+  const at = hits.value[hit.value]
+  return { query: query.value, matchCase: matchCase.value, row: at?.row ?? null, nth: at?.nth ?? 0 }
+})
+
+/** Where the rows start inside the box: the notes above them push them down. */
+function rowsTop(box: HTMLElement) {
+  const rows = box.querySelector('.lines, .rows')
+  if (!rows) return 0
+  return rows.getBoundingClientRect().top - box.getBoundingClientRect().top + box.scrollTop
+}
+
+/**
+ * Puts the match on `hit` at, or else after, `row` — the top of the view when
+ * no row is given. Typing more of a word keeps you on the match you were on
+ * rather than sending you back to the top of the file.
+ */
+function findFrom(row: number | null) {
+  const list = hits.value
+  if (!list.length) {
+    hit.value = 0
+    findRow = null
+    return
+  }
+  let from = row
+  if (from === null) {
+    const box = body.value
+    const scrolled = box ? box.scrollTop - rowsTop(box) : 0
+    from = searched.value.findIndex((one) => one.top >= scrolled)
+  }
+  const at = list.findIndex((one) => one.row >= (from ?? 0))
+  hit.value = at < 0 ? 0 : at
+  findRow = list[hit.value]?.row ?? null
+}
+
+/**
+ * Scrolls the current match into view.
+ *
+ * Only when it is not already comfortably on screen, the way an editor does it:
+ * stepping through three matches on the same screenful should move the mark,
+ * not the page. When it does scroll, the match lands in the middle, clear of
+ * the find box and the pinned hunk heading at the top.
+ */
+async function reveal() {
+  const box = body.value
+  const at = hits.value[hit.value]
+  const row = at ? searched.value[at.row] : undefined
+  if (!box || !row) return
+  const y = rowsTop(box) + row.top
+  const margin = 44
+  if (y < box.scrollTop + margin || y + CODE_ROW > box.scrollTop + box.clientHeight - margin) {
+    box.scrollTop = Math.max(0, y - box.clientHeight / 2)
+    top.value = box.scrollTop
+  }
+  // Now the row is drawn, the mark is there to bring into view sideways, for
+  // a match out at the end of a long line.
+  await nextTick()
+  box
+    .querySelector<HTMLElement>('mark.find-hit.now')
+    ?.scrollIntoView?.({ block: 'nearest', inline: 'nearest' })
+}
+
+function step(by: number) {
+  const count = hits.value.length
+  if (!count) return
+  hit.value = (hit.value + by + count) % count
+  findRow = hits.value[hit.value]?.row ?? null
+  void reveal()
+}
+
+/**
+ * Opens the find box, or puts the caret back in it.
+ *
+ * Text selected in the file is what is being looked for more often than not,
+ * so a short piece of one line of it starts the search.
+ */
+async function openFind() {
+  const picked = window.getSelection?.()?.toString() ?? ''
+  if (picked && !picked.includes('\n') && picked.length <= 200) query.value = picked
+  finding.value = true
+  await nextTick()
+  findBox.value?.focus()
+  findBox.value?.select()
+}
+
+/** Closes it. The words stay, so opening it again picks up where it left off. */
+function closeFind() {
+  finding.value = false
+  findBox.value?.blur()
+}
+
+// A reload behind the open file — the watcher saw a save — can leave fewer
+// matches than the one the arrows were on.
+watch(hits, (list) => {
+  if (hit.value >= list.length) hit.value = 0
+})
+
+watch([query, matchCase], () => {
+  findFrom(findRow)
+  void reveal()
+})
+
+const isMac = navigator.userAgent.includes('Mac')
+
+/** Keys inside the box: the arrows and Enter walk the matches. */
+function onFindKey(event: KeyboardEvent) {
+  const mod = isMac ? event.metaKey : event.ctrlKey
+  if (event.key === 'ArrowDown' || (event.key === 'Enter' && !event.shiftKey)) {
+    event.preventDefault()
+    step(1)
+  } else if (event.key === 'ArrowUp' || (event.key === 'Enter' && event.shiftKey)) {
+    event.preventDefault()
+    step(-1)
+  } else if (mod && event.key.toLowerCase() === 'g') {
+    event.preventDefault()
+    step(event.shiftKey ? -1 : 1)
+  } else if (mod && event.key.toLowerCase() === 'f') {
+    event.preventDefault()
+    findBox.value?.select()
+  }
+}
+
+// The commit list owns these keys everywhere else; while a file is open the
+// list is not mounted, and they find text in the file instead.
+useShortcuts({
+  'viewer.search': () => openFind(),
+  'viewer.next': () => (finding.value ? step(1) : openFind()),
+  'viewer.previous': () => (finding.value ? step(-1) : openFind())
+})
 
 /**
  * The files the arrows walk: the commit's own when a commit is open, and the
@@ -363,7 +552,9 @@ async function onHunk(
 
 function onKey(event: KeyboardEvent) {
   if (event.key === 'Escape') {
-    close()
+    // The find box is the thing on top, so it goes first.
+    if (finding.value) closeFind()
+    else close()
     return
   }
   if (typing(event) || covered() || event.altKey || event.ctrlKey || event.metaKey) return
@@ -594,6 +785,7 @@ onUnmounted(() => window.removeEventListener('keydown', onKey))
           :blame="diffMode.blame"
           :blame-loading="blaming"
           :blame-error="blameError"
+          :find="findMarks"
           @toggle-blame="diffMode.blame = !diffMode.blame"
         />
         <DiffView
@@ -607,8 +799,59 @@ onUnmounted(() => window.removeEventListener('keydown', onKey))
           :view="boxHeight"
           :left="left"
           :width="boxWidth"
+          :find="findMarks"
           @hunk="onHunk"
         />
+      </div>
+
+      <!-- Summoned with ⌘F and gone with Esc, in the corner a browser and an
+           editor both put it, over the code rather than above it so the file
+           does not jump down a row when it opens. -->
+      <div v-if="finding" class="find">
+        <Search :size="13" class="faint" />
+        <input
+          ref="findBox"
+          v-model="query"
+          type="text"
+          spellcheck="false"
+          :placeholder="diffMode.mode === 'file' ? 'Find in file' : 'Find in diff'"
+          @keydown="onFindKey"
+        />
+        <span v-if="query" class="count" :class="{ none: !hits.length }">
+          {{ hits.length ? `${hit + 1} of ${hits.length}` : 'no matches' }}
+        </span>
+        <!-- The buttons leave the caret in the box, so the arrows still step
+             through the matches after one of them is clicked. -->
+        <button
+          class="step"
+          :class="{ on: matchCase }"
+          :title="matchCase ? 'Matching case' : 'Match case'"
+          @mousedown.prevent
+          @click="matchCase = !matchCase"
+        >
+          <CaseSensitive :size="14" />
+        </button>
+        <button
+          class="step"
+          :disabled="!hits.length"
+          :title="`Previous (↑ or ${keyLabel('mod+shift+g')})`"
+          @mousedown.prevent
+          @click="step(-1)"
+        >
+          <ChevronUp :size="13" />
+        </button>
+        <button
+          class="step"
+          :disabled="!hits.length"
+          :title="`Next (↓ or ${keyLabel('mod+g')})`"
+          @mousedown.prevent
+          @click="step(1)"
+        >
+          <ChevronDown :size="13" />
+        </button>
+        <button class="step" title="Close (Esc)" @mousedown.prevent @click="closeFind">
+          <X :size="13" />
+        </button>
       </div>
       <ChangeRuler :container="body" :marks="marks" />
     </div>
@@ -783,9 +1026,98 @@ onUnmounted(() => window.removeEventListener('keydown', onKey))
 }
 
 .pane {
+  position: relative;
   display: flex;
   min-width: 0;
   min-height: 0;
+}
+
+/* --- the find box */
+
+/* Floats in the top right corner of the code, clear of the strip beside the
+   scrollbar. */
+.find {
+  position: absolute;
+  top: 8px;
+  right: 22px;
+  z-index: 8;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  width: 340px;
+  max-width: calc(100% - 44px);
+  height: var(--control-h);
+  padding: 0 4px 0 9px;
+  background: var(--bg);
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  box-shadow: var(--shadow-pop);
+}
+
+.find:focus-within {
+  border-color: var(--ring);
+}
+
+.find input {
+  flex: 1;
+  min-width: 0;
+  border: none;
+  background: none;
+  padding: 2px 0;
+  font-size: 12.5px;
+}
+
+.find input:focus {
+  outline: none;
+  box-shadow: none;
+}
+
+.count {
+  font-size: 11px;
+  color: var(--text-dim);
+  white-space: nowrap;
+  font-variant-numeric: tabular-nums;
+}
+
+.count.none {
+  color: var(--amber);
+}
+
+.step {
+  display: grid;
+  flex: none;
+  place-items: center;
+  width: 22px;
+  height: 22px;
+  border-radius: var(--radius-sm);
+  color: var(--text-faint);
+}
+
+.step:hover:not(:disabled) {
+  background: var(--bg-hover);
+  color: var(--text);
+}
+
+.step:disabled {
+  opacity: 0.35;
+}
+
+.step.on {
+  background: var(--bg-active);
+  color: var(--accent-soft);
+}
+
+/* Every match is lit; the one the arrows are on is lit harder, and outlined so
+   it can be told apart on a line tinted green or red. */
+.body :deep(mark.find-hit) {
+  color: inherit;
+  background: color-mix(in srgb, var(--amber) 32%, transparent);
+  border-radius: 2px;
+}
+
+.body :deep(mark.find-hit.now) {
+  background: color-mix(in srgb, var(--amber) 70%, transparent);
+  box-shadow: 0 0 0 1px var(--amber);
 }
 
 .body {

@@ -6,6 +6,7 @@ import { highlightWhole, languageFor } from '~/composables/useHighlight'
 import { CODE_ROW, markedLines, wasRuns, windowOf, type Line } from '~/composables/useCode'
 import { useContextMenu } from '~/composables/useContextMenu'
 import { tint } from '~/composables/useAvatars'
+import { markHtml, type FindMarks } from '~/composables/useFind'
 
 const props = defineProps<{
   diff: FileDiff | null
@@ -23,6 +24,8 @@ const props = defineProps<{
   blame?: boolean
   blameLoading?: boolean
   blameError?: string | null
+  /** What the find box is looking for, marked in the lines it is found on. */
+  find?: FindMarks | null
 }>()
 
 const emit = defineEmits<{ (event: 'toggle-blame'): void }>()
@@ -147,7 +150,13 @@ const painted = computed(() =>
   props.text === null ? [] : highlightWhole(props.text, language.value)
 )
 
-const paint = (at: number) => painted.value[at - 1] ?? ''
+/** A line's colour, with whatever the find box is looking for marked in it. */
+function paint(at: number) {
+  const html = painted.value[at - 1] ?? ''
+  const find = props.find
+  if (!find?.query) return html
+  return markHtml(html, find.query, find.matchCase, find.row === at - 1 ? find.nth : null)
+}
 
 // --- only what is on screen
 const shown = computed(() => windowOf(lines.value.length, props.top ?? 0, props.view ?? 0))

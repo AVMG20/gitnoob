@@ -62,7 +62,10 @@ export const SHORTCUTS: Shortcut[] = [
   // Changes and diffs
   { id: 'diff.mode', keys: 'Tab', label: 'Show the whole file, or only the lines that changed', where: 'An open file', group: 'Changes and diffs', note: 'Blame is a column of the file view, on the line numbers’ right-click menu.' },
   { id: 'viewer.move', keys: 'ArrowUp/ArrowDown', label: 'Move to the file before or after this one', where: 'An open file', group: 'Changes and diffs', note: 'Walks the panel beside it, in the order it lists them.' },
-  { id: 'viewer.close', keys: 'Escape', label: 'Close the file', where: 'An open file', group: 'Changes and diffs' },
+  { id: 'viewer.search', keys: 'mod+f', label: 'Find text in the file', where: 'An open file', group: 'Changes and diffs', note: 'Searches whichever view is on screen. ↑, ↓ and ↵ in the box step through the matches.' },
+  { id: 'viewer.next', keys: 'mod+g', label: 'Next match in the file', where: 'An open file', group: 'Changes and diffs' },
+  { id: 'viewer.previous', keys: 'mod+shift+g', label: 'Previous match in the file', where: 'An open file', group: 'Changes and diffs' },
+  { id: 'viewer.close', keys: 'Escape', label: 'Close the find box, then the file', where: 'An open file', group: 'Changes and diffs' },
   { id: 'conflict.move', keys: 'ArrowUp/ArrowDown', label: 'Move to the conflict before or after this one', where: 'The conflict resolver', group: 'Changes and diffs' },
   { id: 'conflict.undecided', keys: 'Tab', label: 'Jump to the next conflict nobody has decided yet', where: 'The conflict resolver', group: 'Changes and diffs' },
   { id: 'filter.clear', keys: 'Escape', label: 'Clear the branch filter', where: 'The filter box in the sidebar', group: 'Changes and diffs' },

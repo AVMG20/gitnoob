@@ -3,6 +3,7 @@ import { computed, ref, watch } from 'vue'
 import type { DiffLine, FileDiff } from '~/composables/useGit'
 import { highlightLine, highlightWhole, languageFor, version } from '~/composables/useHighlight'
 import { diffRows, diffWindow, oldText } from '~/composables/useCode'
+import { markHtml, type FindMarks } from '~/composables/useFind'
 
 const props = defineProps<{
   diff: FileDiff | null
@@ -18,6 +19,8 @@ const props = defineProps<{
   /** The same sideways: how far it is scrolled, and how wide the box is. */
   left?: number
   width?: number
+  /** What the find box is looking for, marked in the rows it is found on. */
+  find?: FindMarks | null
 }>()
 export interface PickedLines {
   /** New-side line numbers of the `+` lines chosen. */
@@ -316,6 +319,14 @@ const longest = computed(() => {
   return found
 })
 
+/** A row's colour, with whatever the find box is looking for marked in it. */
+function painted(line: DiffLine, row: number) {
+  const html = paint(line)
+  const find = props.find
+  if (!find?.query) return html
+  return markHtml(html, find.query, find.matchCase, find.row === row ? find.nth : null)
+}
+
 function paint(line: DiffLine) {
   // The no-newline remark is git talking, not the file: highlighting it as
   // whatever language this is would colour a sentence as code.
@@ -359,7 +370,7 @@ function paint(line: DiffLine) {
       </div>
 
       <div class="rows" :style="{ height: `${laid.height}px` }">
-        <template v-for="row in visible" :key="`${row.kind}${row.top}`">
+        <template v-for="(row, index) in visible" :key="`${row.kind}${row.top}`">
           <div
             v-if="row.kind === 'head'"
             class="hunk-head mono"
@@ -416,7 +427,7 @@ function paint(line: DiffLine) {
             <span class="no">{{ row.line.old_lineno ?? '' }}</span>
             <span class="no">{{ row.line.new_lineno ?? '' }}</span>
             <span class="sign">{{ row.line.origin === ' ' ? '' : row.line.origin }}</span>
-            <span class="text" v-html="paint(row.line)" />
+            <span class="text" v-html="painted(row.line, shown.first + index)" />
           </div>
         </template>
 
