@@ -137,6 +137,15 @@ function toggleFolder(path: string) {
   saveShut()
 }
 
+/**
+ * A remote folded away under its name, kept with the folders: `remote:origin`
+ * cannot be mistaken for a folder, whose path always has a second colon.
+ * Searching opens it, the same as it opens a shut folder, so a match is never
+ * hidden under a name you would have to think to click.
+ */
+const remoteKey = (remote: string) => `remote:${remote}`
+const remoteShut = (remote: string) => !filter.value.trim() && shut.has(remoteKey(remote))
+
 function readShut(): string[] {
   try {
     const saved = JSON.parse(localStorage.getItem(FOLDERS_KEY) ?? '[]')
@@ -602,21 +611,35 @@ const remoteCount = computed(() =>
  */
 const remoteShelves = computed(() => {
   let budget = remoteShown.value
-  const shelves: { remote: string; rows: Shelf<RemoteRef>[] }[] = []
+  const shelves: { remote: string; shut: boolean; count: number; rows: Shelf<RemoteRef>[] }[] =
+    []
   for (const group of remoteGroups.value) {
-    if (budget <= 0) break
+    // A folded remote draws no rows, so it costs the list nothing and stays on
+    // screen however many branches the remotes above it have.
+    if (remoteShut(group.remote)) {
+      shelves.push({ remote: group.remote, shut: true, count: group.branches.length, rows: [] })
+      continue
+    }
+    if (budget <= 0) continue
     const branches = group.branches.slice(0, budget)
     budget -= branches.length
     shelves.push({
       remote: group.remote,
+      shut: false,
+      count: group.branches.length,
       rows: shelve(branches, `remote:${group.remote}`, remotePin(group.remote))
     })
   }
   return shelves
 })
 
-/** How many the filter found but the list is not drawing yet. */
-const remoteMore = computed(() => Math.max(0, remoteCount.value - remoteShown.value))
+/** How many the filter found but the list is not drawing yet, folded remotes aside. */
+const remoteMore = computed(() => {
+  const open = remoteGroups.value
+    .filter((group) => !remoteShut(group.remote))
+    .reduce((sum, group) => sum + group.branches.length, 0)
+  return Math.max(0, open - remoteShown.value)
+})
 
 /** Asks for the next hundred once the end of the list is nearly in view. */
 function onRemoteScroll(event: Event) {
@@ -1668,10 +1691,13 @@ async function removeSubmodule(one: Submodule) {
         <div v-for="group in remoteShelves" :key="group.remote">
           <div
             class="remote-name"
-            :title="group.remote"
+            :title="group.shut ? `Show the branches on ${group.remote}` : `Hide the branches on ${group.remote}`"
+            @click="toggleFolder(remoteKey(group.remote))"
             @contextmenu="remoteHeaderMenu($event, group.remote)"
           >
+            <ChevronRight :size="10" class="chev" :class="{ down: !group.shut }" />
             <Cloud :size="11" /> {{ group.remote }}
+            <span v-if="group.shut" class="shut-count">{{ group.count }}</span>
           </div>
           <template v-for="row in group.rows" :key="row.key">
             <button
@@ -2510,9 +2536,20 @@ async function removeSubmodule(one: Submodule) {
   color: var(--text-faint);
 }
 
-/* Right-clickable, so it says so on the way past. */
+/* Clicked to fold, right-clicked for the rest, so it says so on the way past. */
+.remote-name {
+  cursor: pointer;
+  user-select: none;
+}
+
 .remote-name:hover {
   color: var(--text-dim);
+}
+
+/* A folded remote still says how much it is holding. */
+.shut-count {
+  font-weight: 500;
+  font-variant-numeric: tabular-nums;
 }
 
 /* Empty states read as a quiet sentence under the heading, lined up with the
