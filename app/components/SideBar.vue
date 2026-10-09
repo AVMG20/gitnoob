@@ -4,6 +4,7 @@ import { invoke } from '~/composables/useInvoke'
 import {
   Archive,
   ArrowDown,
+  ArrowRightLeft,
   ArrowUp,
   ChevronRight,
   Cloud,
@@ -48,7 +49,10 @@ import { useReview } from '~/composables/useReview'
 import { useConfig } from '~/composables/useConfig'
 
 /** A worktree row opens its folder as a project tab, which is the shell's job. */
-const emit = defineEmits<{ open: [path: string]; enter: [one: Submodule] }>()
+const emit = defineEmits<{
+  open: [path: string, replace?: string]
+  enter: [one: Submodule]
+}>()
 
 const git = useGit()
 const store = git.store
@@ -1255,13 +1259,21 @@ function describeWorktree(tree: Worktree) {
   const lines = [tree.path, tree.branch ? `On ${tree.branch}` : 'Detached HEAD']
   if (tree.is_main) lines.push('The main folder — the repository itself lives here.')
   if (tree.locked) lines.push('Locked.')
-  lines.push(tree.is_current ? 'Open in this tab.' : 'Click to open it as a tab.')
+  if (tree.is_current) lines.push('Open in this tab.')
+  else if (replacesTab.value) lines.push('Click to open it in this tab.')
+  else lines.push('Click to open it as a tab.')
   return lines.join('\n')
 }
 
-function openWorktree(tree: Worktree) {
+/** Whether a click on a worktree swaps this tab over to it. Off by default. */
+const replacesTab = computed(() => config.settings.value?.worktree_replaces_tab === true)
+
+/** Opens a worktree, as a tab of its own or in place of this one. */
+function openWorktree(tree: Worktree, inPlace = replacesTab.value) {
   if (tree.is_current) return
-  emit('open', tree.path)
+  const here = config.activeProject.value
+  if (inPlace && here) emit('open', tree.path, here)
+  else emit('open', tree.path)
 }
 
 /** A sibling folder named after the repository and the branch. */
@@ -1303,7 +1315,13 @@ function worktreeMenu(event: MouseEvent, tree: Worktree) {
         icon: FolderOpen,
         disabled: tree.is_current,
         hint: tree.is_current ? 'this tab' : '',
-        action: () => openWorktree(tree)
+        action: () => openWorktree(tree, false)
+      },
+      {
+        label: 'Open in this tab',
+        icon: ArrowRightLeft,
+        disabled: tree.is_current,
+        action: () => openWorktree(tree, true)
       },
       {
         label: git.revealLabel,

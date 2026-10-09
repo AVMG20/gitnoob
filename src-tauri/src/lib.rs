@@ -36,10 +36,14 @@ use tauri::{Emitter, Manager, State};
 /// `record: false` is for stepping into a submodule: it is a repository of its
 /// own and everything below has to point at it, but it is not a project the
 /// user opened and it should not turn into a tab of its own or into a recent.
+///
+/// `replace` names the tab this one takes the place of, for a worktree opened
+/// in the tab it was clicked from rather than as a tab of its own.
 #[tauri::command]
 async fn open_repo(
     path: String,
     record: Option<bool>,
+    replace: Option<String>,
     app: tauri::AppHandle,
     watching: State<'_, watch::Slot>,
     state: State<'_, AppState>,
@@ -55,12 +59,7 @@ async fn open_repo(
     if record.unwrap_or(true) {
         state.update_config(|config| {
             if let Some(profile) = config.active_mut() {
-                if !profile.projects.iter().any(|p| p.path == recorded) {
-                    profile.projects.push(config::Project {
-                        path: recorded.clone(),
-                        name: name.clone(),
-                    });
-                }
+                config::place_tab(profile, &recorded, &name, replace.as_deref());
                 config::remember_recent(profile, &recorded, &name);
                 profile.active_project = Some(recorded.clone());
             }

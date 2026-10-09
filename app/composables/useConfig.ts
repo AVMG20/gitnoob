@@ -66,6 +66,8 @@ export interface GlobalSettings {
   check_updates: boolean
   /** Check the signature on every commit the graph draws. */
   verify_signatures: boolean
+  /** Clicking a worktree turns this tab into it rather than opening a new one. */
+  worktree_replaces_tab?: boolean
 }
 
 export interface Config {

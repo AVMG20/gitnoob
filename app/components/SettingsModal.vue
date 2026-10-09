@@ -1060,6 +1060,23 @@ onMounted(async () => {
           <label class="check">
             <input
               type="checkbox"
+              :checked="config.settings.value?.worktree_replaces_tab"
+              @change="
+                patchGlobal({ worktree_replaces_tab: ($event.target as HTMLInputElement).checked })
+              "
+            />
+            <span>
+              <strong>Open worktrees in the current tab</strong>
+              <span class="faint block">
+                Clicking a worktree in the sidebar turns this tab into it, instead of opening it as
+                a tab of its own. Right-click a worktree for the other one either way.
+              </span>
+            </span>
+          </label>
+
+          <label class="check">
+            <input
+              type="checkbox"
               :checked="config.settings.value?.verify_signatures"
               @change="
                 patchGlobal({ verify_signatures: ($event.target as HTMLInputElement).checked })

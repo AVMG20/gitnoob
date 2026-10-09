@@ -140,6 +140,10 @@ pub struct Global {
     /// large page that is the slowest thing on the screen.
     #[serde(default)]
     pub verify_signatures: bool,
+    /// Clicking a worktree in the sidebar turns the current tab into it,
+    /// instead of opening it as a tab of its own.
+    #[serde(default)]
+    pub worktree_replaces_tab: bool,
     /// How big the window was when it was last closed.
     #[serde(default)]
     pub window: Option<WindowSize>,
@@ -286,6 +290,7 @@ impl Default for Global {
             show_avatars: true,
             check_updates: true,
             verify_signatures: false,
+            worktree_replaces_tab: false,
             window: None,
         }
     }
@@ -364,6 +369,38 @@ pub fn load(dir: &Path) -> Config {
 }
 
 /// Puts a repository at the top of a profile's recents, one entry per path.
+/// Puts a project in the tab strip.
+///
+/// With `replace`, the tab open on that path becomes this project, in the same
+/// place, and any other tab already showing it goes so it is not there twice.
+/// Without it, or when there is no such tab, a project that has no tab yet gets
+/// one at the end.
+pub fn place_tab(profile: &mut Profile, path: &str, name: &str, replace: Option<&str>) {
+    let project = Project {
+        path: path.to_string(),
+        name: name.to_string(),
+    };
+    if let Some(at) = replace
+        .filter(|old| *old != path)
+        .and_then(|old| profile.projects.iter().position(|p| p.path == old))
+    {
+        profile.projects[at] = project;
+        let mut seen = false;
+        profile.projects.retain(|p| {
+            if p.path != path {
+                return true;
+            }
+            let keep = !seen;
+            seen = true;
+            keep
+        });
+        return;
+    }
+    if !profile.projects.iter().any(|p| p.path == path) {
+        profile.projects.push(project);
+    }
+}
+
 pub fn remember_recent(profile: &mut Profile, path: &str, name: &str) {
     profile.recents.retain(|one| one.path != path);
     profile.recents.insert(
@@ -742,6 +779,48 @@ pub const OPENROUTER_KEY: &str = "openrouter";
 
 #[cfg(test)]
 mod tests {
+    fn tabs(profile: &super::Profile) -> Vec<&str> {
+        profile.projects.iter().map(|p| p.path.as_str()).collect()
+    }
+
+    #[test]
+    fn a_new_project_gets_a_tab_at_the_end() {
+        let mut profile = super::Profile::new("Personal", super::ForgeKind::None);
+        super::place_tab(&mut profile, "/a", "a", None);
+        super::place_tab(&mut profile, "/b", "b", None);
+        super::place_tab(&mut profile, "/a", "a", None);
+        assert_eq!(tabs(&profile), vec!["/a", "/b"]);
+    }
+
+    #[test]
+    fn replacing_a_tab_keeps_its_place() {
+        let mut profile = super::Profile::new("Personal", super::ForgeKind::None);
+        for path in ["/a", "/b", "/c"] {
+            super::place_tab(&mut profile, path, "x", None);
+        }
+        super::place_tab(&mut profile, "/b-tree", "b-tree", Some("/b"));
+        assert_eq!(tabs(&profile), vec!["/a", "/b-tree", "/c"]);
+    }
+
+    #[test]
+    fn replacing_with_a_project_that_has_a_tab_leaves_one_of_it() {
+        let mut profile = super::Profile::new("Personal", super::ForgeKind::None);
+        for path in ["/a", "/b", "/c"] {
+            super::place_tab(&mut profile, path, "x", None);
+        }
+        super::place_tab(&mut profile, "/c", "c", Some("/a"));
+        assert_eq!(tabs(&profile), vec!["/c", "/b"]);
+    }
+
+    #[test]
+    fn replacing_a_tab_that_is_not_there_adds_one() {
+        let mut profile = super::Profile::new("Personal", super::ForgeKind::None);
+        super::place_tab(&mut profile, "/a", "a", None);
+        super::place_tab(&mut profile, "/b", "b", Some("/gone"));
+        super::place_tab(&mut profile, "/a", "a", Some("/a"));
+        assert_eq!(tabs(&profile), vec!["/a", "/b"]);
+    }
+
     #[test]
     fn recents_keep_one_entry_per_repository_newest_first() {
         let mut profile = super::Profile::new("Personal", super::ForgeKind::None);

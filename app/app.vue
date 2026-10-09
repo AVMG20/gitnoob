@@ -214,8 +214,12 @@ async function fromHome(path: string) {
   await openProject(path)
 }
 
-/** Opens a project and does the on-open housekeeping GitKraken does. */
-async function openProject(path: string) {
+/**
+ * Opens a project and does the on-open housekeeping GitKraken does.
+ *
+ * `replace` is the tab it takes the place of, rather than getting its own.
+ */
+async function openProject(path: string, replace?: string) {
   // Asking for a repository is asking to look at it, so home stands down —
   // whether the ask came from the home page, a tab, or the keyboard. Ahead of
   // the work below, so a repository that is already open still leaves home.
@@ -225,7 +229,7 @@ async function openProject(path: string) {
   // waiting for it to finish that made switching feel slow.
   config.beginOpen(path)
   try {
-    if (!(await git.openRepo(path))) return
+    if (!(await git.openRepo(path, true, replace))) return
     await config.reload()
   } finally {
     config.endOpen()

@@ -860,9 +860,10 @@ export function useGit() {
    * grows a new entry every time you look inside one is a tab strip nobody
    * asked for.
    */
-  async function openRepo(path: string, record = true) {
+  /** `replace` names the tab this repository takes the place of. */
+  async function openRepo(path: string, record = true, replace?: string) {
     const info = await guard('Open repository', () =>
-      invoke<RepoInfo>('open_repo', { path, record })
+      invoke<RepoInfo>('open_repo', { path, record, replace: replace ?? null })
     )
     if (!info) return false
     // From here every call says it is about this repository, so a switch to
