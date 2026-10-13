@@ -4387,8 +4387,57 @@ fn pulling_a_diverged_branch_visits_it_and_comes_back() {
     let _ = std::fs::remove_dir_all(&bare);
 }
 
+/// The same pull made as a rebase stops the same way, and its continue is the
+/// way home. Git's own `--autostash` inside the pull finds nothing to carry,
+/// since the trip has already set the open work down.
 #[test]
-fn a_pull_that_cannot_merge_leaves_everything_as_it_was() {
+fn a_pull_that_cannot_rebase_stops_on_the_branch_and_continuing_comes_home() {
+    let sandbox = Sandbox::new("pullrebaseconflict");
+    sandbox.commit("a.txt", "one\n", "Base");
+    sandbox.git(&["checkout", "-q", "-b", "topic"]);
+    sandbox.commit("shared.txt", "base\n", "Topic base");
+    sandbox.git(&["checkout", "-q", "main"]);
+    let bare = with_origin(&sandbox, "pullrebaseconflict");
+    sandbox.git(&["branch", "-q", "--set-upstream-to=origin/topic", "topic"]);
+
+    commit_on_remote(&sandbox, &bare, "topic", "shared.txt", "theirs\n");
+    sandbox.git(&["fetch", "-q", "origin"]);
+    sandbox.git(&["checkout", "-q", "topic"]);
+    sandbox.commit("shared.txt", "ours\n", "Our version");
+    sandbox.git(&["checkout", "-q", "main"]);
+    sandbox.write("mine.txt", "half-finished\n");
+
+    let state = sandbox.state();
+    let out = remote::pull_branch(&state, "topic", Some(true)).unwrap();
+    assert_eq!(out.conflicts, vec!["shared.txt".to_string()]);
+    assert!(remote::in_progress(&state).unwrap().rebasing);
+    assert_eq!(
+        remote::in_progress(&state).unwrap().returns_to.as_deref(),
+        Some("main")
+    );
+
+    sandbox.write("shared.txt", "both\n");
+    sandbox.git(&["add", "shared.txt"]);
+    let done = remote::continue_rebase(&state).unwrap();
+    assert!(done.ok, "{}", done.message);
+    assert!(done.message.contains("Back on main"), "{}", done.message);
+    assert_eq!(current(&state), "main");
+    assert_eq!(
+        std::fs::read_to_string(sandbox.root.join("mine.txt")).unwrap(),
+        "half-finished\n"
+    );
+    assert!(sandbox.git(&["stash", "list"]).trim().is_empty());
+    assert_eq!(
+        sandbox.git(&["log", "-1", "--format=%s", "topic~1"]).trim(),
+        "Someone else's work",
+        "topic now sits on what the remote had"
+    );
+
+    let _ = std::fs::remove_dir_all(&bare);
+}
+
+#[test]
+fn a_pull_that_cannot_merge_stops_on_the_branch_and_aborting_comes_home() {
     let sandbox = Sandbox::new("pullconflict");
     sandbox.commit("a.txt", "one\n", "Base");
     sandbox.git(&["checkout", "-q", "-b", "topic"]);
@@ -4408,23 +4457,19 @@ fn a_pull_that_cannot_merge_leaves_everything_as_it_was() {
     let state = sandbox.state();
     let out = remote::pull_branch(&state, "topic", Some(false)).unwrap();
     assert!(!out.ok, "the merge cannot succeed");
-    assert!(
-        out.message.contains("left as it was"),
-        "should say so plainly: {}",
-        out.message
-    );
-    assert!(
-        out.conflicts.is_empty(),
-        "nothing to resolve: the merge was abandoned before we came home"
+    assert_eq!(out.conflicts, vec!["shared.txt".to_string()]);
+    assert_eq!(refs::describe(&state).unwrap().head, "topic");
+    assert!(remote::in_progress(&state).unwrap().merging);
+    assert_eq!(
+        remote::in_progress(&state).unwrap().returns_to.as_deref(),
+        Some("main")
     );
 
-    // The point of the exercise: we are home, nothing is half-merged, and the
-    // work in progress is where it was left.
+    // Changing your mind is the way home too.
+    let said = remote::abort_merge(&state).unwrap();
+    assert!(said.contains("Back on main"), "{said}");
     assert_eq!(refs::describe(&state).unwrap().head, "main");
-    assert!(
-        !remote::in_progress(&state).unwrap().merging,
-        "no merge left dangling"
-    );
+    assert!(!remote::in_progress(&state).unwrap().merging);
     assert!(refs::status(&state).unwrap().conflicted.is_empty());
     assert_eq!(
         std::fs::read_to_string(sandbox.root.join("mine.txt")).unwrap(),
@@ -4433,6 +4478,11 @@ fn a_pull_that_cannot_merge_leaves_everything_as_it_was() {
     assert!(
         sandbox.git(&["stash", "list"]).trim().is_empty(),
         "the stash was put back"
+    );
+    assert_eq!(
+        sandbox.git(&["log", "-1", "--format=%s", "topic"]).trim(),
+        "Our version",
+        "topic must be exactly as it was"
     );
 
     let _ = std::fs::remove_dir_all(&bare);
@@ -4959,13 +5009,196 @@ fn merging_into_the_branch_you_are_on_is_an_ordinary_merge() {
     );
 }
 
-/// A merge made on a visit to another branch that runs into conflicts is
-/// abandoned there and then. Leaving the user on a branch they did not ask to
-/// be on, mid-merge, with their own changes hidden in a stash, is the surprise
-/// the whole trip exists to avoid; the message says where to do it instead.
+/// A merge made on a visit to another branch that runs into conflicts stops
+/// there, on that branch, with the conflicts to resolve. Committing the result
+/// ends the trip: back to where you started, with your open work put back.
 #[test]
-fn a_conflicting_merge_into_another_branch_is_abandoned_and_you_come_home() {
+fn a_conflicting_merge_into_another_branch_stops_there_and_the_commit_comes_home() {
     let sandbox = Sandbox::new("stuck");
+    sandbox.commit("a.txt", "base\n", "First");
+    sandbox.git(&["checkout", "-q", "-b", "side"]);
+    sandbox.commit("a.txt", "their version\n", "On side");
+    sandbox.git(&["checkout", "-q", "main"]);
+    sandbox.commit("a.txt", "our version\n", "On main");
+    sandbox.commit("b.txt", "one\n", "Tracked");
+    // Open work of both kinds, which has to be out of the way during the
+    // merge and back afterwards.
+    sandbox.write("b.txt", "edited\n");
+    sandbox.write("notes.txt", "half-finished\n");
+
+    let state = sandbox.state();
+    let outcome = remote::merge_into(&state, "main", "side", false).unwrap();
+
+    assert!(!outcome.ok);
+    assert_eq!(outcome.conflicts, vec!["a.txt".to_string()]);
+    assert!(
+        outcome.message.contains("conflicts in a.txt") && outcome.message.contains("back to main"),
+        "{}",
+        outcome.message
+    );
+    assert_eq!(current(&state), "side");
+    let progress = remote::in_progress(&state).unwrap();
+    assert!(progress.merging);
+    assert_eq!(progress.returns_to.as_deref(), Some("main"));
+    assert!(
+        !sandbox.root.join("notes.txt").exists(),
+        "the open work waits in the stash, out of the merge"
+    );
+
+    // A commit while the merge still has conflicts is refused by git and must
+    // not set off for home.
+    assert!(work::commit(&state, "Too early", false).is_err());
+    assert_eq!(current(&state), "side");
+
+    sandbox.write("a.txt", "both versions\n");
+    sandbox.git(&["add", "a.txt"]);
+    let said = work::commit(&state, "Merge main into side", false).unwrap();
+
+    assert!(said.contains("Back on main"), "{said}");
+    assert_eq!(current(&state), "main");
+    assert!(!remote::in_progress(&state).unwrap().merging);
+    assert_eq!(remote::in_progress(&state).unwrap().returns_to, None);
+    assert_eq!(
+        sandbox
+            .git(&["log", "-1", "--format=%s %P", "side"])
+            .split_whitespace()
+            .count(),
+        6,
+        "side has the merge commit, with two parents"
+    );
+    assert_eq!(
+        std::fs::read_to_string(sandbox.root.join("notes.txt")).unwrap(),
+        "half-finished\n",
+        "the open work is back where it was"
+    );
+    assert_eq!(
+        std::fs::read_to_string(sandbox.root.join("b.txt")).unwrap(),
+        "edited\n"
+    );
+    assert!(sandbox.git(&["stash", "list"]).trim().is_empty());
+}
+
+/// A rebase made on a visit that stops on conflicts finishes the same way: the
+/// continue that completes it is the way home.
+#[test]
+fn a_conflicting_rebase_of_another_branch_comes_home_when_it_continues() {
+    let sandbox = Sandbox::new("stuck-rebase");
+    sandbox.commit("a.txt", "base\n", "First");
+    sandbox.git(&["checkout", "-q", "-b", "side"]);
+    sandbox.commit("a.txt", "their version\n", "On side");
+    sandbox.git(&["checkout", "-q", "main"]);
+    sandbox.commit("a.txt", "our version\n", "On main");
+    sandbox.write("notes.txt", "half-finished\n");
+
+    let state = sandbox.state();
+    let outcome = remote::rebase_branch(&state, "side", "main").unwrap();
+
+    assert!(!outcome.ok);
+    assert_eq!(outcome.conflicts, vec!["a.txt".to_string()]);
+    assert!(remote::in_progress(&state).unwrap().rebasing);
+
+    sandbox.write("a.txt", "both versions\n");
+    sandbox.git(&["add", "a.txt"]);
+    let done = remote::continue_rebase(&state).unwrap();
+
+    assert!(done.ok, "{}", done.message);
+    assert!(done.message.contains("Back on main"), "{}", done.message);
+    assert_eq!(current(&state), "main");
+    assert_eq!(
+        sandbox.git(&["log", "-1", "--format=%s", "side~1"]).trim(),
+        "On main",
+        "side now sits on top of main"
+    );
+    assert_eq!(
+        std::fs::read_to_string(sandbox.root.join("notes.txt")).unwrap(),
+        "half-finished\n"
+    );
+    assert!(sandbox.git(&["stash", "list"]).trim().is_empty());
+}
+
+/// Walking off the branch by hand mid-merge is your call, not a reason to be
+/// moved again later: the trip is forgotten and the stash left where it is.
+#[test]
+fn a_paused_trip_is_forgotten_once_you_leave_the_branch_yourself() {
+    let sandbox = Sandbox::new("wander");
+    sandbox.commit("a.txt", "base\n", "First");
+    sandbox.git(&["checkout", "-q", "-b", "side"]);
+    sandbox.commit("a.txt", "their version\n", "On side");
+    sandbox.git(&["checkout", "-q", "main"]);
+    sandbox.commit("a.txt", "our version\n", "On main");
+    sandbox.git(&["branch", "-q", "elsewhere"]);
+    sandbox.write("notes.txt", "half-finished\n");
+
+    let state = sandbox.state();
+    let outcome = remote::merge_into(&state, "main", "side", false).unwrap();
+    assert_eq!(outcome.conflicts.len(), 1);
+
+    sandbox.git(&["merge", "--abort"]);
+    sandbox.git(&["checkout", "-q", "elsewhere"]);
+    assert_eq!(remote::in_progress(&state).unwrap().returns_to, None);
+
+    sandbox.write("c.txt", "c\n");
+    sandbox.git(&["add", "c.txt"]);
+    let said = work::commit(&state, "Unrelated", false).unwrap();
+    assert!(said.contains("in the stash"), "{said}");
+    assert_eq!(current(&state), "elsewhere");
+    assert!(
+        !sandbox.git(&["stash", "list"]).trim().is_empty(),
+        "the open work stays in the stash for you to pick up"
+    );
+}
+
+/// The rebase pane's own continue, skip and abort end a visited rebase as
+/// surely as the conflict sheet's do, and the hint names the way home while the
+/// rebase is stopped, with HEAD detached.
+#[test]
+fn a_visited_rebase_comes_home_from_the_rebase_pane_too() {
+    for how in ["resume", "skip", "abort"] {
+        let sandbox = Sandbox::new(&format!("stuck-pane-{how}"));
+        sandbox.commit("a.txt", "base\n", "First");
+        sandbox.git(&["checkout", "-q", "-b", "side"]);
+        sandbox.commit("a.txt", "their version\n", "On side");
+        sandbox.git(&["checkout", "-q", "main"]);
+        sandbox.commit("a.txt", "our version\n", "On main");
+        sandbox.write("notes.txt", "half-finished\n");
+
+        let state = sandbox.state();
+        let outcome = remote::rebase_branch(&state, "side", "main").unwrap();
+        assert_eq!(outcome.conflicts, vec!["a.txt".to_string()]);
+        assert_eq!(
+            remote::in_progress(&state).unwrap().returns_to.as_deref(),
+            Some("main"),
+            "the hint is there while the rebase is stopped"
+        );
+
+        let said = match how {
+            "resume" => {
+                sandbox.write("a.txt", "both versions\n");
+                sandbox.git(&["add", "a.txt"]);
+                rebase::resume(&state)
+            }
+            "skip" => rebase::skip(&state),
+            _ => rebase::abort(&state),
+        }
+        .unwrap();
+
+        assert!(said.contains("Back on main"), "{how}: {said}");
+        assert_eq!(current(&state), "main", "{how}");
+        assert_eq!(
+            std::fs::read_to_string(sandbox.root.join("notes.txt")).unwrap(),
+            "half-finished\n",
+            "{how}"
+        );
+        assert!(sandbox.git(&["stash", "list"]).trim().is_empty(), "{how}");
+    }
+}
+
+/// A merge finished or abandoned outside the app leaves the trip with nothing
+/// to finish. A later commit on that branch is just a commit: it must not set
+/// off for home and pop the stash on its way.
+#[test]
+fn a_trip_whose_merge_ended_elsewhere_does_not_move_a_later_commit() {
+    let sandbox = Sandbox::new("stale-trip");
     sandbox.commit("a.txt", "base\n", "First");
     sandbox.git(&["checkout", "-q", "-b", "side"]);
     sandbox.commit("a.txt", "their version\n", "On side");
@@ -4975,31 +5208,109 @@ fn a_conflicting_merge_into_another_branch_is_abandoned_and_you_come_home() {
 
     let state = sandbox.state();
     let outcome = remote::merge_into(&state, "main", "side", false).unwrap();
+    assert_eq!(outcome.conflicts.len(), 1);
 
-    assert!(!outcome.ok);
-    assert!(
-        outcome.conflicts.is_empty(),
-        "nothing to resolve: the merge was abandoned before we came home"
-    );
-    assert!(
-        outcome.message.contains("would conflict in a.txt")
-            && outcome.message.contains("side was left as it was"),
-        "{}",
-        outcome.message
-    );
-    assert_eq!(current(&state), "main");
-    assert!(!remote::in_progress(&state).unwrap().merging);
+    // Abandoned in a terminal, and the user carries on working on side.
+    sandbox.git(&["merge", "--abort"]);
+    assert_eq!(remote::in_progress(&state).unwrap().returns_to, None);
+    sandbox.write("c.txt", "c\n");
+    sandbox.git(&["add", "c.txt"]);
+    let said = work::commit(&state, "Unrelated", false).unwrap();
+
+    assert_eq!(current(&state), "side", "an unrelated commit is not a trip");
+    assert!(said.contains("in the stash"), "{said}");
+    assert!(!sandbox.git(&["stash", "list"]).trim().is_empty());
+
+    // And a merge of its own on side later on is an ordinary one.
+    sandbox.git(&["checkout", "-q", "-b", "other", "main"]);
+    sandbox.commit("a.txt", "another version\n", "On other");
+    sandbox.git(&["checkout", "-q", "side"]);
+    let again = remote::merge(&state, "other", false).unwrap();
+    assert_eq!(again.conflicts.len(), 1);
+    assert_eq!(remote::in_progress(&state).unwrap().returns_to, None);
+    sandbox.write("a.txt", "settled\n");
+    sandbox.git(&["add", "a.txt"]);
+    let said = work::commit(&state, "Merge other", false).unwrap();
+    assert!(!said.contains("Back on"), "{said}");
+    assert_eq!(current(&state), "side");
+}
+
+/// In a linked worktree git keeps its merge state in a directory of its own,
+/// named by a `.git` file; the trip has to live and be read there too.
+#[test]
+fn a_paused_trip_in_a_linked_worktree_comes_home() {
+    let sandbox = Sandbox::new("trip-worktree");
+    sandbox.commit("a.txt", "base\n", "First");
+    sandbox.git(&["branch", "side"]);
+    sandbox.git(&["branch", "home"]);
+    sandbox.commit("a.txt", "our version\n", "On main");
+    sandbox.git(&["checkout", "-q", "side"]);
+    sandbox.commit("a.txt", "their version\n", "On side");
+    sandbox.git(&["checkout", "-q", "main"]);
+
+    let linked = sandbox.root.with_extension("linked");
+    let _ = std::fs::remove_dir_all(&linked);
+    sandbox.git(&["worktree", "add", "-q", linked.to_str().unwrap(), "home"]);
+    std::fs::write(linked.join("notes.txt"), "half-finished\n").unwrap();
+
+    let state = AppState::new(sandbox.root.join(".gitnoob-config"));
+    state.set_path(linked.clone());
+    let outcome = remote::merge_into(&state, "main", "side", false).unwrap();
+    assert_eq!(outcome.conflicts, vec!["a.txt".to_string()]);
+    assert_eq!(current(&state), "side");
     assert_eq!(
-        sandbox.git(&["log", "-1", "--format=%s", "side"]).trim(),
-        "On side",
-        "side must be exactly as it was"
+        remote::in_progress(&state).unwrap().returns_to.as_deref(),
+        Some("home")
     );
+    assert!(
+        !sandbox.root.join(".git").join("gitnoob-visit").exists(),
+        "the trip belongs to the worktree, not the main checkout"
+    );
+
+    let said = remote::abort_merge(&state).unwrap();
+    assert!(said.contains("Back on home"), "{said}");
+    assert_eq!(current(&state), "home");
+    assert_eq!(
+        std::fs::read_to_string(linked.join("notes.txt")).unwrap(),
+        "half-finished\n"
+    );
+    let _ = std::fs::remove_dir_all(&linked);
+}
+
+/// The stash that goes back on is the one the trip made, wherever it has got
+/// to in the list.
+#[test]
+fn a_trip_puts_back_its_own_stash_even_under_another() {
+    let sandbox = Sandbox::new("own-stash");
+    sandbox.commit("a.txt", "base\n", "First");
+    sandbox.commit("b.txt", "b\n", "Second");
+    sandbox.git(&["checkout", "-q", "-b", "side"]);
+    sandbox.commit("a.txt", "their version\n", "On side");
+    sandbox.git(&["checkout", "-q", "main"]);
+    sandbox.commit("a.txt", "our version\n", "On main");
+    sandbox.write("notes.txt", "half-finished\n");
+
+    let state = sandbox.state();
+    let outcome = remote::rebase_branch(&state, "side", "main").unwrap();
+    assert_eq!(outcome.conflicts.len(), 1);
+
+    // Mid-rebase, with the conflict settled, something else goes on the stash.
+    sandbox.write("a.txt", "both versions\n");
+    sandbox.git(&["add", "a.txt"]);
+    sandbox.write("b.txt", "scratch\n");
+    sandbox.git(&["stash", "push", "-q", "-m", "by hand", "--", "b.txt"]);
+
+    let done = remote::continue_rebase(&state).unwrap();
+    assert!(done.ok, "{}", done.message);
+    assert_eq!(current(&state), "main");
     assert_eq!(
         std::fs::read_to_string(sandbox.root.join("notes.txt")).unwrap(),
         "half-finished\n",
-        "the open work is back where it was"
+        "the trip's own stash went back on"
     );
-    assert!(sandbox.git(&["stash", "list"]).trim().is_empty());
+    let left = sandbox.git(&["stash", "list"]);
+    assert_eq!(left.lines().count(), 1, "{left}");
+    assert!(left.contains("by hand"), "{left}");
 }
 
 #[test]

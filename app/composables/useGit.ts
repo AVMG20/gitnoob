@@ -188,6 +188,11 @@ export interface InProgress {
   applied_stash: string | null
   /** The message git already wrote for it, e.g. "Merge branch 'x' into 'y'". */
   prepared: string | null
+  /**
+   * Set when this merge or rebase was started for another branch: the branch
+   * you were on, which finishing or aborting it takes you back to.
+   */
+  returns_to: string | null
 }
 
 export interface StatusEntry {
@@ -769,6 +774,15 @@ function paint(snapshot: Snapshot) {
   store.stashes = snapshot.stashes
   store.history = snapshot.history
   store.progress = snapshot.progress
+}
+
+/**
+ * How loudly to report a merge-like outcome. Stopping on conflicts is not a
+ * failure when it was done on another branch's behalf: you are left on that
+ * branch with the resolver open, which is the answer rather than an error.
+ */
+function level(outcome: MergeOutcome): LogLevel {
+  return outcome.ok || outcome.conflicts.length ? 'info' : 'error'
 }
 
 /**
@@ -1666,7 +1680,7 @@ export function useGit() {
       const outcome = await guard('Pull', () =>
         invoke<MergeOutcome>('pull_branch', { branch, rebase })
       )
-      if (outcome) note(`Pull ${branch}: ${outcome.message}`, outcome.ok ? 'info' : 'error')
+      if (outcome) note(`Pull ${branch}: ${outcome.message}`, level(outcome))
       await refresh()
       return outcome
     },
@@ -1752,7 +1766,7 @@ export function useGit() {
         invoke<MergeOutcome>('merge_into', { source, target, noFf })
       )
       if (outcome) {
-        note(`Merge ${source} into ${target}: ${outcome.message}`, outcome.ok ? 'info' : 'error')
+        note(`Merge ${source} into ${target}: ${outcome.message}`, level(outcome))
       }
       await refresh()
       return outcome
@@ -1762,7 +1776,7 @@ export function useGit() {
         invoke<MergeOutcome>('rebase_branch', { branch, onto })
       )
       if (outcome) {
-        note(`Rebase ${branch} onto ${onto}: ${outcome.message}`, outcome.ok ? 'info' : 'error')
+        note(`Rebase ${branch} onto ${onto}: ${outcome.message}`, level(outcome))
       }
       await refresh()
       return outcome

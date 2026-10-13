@@ -28,6 +28,9 @@ onUnmounted(() => window.removeEventListener('keydown', onKey))
       <span class="faint">
         {{ remaining }} {{ remaining === 1 ? 'file' : 'files' }} left
       </span>
+      <span v-if="store.progress?.returns_to" class="home" data-test="returns-to">
+        Finishing or aborting takes you back to {{ store.progress.returns_to }}
+      </span>
       <span class="grow" />
       <button
         v-if="store.progress?.restoring"
@@ -116,6 +119,12 @@ onUnmounted(() => window.removeEventListener('keydown', onKey))
 
 .warn {
   color: var(--amber);
+}
+
+/* Where you will be once this is over, for a merge started from elsewhere. */
+.home {
+  color: var(--text-faint);
+  font-size: 12px;
 }
 
 .grow {

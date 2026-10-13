@@ -687,29 +687,39 @@ fn message_of(root: &Path, oid: &str) -> Option<String> {
 }
 
 /// Carries on from wherever the rebase stopped.
+///
+/// A rebase a visit left stopped on another branch's behalf ends here as
+/// surely as from the conflict sheet, so this one goes home too.
 pub fn resume(state: &AppState) -> Result<String, String> {
     let root = state.path()?;
     let git_dir = crate::remote::git_dir(&root)?;
+    let leg = crate::remote::trip(state);
     let out = git_cmd::run_with_env(&root, &["rebase", "--continue"], &[("GIT_EDITOR", "true")])?;
-    settle(&git_dir, out, "Rebase finished")
+    settle(&git_dir, out, "Rebase finished").map(|said| crate::remote::and_home(state, leg, said))
 }
 
 /// Leaves the commit it stopped at out and moves on.
 pub fn skip(state: &AppState) -> Result<String, String> {
     let root = state.path()?;
     let git_dir = crate::remote::git_dir(&root)?;
+    let leg = crate::remote::trip(state);
     let out = git_cmd::run_with_env(&root, &["rebase", "--skip"], &[("GIT_EDITOR", "true")])?;
-    settle(&git_dir, out, "Rebase finished")
+    settle(&git_dir, out, "Rebase finished").map(|said| crate::remote::and_home(state, leg, said))
 }
 
 /// Puts the branch back exactly as it was before the rebase started.
 pub fn abort(state: &AppState) -> Result<String, String> {
     let root = state.path()?;
     let git_dir = crate::remote::git_dir(&root)?;
+    let leg = crate::remote::trip(state);
     let out = git_cmd::run(&root, &["rebase", "--abort"])?;
     clear_marks(&git_dir);
     if out.ok {
-        Ok("Rebase abandoned; the branch is as it was".to_string())
+        Ok(crate::remote::and_home(
+            state,
+            leg,
+            "Rebase abandoned; the branch is as it was".to_string(),
+        ))
     } else {
         Err(one_message(&out))
     }

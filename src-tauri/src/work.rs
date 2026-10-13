@@ -183,6 +183,10 @@ pub fn commit(state: &AppState, message: &str, amend: bool) -> Result<String, St
     let before = journal::head_oid(state);
     let branch = journal::current_branch(state);
 
+    // Read now: whether this commit is the one that concludes a paused visit's
+    // merge depends on what git was in the middle of before it.
+    let leg = crate::remote::trip(state);
+
     let mut args = vec!["commit", "-m", message];
     if amend {
         args.push("--amend");
@@ -202,7 +206,9 @@ pub fn commit(state: &AppState, message: &str, amend: bool) -> Result<String, St
         Mode::Soft,
         false,
     );
-    Ok(output)
+    // The commit that concludes a merge made on another branch's behalf is
+    // also the end of that trip.
+    Ok(crate::remote::and_home(state, leg, output))
 }
 
 /// Loads HEAD's message so the amend dialog can start from it, and reports
@@ -1084,11 +1090,16 @@ pub fn auto_stash_on_top(root: &Path) -> bool {
 /// be restored — "conflicts in index. Try without --index." — and that one
 /// case is retried plain: the split is lost, the work is not.
 fn pop_top(root: &Path) -> Result<String, String> {
-    git_cmd::run_checked(root, &["stash", "pop", "--index"]).or_else(|error| {
+    pop_stash(root, "stash@{0}")
+}
+
+/// Pops one stash by its `stash@{n}` selector, the same way as [`pop_top`].
+pub fn pop_stash(root: &Path, selector: &str) -> Result<String, String> {
+    git_cmd::run_checked(root, &["stash", "pop", "--index", selector]).or_else(|error| {
         if has_unmerged(root) {
             Err(error)
         } else {
-            git_cmd::run_checked(root, &["stash", "pop"])
+            git_cmd::run_checked(root, &["stash", "pop", selector])
         }
     })
 }

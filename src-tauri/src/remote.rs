@@ -239,14 +239,12 @@ fn branch_oid(state: &AppState, branch: &str) -> Option<String> {
 /// `target` is checked out, `act` runs on it, and the way home is the reverse.
 /// `done` is what to say when it all worked.
 ///
-/// Conflicts are the one thing that does not travel. A half-done merge lives in
-/// the working tree, and leaving the user standing in one on a branch they did
-/// not ask to be on, with their own changes hidden in a stash, is exactly the
-/// surprise this application exists to avoid. So the operation is abandoned,
-/// the trip is undone, and the message says what to do instead: check the
-/// branch out and do it there, where the resolver can open on it. Nothing is
-/// changed and nothing is lost — the same repository as before, one sentence
-/// wiser.
+/// Conflicts pause the trip rather than end it. A half-done merge can only be
+/// finished in the working tree, so that is where you are left: on `target`,
+/// with the resolver open on what clashed, and your own open work waiting in
+/// the stash. The way home is written down (see [`come_home`]), and finishing
+/// or aborting the merge or rebase takes it — back to where you started, with
+/// your changes put back.
 fn visit(
     state: &AppState,
     target: &str,
@@ -259,6 +257,7 @@ fn visit(
         .ok_or_else(|| "HEAD is detached; check out a branch first".to_string())?;
 
     let held = work::stash_before(state, reason)?;
+    let stash = held.stashed.then(|| journal::stash_ref(&path)).flatten();
 
     let switched = git_cmd::run(&path, &["switch", "--", target])?;
     if !switched.ok {
@@ -276,20 +275,50 @@ fn visit(
         });
     }
 
-    let mut outcome = act(state)?;
+    // An error is still a reason to go home: stopping here would strand the
+    // user on `target` with their work in the stash and nobody saying so.
+    let mut outcome = act(state).unwrap_or_else(|message| MergeOutcome {
+        ok: false,
+        message,
+        conflicts: Vec::new(),
+    });
 
-    if !outcome.conflicts.is_empty() {
-        // Only one of these applies; the other reports nothing to abort.
-        let _ = git_cmd::run(&path, &["merge", "--abort"]);
-        let _ = git_cmd::run(&path, &["rebase", "--abort"]);
-        outcome.message = format!(
-            "{} would conflict in {}. {target} was left as it was: check it out and try again \
-             there to resolve them.",
-            capitalised(reason),
-            outcome.conflicts.join(", ")
-        );
-        outcome.conflicts.clear();
-        outcome.ok = false;
+    // Only a merge or rebase git is part-way through can be finished later.
+    // Conflicts with nothing running fall through to the way home, which says
+    // plainly where it stopped.
+    let paused = git_dir(&path).ok().and_then(|dir| underway(&dir));
+    if let (false, Some(underway)) = (outcome.conflicts.is_empty(), paused) {
+        let trip = Trip {
+            original: original.clone(),
+            target: target.to_string(),
+            stash,
+            underway,
+        };
+        outcome.message = match write_trip(&path, &trip) {
+            Ok(()) => format!(
+                "{} stopped on conflicts in {}. You are on {target} to resolve them; finishing \
+                 or aborting takes you back to {original}{}.",
+                capitalised(reason),
+                outcome.conflicts.join(", "),
+                if held.stashed {
+                    " and puts your open changes back"
+                } else {
+                    ""
+                }
+            ),
+            Err(error) => format!(
+                "{} stopped on conflicts in {}. You are on {target} to resolve them, and will \
+                 have to go back to {original} yourself: {error}{}",
+                capitalised(reason),
+                outcome.conflicts.join(", "),
+                if held.stashed {
+                    " Your open changes are in the stash."
+                } else {
+                    ""
+                }
+            ),
+        };
+        return Ok(outcome);
     } else if outcome.ok {
         outcome.message = done.to_string();
     }
@@ -319,6 +348,194 @@ fn visit(
         Ok(None) => {}
     }
     Ok(outcome)
+}
+
+/// Where a paused [`visit`] writes its way home, inside the git directory so
+/// it goes wherever the repository goes and survives a restart.
+const TRIP: &str = "gitnoob-visit";
+
+/// A [`visit`] that stopped on conflicts: the branch it left, the one it is
+/// standing on, the stash its open work went into, and which merge or rebase it
+/// is waiting on.
+pub struct Trip {
+    original: String,
+    target: String,
+    /// The stash commit, so the one put back is this trip's own and not
+    /// whatever happens to be on top of the list by then.
+    stash: Option<String>,
+    /// What [`underway`] said when the trip was written. The trip belongs to
+    /// that merge or rebase and no other: one finished or abandoned in a
+    /// terminal leaves it with nothing to wait for, and a later merge on the
+    /// same branch is not the way home.
+    underway: String,
+}
+
+/// The merge or rebase git is part-way through, as something that tells one
+/// from another: the commit being merged, or where a rebase started and what
+/// it is going onto. Read from git's own files, so it is the same on every
+/// step of a rebase and gone the moment it ends.
+fn underway(git_dir: &std::path::Path) -> Option<String> {
+    let read = |name: &str| {
+        std::fs::read_to_string(git_dir.join(name))
+            .ok()
+            .map(|text| text.split_whitespace().collect::<Vec<_>>().join(" "))
+            .filter(|text| !text.is_empty())
+    };
+    if let Some(head) = read("MERGE_HEAD") {
+        return Some(format!("merge {head}"));
+    }
+    ["rebase-merge", "rebase-apply"].iter().find_map(|dir| {
+        let started = read(&format!("{dir}/orig-head"))?;
+        let onto = read(&format!("{dir}/onto")).unwrap_or_default();
+        Some(format!("rebase {started} {onto}"))
+    })
+}
+
+fn write_trip(root: &std::path::Path, trip: &Trip) -> Result<(), String> {
+    let file = git_dir(root)?.join(TRIP);
+    let text = format!(
+        "{}\n{}\n{}\n{}\n",
+        trip.original,
+        trip.target,
+        trip.stash.as_deref().unwrap_or(""),
+        trip.underway
+    );
+    std::fs::write(&file, text).map_err(|e| format!("Could not write {}: {e}", file.display()))
+}
+
+fn read_trip(git_dir: &std::path::Path) -> Option<Trip> {
+    let text = std::fs::read_to_string(git_dir.join(TRIP)).ok()?;
+    let mut lines = text.lines();
+    Some(Trip {
+        original: lines.next()?.to_string(),
+        target: lines.next()?.to_string(),
+        stash: Some(lines.next()?.trim().to_string()).filter(|oid| !oid.is_empty()),
+        underway: lines.next()?.trim().to_string(),
+    })
+}
+
+/// Where a paused [`visit`] stands, read before something that may end it.
+pub enum Leg {
+    /// No trip, or one waiting on something other than what git is doing now.
+    None,
+    /// The trip whose merge or rebase git is part-way through right now.
+    Underway(Trip),
+    /// A trip with nothing left to wait for: its merge or rebase was finished
+    /// or abandoned outside the app.
+    Stale(Trip),
+}
+
+/// The paused [`visit`], if there is one, and whether it is still waiting.
+///
+/// Read *before* a commit, continue or abort, and handed to [`come_home`]
+/// after: whether that step is what ends the trip depends on what git was in
+/// the middle of when it started, and that is gone by the time it is over.
+pub fn trip(state: &AppState) -> Leg {
+    let Ok(root) = state.path() else {
+        return Leg::None;
+    };
+    let Ok(git_dir) = git_dir(&root) else {
+        return Leg::None;
+    };
+    let Some(trip) = read_trip(&git_dir) else {
+        return Leg::None;
+    };
+    match underway(&git_dir) {
+        Some(now) if now == trip.underway => Leg::Underway(trip),
+        Some(_) => Leg::None,
+        None => Leg::Stale(trip),
+    }
+}
+
+/// The branch a paused [`visit`] goes back to once its merge or rebase is done.
+pub fn returns_to(state: &AppState) -> Option<String> {
+    match trip(state) {
+        Leg::Underway(trip) => Some(trip.original),
+        _ => None,
+    }
+}
+
+/// Finishes a paused [`visit`], once there is nothing left to finish.
+///
+/// Called after everything that can end a merge or a rebase — a commit, a
+/// continue, a skip, an abort — with what [`trip`] said before it ran. While
+/// git is still part-way through, the trip waits. Once it is done, you are
+/// taken back to the branch you started on and your open work comes out of the
+/// stash. Answers with what to tell the user, or nothing when there was no
+/// trip to finish.
+///
+/// A trip whose merge ended somewhere else, or one you have wandered off on
+/// your own in the meantime, is simply forgotten: being moved somewhere then
+/// would be the surprise. The stash is left for you to pick up, and you are
+/// told where it is.
+pub fn come_home(state: &AppState, leg: Leg) -> Option<String> {
+    let root = state.path().ok()?;
+    let (trip, stale) = match leg {
+        Leg::None => return None,
+        Leg::Underway(trip) => (trip, false),
+        Leg::Stale(trip) => (trip, true),
+    };
+    let progress = in_progress(state).ok()?;
+    if progress.merging
+        || progress.rebasing
+        || progress.cherry_picking
+        || progress.reverting
+        || has_unmerged(&root)
+    {
+        // Still going: either the very same merge or rebase, which the trip
+        // keeps waiting on, or a stale trip that can wait for another time.
+        return None;
+    }
+    let _ = std::fs::remove_file(git_dir(&root).ok()?.join(TRIP));
+
+    let stash_at = trip
+        .stash
+        .as_deref()
+        .and_then(|oid| journal::stash_index(state, oid));
+    let left_in_stash = format!("Your open changes from {} are in the stash.", trip.original);
+    if stale || journal::current_branch(state).as_deref() != Some(trip.target.as_str()) {
+        return stash_at.map(|_| left_in_stash);
+    }
+
+    let back = match git_cmd::run(&root, &["switch", "--", &trip.original]) {
+        Ok(back) => back,
+        Err(error) => return Some(format!("Could not return to {}: {error}", trip.original)),
+    };
+    if !back.ok {
+        let mut message = format!(
+            "Could not return to {}: {}",
+            trip.original,
+            back.stderr.trim()
+        );
+        if stash_at.is_some() {
+            message = format!("{message}\n{left_in_stash}");
+        }
+        return Some(message);
+    }
+
+    let note = match (trip.stash.is_some(), stash_at) {
+        (false, _) => return Some(format!("Back on {}", trip.original)),
+        // Popped or dropped by hand while the trip was paused.
+        (true, None) => format!(
+            "The stash holding your open changes from {} is no longer on the list.",
+            trip.original
+        ),
+        (true, Some(at)) => match work::pop_stash(&root, &format!("stash@{{{at}}}")) {
+            Ok(_) => "Local changes were stashed and put back".to_string(),
+            Err(error) => format!(
+                "Your changes are safe in the stash, but putting them back hit a problem: {error}"
+            ),
+        },
+    };
+    Some(format!("Back on {}. {note}", trip.original))
+}
+
+/// `text`, with whatever [`come_home`] had to say underneath it.
+pub fn and_home(state: &AppState, leg: Leg, text: String) -> String {
+    match come_home(state, leg) {
+        Some(note) => format!("{}\n{note}", text.trim()),
+        None => text,
+    }
 }
 
 /// "merging a into b" as the start of a sentence.
@@ -479,7 +696,9 @@ pub fn merge(state: &AppState, branch: &str, no_ff: bool) -> Result<MergeOutcome
 
 pub fn abort_merge(state: &AppState) -> Result<String, String> {
     let path = state.path()?;
-    git_cmd::run_checked(&path, &["merge", "--abort"])
+    let leg = trip(state);
+    let out = git_cmd::run_checked(&path, &["merge", "--abort"])?;
+    Ok(and_home(state, leg, out))
 }
 
 /// Merges one branch into another, whichever one is checked out.
@@ -655,14 +874,21 @@ pub fn rebase(state: &AppState, onto: &str) -> Result<MergeOutcome, String> {
 
 pub fn abort_rebase(state: &AppState) -> Result<String, String> {
     let path = state.path()?;
-    git_cmd::run_checked(&path, &["rebase", "--abort"])
+    let leg = trip(state);
+    let out = git_cmd::run_checked(&path, &["rebase", "--abort"])?;
+    Ok(and_home(state, leg, out))
 }
 
 /// Continues a rebase after its conflicts have been resolved and staged.
 pub fn continue_rebase(state: &AppState) -> Result<MergeOutcome, String> {
     let path = state.path()?;
+    let leg = trip(state);
     let out = git_cmd::run(&path, &["-c", "core.editor=true", "rebase", "--continue"])?;
-    Ok(settled(state, out))
+    let mut outcome = settled(state, out);
+    if outcome.ok {
+        outcome.message = and_home(state, leg, outcome.message);
+    }
+    Ok(outcome)
 }
 
 /// Whether git is part-way through something the user has to finish.
@@ -689,6 +915,9 @@ pub struct InProgress {
     /// message it is already holding is a box asking a question it knows the
     /// answer to.
     pub prepared: Option<String>,
+    /// The branch a merge or rebase started from another branch goes back to
+    /// once it is finished or aborted.
+    pub returns_to: Option<String>,
 }
 
 /// Where git keeps its own state for this working tree.
@@ -735,6 +964,7 @@ pub fn in_progress(state: &AppState) -> Result<InProgress, String> {
         restoring: !running && has_unmerged(&root) && work::auto_stash_on_top(&root),
         applied_stash: (!running).then(|| work::applied_stash(&root)).flatten(),
         prepared: prepared_message(&git_dir),
+        returns_to: returns_to(state),
     })
 }
 

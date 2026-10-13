@@ -190,7 +190,8 @@ onMounted(() => {
     reverting: false,
     restoring: false,
     applied_stash: null,
-    prepared: "Merge branch 'feature/ports'"
+    prepared: "Merge branch 'feature/ports'",
+    returns_to: null
   }
   git.store.resolving = Object.keys(FILES)[0] ?? null
 })

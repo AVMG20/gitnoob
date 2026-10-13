@@ -804,7 +804,10 @@ function localMenu(event: MouseEvent, name: string, upstream: string | null) {
         icon: Download,
         disabled: !upstream,
         hint: upstream ? '' : 'no upstream',
-        action: () => git.pullBranch(name)
+        action: async () => {
+          const outcome = await git.pullBranch(name)
+          if (outcome?.conflicts.length) store.resolving = outcome.conflicts[0] ?? null
+        }
       },
       {
         label: upstream ? `Push to ${upstream}` : 'Push and set upstream',
