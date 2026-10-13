@@ -712,6 +712,19 @@ onUnmounted(() => window.removeEventListener('keydown', onKey))
         <span class="divider" />
       </template>
 
+      <!-- The same box ⌘F opens, for whoever does not know the key. It searches
+           whichever view is on screen, so it sits outside the two modes, and a
+           press leaves the selection alone so selected text still starts it. -->
+      <button
+        class="btn tool"
+        :class="{ on: finding }"
+        :title="finding ? 'Close the find box (Esc)' : `Find in the ${diffMode.mode} (${keyLabel('mod+f')})`"
+        @mousedown.prevent
+        @click="finding ? closeFind() : openFind()"
+      >
+        <Search :size="14" />
+      </button>
+
       <!-- Always here, whichever view is on screen. It used to appear along
            with the file view and shove everything beside it sideways, so
            switching views moved the buttons under the pointer. Blame is still

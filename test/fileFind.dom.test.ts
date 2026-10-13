@@ -185,6 +185,38 @@ describe('finding text in an open file', () => {
     expect(count(w)).toBe('1 of 1')
   })
 
+  it('opens and closes from the button in the header, in both views', async () => {
+    for (const mode of ['file', 'diff'] as const) {
+      const w = await show(mode)
+      // The one header button with the magnifying glass on it.
+      const button = () =>
+        w.findAll('header.bar .tool').find((one) => one.find('svg.lucide-search').exists())!
+      expect(button()).toBeTruthy()
+
+      await button().trigger('click')
+      await flushPromises()
+      expect(w.find('.find').exists()).toBe(true)
+      expect(document.activeElement).toBe(w.find('.find input').element)
+      expect(button().classes()).toContain('on')
+
+      await search(w, 'store')
+      expect(w.findAll('mark.find-hit').length).toBeGreaterThan(0)
+
+      await button().trigger('click')
+      await flushPromises()
+      expect(w.find('.find').exists()).toBe(false)
+      w.unmount()
+      wrapper = null
+    }
+  })
+
+  it('opens on the shortcut in the diff view too', async () => {
+    const w = await show('diff')
+    await press('f', mod)
+    expect(w.find('.find').exists()).toBe(true)
+    expect(document.activeElement).toBe(w.find('.find input').element)
+  })
+
   it('keeps the words for the next time it is opened', async () => {
     const w = await show('file')
     await press('f', mod)
