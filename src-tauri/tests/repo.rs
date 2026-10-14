@@ -1235,6 +1235,107 @@ fn the_first_column_follows_the_chosen_trunk() {
     assert_ne!(lane_of("Main work"), 0);
 }
 
+/// A main line, a `topic` with one commit on its upstream it does not have
+/// yet, and an `other` branch nobody asked about.
+fn solo_sandbox() -> Sandbox {
+    let sandbox = Sandbox::new("solo");
+    sandbox.commit("a.txt", "1\n", "Root");
+    sandbox.commit("a.txt", "2\n", "Second");
+    sandbox.git(&["checkout", "-q", "-b", "topic"]);
+    sandbox.commit("t.txt", "1\n", "Topic one");
+    sandbox.commit("t.txt", "2\n", "Topic two");
+    sandbox.commit("t.txt", "3\n", "Topic three");
+    // Only the remote has the third one: a pull's worth, not pulled yet.
+    let ahead = sandbox.git(&["rev-parse", "HEAD"]).trim().to_string();
+    sandbox.git(&["remote", "add", "origin", "https://example.invalid/repo.git"]);
+    sandbox.git(&["update-ref", "refs/remotes/origin/topic", &ahead]);
+    sandbox.git(&["branch", "-q", "--set-upstream-to=origin/topic"]);
+    sandbox.git(&["reset", "-q", "--hard", "HEAD~1"]);
+    sandbox.git(&["checkout", "-q", "-b", "other", "main"]);
+    sandbox.commit("o.txt", "o\n", "Other work");
+    sandbox.git(&["checkout", "-q", "main"]);
+    sandbox.commit("a.txt", "3\n", "Main later");
+    sandbox
+}
+
+fn solo(names: &[&str]) -> Vec<String> {
+    names.iter().map(|name| name.to_string()).collect()
+}
+
+#[test]
+fn a_soloed_branch_is_drawn_alone_with_its_upstream() {
+    let sandbox = solo_sandbox();
+    let state = sandbox.state();
+
+    let page = graph::soloed(&state, 500, &solo(&["refs/heads/topic"])).unwrap();
+    let summaries: Vec<&str> = page.rows.iter().map(|row| row.summary.as_str()).collect();
+    assert_eq!(
+        summaries,
+        ["Topic three", "Topic two", "Topic one", "Second", "Root"],
+        "only what topic and its upstream reach"
+    );
+    // One straight line down the leftmost column, the upstream's commit
+    // included, rather than a branch drawn beside an empty trunk column.
+    assert!(page.rows.iter().all(|row| row.lane == 0), "{summaries:?}");
+    assert!(page.rows[0].unpulled, "the upstream's commit is still the one to pull");
+
+    // Everything is back once the solo is.
+    let whole = graph::soloed(&state, 500, &[]).unwrap();
+    assert!(whole.rows.iter().any(|row| row.summary == "Other work"));
+    assert!(whole.rows.iter().any(|row| row.summary == "Main later"));
+}
+
+#[test]
+fn soloing_alongside_the_trunk_keeps_the_trunk_in_its_column() {
+    let sandbox = solo_sandbox();
+    let page = graph::soloed(
+        &sandbox.state(),
+        500,
+        &solo(&["refs/heads/topic", "refs/heads/main"]),
+    )
+    .unwrap();
+    let lane_of = |summary: &str| {
+        page.rows
+            .iter()
+            .find(|row| row.summary == summary)
+            .unwrap_or_else(|| panic!("{summary} should be drawn"))
+            .lane
+    };
+    assert_eq!(lane_of("Main later"), 0);
+    assert_ne!(lane_of("Topic two"), 0);
+    assert!(!page.rows.iter().any(|row| row.summary == "Other work"));
+}
+
+#[test]
+fn a_remote_branch_can_be_soloed_on_its_own() {
+    let sandbox = solo_sandbox();
+    let page = graph::soloed(&sandbox.state(), 500, &solo(&["refs/remotes/origin/topic"])).unwrap();
+    assert_eq!(page.rows.len(), 5);
+    assert_eq!(page.rows[0].summary, "Topic three");
+}
+
+#[test]
+fn a_solo_of_branches_that_are_gone_draws_everything() {
+    let sandbox = solo_sandbox();
+    let page = graph::soloed(&sandbox.state(), 500, &solo(&["refs/heads/deleted"])).unwrap();
+    assert!(page.rows.iter().any(|row| row.summary == "Other work"));
+    assert!(page.rows.iter().any(|row| row.summary == "Topic two"));
+}
+
+#[test]
+fn depth_counts_the_rows_of_the_soloed_graph() {
+    let sandbox = solo_sandbox();
+    let state = sandbox.state();
+    let rev = |what: &str| sandbox.git(&["rev-parse", what]).trim().to_string();
+    let topic = solo(&["refs/heads/topic"]);
+
+    // Root is the last of five rows, whatever the whole graph would say.
+    assert_eq!(graph::depth(&state, &rev("main~2"), &topic).unwrap(), Some(4));
+    // A commit the solo leaves out is not in its walk at all.
+    assert_eq!(graph::depth(&state, &rev("other"), &topic).unwrap(), None);
+    assert!(graph::depth(&state, &rev("other"), &[]).unwrap().is_some());
+}
+
 #[test]
 fn graph_paginates() {
     let sandbox = Sandbox::new("page");

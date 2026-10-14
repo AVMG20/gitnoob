@@ -58,6 +58,8 @@ A few decisions that are easy to undo by accident:
 - **The line you are on is marked** from HEAD's commit down to where it runs into another line (`Segment.current`), and the frontend draws it a shade brighter. Not above HEAD: that is the rest of the branch, or the upstream's commits, and neither is where you are.
 - **Squash and rebase merges are found by patch-id.** Git keeps no record of where a squash commit came from, so a branch merged that way dangles. Every branch tip nothing is built on has the patch from its fork point to its tip measured, and the single-parent commits above it are asked whether they make the same patch; a rebase is the same question one commit at a time. A match is drawn as a broken line from the commit that carries the work down to the branch tip (`GraphRow.carries`). Only the page is looked at, and only against the trunk's fork point: a wrong link is worse than a missing one. Patch-ids are cached for the life of the process, since a commit's content never changes.
 
+**Soloing** draws only some branches (`graph::soloed`, `store.solo`). The walk starts from those refs alone, a local branch bringing its upstream along, and the first one named takes the leftmost column unless the trunk is among them. `commit_depth` takes the same list, since it has to count the same rows. The solo is kept per repository for the session, not across restarts, and a soloed branch that disappears is dropped on the next refresh.
+
 A new branch is named in the graph itself, on the row it starts from (`useBranchNaming`). The dialog stays for when the graph is not on screen.
 
 ## Which repo a call is about

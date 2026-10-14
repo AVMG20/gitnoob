@@ -206,9 +206,13 @@ async fn working_status(state: Aimed) -> Result<refs::WorkingStatus, String> {
 // --- history ----------------------------------------------------------------
 
 #[tauri::command]
-async fn commit_graph(limit: Option<usize>, state: Aimed) -> Result<graph::GraphPage, String> {
+async fn commit_graph(
+    limit: Option<usize>,
+    solo: Option<Vec<String>>,
+    state: Aimed,
+) -> Result<graph::GraphPage, String> {
     let fallback = state.config().global.graph_page_size;
-    graph::build(&state, limit.unwrap_or(fallback))
+    graph::soloed(&state, limit.unwrap_or(fallback), &solo.unwrap_or_default())
 }
 
 #[tauri::command]
@@ -271,8 +275,12 @@ async fn create_branch(
 /// How far back a commit sits in the graph's walk, so a page big enough to
 /// hold its row can be asked for.
 #[tauri::command]
-async fn commit_depth(oid: String, state: Aimed) -> Result<Option<usize>, String> {
-    graph::depth(&state, &oid)
+async fn commit_depth(
+    oid: String,
+    solo: Option<Vec<String>>,
+    state: Aimed,
+) -> Result<Option<usize>, String> {
+    graph::depth(&state, &oid, &solo.unwrap_or_default())
 }
 
 /// Checks out the branch a review was opened from, adding the fork it lives

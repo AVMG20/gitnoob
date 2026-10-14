@@ -79,22 +79,67 @@ pub struct GraphPage {
 }
 
 /// The walk the graph draws: every ref, newest first, a branch's commits kept
-/// together.
+/// together — or, while branches are soloed, only what those branches reach.
 ///
 /// Shared with `depth`, which has to count the very same rows in the very same
 /// order or the number it reports is not the row the graph puts the commit on.
-fn walk(repo: &Repository) -> Result<Revwalk<'_>, String> {
+fn walk<'r>(repo: &'r Repository, solo: &[Oid]) -> Result<Revwalk<'r>, String> {
     let mut walk = repo.revwalk().map_err(err)?;
     // Topological order keeps a branch's commits contiguous; the time secondary
     // sort keeps the result close to what the user expects to read.
     walk.set_sorting(Sort::TOPOLOGICAL | Sort::TIME)
         .map_err(err)?;
+    if !solo.is_empty() {
+        for tip in solo {
+            walk.push(*tip).map_err(err)?;
+        }
+        return Ok(walk);
+    }
     // Push every ref, not just HEAD, so unmerged branches are visible.
     walk.push_glob("refs/heads/*").map_err(err)?;
     let _ = walk.push_glob("refs/remotes/*");
     let _ = walk.push_glob("refs/tags/*");
     let _ = walk.push_head();
     Ok(walk)
+}
+
+/// Where a solo starts walking from: each branch named, by its full ref name.
+///
+/// A local branch brings its upstream along, the further of the two first
+/// (`furthest`, so a branch behind its remote is anchored where its line ends).
+/// Soloing a branch is asking what happened on it, and the commits a pull would
+/// bring and the ones a push would send are both part of that answer. Nothing
+/// else comes with it: not HEAD, not the trunk, not the tags.
+///
+/// A name that no longer resolves — a branch deleted, or pruned by a fetch —
+/// is skipped, and when none resolve the answer is empty, which the walk takes
+/// as no solo at all. A graph with nothing in it is not a view of anything.
+fn solo_tips(repo: &Repository, solo: &[String]) -> Vec<Oid> {
+    let mut tips: Vec<Oid> = Vec::new();
+    let mut add = |oid: Option<Oid>| {
+        if let Some(oid) = oid {
+            if !tips.contains(&oid) {
+                tips.push(oid);
+            }
+        }
+    };
+    for name in solo {
+        let Ok(reference) = repo.find_reference(name) else {
+            continue;
+        };
+        let Ok(tip) = reference.peel_to_commit().map(|c| c.id()) else {
+            continue;
+        };
+        if reference.is_branch() {
+            let branch = Branch::wrap(reference);
+            add(furthest(repo, &branch));
+            add(Some(tip));
+            add(branch.upstream().ok().and_then(|u| u.get().target()));
+        } else {
+            add(Some(tip));
+        }
+    }
+    tips
 }
 
 /// How far back a commit sits in the same walk the graph draws.
@@ -107,11 +152,12 @@ fn walk(repo: &Repository) -> Result<Revwalk<'_>, String> {
 ///
 /// `None` means the commit is not in the walk at all — nothing points at it,
 /// or it is deeper than any page anybody should be asked to wait for.
-pub fn depth(state: &AppState, oid: &str) -> Result<Option<usize>, String> {
+pub fn depth(state: &AppState, oid: &str, solo: &[String]) -> Result<Option<usize>, String> {
     let repo = state.repo()?;
     let wanted = Oid::from_str(oid).map_err(err)?;
+    let tips = solo_tips(&repo, solo);
 
-    for (index, found) in walk(&repo)?.enumerate() {
+    for (index, found) in walk(&repo, &tips)?.enumerate() {
         if index >= DEPTH_CAP {
             break;
         }
@@ -132,7 +178,20 @@ pub fn depth(state: &AppState, oid: &str) -> Result<Option<usize>, String> {
 /// is derived from the lane table immediately before and after that step, a row
 /// can be drawn in isolation — which is what makes the list cheap to virtualize.
 pub fn build(state: &AppState, limit: usize) -> Result<GraphPage, String> {
+    soloed(state, limit, &[])
+}
+
+/// The graph with only some branches in it, named by full ref name.
+///
+/// What is left is the history those branches can reach, drawn exactly as the
+/// whole graph draws it, except that the first branch named takes the leftmost
+/// column instead of the trunk — unless the trunk is one of those named. The
+/// point of soloing a branch is to read its history as one straight line, and
+/// with the trunk anchored it is drawn off to the side of a column that is
+/// empty above the fork. An empty list is the whole graph.
+pub fn soloed(state: &AppState, limit: usize, solo: &[String]) -> Result<GraphPage, String> {
     let repo = state.repo()?;
+    let tips = solo_tips(&repo, solo);
     let labels = refs::labels_by_oid(&repo);
     let Against { unpushed, unpulled } = against_upstreams(&repo, limit);
 
@@ -141,7 +200,7 @@ pub fn build(state: &AppState, limit: usize) -> Result<GraphPage, String> {
     // histories that would be a chore to build a repository for.
     let mut commits: Vec<Commit> = Vec::with_capacity(limit.min(4096));
     let mut has_more = false;
-    for oid in walk(&repo)? {
+    for oid in walk(&repo, &tips)? {
         let oid = oid.map_err(err)?;
         if commits.len() >= limit {
             has_more = true;
@@ -162,9 +221,16 @@ pub fn build(state: &AppState, limit: usize) -> Result<GraphPage, String> {
         });
     }
 
-    let anchor = trunk_tip(&repo);
+    let trunk = trunk_tip(&repo);
+    let anchor = match (trunk, tips.first()) {
+        (trunk, None) => trunk,
+        (Some(trunk), Some(_)) if tips.contains(&trunk) => Some(trunk),
+        (_, Some(first)) => Some(*first),
+    };
     let mut commits = with_stashes(state, &repo, commits);
-    link_folded(&repo, &mut commits, anchor, &labels);
+    // Squashes are still looked for against the trunk, never against a soloed
+    // branch's tip: that is the only fork point the matching is proven on.
+    link_folded(&repo, &mut commits, trunk, &labels);
     let head = repo.head().ok().and_then(|h| h.target());
     let plotted = plot(&commits, anchor, head);
 
@@ -1091,15 +1157,15 @@ mod tests {
 
         let page = build(&state, 100).unwrap();
         let drawn = page.rows.iter().position(|row| row.oid == old).unwrap();
-        assert_eq!(depth(&state, &old).unwrap(), Some(drawn));
+        assert_eq!(depth(&state, &old, &[]).unwrap(), Some(drawn));
         // A page that stops short of it is exactly the case being fixed: the
         // row is missing, and the depth is what says how far to reach.
         let short = build(&state, drawn).unwrap();
         assert!(short.rows.iter().all(|row| row.oid != old));
-        assert!(depth(&state, &old).unwrap().unwrap() >= short.rows.len());
+        assert!(depth(&state, &old, &[]).unwrap().unwrap() >= short.rows.len());
 
         let unknown = "0".repeat(40);
-        assert_eq!(depth(&state, &unknown).unwrap(), None);
+        assert_eq!(depth(&state, &unknown, &[]).unwrap(), None);
 
         let _ = std::fs::remove_dir_all(&root);
     }

@@ -9,6 +9,7 @@ import {
   Cloud,
   Copy,
   FileText,
+  Focus,
   GitBranch,
   GitBranchPlus,
   GitCommitHorizontal,
@@ -33,8 +34,11 @@ import {
   laneBright,
   laneColor,
   laneTint,
+  localRef,
   relativeTime,
+  remoteRef,
   rowMatches,
+  soloName,
   useGit,
   type GraphRow,
   type ResetMode,
@@ -597,6 +601,7 @@ useShortcuts({
 function onKey(event: KeyboardEvent) {
   if (event.key === 'Escape' && searchOpen.value) {
     closeSearch()
+    return
   }
 
   if (typing(event) || covered() || event.metaKey || event.ctrlKey || event.altKey) return
@@ -626,6 +631,14 @@ function onKey(event: KeyboardEvent) {
     case 'End':
       event.preventDefault()
       move(selectable.value.length)
+      break
+    case 'Escape':
+      // Nothing else in the graph is undone by Esc, so it is free to be the
+      // way out of a solo.
+      if (store.solo.length) {
+        event.preventDefault()
+        git.soloOn([])
+      }
       break
   }
 }
@@ -949,6 +962,33 @@ function commitMenu(event: MouseEvent, row: GraphRow) {
     .filter((label) => label.kind === 'local' || label.kind === 'remote')
     .map((label) => label.name)
 
+  // The branch on this row, as the sidebar would solo it: a local one first,
+  // since that is what you work on, and its remote copy comes along with it.
+  const soloable = refChips(row).find((chip) => chip.kind === 'local' || chip.kind === 'remote')
+  const soloRef = soloable
+    ? soloable.kind === 'local'
+      ? localRef(soloable.name)
+      : remoteRef(
+          soloable.name.slice(0, soloable.name.indexOf('/')),
+          soloable.name.slice(soloable.name.indexOf('/') + 1)
+        )
+    : null
+  const soloEntries = [
+    ...(soloRef && !(store.solo.length === 1 && store.solo[0] === soloRef)
+      ? [
+          {
+            label: `Solo ${soloable!.name}`,
+            icon: Focus,
+            hint: 'hides the other branches',
+            action: () => git.soloOn([soloRef])
+          }
+        ]
+      : []),
+    ...(store.solo.length
+      ? [{ label: 'Show every branch', icon: Focus, hint: 'stop soloing', action: () => git.soloOn([]) }]
+      : [])
+  ]
+
   const namedCheckouts = refChips(row)
     .filter((chip) => !chip.head)
     .map((chip) => ({
@@ -1150,6 +1190,8 @@ function commitMenu(event: MouseEvent, row: GraphRow) {
         }
       },
       { separator: true, label: '' },
+      ...soloEntries,
+      ...(soloEntries.length ? [{ separator: true, label: '' }] : []),
       {
         label: 'Search for this hash',
         icon: Search,
@@ -1341,6 +1383,16 @@ onUnmounted(() => {
            the headings still opens the same column menu; this is the same door
            with a handle on it. -->
       <span class="head-tools">
+        <!-- Only there while the graph is soloed: a graph missing most of its
+             branches has to say why, and this is the way back out of it. -->
+        <button
+          v-if="store.solo.length"
+          class="tool on solo-tool"
+          :title="`Soloing ${store.solo.map(soloName).join(', ')} — click or Esc to show every branch`"
+          @click.stop="git.soloOn([])"
+        >
+          <Focus :size="13" />
+        </button>
         <button
           class="tool"
           :class="{ on: searchOpen }"

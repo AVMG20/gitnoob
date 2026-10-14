@@ -13,6 +13,7 @@ import {
   ExternalLink,
   Eye,
   EyeOff,
+  Focus,
   Folder,
   FolderGit2,
   FolderOpen,
@@ -22,6 +23,7 @@ import {
   HardDrive,
   Hash,
   Milestone,
+  Minus,
   Package,
   Pencil,
   Plus,
@@ -36,7 +38,10 @@ import {
 import {
   copyText,
   fullTime,
+  localRef,
   relativeTime,
+  remoteRef,
+  soloName,
   useGit,
   type StashEntry,
   type Submodule,
@@ -49,6 +54,8 @@ import { useForge, type Review } from '~/composables/useForge'
 import { useReview } from '~/composables/useReview'
 import { useConfig } from '~/composables/useConfig'
 import { tidyKey, trunkLocalName } from '~/composables/useSync'
+import { useToasts } from '~/composables/useToasts'
+import { keyLabel } from '~/composables/useShortcuts'
 
 /** A worktree row opens its folder as a project tab, which is the shell's job. */
 const emit = defineEmits<{
@@ -389,6 +396,112 @@ function toggleHidden(name: string) {
   } catch {
     // A window that cannot remember it still dims it for this session.
   }
+}
+
+// --- branches soloed in the graph
+
+/**
+ * Soloing draws only some branches in the graph. The list keeps every branch,
+ * since it is where you pick the next one, but it reads the way the graph now
+ * does: what is soloed stands out and the rest goes quiet.
+ */
+const soloing = computed(() => store.solo.length > 0)
+const isSoloed = (full: string) => store.solo.includes(full)
+const outOfSolo = (full: string) => soloing.value && !isSoloed(full)
+
+/** "serp", "serp and staging", "serp, staging and 3 more". */
+function soloList(names: string[]) {
+  const shown = names.map(soloName)
+  if (shown.length <= 2) return shown.join(' and ')
+  return `${shown.slice(0, 2).join(', ')} and ${shown.length - 2} more`
+}
+
+/** Solos and then shows the branch, which is at or near the top of what is left. */
+async function soloTo(names: string[], oid: string) {
+  await git.soloOn(names)
+  if (oid) await git.revealCommit(oid)
+}
+
+/**
+ * What a branch's menu offers about soloing, which depends on whether anything
+ * is soloed and whether this branch is part of it. One branch is the usual
+ * case, so it gets the first word everywhere; adding to a solo is there for
+ * comparing two lines.
+ */
+function soloItems(full: string, oid: string) {
+  const main = trunkLocal.value ? localRef(trunkLocal.value) : null
+  if (!soloing.value) {
+    return [
+      {
+        label: 'Solo in the graph',
+        icon: Focus,
+        hint: `hides the rest · ${keyLabel('alt')}-click`,
+        action: () => soloTo([full], oid)
+      },
+      // The branch on its own is one straight line, which says what is on it
+      // but not where it left or what it missed. With the trunk beside it,
+      // both are there.
+      ...(main && main !== full
+        ? [
+            {
+              label: `Solo with ${trunkLocal.value}`,
+              icon: Focus,
+              hint: 'where it forked, and what came since',
+              action: () => soloTo([full, main], oid)
+            }
+          ]
+        : [])
+    ]
+  }
+  if (isSoloed(full)) {
+    const rest = store.solo.filter((one) => one !== full)
+    if (!rest.length) {
+      return [
+        { label: 'Stop soloing', icon: Eye, hint: 'every branch back', action: () => git.soloOn([]) }
+      ]
+    }
+    return [
+      { label: 'Solo just this one', icon: Focus, action: () => soloTo([full], oid) },
+      {
+        label: 'Take out of the solo',
+        icon: Minus,
+        hint: `leaves ${soloList(rest)}`,
+        action: () => git.soloOn(rest)
+      },
+      { label: 'Stop soloing', icon: Eye, hint: 'every branch back', action: () => git.soloOn([]) }
+    ]
+  }
+  return [
+    {
+      label: 'Add to the solo',
+      icon: Plus,
+      hint: `beside ${soloList(store.solo)}`,
+      action: () => soloTo([...store.solo, full], oid)
+    },
+    { label: 'Solo just this one', icon: Focus, action: () => soloTo([full], oid) },
+    { label: 'Stop soloing', icon: Eye, hint: 'every branch back', action: () => git.soloOn([]) }
+  ]
+}
+
+/**
+ * A single click on a branch: show where it is. Alt-click solos it, or lets go
+ * when it is the only one soloed.
+ *
+ * A branch the solo leaves out has no row to show, and a click that does
+ * nothing reads as broken. So it says why, and offers the two ways to reach it.
+ */
+async function pointAt(event: MouseEvent, full: string, oid: string) {
+  if (event.altKey) {
+    const alone = store.solo.length === 1 && isSoloed(full)
+    await soloTo(alone ? [] : [full], oid)
+    return
+  }
+  if (await git.revealCommit(oid)) return
+  if (!outOfSolo(full)) return
+  useToasts().offer(`${soloName(full)} is not in the solo`, [
+    { label: 'Add it', run: () => soloTo([...store.solo, full], oid) },
+    { label: 'Show every branch', run: () => soloTo([], oid) }
+  ])
 }
 
 const head = computed(() => store.repo?.head ?? '')
@@ -911,6 +1024,8 @@ function localMenu(event: MouseEvent, name: string, upstream: string | null) {
             }
           ]),
       { separator: true, label: '' },
+      ...soloItems(localRef(name), localOid(name)),
+      { separator: true, label: '' },
       {
         // What "is this safe to delete?" gets measured against. Guessed as main
         // or master until somebody says otherwise, which is wrong in every
@@ -962,6 +1077,15 @@ function localMenu(event: MouseEvent, name: string, upstream: string | null) {
 
 /** The trunk by its local name, for "Update from main". */
 const trunkLocal = computed(() => trunkLocalName(store.trunk, store.refs?.locals ?? []))
+
+/** Where a branch points, for revealing it after a solo from its menu. */
+function localOid(name: string) {
+  return store.refs?.locals.find((one) => one.name === name)?.oid ?? ''
+}
+
+function remoteOid(remote: string, name: string) {
+  return store.refs?.remotes.find((one) => one.remote === remote && one.name === name)?.oid ?? ''
+}
 
 /** The deleted upstream a local branch still names, if it does. */
 function goneOf(name: string) {
@@ -1047,6 +1171,8 @@ function remoteMenu(event: MouseEvent, remote: string, name: string) {
         icon: Cloud,
         action: () => git.setUpstream(head.value, full)
       },
+      { separator: true, label: '' },
+      ...soloItems(remoteRef(remote, name), remoteOid(remote, name)),
       { separator: true, label: '' },
       { label: 'Copy name', icon: Copy, action: () => copyText(full, 'Branch') },
       {
@@ -1688,13 +1814,14 @@ async function removeSubmodule(one: Submodule) {
             class="row"
             :class="{
               on: row.item.is_head,
-              dim: isHidden(row.item.name),
+              dim: !isSoloed(localRef(row.item.name)) && (isHidden(row.item.name) || soloing),
+              solo: isSoloed(localRef(row.item.name)),
               drop: drag.state.over === `branch:${row.item.name}`
             }"
             :style="{ paddingLeft: `calc(var(--indent) + ${row.depth * 14}px)` }"
             :title="`${row.item.name}${row.item.upstream ? ` → ${row.item.upstream}` : ' (no upstream)'}`"
             draggable="true"
-            @click="git.revealCommit(row.item.oid)"
+            @click="pointAt($event, localRef(row.item.name), row.item.oid)"
             @dblclick="git.checkout(row.item.name)"
             @contextmenu="localMenu($event, row.item.name, row.item.upstream)"
             @dragstart="drag.begin($event, { kind: 'branch', name: row.item.name, remote: false })"
@@ -1732,6 +1859,12 @@ async function removeSubmodule(one: Submodule) {
                   ? 'The main branch, as set here'
                   : 'Taken as the main branch — right-click another to change it'
               "
+            />
+            <Focus
+              v-if="isSoloed(localRef(row.item.name))"
+              :size="11"
+              class="solo-mark"
+              title="Soloed in the graph — right-click to change"
             />
             <Cloud
               v-if="!row.item.upstream"
@@ -1798,10 +1931,14 @@ async function removeSubmodule(one: Submodule) {
             <div
               v-else
               class="row indent"
+              :class="{
+                dim: outOfSolo(remoteRef(group.remote, row.item.name)),
+                solo: isSoloed(remoteRef(group.remote, row.item.name))
+              }"
               :style="{ paddingLeft: `calc(var(--indent-2) + ${row.depth * 14}px)` }"
               :title="`${group.remote}/${row.item.name}`"
               draggable="true"
-              @click="git.revealCommit(row.item.oid)"
+              @click="pointAt($event, remoteRef(group.remote, row.item.name), row.item.oid)"
               @dblclick="git.checkout(`${group.remote}/${row.item.name}`)"
               @contextmenu="remoteMenu($event, group.remote, row.item.name)"
               @dragstart="
@@ -1815,6 +1952,12 @@ async function removeSubmodule(one: Submodule) {
             >
               <GitBranch :size="13" class="glyph remote" />
               <MidTruncate class="name" :text="row.label" />
+              <Focus
+                v-if="isSoloed(remoteRef(group.remote, row.item.name))"
+                :size="11"
+                class="solo-mark"
+                title="Soloed in the graph — right-click to change"
+              />
             </div>
           </template>
         </div>
@@ -2447,6 +2590,22 @@ async function removeSubmodule(one: Submodule) {
 .row.dim:hover .name,
 .row.dim:hover .glyph {
   opacity: 0.75;
+}
+
+/* Soloed: the branch the graph is drawing, in the accent so the eye finds it
+   in a list where everything else has just gone quiet. */
+.row.solo .name,
+.row.solo .glyph {
+  color: var(--accent);
+}
+
+.row.solo .name {
+  font-weight: 600;
+}
+
+.solo-mark {
+  flex: none;
+  color: var(--accent);
 }
 
 /* Something is being dragged over it: outlined in the accent, the colour a

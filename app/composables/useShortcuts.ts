@@ -59,6 +59,7 @@ export const SHORTCUTS: Shortcut[] = [
   { id: 'graph.extend', keys: 'shift+click', label: 'Mark a run of commits', where: 'The commit list', group: 'The commit list', note: 'mod+click marks one more on its own.' },
   { id: 'graph.checkout', keys: 'double-click', label: 'Check out the branch on a chip', where: 'A branch chip in the commit list', group: 'The commit list' },
   { id: 'graph.clearsearch', keys: 'Escape', label: 'Close the search box', where: 'The commit list', group: 'The commit list' },
+  { id: 'graph.solo', keys: 'alt+click', label: 'Solo a branch in the graph, or stop', where: 'A branch in the sidebar', group: 'The commit list', note: 'Escape shows every branch again. Right-click a branch to solo more than one.' },
 
   // Changes and diffs
   { id: 'diff.mode', keys: 'Tab', label: 'Show the whole file, or only the lines that changed', where: 'An open file', group: 'Changes and diffs', note: 'Blame is a column of the file view, on the line numbers’ right-click menu.' },

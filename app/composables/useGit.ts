@@ -749,6 +749,11 @@ const fields = reactive({
   inside: [] as { path: string; name: string; from: string; fromName: string }[],
   rows: [] as GraphRow[],
   hasMore: false,
+  /**
+   * The branches the graph is soloed on, by full ref name (`refs/heads/x`,
+   * `refs/remotes/origin/x`). Empty draws every branch.
+   */
+  solo: [] as string[],
   limit: COMMIT_PAGE,
   /** Either `WIP` or a commit id. The working tree is selected by default. */
   selected: WIP as string,
@@ -854,6 +859,31 @@ interface Snapshot {
 }
 
 const snapshots = new Map<string, Snapshot>()
+
+/**
+ * Each repository's solo, by path, for as long as the window is open.
+ *
+ * Kept when you switch tabs and come back, because you were in the middle of
+ * reading that branch. Not kept past a restart: a graph that opens with most of
+ * its branches missing is a graph that looks broken until you spot why.
+ */
+const solos = new Map<string, string[]>()
+
+/** The full ref name a solo is kept under. */
+export const localRef = (name: string) => `refs/heads/${name}`
+export const remoteRef = (remote: string, name: string) => `refs/remotes/${remote}/${name}`
+
+/** A soloed ref as the sidebar writes it: `serp`, `origin/serp`. */
+export function soloName(full: string) {
+  return full.replace(/^refs\/(heads|remotes)\//, '')
+}
+
+/** Whether a soloed ref is still one of the branches the sidebar lists. */
+function refExists(refs: RefTree, full: string) {
+  return full.startsWith('refs/heads/')
+    ? refs.locals.some((branch) => localRef(branch.name) === full)
+    : refs.remotes.some((branch) => remoteRef(branch.remote, branch.name) === full)
+}
 
 /** A big repository's snapshot is a megabyte or so; a handful is plenty. */
 const SNAPSHOT_LIMIT = 8
@@ -982,6 +1012,7 @@ function forget() {
   store.viewer = null
   store.inside = []
   store.query = ''
+  store.solo = []
 }
 
 /**
@@ -1031,6 +1062,7 @@ export function useGit() {
     store.viewer = null
     store.resolving = null
     store.query = ''
+    store.solo = solos.get(info.path) ?? []
     // Opening a project is leaving whatever submodule was being looked at.
     // Stepping into one passes `record` false and keeps the trail, which the
     // caller then adds to.
@@ -1103,6 +1135,7 @@ export function useGit() {
     if (!store.repo) return
     const path = store.repo.path
     const limit = store.limit
+    const solo = store.solo
     const [
       info,
       refs,
@@ -1136,7 +1169,7 @@ export function useGit() {
       part('the LFS setup', invoke<LfsStatus>('lfs_status'), null),
       part(
         'the history',
-        invoke<{ rows: GraphRow[]; has_more: boolean }>('commit_graph', { limit }),
+        invoke<{ rows: GraphRow[]; has_more: boolean }>('commit_graph', { limit, solo }),
         null
       ),
       part('the stashes', invoke<StashEntry[]>('stash_list'), [] as StashEntry[]),
@@ -1169,7 +1202,9 @@ export function useGit() {
     store.signatures = settle('signatures', signatures ?? {}, store.signatures)
     store.signing = settle('signing', signing, store.signing)
     store.lfs = settle('lfs', lfs, store.lfs)
-    if (page) {
+    // A solo changed while this was out describes the graph before it, and
+    // the refresh the change started is already on its way with the new one.
+    if (page && store.solo === solo) {
       store.rows = settle('rows', page.rows, store.rows)
       store.hasMore = page.has_more
     }
@@ -1196,6 +1231,8 @@ export function useGit() {
       seen
     })
 
+    pruneSolo()
+
     // An amend rewrites the commit that was open; fall back to the working tree.
     if (store.selected !== WIP && !store.rows.some((r) => r.oid === store.selected)) {
       store.selected = WIP
@@ -1207,6 +1244,35 @@ export function useGit() {
         () => store.detail
       )
     }
+  }
+
+  /**
+   * Draws only these branches in the graph, or every branch again for none.
+   *
+   * Only the picture changes. Nothing is fetched, nothing about the branches
+   * moves, and the sidebar still lists them all.
+   */
+  async function soloOn(names: string[]) {
+    if (!store.repo) return
+    const path = store.repo.path
+    store.solo = [...new Set(names)]
+    if (store.solo.length) solos.set(path, store.solo)
+    else solos.delete(path)
+    await refresh()
+  }
+
+  /**
+   * Lets go of soloed branches that are not there any more.
+   *
+   * Deleted here, or pruned by a fetch: the backend skips a name it cannot
+   * find, so the graph is right either way, but a banner still saying it is
+   * soloing a branch that no longer exists is not.
+   */
+  function pruneSolo() {
+    const refs = store.refs
+    if (!refs || !store.solo.length) return
+    const live = store.solo.filter((full) => refExists(refs, full))
+    if (live.length !== store.solo.length) void soloOn(live)
   }
 
   async function loadMore() {
@@ -1237,7 +1303,7 @@ export function useGit() {
   async function loadUpTo(oid: string): Promise<'here' | 'missing' | 'far'> {
     if (store.rows.some((row) => row.oid === oid)) return 'here'
     const depth = await guard('Find commit', () =>
-      invoke<number | null>('commit_depth', { oid })
+      invoke<number | null>('commit_depth', { oid, solo: store.solo })
     )
     // Nothing points at it, or this clone has never fetched it.
     if (depth === null || depth === undefined) return 'missing'
@@ -1874,6 +1940,7 @@ export function useGit() {
     refresh,
     refreshStatus,
     loadMore,
+    soloOn,
     openRepo,
     select,
     revealCommit,
