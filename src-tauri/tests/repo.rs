@@ -1247,7 +1247,12 @@ fn solo_sandbox() -> Sandbox {
     sandbox.commit("t.txt", "3\n", "Topic three");
     // Only the remote has the third one: a pull's worth, not pulled yet.
     let ahead = sandbox.git(&["rev-parse", "HEAD"]).trim().to_string();
-    sandbox.git(&["remote", "add", "origin", "https://example.invalid/repo.git"]);
+    sandbox.git(&[
+        "remote",
+        "add",
+        "origin",
+        "https://example.invalid/repo.git",
+    ]);
     sandbox.git(&["update-ref", "refs/remotes/origin/topic", &ahead]);
     sandbox.git(&["branch", "-q", "--set-upstream-to=origin/topic"]);
     sandbox.git(&["reset", "-q", "--hard", "HEAD~1"]);
@@ -1277,7 +1282,10 @@ fn a_soloed_branch_is_drawn_alone_with_its_upstream() {
     // One straight line down the leftmost column, the upstream's commit
     // included, rather than a branch drawn beside an empty trunk column.
     assert!(page.rows.iter().all(|row| row.lane == 0), "{summaries:?}");
-    assert!(page.rows[0].unpulled, "the upstream's commit is still the one to pull");
+    assert!(
+        page.rows[0].unpulled,
+        "the upstream's commit is still the one to pull"
+    );
 
     // Everything is back once the solo is.
     let whole = graph::soloed(&state, 500, &[]).unwrap();
@@ -1330,7 +1338,10 @@ fn depth_counts_the_rows_of_the_soloed_graph() {
     let topic = solo(&["refs/heads/topic"]);
 
     // Root is the last of five rows, whatever the whole graph would say.
-    assert_eq!(graph::depth(&state, &rev("main~2"), &topic).unwrap(), Some(4));
+    assert_eq!(
+        graph::depth(&state, &rev("main~2"), &topic).unwrap(),
+        Some(4)
+    );
     // A commit the solo leaves out is not in its walk at all.
     assert_eq!(graph::depth(&state, &rev("other"), &topic).unwrap(), None);
     assert!(graph::depth(&state, &rev("other"), &[]).unwrap().is_some());
