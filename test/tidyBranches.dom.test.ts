@@ -66,6 +66,13 @@ describe('tidying finished branches', () => {
     expect(wrapper.find('.btn-primary').text()).toBe('Delete 2 branches')
   })
 
+  it('names each branch in full on hover, since a long one is cut short', () => {
+    const wrapper = show(TidyDialog)
+    const title = wrapper.findAll('.item label')[1]!.attributes('title')!
+    expect(title.split('\n')[0]).toBe('squashed')
+    expect(title).toMatch(/squash-merged into origin\/main/)
+  })
+
   it('needs an explicit tick for work that is on no trunk, and warns once ticked', async () => {
     const wrapper = show(TidyDialog)
     await wrapper.findAll('.item input')[2]!.setValue(true)

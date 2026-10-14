@@ -49,7 +49,9 @@ async function remove() {
 
     <ul class="list">
       <li v-for="one in store.tidy" :key="one.name" class="item" :class="{ risky: !one.proven }">
-        <label>
+        <!-- Long names are cut to leave room for the reason, and the part cut
+             off is usually the part that says what the branch was for. -->
+        <label :title="`${one.name}\n${tidyReason(one)}`">
           <input
             type="checkbox"
             :checked="ticked.has(one.name)"
