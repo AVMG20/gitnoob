@@ -1,4 +1,4 @@
-import { onMounted, onUnmounted } from 'vue'
+import { onMounted, onUnmounted, reactive } from 'vue'
 
 /**
  * The keyboard, in one place.
@@ -32,6 +32,7 @@ export interface Shortcut {
 }
 
 const ANYWHERE = 'Anywhere in the window'
+const WORKING = 'While the working tree is shown'
 
 export const SHORTCUTS: Shortcut[] = [
   // Repository
@@ -80,8 +81,104 @@ export const SHORTCUTS: Shortcut[] = [
   { id: 'dialog.close', keys: 'Escape', label: 'Close the dialog on top', where: 'Any dialog', group: 'Projects and windows' },
   { id: 'zoom.in', keys: 'mod+=', label: 'Make everything larger', where: ANYWHERE, group: 'Projects and windows' },
   { id: 'zoom.out', keys: 'mod+-', label: 'Make everything smaller', where: ANYWHERE, group: 'Projects and windows' },
-  { id: 'zoom.reset', keys: 'mod+0', label: 'Back to the standard size', where: ANYWHERE, group: 'Projects and windows' }
+  { id: 'zoom.reset', keys: 'mod+0', label: 'Back to the standard size', where: ANYWHERE, group: 'Projects and windows' },
+
+  // Branches and commits, continued
+  { id: 'branch.start', keys: 'mod+shift+b', label: 'Start work: fetch, then branch from main', where: ANYWHERE, group: 'Branches and commits', note: 'Open changes come along.' },
+  { id: 'branch.update', keys: 'mod+shift+o', label: 'Update this branch from main', where: ANYWHERE, group: 'Branches and commits', note: 'Rebases a branch only you have, merges into one that is pushed. Settings › Behaviour changes that.' },
+  // The working tree to commit loop. Chosen clear of the system's own keys and
+  // of everything above; every one of them can be moved in settings.
+  { id: 'commit.push', keys: 'mod+shift+enter', label: 'Commit what is staged, then push', where: WORKING, group: 'Branches and commits', note: 'An amend of a commit already on the remote stops at the force-push question.' },
+  { id: 'commit.focus', keys: 'mod+shift+m', label: 'Put the caret in the commit message', where: ANYWHERE, group: 'Branches and commits' },
+  { id: 'commit.amend', keys: 'mod+shift+e', label: 'Amend the previous commit, or stop amending', where: WORKING, group: 'Branches and commits' },
+  { id: 'commit.generate', keys: 'mod+shift+k', label: 'Write the commit message with the model', where: WORKING, group: 'Branches and commits', note: 'Only when a model is set up. What is already typed is finished, not replaced.' },
+  { id: 'work.toggle', keys: 'mod+s', label: 'Stage the open file, or unstage it', where: 'An open working-tree file', group: 'Changes and diffs' },
+  { id: 'work.stageall', keys: 'mod+shift+a', label: 'Stage every change', where: WORKING, group: 'Changes and diffs' },
+  { id: 'work.unstageall', keys: 'mod+shift+u', label: 'Unstage everything', where: WORKING, group: 'Changes and diffs' },
+  { id: 'work.discard', keys: 'mod+backspace', label: 'Discard the open file’s unstaged changes', where: 'An open working-tree file', group: 'Changes and diffs', note: 'Always asks first.' },
+  { id: 'work.next', keys: 'mod+]', label: 'Open the next changed file', where: WORKING, group: 'Changes and diffs' },
+  { id: 'work.previous', keys: 'mod+[', label: 'Open the previous changed file', where: WORKING, group: 'Changes and diffs' }
 ]
+
+/**
+ * Keys the user moved, by shortcut id. Filled from the settings whenever they
+ * are read or saved; anything not in here keeps the key it ships with.
+ */
+const overrides = reactive<Record<string, string>>({})
+
+export function setShortcutOverrides(map: Record<string, string> | null | undefined) {
+  for (const id of Object.keys(overrides)) delete overrides[id]
+  for (const [id, keys] of Object.entries(map ?? {})) {
+    if (keys && SHORTCUTS.some((one) => one.id === id)) overrides[id] = keys
+  }
+}
+
+/** The keys a shortcut is bound to right now: the user's, or the default. */
+export function keysFor(id: string): string {
+  return overrides[id] ?? SHORTCUTS.find((one) => one.id === id)?.keys ?? ''
+}
+
+/**
+ * Whether a shortcut is one chord the window dispatches, and so can be moved.
+ *
+ * The arrows, Tab, Escape and the clicks are handled by the lists and views
+ * they belong to, in ways that depend on where the caret is; a chord with a
+ * modifier on it is the same keypress wherever it lands.
+ */
+export function isRebindable(shortcut: Shortcut): boolean {
+  const keys = shortcut.keys
+  if (shortcut.id === 'project.nth') return false
+  if (keys.includes('/') || keys.includes('…') || keys.includes('click')) return false
+  return /^(mod|alt)\+/.test(keys)
+}
+
+/** The chord an event stands for, in the spelling the list uses. */
+export function eventChord(event: KeyboardEvent): string {
+  return chordOf(event)
+}
+
+/** Whether two chords are the same keypress, whatever the case of their key names. */
+function same(a: string, b: string) {
+  return !!a && a.toLowerCase() === b.toLowerCase()
+}
+
+/**
+ * Whether a keypress is the one a shortcut is bound to.
+ *
+ * For the keys a component handles itself rather than through the dispatcher —
+ * ⌘↵ in the commit box — so that moving the key in settings moves it there too.
+ */
+export function matchesShortcut(event: KeyboardEvent, id: string): boolean {
+  return same(chordOf(event), keysFor(id))
+}
+
+/**
+ * The places that are on screen together while the working tree is: the list,
+ * the commit box inside it, the working file open beside it. A key moved onto
+ * one of them is live in all three at once — ⌘↵ in the box and a commit-and-
+ * push moved onto it are the same press — so they are one place here.
+ */
+const WORKING_TOGETHER = new Set([WORKING, 'The commit message box', 'An open working-tree file'])
+
+function together(a: string, b: string) {
+  if (a === b || a === ANYWHERE || b === ANYWHERE) return true
+  return WORKING_TOGETHER.has(a) && WORKING_TOGETHER.has(b)
+}
+
+/**
+ * The shortcut `chord` would collide with if `row` were moved onto it, if any:
+ * one bound to the same keys and live at the same time. ⌘1…9 are the project
+ * tabs', all nine of them, wherever you are.
+ */
+export function clashFor(row: Shortcut, chord: string): Shortcut | undefined {
+  if (/^mod\+[1-9]$/i.test(chord)) {
+    const nth = SHORTCUTS.find((one) => one.id === 'project.nth')
+    if (nth && nth.id !== row.id) return nth
+  }
+  return SHORTCUTS.find(
+    (one) => one.id !== row.id && same(keysFor(one.id), chord) && together(one.where, row.where)
+  )
+}
 
 export const SHORTCUT_GROUPS: ShortcutGroup[] = [
   'Repository',
@@ -105,7 +202,8 @@ const GLYPHS: Record<string, string> = {
   arrowleft: '←',
   arrowright: '→',
   pageup: 'PgUp',
-  pagedown: 'PgDn'
+  pagedown: 'PgDn',
+  backspace: isMac ? '⌫' : 'Backspace'
 }
 
 /** `mod+shift+f` as `⌘⇧F`, and `ArrowUp/ArrowDown` as `↑/↓`. */
@@ -156,8 +254,23 @@ function covered(): boolean {
 /** `project.nth` is handed the position it was asked for; nothing else takes an argument. */
 type Handler = (index: number) => unknown
 
-const handlers = new Map<string, Handler>()
+/**
+ * Every handler bound right now, by shortcut id, in the order they were bound.
+ *
+ * By id rather than by chord, so that a key moved in settings is picked up by
+ * handlers already bound. Two bound to the same keys — the commit list's ⌘F
+ * and an open file's — go to the one bound last, which is the one on top.
+ */
+const handlers: { id: string; handler: Handler }[] = []
 let listening = false
+
+function handlerFor(chord: string): Handler | null {
+  for (let at = handlers.length - 1; at >= 0; at--) {
+    const bound = handlers[at]!
+    if (same(chord, keysFor(bound.id))) return bound.handler
+  }
+  return null
+}
 
 function onKey(event: KeyboardEvent) {
   const chord = chordOf(event)
@@ -165,7 +278,7 @@ function onKey(event: KeyboardEvent) {
 
   // ⌘1…⌘9 are one binding over nine keys, so they are matched before the map.
   if (/^mod\+[1-9]$/.test(chord)) {
-    const nth = handlers.get('project.nth')
+    const nth = [...handlers].reverse().find((one) => one.id === 'project.nth')?.handler
     if (nth && !covered()) {
       event.preventDefault()
       void nth(Number(chord.slice(-1)) - 1)
@@ -173,7 +286,7 @@ function onKey(event: KeyboardEvent) {
     return
   }
 
-  const handler = handlers.get(chord)
+  const handler = handlerFor(chord)
   if (!handler) return
   // Every registered chord carries a modifier, so a plain letter typed into the
   // commit box never reaches here — but ⌘Z in a text box is that box's undo.
@@ -187,16 +300,14 @@ function onKey(event: KeyboardEvent) {
  * `SHORTCUTS`. An id that is not in the list is a typo, and says so.
  */
 export function useShortcuts(bindings: Record<string, Handler>) {
-  const chords = Object.entries(bindings).map(([id, handler]) => {
+  const bound = Object.entries(bindings).map(([id, handler]) => {
     const shortcut = SHORTCUTS.find((one) => one.id === id)
     if (!shortcut) throw new Error(`No shortcut is written down under "${id}"`)
-    // The nine project keys register under their id; everything else under the
-    // chord the dispatcher builds from the event.
-    return [id === 'project.nth' ? id : shortcut.keys, handler] as const
+    return { id, handler }
   })
 
   onMounted(() => {
-    for (const [key, handler] of chords) handlers.set(key, handler)
+    handlers.push(...bound)
     if (!listening) {
       window.addEventListener('keydown', onKey)
       listening = true
@@ -204,8 +315,9 @@ export function useShortcuts(bindings: Record<string, Handler>) {
   })
 
   onUnmounted(() => {
-    for (const [key, handler] of chords) {
-      if (handlers.get(key) === handler) handlers.delete(key)
+    for (const one of bound) {
+      const at = handlers.indexOf(one)
+      if (at >= 0) handlers.splice(at, 1)
     }
   })
 }

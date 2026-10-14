@@ -815,6 +815,93 @@ fn commits_between(repo: &Repository, base: Oid, tip: Oid, cap: usize) -> Option
     Some(out)
 }
 
+/// How a branch's work reached another line without the branch itself being
+/// part of that line's history.
+#[derive(Serialize, Clone, Copy, Debug, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+pub enum Carried {
+    /// One commit on the other line makes the same patch as the whole branch.
+    Squash,
+    /// Every commit on the branch has a copy on the other line.
+    Rebase,
+}
+
+/// Whether the work on `branch` is already on `onto` as copies: squashed into
+/// one commit, or rebased commit by commit.
+///
+/// The same question [`link_folded`] asks for the picture, asked about two
+/// commits rather than a page of rows, for the places that have to decide
+/// something on it — whether a branch is safe to delete, whether a force push
+/// would only drop commits that were rewritten here. It answers `None` for a
+/// branch that is simply an ancestor of `onto`: that is the ordinary kind of
+/// merged, and the caller asks it the ordinary way.
+///
+/// Only the commits since the two lines parted are looked at, and at most
+/// [`CARRY_REACH`] of them. Anything that cannot be proven — an empty commit,
+/// a merge on the branch, a branch too long to check — is `None`: here a wrong
+/// yes deletes work, so a missing one is the price.
+pub fn carried(repo: &Repository, branch: Oid, onto: Oid) -> Option<Carried> {
+    let base = repo.merge_base(onto, branch).ok()?;
+    if base == branch {
+        return None;
+    }
+    let found = patches_since(repo, onto, base, CARRY_REACH);
+    if found.is_empty() {
+        return None;
+    }
+    if patch_id(repo, base, branch).is_some_and(|whole| found.contains(&whole)) {
+        return Some(Carried::Squash);
+    }
+    let own = commits_between(repo, base, branch, REBASE_CAP)?;
+    if own.is_empty() {
+        return None;
+    }
+    for oid in own {
+        let commit = repo.find_commit(oid).ok()?;
+        if commit.parent_count() != 1 {
+            return None;
+        }
+        let id = patch_id(repo, commit.parent_id(0).ok()?, oid)?;
+        if !found.contains(&id) {
+            return None;
+        }
+    }
+    Some(Carried::Rebase)
+}
+
+/// The patches the single-parent commits on `tip`'s side of `base` make,
+/// newest first, at most `cap` commits deep.
+fn patches_since(repo: &Repository, tip: Oid, base: Oid, cap: usize) -> HashSet<Oid> {
+    let mut found = HashSet::new();
+    let Ok(mut walk) = repo.revwalk() else {
+        return found;
+    };
+    if walk.push(tip).is_err() || walk.hide(base).is_err() {
+        return found;
+    }
+    for oid in walk.flatten().take(cap) {
+        let Ok(commit) = repo.find_commit(oid) else {
+            continue;
+        };
+        if commit.parent_count() != 1 {
+            continue;
+        }
+        if let Some(id) = commit
+            .parent_id(0)
+            .ok()
+            .and_then(|parent| patch_id(repo, parent, oid))
+        {
+            found.insert(id);
+        }
+    }
+    found
+}
+
+/// How far down the other line [`carried`] looks for copies. A squash merged
+/// a few hundred commits ago is still found; a branch from last year is not
+/// worth diffing the whole history for.
+const CARRY_REACH: usize = 2_000;
+
 /// The patch-id of the change from one commit's tree to another's, or `None`
 /// when the two trees are the same: an empty patch matches every other empty
 /// patch, and says nothing.

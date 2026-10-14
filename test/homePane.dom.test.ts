@@ -107,7 +107,7 @@ describe('the home tab', () => {
 
     const said = wrapper.findAll('.line').map((one) => one.text())
     expect(said.some((one) => one.includes('12 uncommitted changes'))).toBe(true)
-    expect(said.some((one) => one.includes('6 commits not on origin'))).toBe(true)
+    expect(said.some((one) => one.includes('6 commits not pushed'))).toBe(true)
     // A folder that has moved is worth saying out loud, not quietly dropping.
     expect(said.some((one) => one.includes('not there any more'))).toBe(true)
   })

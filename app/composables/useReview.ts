@@ -1,6 +1,20 @@
 import { computed, reactive } from 'vue'
 import { invoke } from './useInvoke'
-import type { Label, Member, Review, ReviewDetail } from './useForge'
+import type { Label, Member, MergeMethod, Review, ReviewDetail } from './useForge'
+
+/** How the backend begins a refusal for a head that moved since the page
+    loaded; `forge::MOVED` says the same. */
+export const HEAD_MOVED = 'New commits were pushed to this branch'
+
+/** What tidying up after a merge did, and what it leaves to the user. */
+export interface AfterMerge {
+  message: string
+  switched_to: string | null
+  /** The local branch that carried the work, when deleting it loses nothing. */
+  branch: string | null
+  sha: string | null
+  extra: number
+}
 import { useForge } from './useForge'
 import { parsePatch } from './usePatch'
 import { foldThreads, threadKey } from './reviewThreads'
@@ -402,13 +416,39 @@ export function useReview() {
     const number = store.current?.number
     if (!number) return
     await forge.loadReviewDetail(number, true)
+    // Another review may have been opened while that was out; this one's
+    // answers are not that one's.
+    if (!stillOpen(number)) return
     store.detail = forge.store.details[number] ?? null
     void loadStatus(number)
     try {
       const comments = await invoke<RComment[]>('forge_review_comments', { number })
-      store.comments = comments
+      if (stillOpen(number)) store.comments = comments
     } catch (error) {
-      store.commentsError = String(error)
+      if (stillOpen(number)) store.commentsError = String(error)
+    }
+  }
+
+  /** Everything again — files and commits too — for a head that moved. */
+  function reloadAll() {
+    const number = store.current?.number
+    if (number) void loadAll(number)
+  }
+
+  /** Asks somebody who has reviewed already to look again. */
+  async function rerequest(login: string): Promise<boolean> {
+    const number = store.current?.number
+    if (!number) return false
+    store.acting = `rerequest:${login}`
+    try {
+      await invoke('forge_rerequest_review', { number, login })
+      await refreshConversation()
+      return true
+    } catch (error) {
+      forge.store.error = String(error)
+      return false
+    } finally {
+      store.acting = null
     }
   }
 
@@ -719,9 +759,19 @@ export function useReview() {
     }
   }
 
-  async function merge(squash = false, deleteBranch = false) {
+  /**
+   * Merges the review the way asked — a merge commit, squashed, or rebased.
+   *
+   * The forge is told which head the page is showing, so commits pushed while
+   * it was being read are not merged unseen: it refuses, and the whole review
+   * is read again so the new commits are there to look at. `true` and `false`
+   * still mean squash or not, for callers from before there were three ways.
+   */
+  async function merge(method: MergeMethod | boolean = 'merge', deleteBranch = false) {
     const current = store.current
     if (!current) return
+    const how: MergeMethod = method === true ? 'squash' : method === false ? 'merge' : method
+    const sha = store.detail?.head_sha || current.head_sha || null
     // Kept from before the optimistic set below, since a draft or a closed
     // review has no business landing back on 'open' when the merge fails.
     const priorState = store.detail?.state ?? null
@@ -730,8 +780,9 @@ export function useReview() {
       store.detail && (store.detail.state = 'merged')
       const note = await invoke<string>('forge_merge_review', {
         number: current.number,
-        squash,
-        deleteBranch
+        method: how,
+        deleteBranch,
+        sha
       })
       forge.store.error = null
       await Promise.all([
@@ -739,7 +790,9 @@ export function useReview() {
         forge.loadReviews(),
         refreshConversation()
       ])
-      store.detail = forge.store.details[current.number] ?? store.detail
+      if (stillOpen(current.number)) {
+        store.detail = forge.store.details[current.number] ?? store.detail
+      }
       return note
     } catch (error) {
       if (store.detail && priorState !== null) store.detail.state = priorState
@@ -754,11 +807,41 @@ export function useReview() {
         forge.loadReviews(),
         loadStatus(current.number)
       ])
-      store.detail = forge.store.details[current.number] ?? store.detail
+      if (stillOpen(current.number)) {
+        store.detail = forge.store.details[current.number] ?? store.detail
+      }
+      // The head moved under the page: everything it shows is out of date,
+      // the commits and files most of all.
+      if (String(error).includes(HEAD_MOVED) && stillOpen(current.number)) reloadAll()
       forge.store.error = String(error)
       return null
     } finally {
       store.acting = null
+    }
+  }
+
+  /**
+   * Tidies the clone after a merge made from here: fetches, and — when the
+   * setting allows and the tree is clean — steps off the merged branch onto
+   * the trunk and fast-forwards it. Deleting the branch is only ever offered.
+   */
+  async function afterMerge(source: string, head: string | null) {
+    // Where the merged branch lived: a fork's `feature` is not mine, and
+    // the backend leaves my branches alone for one.
+    const merged = store.current?.source_branch === source ? store.current : null
+    const from = merged?.source
+      ? { fork: merged.source.is_fork, repo: merged.source.full_name }
+      : null
+    try {
+      return await invoke<AfterMerge>('review_after_merge', {
+        branch: source,
+        head,
+        remote: forge.store.status?.remote ?? null,
+        from
+      })
+    } catch (error) {
+      forge.store.error = String(error)
+      return null
     }
   }
 
@@ -861,6 +944,9 @@ export function useReview() {
     reply,
     verdict,
     merge,
+    afterMerge,
+    rerequest,
+    reloadAll,
     setState,
     setPeople,
     setLabels,

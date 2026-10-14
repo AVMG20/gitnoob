@@ -35,7 +35,36 @@ pub struct RepoCard {
     /// False when the folder is not where it was, so the row can say so
     /// instead of the list quietly getting shorter.
     pub exists: bool,
+    /// Whether it has a remote at all; without one, nothing is "not pushed".
+    pub has_remote: bool,
+    /// Local branches that track nothing and hold commits no remote has —
+    /// work that exists on this disk and nowhere else. HEAD included.
+    pub unpushed: Vec<BranchCount>,
+    /// The trunk, when it is behind what it tracks.
+    pub trunk: Option<String>,
+    pub trunk_behind: usize,
+    /// Stashes older than `OLD_STASH_DAYS`, and the age of the oldest in days.
+    pub old_stashes: usize,
+    pub oldest_stash_days: u32,
+    /// Branches untouched for `STALE_DAYS` whose upstream has been deleted:
+    /// usually merged and forgotten.
+    pub gone: Vec<String>,
 }
+
+/// A branch and how many commits it has that matter for what is asked.
+#[derive(Serialize, Debug, Default, Clone, PartialEq)]
+pub struct BranchCount {
+    pub name: String,
+    pub count: usize,
+}
+
+/// A stash this old has usually been forgotten rather than kept.
+const OLD_STASH_DAYS: i64 = 14;
+/// A branch untouched this long with its upstream gone is most likely done.
+const STALE_DAYS: i64 = 30;
+/// Enough branches to ask about without a repository of hundreds stalling the
+/// page; the rest are still on the project's own sidebar.
+const MAX_BRANCHES: usize = 30;
 
 /// The numbers along the top, and the grid under them.
 #[derive(Serialize, Debug, Default)]
@@ -64,17 +93,31 @@ pub struct HomeSummary {
     pub repos: Vec<RepoCard>,
     pub stats: HomeStats,
     /// The address the commits were counted for, so the page can say whose
-    /// year it is drawing.
+    /// year it is drawing. The profile's, or the one git commits with when the
+    /// profile names none.
     pub author: Option<String>,
+    /// Projects whose commits could not be counted because there is no
+    /// address to tell yours from everybody else's.
+    pub uncounted: Vec<String>,
+}
+
+/// Whose commits to count in one repository: the profile's address, else the
+/// one git would commit with there. `None` means nobody can be told apart,
+/// and then nothing is counted rather than everybody.
+pub fn author_for(profile_email: Option<&str>, configured: Option<&str>) -> Option<String> {
+    profile_email
+        .or(configured)
+        .map(str::trim)
+        .filter(|email| !email.is_empty())
+        .map(str::to_string)
 }
 
 /// Everything the home tab draws, read in one go.
 pub fn summary(state: &AppState) -> Result<HomeSummary, String> {
     let config = state.config();
     let profile = config.active();
-    let author = profile
-        .and_then(|one| one.git_email.clone())
-        .filter(|email| !email.trim().is_empty());
+    let mut uncounted: Vec<String> = Vec::new();
+    let mut shown_author: Option<String> = None;
 
     // Tabs first, then whatever else was opened before them; each path once.
     let mut paths: Vec<(String, String)> = Vec::new();
@@ -109,6 +152,27 @@ pub fn summary(state: &AppState) -> Result<HomeSummary, String> {
         }
 
         let mut card = card_for(&root, &path, &name);
+
+        // Whose commits these are: the address of the profile this project
+        // answers to, else what git commits with here. With neither, the year
+        // would be everybody's work presented as yours.
+        let profile_email = config
+            .profile_for(&path)
+            .and_then(|one| one.git_email.clone());
+        let configured = git_cmd::run_checked(&root, &["config", "--get", "user.email"]).ok();
+        let Some(author) = author_for(profile_email.as_deref(), configured.as_deref()) else {
+            uncounted.push(name.clone());
+            card.last_commit = git_cmd::run_checked(&root, &["log", "-1", "--format=%ct"])
+                .ok()
+                .and_then(|out| out.trim().parse().ok())
+                .unwrap_or(0);
+            repos.push(card);
+            continue;
+        };
+        if shown_author.is_none() {
+            shown_author = Some(author.clone());
+        }
+        let author = Some(author);
 
         let mut this_week = 0u32;
         for commit in read_year(&root, author.as_deref()) {
@@ -165,12 +229,14 @@ pub fn summary(state: &AppState) -> Result<HomeSummary, String> {
             favourite_word,
             favourite_count,
         },
-        author,
+        author: shown_author,
+        uncounted,
     })
 }
 
-/// The state of one repository, in the three cheapest reads that say it.
-fn card_for(root: &std::path::Path, path: &str, name: &str) -> RepoCard {
+/// The state of one repository: the branch, the counts, and what has been
+/// left lying about in it.
+pub fn card_for(root: &std::path::Path, path: &str, name: &str) -> RepoCard {
     let branch = git_cmd::run_checked(root, &["symbolic-ref", "--quiet", "--short", "HEAD"])
         .map(|out| out.trim().to_string())
         .or_else(|_| {
@@ -184,7 +250,8 @@ fn card_for(root: &std::path::Path, path: &str, name: &str) -> RepoCard {
         .unwrap_or(0);
 
     // One command for both counts. A branch with no upstream answers with an
-    // error, which is not one: it simply has nothing to be ahead of.
+    // error, which is not one: it has nothing to be ahead of, and what it has
+    // that no remote does is counted below instead.
     let (ahead, behind) = git_cmd::run_checked(
         root,
         &["rev-list", "--left-right", "--count", "@{upstream}...HEAD"],
@@ -198,7 +265,11 @@ fn card_for(root: &std::path::Path, path: &str, name: &str) -> RepoCard {
     })
     .unwrap_or((0, 0));
 
-    RepoCard {
+    let has_remote = git_cmd::run_checked(root, &["remote"])
+        .map(|out| out.lines().any(|line| !line.trim().is_empty()))
+        .unwrap_or(false);
+
+    let mut card = RepoCard {
         path: path.to_string(),
         name: name.to_string(),
         branch,
@@ -207,6 +278,138 @@ fn card_for(root: &std::path::Path, path: &str, name: &str) -> RepoCard {
         dirty,
         last_commit: 0,
         exists: true,
+        has_remote,
+        ..RepoCard::default()
+    };
+    survey_branches(root, &mut card);
+    survey_stashes(root, &mut card);
+    card
+}
+
+/// One local branch as `for-each-ref` describes it.
+#[derive(Debug, PartialEq)]
+pub struct BranchLine {
+    pub name: String,
+    /// The full ref it is configured to track; empty when nothing.
+    pub upstream: String,
+    /// `[gone]`, `[ahead 1, behind 2]`, or empty.
+    pub track: String,
+    /// When its tip was committed, unix seconds.
+    pub at: i64,
+}
+
+/// Reads `for-each-ref` lines written with `BRANCH_FORMAT`.
+pub fn parse_branches(raw: &str) -> Vec<BranchLine> {
+    raw.lines()
+        .filter_map(|line| {
+            let mut parts = line.split('\u{1f}');
+            let name = parts.next()?.to_string();
+            if name.is_empty() {
+                return None;
+            }
+            Some(BranchLine {
+                name,
+                upstream: parts.next().unwrap_or("").to_string(),
+                track: parts.next().unwrap_or("").to_string(),
+                at: parts
+                    .next()
+                    .and_then(|v| v.trim().parse().ok())
+                    .unwrap_or(0),
+            })
+        })
+        .collect()
+}
+
+/// How far behind a `%(upstream:track)` says a branch is.
+pub fn behind_in(track: &str) -> usize {
+    track
+        .trim_matches(['[', ']'])
+        .split(", ")
+        .find_map(|part| part.strip_prefix("behind "))
+        .and_then(|n| n.trim().parse().ok())
+        .unwrap_or(0)
+}
+
+const BRANCH_FORMAT: &str =
+    "--format=%(refname:lstrip=2)%1f%(upstream)%1f%(upstream:track)%1f%(committerdate:unix)";
+
+/// Never-pushed work, a trunk behind, and branches whose upstream is gone.
+fn survey_branches(root: &std::path::Path, card: &mut RepoCard) {
+    let Ok(raw) = git_cmd::run_checked(root, &["for-each-ref", BRANCH_FORMAT, "refs/heads"]) else {
+        return;
+    };
+    let branches = parse_branches(&raw);
+    let now = now();
+
+    let trunk = git_cmd::run_checked(root, &["config", "--get", "gitnoob.trunk"])
+        .ok()
+        .map(|out| out.trim().to_string())
+        .filter(|name| branches.iter().any(|b| &b.name == name))
+        .or_else(|| {
+            ["main", "master"]
+                .iter()
+                .find(|name| branches.iter().any(|b| b.name == **name))
+                .map(|name| name.to_string())
+        });
+    if let Some(trunk) = &trunk {
+        if let Some(line) = branches.iter().find(|b| &b.name == trunk) {
+            card.trunk_behind = behind_in(&line.track);
+            card.trunk = Some(trunk.clone());
+        }
+    }
+
+    for line in branches.iter().take(MAX_BRANCHES) {
+        if line.upstream.is_empty() {
+            // Only where there is somewhere to push to: a repository with no
+            // remote keeps everything on this disk by choice.
+            if !card.has_remote {
+                continue;
+            }
+            let tip = format!("refs/heads/{}", line.name);
+            let count = git_cmd::run_checked(
+                root,
+                &[
+                    "log",
+                    "--format=%h",
+                    "--max-count=1000",
+                    &tip,
+                    "--not",
+                    "--remotes",
+                ],
+            )
+            .map(|out| out.lines().filter(|l| !l.trim().is_empty()).count())
+            .unwrap_or(0);
+            if count > 0 {
+                card.unpushed.push(BranchCount {
+                    name: line.name.clone(),
+                    count,
+                });
+            }
+        } else if line.track.contains("gone")
+            && line.at > 0
+            && now - line.at > STALE_DAYS * 86_400
+            && Some(&line.name) != trunk.as_ref()
+        {
+            card.gone.push(line.name.clone());
+        }
+    }
+}
+
+/// Stashes old enough to have been forgotten.
+fn survey_stashes(root: &std::path::Path, card: &mut RepoCard) {
+    let Ok(raw) = git_cmd::run_checked(root, &["stash", "list", "--format=%ct"]) else {
+        return;
+    };
+    let now = now();
+    for stamp in raw
+        .lines()
+        .filter_map(|line| line.trim().parse::<i64>().ok())
+    {
+        let days = (now - stamp) / 86_400;
+        if days >= OLD_STASH_DAYS {
+            card.old_stashes += 1;
+            card.oldest_stash_days = card.oldest_stash_days.max(days as u32);
+        }
     }
 }
 
@@ -235,12 +438,15 @@ fn read_year(root: &std::path::Path, author: Option<&str>) -> Vec<Commit> {
     ];
     let filter;
     if let Some(email) = author {
-        filter = format!("--author={email}");
+        filter = format!("--author=<{email}>");
         args.push(&filter);
     }
-    // `HEAD` only: branches nobody has checked out are somebody else's work
-    // just as often as they are yours, and counting them twice over is worse
-    // than missing them.
+    // Every local branch, each commit once: work on a branch not checked out
+    // right now is still work done this year. The author filter is what keeps
+    // somebody else's branches out, and `-F` with the angle brackets makes it
+    // the whole address rather than anything containing it.
+    args.push("--fixed-strings");
+    args.push("--branches");
     let Ok(raw) = git_cmd::run_checked(root, &args) else {
         return Vec::new();
     };
@@ -269,9 +475,11 @@ fn read_week_lines(root: &std::path::Path, author: Option<&str>) -> (u64, u64) {
     ];
     let filter;
     if let Some(email) = author {
-        filter = format!("--author={email}");
+        filter = format!("--author=<{email}>");
         args.push(&filter);
     }
+    args.push("--fixed-strings");
+    args.push("--branches");
     let Ok(raw) = git_cmd::run_checked(root, &args) else {
         return (0, 0);
     };

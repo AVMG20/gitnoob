@@ -5,9 +5,10 @@ import { useGit } from '~/composables/useGit'
 /**
  * The question asked before a stash goes.
  *
- * Dropping is the one stash action nothing undoes — the commit it holds is
- * unreachable the moment the entry is gone — so every way of asking for it
- * comes through here: the toolbar, the sidebar's menu and the graph's.
+ * The commit a stash holds outlives its entry, and undo stores it again — but
+ * only until git's garbage collection takes unreachable commits away, which
+ * is weeks rather than never. So it is still asked, and every way of asking
+ * for it comes through here: the toolbar, the sidebar's menu and the graph's.
  */
 const props = defineProps<{ index: number }>()
 const emit = defineEmits<{ close: [] }>()
@@ -31,8 +32,9 @@ async function drop() {
         <strong>{{ stash.message }}</strong>
       </p>
       <p class="line dim">
-        {{ stash.files }} {{ stash.files === 1 ? 'file' : 'files' }}, gone for good. Apply it first
-        to keep the changes.
+        {{ stash.files }} {{ stash.files === 1 ? 'file' : 'files' }}. Undo puts it back on the list.
+        Git keeps a dropped stash for a couple of weeks before it can be cleaned away, so apply it
+        first if you want the changes for good.
       </p>
     </template>
     <p v-else class="line dim">That stash is no longer on the list.</p>

@@ -78,6 +78,11 @@ pub struct Profile {
     pub recents: Vec<Project>,
     #[serde(default)]
     pub active_project: Option<String>,
+    /// The accounts, organisations or groups on its host this profile is for.
+    /// Empty means anything on the host. Only read when a repository is opened,
+    /// to tell which profile its remote belongs to when two share a host.
+    #[serde(default)]
+    pub owners: Vec<String>,
 }
 
 /// How many repositories a profile remembers having opened.
@@ -100,6 +105,7 @@ impl Profile {
             projects: Vec::new(),
             recents: Vec::new(),
             active_project: None,
+            owners: Vec::new(),
         }
     }
 }
@@ -147,6 +153,94 @@ pub struct Global {
     /// How big the window was when it was last closed.
     #[serde(default)]
     pub window: Option<WindowSize>,
+    /// After a fetch, fast-forward the local trunk to its upstream when no
+    /// worktree has it checked out. Fast-forward only, so it can lose nothing.
+    #[serde(default = "yes")]
+    pub keep_trunk_current: bool,
+    /// How "Update from main" joins the trunk into a branch: `auto` rebases a
+    /// branch nobody else has and merges into one already pushed, `rebase` and
+    /// `merge` always do the one thing.
+    #[serde(default = "default_update_from_trunk")]
+    pub update_from_trunk: String,
+    /// Ask before a plain push straight to the trunk.
+    #[serde(default)]
+    pub warn_push_to_trunk: bool,
+    /// After a fetch on the timer, say when the branch you are on, or the
+    /// trunk, has new commits on the remote.
+    #[serde(default = "yes")]
+    pub announce_remote_moves: bool,
+    /// After a fetch, list the local branches that look merged or whose
+    /// upstream was deleted. Nothing is deleted without a click.
+    #[serde(default = "yes")]
+    pub suggest_tidy: bool,
+    /// What the commit box does on its own.
+    #[serde(default)]
+    pub commit: CommitFlow,
+    /// Keys the user moved, by shortcut id. Anything not in here keeps the
+    /// key it ships with.
+    #[serde(default)]
+    pub shortcuts: std::collections::BTreeMap<String, String>,
+    /// Repositories where the app asks git to remember conflict resolutions
+    /// (`rerere`). Off unless turned on: once git has an `rr-cache` it turns
+    /// rerere on by itself, so a terminal `git merge` in that repository
+    /// starts filling files in from old answers too — not something to start
+    /// on anybody's behalf. An older config listed the repositories turned
+    /// *off* under `rerere_off`; that list is no longer read.
+    #[serde(default)]
+    pub rerere_on: Vec<String>,
+    /// Move stacked branches along with a rebase (`--update-refs`, git 2.38
+    /// and later). An older git simply rebases without it. Off unless turned
+    /// on: it moved backup branches and local copies of colleagues' branches
+    /// that happened to sit on the commits being replayed.
+    #[serde(default)]
+    pub update_refs: bool,
+    /// After a review merged from here: switch off the merged branch to the
+    /// trunk and fast-forward it, when the working tree is clean. Deleting the
+    /// branch is always offered, never done.
+    #[serde(default = "yes")]
+    pub post_merge_switch: bool,
+    /// What opening a repository whose remote belongs to another profile does:
+    /// `switch` to that profile for the repository, `ask`, or `off`.
+    #[serde(default = "default_profile_match")]
+    pub profile_match: String,
+    /// Watch the checks and reviews on your pull requests and say so when they
+    /// change, with a notification from the system.
+    #[serde(default = "yes")]
+    pub check_notifications: bool,
+    /// After the first push of a branch, offer to open a pull request for it.
+    #[serde(default = "yes")]
+    pub offer_review_after_push: bool,
+}
+
+fn default_update_from_trunk() -> String {
+    "auto".to_string()
+}
+
+/// The commit box's own habits, each one a switch.
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
+pub struct CommitFlow {
+    /// Start an empty message with the ticket the branch is named after:
+    /// `ABC-123: ` on `feature/ABC-123-thing`.
+    #[serde(default = "yes")]
+    pub ticket_prefix: bool,
+    /// Look over the staged diff for conflict markers, keys and files like
+    /// `.env` before committing, and say so. It warns; it never refuses.
+    #[serde(default = "yes")]
+    pub guard: bool,
+    /// Also point out `console.log`, `dbg!` and the like. Off by default:
+    /// in plenty of codebases those are meant to be there.
+    #[serde(default)]
+    pub guard_debug: bool,
+}
+
+impl Default for CommitFlow {
+    fn default() -> Self {
+        CommitFlow {
+            ticket_prefix: true,
+            guard: true,
+            guard_debug: false,
+        }
+    }
 }
 
 /// The size the window is reopened at.
@@ -229,6 +323,11 @@ pub struct Config {
     pub global: Global,
     #[serde(default)]
     pub profiles: Vec<Profile>,
+    /// Repositories that answer to a profile other than the active one, by
+    /// path: a GitLab project opened while a GitHub profile is active talks to
+    /// GitLab with the profile that fits it.
+    #[serde(default)]
+    pub repo_profiles: HashMap<String, String>,
 }
 
 fn one() -> u32 {
@@ -265,6 +364,11 @@ fn default_fetch_minutes() -> u32 {
 fn default_diverged_checkout() -> String {
     "ask".to_string()
 }
+/// Ask: a repository quietly answering to another account is exactly the
+/// surprise profiles exist to prevent.
+fn default_profile_match() -> String {
+    "ask".to_string()
+}
 
 impl Default for Ai {
     fn default() -> Self {
@@ -292,6 +396,19 @@ impl Default for Global {
             verify_signatures: false,
             worktree_replaces_tab: false,
             window: None,
+            keep_trunk_current: true,
+            update_from_trunk: default_update_from_trunk(),
+            warn_push_to_trunk: false,
+            announce_remote_moves: true,
+            suggest_tidy: true,
+            commit: CommitFlow::default(),
+            shortcuts: std::collections::BTreeMap::new(),
+            rerere_on: Vec::new(),
+            update_refs: false,
+            post_merge_switch: true,
+            profile_match: default_profile_match(),
+            check_notifications: true,
+            offer_review_after_push: true,
         }
     }
 }
@@ -305,6 +422,7 @@ impl Default for Config {
             active_profile: Some(profile.id.clone()),
             global: Global::default(),
             profiles: vec![profile],
+            repo_profiles: HashMap::new(),
         }
     }
 }
@@ -313,6 +431,15 @@ impl Config {
     pub fn active(&self) -> Option<&Profile> {
         let id = self.active_profile.as_ref()?;
         self.profiles.iter().find(|p| &p.id == id)
+    }
+
+    /// The profile a repository answers to: the one it was given, while that
+    /// profile still exists, and the active one otherwise.
+    pub fn profile_for(&self, path: &str) -> Option<&Profile> {
+        self.repo_profiles
+            .get(path)
+            .and_then(|id| self.profiles.iter().find(|p| &p.id == id))
+            .or_else(|| self.active())
     }
 
     pub fn active_mut(&mut self) -> Option<&mut Profile> {

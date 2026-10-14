@@ -50,6 +50,8 @@ export interface RebaseProgress {
   /** True when this stop is one the plan asked for as a reword. */
   rewording: boolean
   message: string | null
+  /** The subject of the commit being split, when this stop is a split. */
+  splitting?: string | null
 }
 
 const store = reactive({

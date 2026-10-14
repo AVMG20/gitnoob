@@ -2,6 +2,7 @@
 import { computed, ref, watch } from 'vue'
 import {
   Archive,
+  ArrowUpFromLine,
   Ban,
   Check,
   Copy,
@@ -9,18 +10,23 @@ import {
   FolderOpen,
   Minus,
   Plus,
+  RotateCcw,
+  ShieldAlert,
   ShieldCheck,
   Sparkles,
   Trash2,
   TriangleAlert,
   Undo2
 } from 'lucide-vue-next'
-import { copyText, isRunning, useGit } from '~/composables/useGit'
+import { copyText, isRunning, useGit, type GuardFinding } from '~/composables/useGit'
 import { useContextMenu } from '~/composables/useContextMenu'
 import { useDragDrop } from '~/composables/useDragDrop'
 import { useAi } from '~/composables/useAi'
 import { CONFLICTED, useFileView } from '~/composables/useFileView'
-import { useConfig } from '~/composables/useConfig'
+import { COMMIT_FLOW_DEFAULTS, useConfig } from '~/composables/useConfig'
+import { useCommitDraft } from '~/composables/useCommitDraft'
+import { composeMessage, onTrunk, onlyPrefix, ticketPrefix } from '~/composables/useCommitFlow'
+import { keyLabel, keysFor, matchesShortcut, useShortcuts } from '~/composables/useShortcuts'
 
 const git = useGit()
 const store = git.store
@@ -47,30 +53,42 @@ const selected = computed(() =>
     ? { path: store.viewer.path, side: store.viewer.side ?? 'unstaged' }
     : null
 )
-const message = ref('')
-const amend = ref(false)
+
+/**
+ * What is being written, kept per repository and branch outside this
+ * component — see `useCommitDraft`. The panel is taken down whenever a commit
+ * is looked at instead, and the message and the amend tick used to go with it.
+ */
+const draft = useCommitDraft(() => ({
+  repo: store.repo?.path ?? null,
+  branch: store.repo?.head ?? null
+}))
+const message = draft.message
+const amend = draft.amend
 /** What the user had typed before ticking amend, so unticking restores it. */
-const stashedMessage = ref<string | null>(null)
-const amendPushed = ref(false)
+const stashedMessage = draft.stashed
+const amendPushed = draft.pushed
+
+const flow = computed(() => ({ ...COMMIT_FLOW_DEFAULTS, ...(config.settings.value?.commit ?? {}) }))
+
+/** `ABC-123: ` when the branch is named after a ticket and the setting is on. */
+const prefix = computed(() =>
+  flow.value.ticket_prefix && !store.repo?.detached ? ticketPrefix(store.repo?.head) : null
+)
+
+/** Nothing typed but the prefix that was put there: as good as empty. */
+const blankMessage = computed(() => onlyPrefix(message.value, prefix.value))
+
+/** Starts an empty box with the ticket, the first time it is seen empty. */
+function prefill() {
+  if (prefix.value && !message.value.trim() && !amend.value) message.value = prefix.value
+}
+watch(() => draft.key.value, prefill, { immediate: true })
 
 /** The first line is the commit subject, the way git reads it. */
 const subject = computed(() => message.value.split('\n')[0]?.trim() ?? '')
 /** Git's own soft limit; past it `git log --oneline` starts truncating. */
 const SUBJECT_LIMIT = 72
-
-/**
- * Normalises the typed text into a git commit message.
- *
- * Git takes the first line as the subject whatever follows it, but every tool
- * that shows a subject and a body expects a blank line between them — so one is
- * inserted if the user did not leave one.
- */
-function composed() {
-  const lines = message.value.split('\n')
-  const head = (lines.shift() ?? '').trim()
-  const rest = lines.join('\n').replace(/^\s*\n/, '').trimEnd()
-  return rest ? `${head}\n\n${rest}` : head
-}
 
 const staged = computed(() => store.status?.staged ?? [])
 const unstaged = computed(() => store.status?.unstaged ?? [])
@@ -88,23 +106,57 @@ const unstagedRows = computed(() => [
   ...conflicted.value.map((path) => ({ path, kind: CONFLICTED })),
   ...unstaged.value.filter((entry) => !conflicted.value.includes(entry.path))
 ])
+
+const hasMessage = computed(() => subject.value.length > 0 && !blankMessage.value)
+
+/**
+ * Nothing staged, but changes to commit: the button offers to stage the lot
+ * first rather than sitting there disabled. Said in full on the button, new
+ * files counted apart, since they are the ones nobody remembers making.
+ */
+const stageAllFirst = computed(
+  () => !staged.value.length && !amend.value && unstaged.value.length > 0
+)
+const sweep = computed(() => {
+  const fresh = unstaged.value.filter((entry) => entry.kind === 'untracked').length
+  return { changed: unstaged.value.length - fresh, fresh }
+})
+
 const canCommit = computed(
-  () => (staged.value.length > 0 || amend.value) && subject.value.length > 0 && !conflicted.value.length
+  () =>
+    (staged.value.length > 0 || amend.value || stageAllFirst.value) &&
+    hasMessage.value &&
+    !conflicted.value.length
 )
 
-/** Ticking amend loads HEAD's message; unticking gives back what was typed. */
+/**
+ * Ticking amend loads HEAD's message; unticking gives back what was typed.
+ *
+ * The message is read from the repository the box was showing when amend was
+ * ticked, and it goes into that draft — written by key, not through the box,
+ * since the tab in front may be another one by the time it arrives.
+ */
 async function toggleAmend(on: boolean) {
+  if (on === amend.value) return
   amend.value = on
   if (on) {
+    const at = draft.key.value
     stashedMessage.value = message.value
-    const draft = await git.amendDraft()
-    if (draft) {
-      message.value = draft.body ? `${draft.summary}\n\n${draft.body}` : draft.summary
-      amendPushed.value = draft.is_pushed
+    const read = await git.amendDraft()
+    if (read) {
+      draft.updateAt(at, {
+        message: read.body ? `${read.summary}\n\n${read.body}` : read.summary,
+        pushed: read.is_pushed
+      })
+    } else {
+      // No commit to amend: put the box back the way it was.
+      draft.updateAt(at, { amend: false, message: draft.read(at).stashed ?? '', stashed: null })
     }
   } else {
     message.value = stashedMessage.value ?? ''
+    stashedMessage.value = null
     amendPushed.value = false
+    prefill()
   }
 }
 /**
@@ -125,7 +177,7 @@ const rows = 'minmax(46px, 1fr) minmax(46px, 1fr) auto'
 watch(
   () => store.progress?.prepared ?? null,
   (ready) => {
-    if (ready && !message.value.trim() && !amend.value) message.value = ready
+    if (ready && blankMessage.value && !amend.value) message.value = ready
   },
   { immediate: true }
 )
@@ -141,7 +193,7 @@ watch(
   () => store.carried,
   (carried) => {
     if (carried === null) return
-    if (!message.value.trim() && !amend.value) message.value = carried
+    if (blankMessage.value && !amend.value) message.value = carried
     store.carried = null
   },
   { immediate: true }
@@ -155,8 +207,18 @@ watch(
  */
 const canThrowAway = computed(() => !isRunning(store.progress))
 
-/** Committing straight to a shared branch is worth a word of warning. */
-const onProtected = computed(() => ['main', 'master', 'develop'].includes(store.repo?.head ?? ''))
+/**
+ * Committing straight to the branch everything is organised around is worth a
+ * word of warning. Which branch that is, is the repository's own answer — the
+ * one the sidebar and the graph use — not a list of usual names.
+ */
+const onProtected = computed(() =>
+  onTrunk(
+    store.repo?.detached ? null : store.repo?.head,
+    store.trunk.name,
+    [...new Set((store.refs?.remotes ?? []).map((one) => one.remote))]
+  )
+)
 
 /** Opens the file across the graph area, the way GitKraken does. */
 function show(path: string, side: 'staged' | 'unstaged') {
@@ -170,18 +232,229 @@ function show(path: string, side: 'staged' | 'unstaged') {
     store.viewer?.path === path && store.viewer?.side === side ? null : { path, side }
 }
 
-async function commit() {
-  if (!canCommit.value) return
-  if (await git.commit(composed(), amend.value)) {
-    message.value = ''
-    stashedMessage.value = null
-    amend.value = false
-    amendPushed.value = false
-    // Back to the graph, whether or not anything is still uncommitted. The
-    // commit that was being written is now in the history, which is what
-    // there is to look at; what is left over is a fresh read, started from
-    // the list rather than from whatever page the last one ended on.
-    store.viewer = null
+// --- committing
+//
+// One press is one commit. ⌘↵ held down, or pressed twice while git is still
+// working, used to start a second commit — or a second amend, which rewrites
+// the commit the first one just made.
+const committing = ref(false)
+
+/**
+ * What the look over the staged diff found, while it is being shown. `at` is
+ * the draft it was found for: repository and branch.
+ */
+const findings = ref<{
+  list: GuardFinding[]
+  push: boolean
+  at: string
+  /** What the button staged on its way to the warning, to unstage on "Go back". */
+  swept: string[]
+} | null>(null)
+
+/** A commit a hook stopped, with what it printed and what it rewrote. */
+const stopped = ref<{
+  output: string
+  hooks: string[]
+  changed: string[]
+  mixed: string[]
+  push: boolean
+  at: string
+} | null>(null)
+
+/**
+ * The strips under the box are about one repository and one branch.
+ *
+ * Left up across a tab switch, "Stage the hook's changes" staged those paths
+ * in the other repository and "Commit without hooks" committed it with
+ * `--no-verify`. They go when the draft does, and every button on them checks
+ * again that the draft in front is the one they were raised for.
+ */
+watch(
+  () => draft.key.value,
+  () => {
+    stopped.value = null
+    findings.value = null
+    generated.value = null
+  }
+)
+
+/** Whether the box still shows the draft `at` names. */
+const still = (at: string) => draft.key.value === at
+
+/**
+ * Commits — staging everything first when that is what the button says —
+ * and pushes after when asked.
+ */
+async function commit(push = false) {
+  if (committing.value || store.busy || !canCommit.value) return
+  committing.value = true
+  const at = draft.key.value
+  let swept: string[] = []
+  try {
+    if (stageAllFirst.value) {
+      // Conflicts disable the button, so `--all` cannot sweep one in. The
+      // list said nothing was staged; if something is by now — a `git add -p`
+      // in a terminal — the backend refuses rather than sweep it in unseen.
+      swept = unstaged.value.map((one) => one.path)
+      if ((await git.stageAll(false)) === null || !still(at)) return
+    }
+    if (flow.value.guard) {
+      const found = await git.commitGuard(flow.value.guard_debug)
+      if (!still(at)) return
+      if (found?.length) {
+        findings.value = { list: found, push, at, swept }
+        return
+      }
+    }
+    await finish(push, false)
+  } finally {
+    committing.value = false
+  }
+}
+
+/**
+ * Backs out of the guard's warning, leaving the index as it was before the
+ * button staged everything: only the paths it staged are taken back out.
+ */
+async function goBack() {
+  const asked = findings.value
+  findings.value = null
+  if (!asked?.swept.length || !still(asked.at)) return
+  await git.unstage(asked.swept)
+}
+
+/** Commits what the guard warned about, because the user said to. */
+async function commitAnyway() {
+  const asked = findings.value
+  findings.value = null
+  if (!asked || committing.value || !still(asked.at)) return
+  committing.value = true
+  try {
+    await finish(asked.push, false)
+  } finally {
+    committing.value = false
+  }
+}
+
+/**
+ * The commit itself, and everything after one that went through.
+ *
+ * The commit goes to the repository the box was showing when it was pressed.
+ * A hook can take long enough for another tab to come to the front, and what
+ * follows — clearing the box, pushing — belongs to the first one: the draft is
+ * cleared by its key, and nothing is pushed from a tab that is not it.
+ */
+async function finish(push: boolean, noVerify: boolean) {
+  const at = draft.key.value
+  const branch = store.repo?.detached ? null : (store.repo?.head ?? null)
+  const amending = amend.value
+  const rewrote = amending && amendPushed.value
+  const attempt = await git.commitAttempt(composeMessage(message.value), amending, noVerify)
+  if (!attempt) return false
+  if (!still(at)) {
+    if (attempt.ok) {
+      draft.clear(at)
+      git.note(
+        push
+          ? 'Committed. Another repository or branch is in front now, so it was not pushed.'
+          : 'Committed.'
+      )
+    } else {
+      git.note(`Commit: ${attempt.output}`, 'error')
+    }
+    return attempt.ok
+  }
+  if (!attempt.ok) {
+    if (attempt.hook) {
+      stopped.value = { output: attempt.output, ...attempt.hook, push, at }
+      git.note(`Commit stopped by the ${attempt.hook.hooks.join(', ')} hook`)
+    } else {
+      git.note(`Commit: ${attempt.output}`, 'error')
+    }
+    return false
+  }
+  stopped.value = null
+  findings.value = null
+  generated.value = null
+  draft.clear()
+  prefill()
+  // Back to the graph, whether or not anything is still uncommitted. The
+  // commit that was being written is now in the history, which is what
+  // there is to look at; what is left over is a fresh read, started from
+  // the list rather than from whatever page the last one ended on.
+  store.viewer = null
+  if (push) await pushAfter(rewrote, at, branch)
+  return true
+}
+
+/**
+ * Pushes the branch the way the toolbar does, setting its upstream when it
+ * has none.
+ *
+ * An amend of a commit that is already on the remote cannot go up as a plain
+ * push. It is tried as one anyway, and the remote's refusal opens the strip
+ * under the toolbar, which is where a force push is offered — with what it
+ * would drop, leased on what was read. Nothing here forces on its own.
+ */
+async function pushAfter(rewrote: boolean, at: string, branch: string | null) {
+  const head = store.refs?.locals.find((one) => one.is_head)
+  if (!head) {
+    git.note('Committed. There is no branch checked out to push.')
+    return
+  }
+  // Only the branch that was committed on, in the repository it was made in.
+  if (!still(at) || head.name !== branch) {
+    git.note('Committed. The branch in front is not the one committed on, so nothing was pushed.')
+    return
+  }
+  await git.requestPush(head.name, !head.upstream)
+  if (rewrote && store.pushBlocked) {
+    git.note(
+      'The amended commit replaces one already on the remote, so it needs a force push — offered under the toolbar.'
+    )
+  }
+}
+
+/** Tries the stopped commit again, as it was. */
+async function retry() {
+  const was = stopped.value
+  if (!was || committing.value || !still(was.at)) return
+  committing.value = true
+  try {
+    await finish(was.push, false)
+  } finally {
+    committing.value = false
+  }
+}
+
+/** Commits without the hooks: only ever from the button that says so. */
+async function skipHooks() {
+  const was = stopped.value
+  if (!was || committing.value || !still(was.at)) return
+  committing.value = true
+  try {
+    await finish(was.push, true)
+  } finally {
+    committing.value = false
+  }
+}
+
+/**
+ * Stages what the hook rewrote and commits again.
+ *
+ * Only files that were staged and had nothing else unstaged in them, so what
+ * goes in is exactly what the hook wrote — not an edit of the user's that was
+ * being kept out of this commit on purpose.
+ */
+async function stageHookChanges() {
+  const was = stopped.value
+  if (!was?.changed.length || committing.value || !still(was.at)) return
+  committing.value = true
+  try {
+    if ((await git.stage(was.changed)) === null || !still(was.at)) return
+    await finish(was.push, false)
+  } finally {
+    committing.value = false
   }
 }
 
@@ -191,15 +464,146 @@ async function commit() {
  * tell apart later.
  */
 async function stashInstead() {
-  if (await git.stashPush(subject.value || undefined)) message.value = ''
+  const name = blankMessage.value ? undefined : subject.value || undefined
+  if (await git.stashPush(name)) {
+    draft.clear()
+    prefill()
+  }
 }
 
+// --- the model
+
+/**
+ * What the box held before the model wrote in it, and what the model wrote,
+ * for as long as the text is still the model's. One step back is then one
+ * click, and typing over it is taken as keeping it.
+ */
+const generated = ref<{ before: string; after: string; amend: boolean } | null>(null)
+const canRevert = computed(
+  () => !!generated.value && message.value === generated.value.after
+)
+
+/** Writing a message needs something to describe: staged work, or an amend. */
+const canGenerate = computed(() => (staged.value.length > 0 || amend.value) && !ai.store.busy)
+
 async function generate() {
-  const written = await ai.commitMessage()
+  if (!ai.configured.value || !canGenerate.value) return
+  const at = draft.key.value
+  const before = message.value
+  // The prefix alone is not a draft to finish, but it is still handed over:
+  // it is the one thing the model cannot know.
+  const written = await ai.commitMessage({ amend: amend.value, draft: before })
   if (!written) return
-  message.value = written.body ? `${written.summary}\n\n${written.body}` : written.summary
+  // Written about the changes of the tab it was asked in; another one in
+  // front now gets none of it.
+  if (!still(at)) {
+    git.note('The repository or branch changed while the model was writing, so its answer was not used')
+    return
+  }
+  // Typed over while the model was thinking: what was typed wins.
+  if (message.value !== before) {
+    git.note('The message changed while the model was writing, so its answer was not used')
+    return
+  }
+  const after = written.body ? `${written.summary}\n\n${written.body}` : written.summary
+  message.value = after
+  generated.value = { before, after, amend: amend.value }
   git.note('Commit message written by the model — read it before committing')
 }
+
+function revertGenerated() {
+  if (!canRevert.value || !generated.value) return
+  message.value = generated.value.before
+  generated.value = null
+}
+
+// --- keys
+
+const box = ref<HTMLTextAreaElement | null>(null)
+
+/** ⌘↵ commits, ⌘⇧↵ commits and pushes — wherever settings put them. */
+function onBoxKey(event: KeyboardEvent) {
+  if (matchesShortcut(event, 'commit.push')) {
+    event.preventDefault()
+    void commit(true)
+  } else if (matchesShortcut(event, 'commit.write')) {
+    event.preventDefault()
+    void commit(false)
+  }
+}
+
+/** The working file open in the viewer, when there is one. */
+const openFile = computed(() => {
+  const open = store.viewer
+  if (!open || open.commit) return null
+  return { path: open.path, side: open.side ?? 'unstaged' }
+})
+
+/** Unstaged changes to one file waiting on the question before they go. */
+const discarding = ref<string | null>(null)
+
+function askDiscard() {
+  const open = openFile.value
+  if (!open || open.side !== 'unstaged') return
+  const entry = unstaged.value.find((one) => one.path === open.path)
+  // An untracked file has its own question, and a conflict its own dialog.
+  if (!entry || entry.kind === 'untracked' || conflicted.value.includes(open.path)) {
+    if (entry?.kind === 'untracked') deleting.value = [open.path]
+    return
+  }
+  discarding.value = open.path
+}
+
+async function discardConfirmed() {
+  const path = discarding.value
+  discarding.value = null
+  if (path) await git.discard([path])
+}
+
+/** Opens the changed file `by` steps along both lists, or the first one. */
+function stepFile(by: number) {
+  const order = [
+    ...unstaged.value
+      .filter((one) => !conflicted.value.includes(one.path))
+      .map((one) => ({ path: one.path, side: 'unstaged' as const })),
+    ...staged.value.map((one) => ({ path: one.path, side: 'staged' as const }))
+  ]
+  if (!order.length) return
+  const open = openFile.value
+  const at = open ? order.findIndex((one) => one.path === open.path && one.side === open.side) : -1
+  const next = at < 0 ? (by > 0 ? 0 : order.length - 1) : at + by
+  const target = order[next]
+  if (target) store.viewer = target
+}
+
+useShortcuts({
+  'commit.push': () => void commit(true),
+  'commit.amend': () => !store.busy && void toggleAmend(!amend.value),
+  'commit.generate': () => void generate(),
+  'work.toggle': () => {
+    const open = openFile.value
+    if (!open || store.busy) return
+    if (open.side === 'staged') void git.unstage([open.path])
+    else if (!conflicted.value.includes(open.path)) void git.stage([open.path])
+  },
+  'work.stageall': () => {
+    if (store.busy || !unstaged.value.length) return
+    void (conflicted.value.length
+      ? git.stage(unstaged.value.map((one) => one.path).filter((p) => !conflicted.value.includes(p)))
+      : git.stageAll())
+  },
+  'work.unstageall': () =>
+    !store.busy && staged.value.length && void git.unstage(staged.value.map((one) => one.path)),
+  'work.discard': () => askDiscard(),
+  'work.next': () => stepFile(1),
+  'work.previous': () => stepFile(-1)
+})
+
+/** The commit button's title: what it does, and the key for it. */
+const commitTitle = computed(() => `${keyLabel(keysFor('commit.write'))}`)
+const pushTitle = computed(
+  () => `Commit, then push the branch (${keyLabel(keysFor('commit.push'))})`
+)
 
 /**
  * The untracked files a menu has offered to delete, while it is being asked.
@@ -351,24 +755,33 @@ function fileMenu(event: MouseEvent, path: string, side: 'staged' | 'unstaged', 
       side === 'staged'
         ? { label: 'Unstage', icon: Minus, action: () => git.unstage([path]) }
         : { label: 'Stage', icon: Plus, action: () => git.stage([path]) },
-      // A file git has never seen has no changes to take back — the whole
-      // file is the change — so the same place in the menu offers the only
-      // thing that could have meant.
-      kind === 'untracked'
-        ? {
-            label: 'Delete this file',
-            icon: Trash2,
-            danger: true,
-            action: () => {
-              deleting.value = [path]
-            }
-          }
-        : {
-            label: 'Discard changes to this file',
-            icon: Undo2,
-            danger: true,
-            action: () => git.discard([path])
-          },
+      // Only on the unstaged side, where it means the one thing it says.
+      // From the staged side it threw away the unstaged edits — the copy on
+      // disk — while the user was looking at the staged one, and did nothing
+      // at all to a file with no unstaged edits. Unstage is the move there,
+      // the same as the folder menu.
+      ...(side === 'staged'
+        ? []
+        : [
+            // A file git has never seen has no changes to take back — the
+            // whole file is the change — so the same place in the menu
+            // offers the only thing that could have meant.
+            kind === 'untracked'
+              ? {
+                  label: 'Delete this file',
+                  icon: Trash2,
+                  danger: true,
+                  action: () => {
+                    deleting.value = [path]
+                  }
+                }
+              : {
+                  label: 'Discard changes to this file',
+                  icon: Undo2,
+                  danger: true,
+                  action: () => git.discard([path])
+                }
+          ]),
       { separator: true, label: '' },
       {
         label: 'Add to .gitignore',
@@ -512,29 +925,45 @@ function fileMenu(event: MouseEvent, path: string, side: 'staged' | 'unstaged', 
           <input
             type="checkbox"
             :checked="amend"
+            :disabled="store.busy"
             @change="toggleAmend(($event.target as HTMLInputElement).checked)"
           />
           Amend previous commit
         </label>
-        <button
-          v-if="ai.configured.value"
-          class="btn tiny ai"
-          :disabled="!staged.length || !!ai.store.busy"
-          title="Write a message from the staged diff"
-          @click="generate"
-        >
-          <Spinner v-if="ai.store.busy" :size="12" />
-          <Sparkles v-else :size="12" />
-          {{ ai.store.busy ? 'Writing…' : 'Generate' }}
-        </button>
+        <span v-if="ai.configured.value" class="ai-tools">
+          <!-- One step back from what the model wrote, for as long as the
+               text is still the model's. -->
+          <button
+            v-if="canRevert"
+            class="btn tiny ghost revert"
+            title="Put back what was in the box before the model wrote in it"
+            @click="revertGenerated"
+          >
+            <RotateCcw :size="12" /> Revert
+          </button>
+          <button
+            class="btn tiny ai"
+            :disabled="!canGenerate"
+            :title="
+              amend
+                ? `Write a message for the amended commit, finishing what is typed (${keyLabel(keysFor('commit.generate'))})`
+                : `Write a message from the staged diff, finishing what is typed (${keyLabel(keysFor('commit.generate'))})`
+            "
+            @click="generate"
+          >
+            <Spinner v-if="ai.store.busy" :size="12" />
+            <Sparkles v-else :size="12" />
+            {{ ai.store.busy ? 'Writing…' : 'Generate' }}
+          </button>
+        </span>
       </div>
       <div class="field">
         <textarea
+          ref="box"
           v-model="message"
           rows="4"
           placeholder="Summary on the first line, why it changed below"
-          @keydown.meta.enter="commit"
-          @keydown.ctrl.enter="commit"
+          @keydown="onBoxKey"
         />
         <span
           v-if="subject.length"
@@ -549,7 +978,7 @@ function fileMenu(event: MouseEvent, path: string, side: 'staged' | 'unstaged', 
         <TriangleAlert :size="12" /> That commit is already on a remote — amending it will need a
         force push.
       </p>
-      <p v-else-if="onProtected && (staged.length || amend)" class="warn-line">
+      <p v-else-if="onProtected && (staged.length || amend || stageAllFirst)" class="warn-line">
         <TriangleAlert :size="12" /> You are committing straight to
         <span class="mono">{{ store.repo?.head }}</span>.
       </p>
@@ -565,23 +994,96 @@ function fileMenu(event: MouseEvent, path: string, side: 'staged' | 'unstaged', 
         Will be signed<template v-if="signingKey"> · <span class="mono">{{ signingKey }}</span></template>
       </button>
 
+      <!-- What the look over the staged diff found. A warning, never a wall:
+           the person committing knows whether the key is a fixture. -->
+      <div v-if="findings" class="stop guard">
+        <p class="stop-head">
+          <ShieldAlert :size="13" />
+          {{ findings.list.length === 1 ? 'One thing' : `${findings.list.length} things` }} in
+          what is staged worth a second look
+        </p>
+        <ul class="findings">
+          <li v-for="(one, at) in findings.list" :key="at">
+            <span class="what">{{ one.what }}</span>
+            <span class="mono where">{{ one.path }}<template v-if="one.line">:{{ one.line }}</template></span>
+            <span v-if="one.excerpt" class="mono excerpt truncate">{{ one.excerpt }}</span>
+          </li>
+        </ul>
+        <div class="stop-buttons">
+          <button class="btn tiny" :disabled="store.busy" @click="goBack">Go back</button>
+          <button class="btn tiny warn" :disabled="store.busy" @click="commitAnyway">
+            Commit anyway
+          </button>
+        </div>
+      </div>
+
+      <!-- A hook said no. What it said, where the button was, and the ways
+           on — skipping it only on its own explicit button. -->
+      <div v-else-if="stopped" class="stop hook">
+        <p class="stop-head">
+          <TriangleAlert :size="13" /> The {{ stopped.hooks.join(', ') }}
+          {{ stopped.hooks.length === 1 ? 'hook' : 'hooks' }} stopped the commit
+        </p>
+        <pre class="hook-output">{{ stopped.output.trim() || 'It printed nothing.' }}</pre>
+        <p v-if="stopped.changed.length" class="faint small">
+          It rewrote {{ stopped.changed.join(', ') }}.
+        </p>
+        <p v-if="stopped.mixed.length" class="faint small">
+          It also rewrote {{ stopped.mixed.join(', ') }}, which
+          {{ stopped.mixed.length === 1 ? 'has' : 'have' }} unstaged edits of your own — stage
+          {{ stopped.mixed.length === 1 ? 'that one' : 'those' }} by hand.
+        </p>
+        <div class="stop-buttons">
+          <button
+            v-if="stopped.changed.length"
+            class="btn tiny"
+            :disabled="store.busy"
+            @click="stageHookChanges"
+          >
+            Stage the hook’s changes and retry
+          </button>
+          <button class="btn tiny" :disabled="store.busy" @click="retry">Retry</button>
+          <button class="btn tiny ghost" :disabled="store.busy" @click="skipHooks">
+            Commit without hooks
+          </button>
+          <button class="btn tiny ghost" @click="stopped = null">Dismiss</button>
+        </div>
+      </div>
+
       <div class="buttons">
-        <button class="btn btn-primary wide" :disabled="store.busy || !canCommit" @click="commit">
-        <Spinner v-if="store.busy" :size="13" />
-        <Check v-else :size="14" />
-        <template v-if="amend">
-          Amend commit{{ staged.length ? ` with ${staged.length} more` : '' }}
-        </template>
-        <template v-else>
-          Commit {{ staged.length }} {{ staged.length === 1 ? 'file' : 'files' }}
-        </template>
+        <button
+          class="btn btn-primary wide"
+          :disabled="store.busy || committing || !canCommit"
+          :title="commitTitle"
+          @click="commit(false)"
+        >
+          <Spinner v-if="store.busy || committing" :size="13" />
+          <Check v-else :size="14" />
+          <template v-if="amend">
+            Amend commit{{ staged.length ? ` with ${staged.length} more` : '' }}
+          </template>
+          <template v-else-if="stageAllFirst">
+            Stage all {{ unstaged.length }} and commit
+          </template>
+          <template v-else>
+            Commit {{ staged.length }} {{ staged.length === 1 ? 'file' : 'files' }}
+          </template>
+        </button>
+        <button
+          class="btn btn-ghost push-btn"
+          :disabled="store.busy || committing || !canCommit"
+          :title="pushTitle"
+          aria-label="Commit and push"
+          @click="commit(true)"
+        >
+          <ArrowUpFromLine :size="14" />
         </button>
         <button
           class="btn btn-ghost stash-btn"
           :disabled="store.busy || (!staged.length && !unstaged.length)"
           :title="
-            subject
-              ? `Stash everything as \u201c${subject}\u201d instead of committing`
+            !blankMessage && subject
+              ? `Stash everything as “${subject}” instead of committing`
               : 'Stash everything instead of committing'
           "
           @click="stashInstead"
@@ -590,15 +1092,41 @@ function fileMenu(event: MouseEvent, path: string, side: 'staged' | 'unstaged', 
           Stash
         </button>
       </div>
+      <p v-if="stageAllFirst && !conflicted.length" class="sweep faint">
+        Nothing is staged, so this stages
+        <template v-if="sweep.changed">{{ sweep.changed }} changed</template>
+        <template v-if="sweep.changed && sweep.fresh"> and </template>
+        <template v-if="sweep.fresh">{{ sweep.fresh }} new</template>
+        {{ unstaged.length === 1 ? 'file' : 'files' }} first.
+      </p>
       <p v-if="conflicted.length" class="blocked faint">
         <Ban :size="12" /> Resolve the conflicts first.
       </p>
     </div>
   </div>
 
-  <!-- Asked because there is nothing behind it: an untracked file is not in
-       the index and not in a commit, so nothing here or in git can bring it
-       back. -->
+  <!-- Asked every time, from the key. The app saves a copy first, so undo
+       brings the edits back, but nothing in git itself has them. What is
+       staged is left as it is. -->
+  <AppModal
+    v-if="discarding"
+    title="Discard these changes?"
+    :width="420"
+    @close="discarding = null"
+  >
+    <p class="gone">
+      The unstaged changes to <span class="mono">{{ discarding }}</span> go back to what is
+      staged or committed. Anything staged stays staged.
+    </p>
+    <template #footer>
+      <button class="btn btn-ghost" @click="discarding = null">Cancel</button>
+      <button class="btn btn-danger" @click="discardConfirmed">Discard</button>
+    </template>
+  </AppModal>
+
+  <!-- Asked because an untracked file is in no index and no commit. The app
+       saves a copy before deleting, so undo brings it back, but that copy is
+       one only this app knows about. -->
   <AppModal
     v-if="deleting"
     :title="deleting.length === 1 ? 'Delete this file?' : `Delete ${deleting.length} files?`"
@@ -608,7 +1136,8 @@ function fileMenu(event: MouseEvent, path: string, side: 'staged' | 'unstaged', 
     <p class="gone">
       Git is not tracking
       {{ deleting.length === 1 ? 'it' : 'them' }}, so
-      {{ deleting.length === 1 ? 'it is' : 'they are' }} only on disk. Deleting cannot be undone.
+      {{ deleting.length === 1 ? 'it is' : 'they are' }} only on disk. Undo in the history menu brings
+      {{ deleting.length === 1 ? 'it' : 'them' }} back.
     </p>
     <ul class="gone-list mono">
       <li v-for="path in deleting.slice(0, 8)" :key="path" class="truncate">{{ path }}</li>
@@ -908,5 +1437,101 @@ textarea {
   font-family: var(--mono);
   font-size: 10.5px;
   color: var(--text-faint);
+}
+
+.ai-tools {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.revert {
+  gap: 4px;
+}
+
+/* Commit and push: the same press with one more step, so it sits right beside
+   the button it extends and says what it adds with an arrow. */
+.push-btn {
+  flex: none;
+  min-height: 32px;
+  padding: 0 9px;
+}
+
+.sweep {
+  margin: 6px 0 0;
+  font-size: 11.5px;
+}
+
+/* A commit that did not happen yet, and why: in place, above the buttons
+   that will try again. */
+.stop {
+  margin: 0 0 8px;
+  padding: 7px 8px;
+  border-radius: var(--radius-sm);
+  font-size: 12px;
+  background: var(--warning-bg);
+  border: 1px solid var(--warning-line);
+}
+
+.stop-head {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin: 0 0 6px;
+  color: var(--amber-soft);
+  font-weight: 600;
+}
+
+.stop .small {
+  margin: 4px 0 0;
+  font-size: 11.5px;
+}
+
+.findings {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  max-height: 140px;
+  overflow: auto;
+}
+
+.findings li {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  padding: 3px 0;
+}
+
+.findings li + li {
+  border-top: 1px solid var(--line-soft);
+}
+
+.findings .where,
+.findings .excerpt {
+  font-family: var(--mono);
+  font-size: 10.5px;
+  color: var(--text-dim);
+}
+
+.hook-output {
+  margin: 0;
+  padding: 6px 8px;
+  max-height: 160px;
+  overflow: auto;
+  font-family: var(--mono);
+  font-size: 11px;
+  line-height: 1.45;
+  white-space: pre-wrap;
+  word-break: break-word;
+  background: var(--bg);
+  border: 1px solid var(--line-soft);
+  border-radius: var(--radius-sm);
+  color: var(--text);
+}
+
+.stop-buttons {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  margin-top: 8px;
 }
 </style>

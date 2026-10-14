@@ -86,8 +86,10 @@ src-tauri/src
   submodule.rs  submodules
   lfs.rs        git-lfs
   journal.rs    undo and redo
+  recover.rs    discard backups, the reflog view, dropped stashes
   home.rs       the home tab
   config.rs     settings, profiles, projects
+  identity.rs   the name and address a repository commits with
   forge/        GitHub and GitLab
   review.rs     one pull or merge request, rolled up
   ai.rs         OpenRouter
@@ -97,6 +99,7 @@ src-tauri/src
   watch.rs      filesystem watcher
 src-tauri/tests
   repo.rs       integration tests against real repos built with git
+  forge.rs      which forge project and profile, the home tab, after a merge
 app
   app.vue           shell, tabs, repo picker
   composables/      useGit.ts is the shared store; useInvoke.ts wraps every call
@@ -107,6 +110,21 @@ scripts
   release.mjs       cuts a release
   theme/            palette and the generator for themes.css
 ```
+
+## Undo
+
+Each work tree has its own history, keyed by its canonical path and written to `gitnoob-journal.json` in that work tree's git directory, so it survives a restart and two worktrees of one repository never share steps. When the history is read, every step is checked against the repository as if the newer steps had been taken; one that no longer fits is shown greyed out and can be forgotten, never attempted.
+
+A few rules that are easy to break:
+
+- **Record after the operation, never before**, with `journal::record` (branch moves) or `journal::record_entry` (anything carrying more). A step that stops on conflicts calls `journal::begin_pending`, and whatever finishes it reads `journal::pending` first and calls `journal::finish_pending` after. A commit that concludes a merge is recorded as a merge, never as a soft commit.
+- **Anything that throws work away saves it first.** Discards and deleted untracked files go through `recover::look(.., true)` (raw bytes, `hash-object -w --no-filters`) before and after, and the difference is the step. Undo refuses if the file changed since.
+- **A branch that is not checked out is moved with `update-ref` and an old value**, so git itself refuses if it moved in between. Undo and redo refuse while a merge, rebase, cherry-pick or revert is running.
+- **A stash apply or pop saves what its paths held first.** `work::before_stash` reads each touched path's index entry and file before it goes on, and the undo puts exactly that back, so work staged before the pop survives it.
+- **Branches are deleted by commit.** A tidy passes the oid it showed and deletes with `update-ref -d <ref> <oid>`; the whole batch is one `Branch` step, and the notice's Undo calls `undo_step` with that step's id rather than putting the branches back by itself.
+- **The file is shared with other windows.** `journal_at` re-reads it before every use and the file wins for steps both have seen. A file this version cannot parse is moved aside to `gitnoob-journal.json.bad-<time>`, never written over, and one that cannot be read at the moment (locked by another program, a permission gone wrong) is left alone until it can. A full history lets go of other steps before a discard's, but never of the step just recorded.
+
+Dropped stashes and saved files are unreachable objects, so they are only as safe as git's garbage collection allows (two weeks by default).
 
 ## Themes
 

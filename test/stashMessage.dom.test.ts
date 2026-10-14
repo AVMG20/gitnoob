@@ -6,6 +6,7 @@ import WorkingChanges from '~/components/WorkingChanges.vue'
 import FileList from '~/components/FileList.vue'
 import AppModal from '~/components/AppModal.vue'
 import DiscardConflictsDialog from '~/components/DiscardConflictsDialog.vue'
+import { resetDrafts } from '~/composables/useCommitDraft'
 import { useGit, type StashEntry } from '~/composables/useGit'
 
 vi.mock('@tauri-apps/api/core', () => ({ invoke: vi.fn() }))
@@ -30,6 +31,9 @@ const status = {
 }
 
 beforeEach(() => {
+  // The commit message outlives the panel now; each test starts without one.
+  localStorage.clear()
+  resetDrafts()
   asked.mockReset()
   asked.mockImplementation(async (cmd: string) => {
     if (cmd === 'stash_apply' || cmd === 'stash_pop') return 'Applied'

@@ -2359,7 +2359,9 @@ fn redoing_a_stash_on_a_clean_tree_refuses_rather_than_stealing_one() {
 
     gitnoob_lib::journal::undo(&state).unwrap();
     // Back to a clean tree, with a stash made elsewhere sitting on the list.
-    gitnoob_lib::work::discard(&state, &["a.txt".to_string()]).unwrap();
+    // In a terminal: a discard in the app is a step of its own now, and a
+    // fresh step clears what there was to redo.
+    sandbox.git(&["restore", "--worktree", "--", "a.txt"]);
     sandbox.write("b.txt", "one\nsomeone else's\n");
     sandbox.git(&["stash", "push", "-q", "-m", "unrelated"]);
 
@@ -2835,7 +2837,7 @@ fn parses_forge_remotes_and_reports_status() {
     ]);
 
     let state = sandbox.state();
-    let status = gitnoob_lib::forge::status(&state);
+    let status = tauri::async_runtime::block_on(gitnoob_lib::forge::status(&state));
     let slug = status.slug.expect("the remote should have parsed");
     assert_eq!(slug.host, "gitlab.bigbridge.nl");
     assert_eq!(slug.owner, "team/sub");
@@ -3165,6 +3167,14 @@ fn a_branch_that_also_lives_on_a_remote_is_reported() {
     sandbox.git(&["clone", "-q", "--bare", ".", &bare_arg]);
     sandbox.git(&["remote", "add", "origin", &bare_arg]);
     sandbox.git(&["fetch", "-q", "origin"]);
+    // The bare copy was cloned while topic was checked out, so its HEAD — and
+    // the origin/HEAD a newer git's fetch records from it — names topic, which
+    // would make topic the trunk. A real remote's default is main here.
+    sandbox.git(&[
+        "symbolic-ref",
+        "refs/remotes/origin/HEAD",
+        "refs/remotes/origin/main",
+    ]);
     sandbox.git(&["branch", "-q", "--set-upstream-to=origin/topic", "topic"]);
     // One commit made after the clone, so the remote copy is behind.
     sandbox.commit("c.txt", "three\n", "Not pushed");

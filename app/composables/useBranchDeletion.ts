@@ -53,7 +53,15 @@ function remoteName(found: BranchDeletion) {
  */
 export function localVerdict(found: BranchDeletion): Verdict {
   if (found.trunk_holds) {
-    return { tone: 'safe', headline: `Merged into ${against(found)}`, acknowledge: false }
+    // A forge's squash or rebase merge leaves the work on the trunk under new
+    // ids. Git calls the branch unmerged; the work has landed all the same.
+    const how =
+      found.landed === 'squash'
+        ? 'Squash-merged into'
+        : found.landed === 'rebase'
+          ? 'Rebased into'
+          : 'Merged into'
+    return { tone: 'safe', headline: `${how} ${against(found)}`, acknowledge: false }
   }
 
   // The remote has it all: the branch can be checked out again from there.

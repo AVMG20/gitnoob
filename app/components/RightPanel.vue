@@ -1,7 +1,8 @@
 <script setup lang="ts">
-import { computed } from 'vue'
+import { computed, nextTick } from 'vue'
 import { FilePen, TriangleAlert } from 'lucide-vue-next'
 import { WIP, useGit } from '~/composables/useGit'
+import { useShortcuts } from '~/composables/useShortcuts'
 
 const git = useGit()
 const store = git.store
@@ -25,6 +26,23 @@ const conflicts = computed(() => store.status?.conflicted.length ?? 0)
  * the working-tree row again.
  */
 const pending = computed(() => (showWorking.value ? 0 : conflicts.value || dirty.value))
+
+/**
+ * Puts the caret at the end of the commit message, from wherever you are.
+ *
+ * Bound here rather than in the commit box because the box is not there while
+ * a commit is being read: the key brings it back first.
+ */
+async function focusMessage() {
+  if (!showWorking.value) await git.select(WIP)
+  await nextTick()
+  const box = document.querySelector<HTMLTextAreaElement>('.panel .commit textarea')
+  if (!box) return
+  box.focus()
+  box.setSelectionRange(box.value.length, box.value.length)
+}
+
+useShortcuts({ 'commit.focus': () => void focusMessage() })
 </script>
 
 <template>

@@ -31,7 +31,15 @@ pub struct ForgeStatus {
     /// The account the token belongs to, once it has been checked.
     pub user: Option<String>,
     pub slug: Option<RepoSlug>,
+    /// Why the forge cannot be asked about this repository, when it cannot:
+    /// the profile is for another host, the chosen remote does not exist.
     pub error: Option<String>,
+    /// The profile the repository answers to, which is not always the active
+    /// one: see `Config::repo_profiles`.
+    pub profile: Option<String>,
+    pub profile_name: Option<String>,
+    /// The remote the reviews live on, once that was worked out.
+    pub remote: Option<String>,
 }
 
 /// The account an access token belongs to.
@@ -57,7 +65,7 @@ pub struct Member {
 }
 
 /// A pull request or merge request, flattened to the fields both forges share.
-#[derive(Serialize)]
+#[derive(Serialize, Clone, Debug)]
 pub struct Review {
     pub number: i64,
     pub title: String,
@@ -81,6 +89,12 @@ pub struct Review {
     /// GitHub takes the people in separate requests, and one of those failing
     /// is worth saying out loud without pretending the whole thing failed.
     pub warning: Option<String>,
+    /// The checks on its head rolled into one word — `success`, `failure`,
+    /// `pending` or `none` — when the forge said. `None` when it was not asked.
+    pub checks: Option<String>,
+    /// Where the reviewing stands: `approved`, `changes_requested` or
+    /// `review_required`, when the forge said.
+    pub review_state: Option<String>,
 }
 
 /// The repository a review's branch lives in, for the reviews that come from
@@ -89,7 +103,7 @@ pub struct Review {
 /// A fork's branch is not in any remote this clone has, which is why checking
 /// one out used to fail: there was no `origin/their-branch` to track. Carrying
 /// the fork's address here is what lets the checkout add the remote it needs.
-#[derive(Serialize, Clone)]
+#[derive(Serialize, Clone, Debug)]
 pub struct ReviewSource {
     /// `owner/name` on the forge.
     pub full_name: String,

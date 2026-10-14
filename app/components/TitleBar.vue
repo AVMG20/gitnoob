@@ -13,6 +13,8 @@ import {
   Redo2,
   RefreshCw,
   Settings,
+  Sprout,
+  GitPullRequestArrow,
   Trash2,
   TriangleAlert,
   Undo2,
@@ -25,11 +27,28 @@ import { useUpdates } from '~/composables/useUpdates'
 import { useRebase } from '~/composables/useRebase'
 import { usePanes } from '~/composables/usePanes'
 import { useBranchNaming } from '~/composables/useBranchNaming'
+import { leadWithForce, trunkLocalName } from '~/composables/useSync'
+import type { BranchDeletion } from '~/composables/useGit'
+import { useRewrite } from '~/composables/useRewrite'
+import { useForge } from '~/composables/useForge'
 
 const emit = defineEmits<{ leave: [depth: number] }>()
+const rewrite = useRewrite()
+
+/** A cherry-pick or revert that stopped, named the way its buttons say it. */
+const picking = computed(() => {
+  const now = store.progress
+  if (!now || now.merging || now.rebasing) return null
+  if (now.cherry_picking) return 'cherry-pick'
+  if (now.reverting) return 'revert'
+  return null
+})
 
 const git = useGit()
 const store = git.store
+
+/** The open review for the branch checked out, for the badge beside it. */
+const forgeCurrent = computed(() => useForge().currentReview.value)
 
 /** The project the trail started from — the tab you are still in. */
 const rootName = computed(() => store.inside[0]?.fromName ?? '')
@@ -71,6 +90,25 @@ function newBranch() {
   if (!branchNaming.begin()) showBranch.value = true
 }
 const showHistory = ref(false)
+
+/** The start-work dialog: fetch, then branch from the trunk as the remote has it. */
+const starting = ref(false)
+
+function startWork() {
+  if (store.busy || !store.repo) return
+  starting.value = true
+}
+
+/** The trunk's own local name, so the branch you are on can be told apart from it. */
+const trunkName = computed(() => trunkLocalName(store.trunk, store.refs?.locals ?? []))
+
+/** Updating from main means something only on a branch that is not main. */
+const canUpdate = computed(() => !!head.value && !!trunkName.value && head.value.name !== trunkName.value)
+
+function updateFromMain() {
+  if (store.busy || !canUpdate.value || !head.value) return
+  return git.updateFromTrunk(head.value.name)
+}
 
 /**
  * The stash the selected row is, when it is one.
@@ -133,10 +171,75 @@ const nextUndo = computed(() => store.history.undo[0] ?? null)
 const nextRedo = computed(() => store.history.redo[0] ?? null)
 
 /** Push is push: no dialog. If the remote refuses, the strip below offers the
-    way out, which is the only moment a choice is actually needed. */
+    way out, which is the only moment a choice is actually needed.
+
+    The exceptions are asked in `requestPush`, which every push in the window
+    goes through: a branch whose upstream was deleted on the remote — most
+    often because its pull request was merged, and pushing it would quietly
+    put the deleted branch back — and, when settings say so, a push straight
+    to the main branch. */
 function push() {
   if (!head.value) return
-  return git.pushBranch(head.value.name, !head.value.upstream)
+  return git.requestPush(head.value.name, !head.value.upstream)
+}
+
+// --- an upstream that was deleted
+
+/** What deleting the branch would cost, read when the strip opens. */
+const goneReading = ref<BranchDeletion | null>(null)
+
+/** The strip stands only while the branch it asks about still has a gone upstream. */
+const gone = computed(() => {
+  const asked = store.pushGone
+  if (!asked) return null
+  const local = store.refs?.locals.find((one) => one.name === asked.branch)
+  return local?.gone ? local : null
+})
+
+watch(
+  () => store.pushGone?.branch ?? null,
+  async (name) => {
+    goneReading.value = null
+    if (!name) return
+    const reading = await git.deleteBranchPreview(name)
+    if (store.pushGone?.branch === name) goneReading.value = reading
+  },
+  { immediate: true }
+)
+
+/** Its work is on the trunk, by history or by patch, so it can go. */
+const goneLanded = computed(() => !!goneReading.value?.trunk_holds)
+
+/** Nothing open to carry across: switching away is a plain switch. */
+const clean = computed(
+  () =>
+    !store.status ||
+    (!store.status.staged.length && !store.status.unstaged.length && !store.status.conflicted.length)
+)
+
+/** Whether finishing the branch means stepping off it first. */
+const goneIsHead = computed(() => !!gone.value && gone.value.name === store.repo?.head)
+
+/** Steps onto the trunk if need be and deletes the finished branch, with Undo on the notice. */
+async function switchAndDelete() {
+  const branch = gone.value?.name
+  // Where it pointed when the strip asked: if it moves on, it is not deleted.
+  const oid = gone.value?.oid
+  const trunk = trunkName.value
+  store.pushGone = null
+  if (!branch || !oid || !trunk) return
+  if (store.repo?.head === branch) {
+    await git.checkout(trunk)
+    if (store.repo?.head !== trunk) return
+  }
+  await git.deleteBranches([{ name: branch, oid }])
+}
+
+/** Pushes on purpose, putting the remote branch back under its old name. */
+async function recreate() {
+  const branch = gone.value?.name
+  store.pushGone = null
+  if (branch) await git.requestPush(branch, false, true)
 }
 
 // The toolbar's own actions, bound to the keyboard. It is mounted for as long
@@ -148,6 +251,8 @@ useShortcuts({
   'repo.refresh': () => !store.busy && void git.refresh(),
   'repo.settings': () => config.openSettings('profiles'),
   'branch.create': () => newBranch(),
+  'branch.start': () => startWork(),
+  'branch.update': () => !store.busy && void updateFromMain(),
   'stash.push': () => !store.busy && void git.stashPush(),
   'history.undo': () => !store.busy && nextUndo.value && void git.undo(),
   'history.redo': () => !store.busy && nextRedo.value && void git.redo()
@@ -198,9 +303,15 @@ async function askForce() {
   checkingForce.value = false
 }
 
+/** Lead with forcing when the commits it would drop are older copies of ours. */
+const forceFirst = computed(() => leadWithForce(store.pushBlocked))
+
 async function forcePush() {
   const target = blockedTarget()
-  if (!target) return
+  // Never without a lease: with no upstream commit read, `--force-with-lease`
+  // would lease on whatever the last fetch happened to leave, which is not
+  // what anyone confirmed.
+  if (!target || !lease.value) return
   confirming.value = false
   await git.push(target.remote, target.branch, true, false, lease.value)
 }
@@ -294,6 +405,7 @@ async function reconcile(rebase: boolean) {
         <GitBranch :size="12" class="branch-icon" />
         <span class="branch-name">{{ store.repo?.head }}</span>
         <span v-if="store.repo?.detached" class="pill">detached</span>
+        <ReviewBadge v-if="forgeCurrent" :review="forgeCurrent" />
       </span>
     </div>
 
@@ -358,7 +470,7 @@ async function reconcile(rebase: boolean) {
       <button
         class="btn"
         :disabled="store.busy || !head"
-        :title="head?.upstream ? `Push to ${head.upstream}` : 'Push and set the upstream'"
+        :title="head?.upstream ? `Push to ${head.push_to ?? head.upstream}` : head?.gone ? `${head.gone} was deleted on the remote` : 'Push and set the upstream'"
         @click="push"
       >
         <ArrowUpFromLine :size="14" /> Push
@@ -369,6 +481,23 @@ async function reconcile(rebase: boolean) {
 
       <button class="btn" :disabled="store.busy" title="Start a branch here" @click="newBranch">
         <GitBranchPlus :size="14" /> Branch
+      </button>
+      <button
+        class="btn"
+        :disabled="store.busy"
+        title="Fetch, then start a new branch from main as the remote has it"
+        @click="startWork"
+      >
+        <Sprout :size="14" /> Start
+      </button>
+      <button
+        v-if="canUpdate"
+        class="btn"
+        :disabled="store.busy"
+        :title="`Fetch, then bring ${head?.name} up to date with main`"
+        @click="updateFromMain"
+      >
+        <GitPullRequestArrow :size="14" /> Update
       </button>
       <button class="btn" :disabled="store.busy" title="Stash everything" @click="git.stashPush()">
         <Archive :size="14" /> Stash
@@ -420,7 +549,26 @@ async function reconcile(rebase: boolean) {
          rather than putting a dialog in the way. Force push gets its own
          second press: nothing rewrites a remote on one click. -->
     <div v-if="blocked" class="banner push" :class="{ danger: confirming }">
-      <template v-if="!confirming">
+      <template v-if="!confirming && forceFirst">
+        <TriangleAlert :size="14" />
+        <span>
+          <span class="mono">{{ blocked.upstream ?? `${blocked.remote}/${blocked.branch}` }}</span>
+          still has the commits you rewrote here. Pulling would bring the old copies back beside
+          the new ones.
+        </span>
+        <button class="btn tiny" :disabled="store.busy" @click="askForce">
+          Force push with lease…
+        </button>
+        <button class="btn tiny ghost" :disabled="store.busy" @click="pullThen(true)">
+          Pull with rebase
+        </button>
+        <button class="btn tiny ghost" :disabled="store.busy" @click="pullThen(false)">
+          Pull and merge
+        </button>
+        <button class="btn tiny ghost close" @click="git.dismissPushBlock()">Dismiss</button>
+      </template>
+
+      <template v-else-if="!confirming">
         <TriangleAlert :size="14" />
         <span>
           <span class="mono">{{ blocked.upstream ?? `${blocked.remote}/${blocked.branch}` }}</span>
@@ -441,6 +589,11 @@ async function reconcile(rebase: boolean) {
       <template v-else>
         <TriangleAlert :size="14" />
         <span v-if="checkingForce">Reading what a rewrite would drop…</span>
+        <span v-else-if="!lease">
+          Could not read what
+          <span class="mono">{{ blocked.upstream ?? `${blocked.remote}/${blocked.branch}` }}</span>
+          holds, so there is nothing to lease the force push on. Fetch, then try again.
+        </span>
         <span v-else>
           Force pushing replaces
           <span class="mono">{{ blocked.upstream ?? `${blocked.remote}/${blocked.branch}` }}</span>
@@ -454,13 +607,57 @@ async function reconcile(rebase: boolean) {
         </span>
         <button
           class="btn tiny danger-btn"
-          :disabled="store.busy || checkingForce"
+          :disabled="store.busy || checkingForce || !lease"
           @click="forcePush"
         >
           Yes, force push with lease
         </button>
         <button class="btn tiny ghost close" @click="confirming = false">Cancel</button>
       </template>
+    </div>
+
+    <!-- The branch's remote copy was deleted — usually its pull request was
+         merged. A plain push would put it back, so this asks what was meant. -->
+    <div v-if="gone" class="banner push gone-strip">
+      <TriangleAlert :size="14" />
+      <span>
+        <span class="mono">{{ gone.gone }}</span> was deleted on the remote.
+        <template v-if="!goneReading">Checking whether its work landed…</template>
+        <template v-else-if="goneLanded">
+          Its work is on <span class="mono">{{ goneReading.against }}</span>, so
+          <span class="mono">{{ gone.name }}</span> is finished.
+        </template>
+        <template v-else>Its work is not on the main branch.</template>
+      </span>
+      <button
+        v-if="goneLanded && trunkName"
+        class="btn tiny"
+        :disabled="store.busy || (goneIsHead && !clean)"
+        :title="goneIsHead && !clean ? 'Commit or stash your open changes first' : ''"
+        @click="switchAndDelete"
+      >
+        <template v-if="goneIsHead">Switch to {{ trunkName }} and delete {{ gone.name }}</template>
+        <template v-else>Delete {{ gone.name }}</template>
+      </button>
+      <button
+        class="btn tiny"
+        :class="{ ghost: goneLanded }"
+        :disabled="store.busy"
+        @click="recreate"
+      >
+        Push to recreate {{ gone.gone }}
+      </button>
+      <button class="btn tiny ghost close" @click="store.pushGone = null">Dismiss</button>
+    </div>
+
+    <!-- A push straight to the main branch, when settings say to ask first. -->
+    <div v-if="store.pushConfirm" class="banner push confirm-strip">
+      <TriangleAlert :size="14" />
+      <span>{{ store.pushConfirm.reason }}</span>
+      <button class="btn tiny" :disabled="store.busy" @click="git.confirmPush(true)">
+        Push anyway
+      </button>
+      <button class="btn tiny ghost close" @click="git.confirmPush(false)">Cancel</button>
     </div>
 
     <!-- Checking out a remote branch found the local one had gone its own way
@@ -521,7 +718,90 @@ async function reconcile(rebase: boolean) {
     <!-- A rebase that is part-way through, whether or not the plan is still
          on screen: closing the pane must not be a way to lose the thread. The
          conflict strip below covers what to do about the files themselves. -->
-    <div v-if="store.progress?.rebasing && !rebase.store.open" class="banner">
+    <!-- A split stops with the commit's changes unstaged: the ordinary
+         staging panel is where the pieces are made, and this is the way on. -->
+    <div
+      v-if="store.progress?.rebasing && rebase.store.progress?.splitting && !rebase.store.open"
+      class="banner"
+      data-test="split-banner"
+    >
+      <TriangleAlert :size="14" />
+      <span v-if="rewrite.store.splitLeft.length">
+        {{ rewrite.store.splitLeft.length }}
+        {{ rewrite.store.splitLeft.length === 1 ? 'file' : 'files' }} of the commit
+        {{ rewrite.store.splitLeft.length === 1 ? 'is' : 'are' }} not committed yet:
+        <span class="mono">{{ rewrite.store.splitLeft.join(', ') }}</span>
+      </span>
+      <span v-else>
+        Splitting <span class="mono">{{ rebase.store.progress.splitting }}</span>: commit pieces,
+        then Continue
+      </span>
+      <template v-if="rewrite.store.splitLeft.length">
+        <button
+          class="btn tiny"
+          :disabled="store.busy"
+          data-test="split-commit-rest"
+          @click="rewrite.splitContinue('commit')"
+        >
+          Commit the rest as one more piece
+        </button>
+        <button
+          class="btn tiny ghost"
+          :disabled="store.busy"
+          title="For changes you discarded on purpose"
+          @click="rewrite.splitContinue('leave')"
+        >
+          Go on without it
+        </button>
+      </template>
+      <button
+        v-else
+        class="btn tiny"
+        :disabled="store.busy || !!conflicts"
+        data-test="split-continue"
+        @click="rewrite.splitContinue('ask')"
+      >
+        Continue
+      </button>
+      <button
+        class="btn tiny ghost close"
+        :disabled="store.busy"
+        title="Puts the branch back as it was. Anything you changed during the split goes to the stash first."
+        data-test="split-abort"
+        @click="rebase.abort()"
+      >
+        Abort the split
+      </button>
+    </div>
+
+    <!-- A run of picks or reverts with nothing left to resolve: committing the
+         stopped one is not the end of it, the rest of the list is waiting. -->
+    <div
+      v-if="store.progress?.sequencer && !conflicts"
+      class="banner"
+      data-test="sequence-banner"
+    >
+      <TriangleAlert :size="14" />
+      <span>
+        {{ store.progress.sequencer === 'revert' ? 'Reverting' : 'Cherry-picking' }} —
+        {{ store.progress.sequence_left ?? 0 }}
+        {{ (store.progress.sequence_left ?? 0) === 1 ? 'commit' : 'commits' }} still to apply
+      </span>
+      <button class="btn tiny" :disabled="store.busy" @click="rewrite.sequenceContinue()">
+        Continue
+      </button>
+      <button class="btn tiny ghost" :disabled="store.busy" @click="rewrite.sequenceSkip()">
+        Skip this commit
+      </button>
+      <button class="btn tiny ghost close" :disabled="store.busy" @click="rewrite.sequenceAbort()">
+        Abort the {{ store.progress.sequencer }}
+      </button>
+    </div>
+
+    <div
+      v-if="store.progress?.rebasing && !rebase.store.progress?.splitting && !rebase.store.open"
+      class="banner"
+    >
       <TriangleAlert :size="14" />
       <span v-if="rebase.store.progress">
         Rebasing — {{ rebase.store.progress.at }} of {{ rebase.store.progress.total }}, stopped at
@@ -598,11 +878,21 @@ async function reconcile(rebase: boolean) {
       >
         Abort merge
       </button>
+      <button
+        v-else-if="picking"
+        class="btn tiny ghost"
+        :disabled="store.busy"
+        data-test="abort-pick"
+        @click="rewrite.sequenceAbort()"
+      >
+        Abort {{ picking }}
+      </button>
     </div>
     </div>
 
     <HistoryMenu v-if="showHistory" @close="showHistory = false" />
     <BranchDialog v-if="showBranch" @close="showBranch = false" />
+    <BranchDialog v-if="starting" fresh @close="starting = false" />
     <DropStashDialog v-if="dropping !== null" :index="dropping" @close="dropping = null" />
 
     <DiscardConflictsDialog

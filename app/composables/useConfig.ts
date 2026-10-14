@@ -1,5 +1,6 @@
 import { aimAt, invoke } from './useInvoke'
 import { computed, reactive } from 'vue'
+import { setShortcutOverrides } from './useShortcuts'
 
 export type ForgeKind = 'none' | 'github' | 'gitlab'
 
@@ -30,6 +31,10 @@ export interface Profile {
   /** Everything opened under this profile, newest first, tabs included. */
   recents: Project[]
   active_project: string | null
+  /** The accounts, organisations or groups on its host this profile is for;
+      empty means anything there. Used to tell which profile a remote
+      belongs to when two share a host. */
+  owners?: string[]
 }
 
 export type ReasoningLevel = 'off' | 'minimal' | 'low' | 'medium' | 'high'
@@ -68,6 +73,48 @@ export interface GlobalSettings {
   verify_signatures: boolean
   /** Clicking a worktree turns this tab into it rather than opening a new one. */
   worktree_replaces_tab?: boolean
+  /** After a fetch, fast-forward the local trunk when nobody is standing on it. */
+  keep_trunk_current?: boolean
+  /** How "Update from main" joins the trunk in. `auto` rebases a branch nobody
+      else has and merges into one that is pushed. */
+  update_from_trunk?: 'auto' | 'rebase' | 'merge'
+  /** Ask before a plain push straight to the trunk. */
+  warn_push_to_trunk?: boolean
+  /** Say when the fetch on the timer brings new commits for this branch or the trunk. */
+  announce_remote_moves?: boolean
+  /** Offer to tidy away branches that look merged or whose upstream was deleted. */
+  suggest_tidy?: boolean
+  /** What the commit box does on its own. */
+  commit?: CommitFlowSettings
+  /** Keys the user moved, by shortcut id. */
+  shortcuts?: Record<string, string>
+  /** Repositories where git is asked to remember conflict resolutions. */
+  rerere_on?: string[]
+  /** Move stacked branches along with a rebase (git 2.38 and later). */
+  update_refs?: boolean
+  /** After a review merged from here, step onto the trunk and fast-forward it. */
+  post_merge_switch?: boolean
+  /** What opening a repository that belongs to another profile does. */
+  profile_match?: 'switch' | 'ask' | 'off'
+  /** Watch checks and reviews on your pull requests, and notify. */
+  check_notifications?: boolean
+  /** Offer to open a pull request after a branch's first push. */
+  offer_review_after_push?: boolean
+}
+
+export interface CommitFlowSettings {
+  /** Start an empty message with the ticket the branch is named after. */
+  ticket_prefix: boolean
+  /** Look over the staged diff before committing, and warn. */
+  guard: boolean
+  /** Also point out console.log, dbg! and the like. */
+  guard_debug: boolean
+}
+
+export const COMMIT_FLOW_DEFAULTS: CommitFlowSettings = {
+  ticket_prefix: true,
+  guard: true,
+  guard_debug: false
 }
 
 export interface Config {
@@ -75,6 +122,8 @@ export interface Config {
   active_profile: string | null
   global: GlobalSettings
   profiles: Profile[]
+  /** Repositories that answer to a profile other than the active one. */
+  repo_profiles?: Record<string, string>
 }
 
 export const OPENROUTER_SECRET = 'openrouter'
@@ -99,6 +148,8 @@ const store = reactive({
 
 function apply(config: Config) {
   store.config = config
+  // Keys moved in settings take effect the moment they are saved.
+  setShortcutOverrides(config?.global?.shortcuts)
 }
 
 export function useConfig() {
@@ -222,8 +273,13 @@ export function useConfig() {
     async reload() {
       apply(await invoke<Config>('config_get'))
     },
-    /** Null when there was nothing to change, so callers can stay quiet. */
-    applyIdentity: () => invoke<string | null>('apply_identity')
+    /** Null when there was nothing to change, so callers can stay quiet.
+        `force` is the user agreeing to replace what the repository had. */
+    applyIdentity: (force = false) => invoke<string | null>('apply_identity', { force }),
+    /** Makes a repository answer to another profile, or (null) the active one. */
+    async setRepoProfile(path: string, id: string | null) {
+      apply(await invoke<Config>('repo_profile_set', { path, id }))
+    }
   }
 }
 

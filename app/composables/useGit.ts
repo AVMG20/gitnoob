@@ -1,4 +1,4 @@
-import { aimAt, invoke } from './useInvoke'
+import { aimAt, aimedAt, invoke } from './useInvoke'
 import { markRaw, reactive, ref } from 'vue'
 import { useConfig } from './useConfig'
 import { useForge } from './useForge'
@@ -7,6 +7,9 @@ import { useHome } from './useHome'
 import { parseCommandLine } from './cli'
 import type { LfsStatus } from './useLfs'
 import { useToasts } from './useToasts'
+import { commitCount, failedRemotes, protectedPushWarning, trunkLocalName } from './useSync'
+import { afterPush } from './useForgeNudges'
+import { moveDraft } from './useCommitDraft'
 
 /**
  * What the platform calls its file manager. The backend already opens the right
@@ -47,6 +50,12 @@ export interface LocalBranch {
   upstream: string | null
   ahead: number
   behind: number
+  /** The upstream it was set to follow, when that was deleted on the remote
+      and pruned here. `upstream` is null then. */
+  gone?: string | null
+  /** Where a push lands, `remote/name`: the upstream, except for a branch
+      that follows another branch's name, which is pushed under its own. */
+  push_to?: string | null
 }
 
 export interface RemoteBranch { name: string; remote: string; oid: string }
@@ -193,6 +202,12 @@ export interface InProgress {
    * you were on, which finishing or aborting it takes you back to.
    */
   returns_to: string | null
+  /** A cherry-pick or revert of several commits that is part-way through. */
+  sequencer?: 'cherry-pick' | 'revert' | null
+  /** How many commits that run still has to apply, the stopped one included. */
+  sequence_left?: number
+  /** Names what is under way, the same for as long as it lasts. */
+  operation?: string | null
 }
 
 export interface StatusEntry {
@@ -318,6 +333,9 @@ export interface PushPreview {
   force_needed: boolean
   will_orphan: CommitSummary[]
   will_push: CommitSummary[]
+  /** Every commit a force push would drop has a copy in the branch: it was
+      rebased, squashed or amended here. */
+  rewritten?: boolean
 }
 
 /**
@@ -332,6 +350,9 @@ export interface PushBlock {
   upstream: string | null
   /** Git's own rejection, shown so the offer is not taken on trust. */
   message: string
+  /** What the remote has that the branch does not is only older copies of
+      its own commits, so force pushing is the answer to lead with. */
+  rewritten?: boolean
 }
 
 /**
@@ -390,6 +411,11 @@ export interface BranchRelation {
   ahead: number
   /** Commits the target has that the source does not. */
   behind: number
+  /** Whether merging would go through on its own, worked out in memory.
+      Null when it could not be asked (git older than 2.38). */
+  clean?: boolean | null
+  /** The files that merge would stop on. */
+  conflicts?: string[]
 }
 
 /** What deleting a branch would cost, read before the question is asked. */
@@ -425,6 +451,50 @@ export interface BranchDeletion {
   remote: RemoteCopy | null
   /** Copies on forks and mirrors, named but never deleted from here. */
   other_remotes: string[]
+  /** How the work reached the trunk: merged, squash or rebase. */
+  landed?: 'merged' | 'squash' | 'rebase' | null
+  /** The upstream it followed, when that has been deleted on the remote. */
+  gone?: string | null
+}
+
+/** A local branch that looks finished, and why. */
+export interface Tidy {
+  name: string
+  oid: string
+  reason: 'merged' | 'squash' | 'rebase' | 'gone'
+  /** The trunk ref the work was found on. */
+  into: string | null
+  gone: string | null
+  /** Deleting it loses nothing. */
+  proven: boolean
+}
+
+/** A deleted branch, with what it takes to put it back. */
+export interface Removed {
+  name: string
+  oid: string
+  remote: string | null
+  merge: string | null
+}
+
+export interface Removal {
+  removed: Removed[]
+  refused: string[]
+  /** The undo step that puts the whole batch back. */
+  step: number | null
+}
+
+/** A branch to delete, with the commit it pointed at when it was offered. */
+export interface Doomed {
+  name: string
+  oid: string
+}
+
+/** The local trunk, moved up to its upstream after a fetch. */
+export interface TrunkMove {
+  branch: string
+  upstream: string
+  commits: number
 }
 
 /**
@@ -441,6 +511,29 @@ export interface Trunk {
 }
 
 export interface MergeOutcome { ok: boolean; message: string; conflicts: string[] }
+
+/** How a commit went, with what a hook did when one stopped it. */
+export interface CommitAttempt {
+  ok: boolean
+  /** Git's answer, or everything git and the hooks printed. */
+  output: string
+  hook: {
+    hooks: string[]
+    /** Staged files the hook rewrote; staging them again picks up just that. */
+    changed: string[]
+    /** Rewritten files that also had unstaged edits; left alone. */
+    mixed: string[]
+  } | null
+}
+
+/** One thing in the staged diff worth a second look. */
+export interface GuardFinding {
+  path: string
+  line: number | null
+  kind: 'conflict' | 'secret' | 'file' | 'debug'
+  what: string
+  excerpt: string | null
+}
 export interface AmendDraft { summary: string; body: string; is_pushed: boolean; short: string }
 
 /** What rewording a given commit would take, asked before the editor opens. */
@@ -482,12 +575,36 @@ export interface HistoryEntry {
   branch: string | null
   before: string | null
   after: string | null
-  mode: 'soft' | 'hard' | 'stash'
+  mode: 'soft' | 'hard' | 'stash' | 'apply' | 'pop' | 'drop' | 'files' | 'branch'
   destructive: boolean
   at: number
+  /** Why this step cannot be taken as the repository stands; absent when it can. */
+  unavailable?: string | null
 }
 
-export type ResetMode = 'soft' | 'mixed' | 'hard'
+/** One place HEAD or the current branch has been, from the reflog. */
+export interface Moment {
+  oid: string
+  short: string
+  previous: string | null
+  time: number
+  /** What git wrote down about the move: "commit: Tidy", "reset: moving to …". */
+  action: string
+  subject: string
+  /** "HEAD", the branch's name, or both. */
+  logs: string[]
+}
+
+/** A stash commit that is no longer on the list. */
+export interface LostStash {
+  oid: string
+  short: string
+  message: string
+  time: number
+}
+
+/** `keep` moves the branch and keeps uncommitted work, or refuses. */
+export type ResetMode = 'soft' | 'mixed' | 'hard' | 'keep'
 
 export interface ResetPreview {
   target: string
@@ -524,6 +641,8 @@ export type ConflictBlock =
       has_base: boolean
       ours_label: string
       theirs_label: string
+      /** The sides only look different: the same lines, or spacing alone. */
+      trivial?: 'same' | 'whitespace' | null
     }
 
 /** Which of the three index stages a conflicted path has. */
@@ -538,6 +657,10 @@ export interface ConflictFile {
   blocks: ConflictBlock[]
   conflict_count: number
   stages: ConflictStages
+  /** rerere wrote last time's answer into the file; it waits to be accepted. */
+  rerere?: boolean
+  /** A lockfile: take a side and regenerate rather than merge lines. */
+  lockfile?: boolean
 }
 
 export interface Resolution {
@@ -655,7 +778,15 @@ const fields = reactive({
   /** Set when a checkout found the branch and its remote had both moved on
       and settings said to ask, so the toolbar can put the question up. */
   divergedCheckout: null as Diverged | null,
-  log: [] as LogLine[]
+  log: [] as LogLine[],
+  /** Local branches that look finished, as of the last fetch. */
+  tidy: [] as Tidy[],
+  /** A push waiting on the user's say-so, and why it is being asked. */
+  pushConfirm: null as { branch: string; setUpstream: boolean; reason: string } | null,
+  /** A push held back because the branch's upstream was deleted on the
+      remote, so the toolbar can ask whether it was finished or meant to go
+      back up. `gone` is the deleted upstream, `remote/name`. */
+  pushGone: null as { branch: string; gone: string } | null
 })
 
 const logSeq = ref(0)
@@ -843,6 +974,9 @@ function forget() {
   store.selected = WIP
   store.pushBlocked = null
   store.divergedCheckout = null
+  store.tidy = []
+  store.pushConfirm = null
+  store.pushGone = null
   store.resolving = null
   store.revealing = null
   store.viewer = null
@@ -891,6 +1025,9 @@ export function useGit() {
     // that is not here, a file viewer on a path that no longer exists.
     store.pushBlocked = null
     store.divergedCheckout = null
+    store.tidy = []
+    store.pushConfirm = null
+    store.pushGone = null
     store.viewer = null
     store.resolving = null
     store.query = ''
@@ -1214,6 +1351,43 @@ export function useGit() {
     return result
   }
 
+  /**
+   * Runs something that only moves files between the index and the working
+   * tree, and re-reads only what that can change.
+   *
+   * Staging and unstaging never touch a ref, so a full refresh — thirteen
+   * reads and a walk of the history — was the wrong answer to every click on
+   * a file. The status, and what git is part-way through (staging the last
+   * conflicted file can end a merge's conflicts), are the whole of it.
+   */
+  async function runStatus<T>(label: string, command: string, args: Record<string, unknown> = {}) {
+    const result = await guard(label, () => invoke<T>(command, args))
+    await refreshWorking()
+    useHome().stale()
+    return result
+  }
+
+  /** The status and what git is part-way through, and nothing else. */
+  async function refreshWorking() {
+    if (!store.repo) return
+    const path = store.repo.path
+    const [, progress] = await Promise.all([
+      refreshStatus(),
+      part('what git is doing', invoke<InProgress>('in_progress'), store.progress)
+    ])
+    if (store.repo?.path !== path) return
+    const key = JSON.stringify(progress) ?? 'undefined'
+    const snapshot = snapshots.get(path)
+    if (snapshot) {
+      if (snapshot.seen.progress === key) return
+      snapshot.seen.progress = key
+      snapshot.progress = raw(progress)
+      store.progress = snapshot.progress
+      return
+    }
+    if (JSON.stringify(store.progress) !== key) store.progress = raw(progress)
+  }
+
   async function run<T>(label: string, command: string, args: Record<string, unknown> = {}) {
     const result = await guard(label, () => invoke<T>(command, args))
     // Refresh whether or not it worked. A git command that fails can still have
@@ -1273,7 +1447,7 @@ export function useGit() {
     // is not stepping through a review, so the file on screen simply follows
     // itself across rather than jumping somewhere new.
     const next = taken && paths.length === 1 ? nextToRead(open.path) : null
-    const said = await run<string>('Stage', 'stage', { paths })
+    const said = await runStatus<string>('Stage', 'stage', { paths })
     // A refusal leaves the file where it was, so the viewer stays on it.
     if (said !== null && taken) {
       store.viewer =
@@ -1282,10 +1456,20 @@ export function useGit() {
     return said
   }
 
-  /** Stages the lot; the file on screen follows itself to the staged side. */
-  async function stageEverything() {
+  /**
+   * Stages the lot; the file on screen follows itself to the staged side.
+   *
+   * `expectStaged: false` is the commit button's "stage everything first":
+   * the list said nothing was staged, and the backend refuses if something
+   * is by now rather than sweep it into the commit unseen.
+   */
+  async function stageEverything(expectStaged?: boolean) {
     const open = openWorkingFile('unstaged')
-    const said = await run<string>('Stage all', 'stage_all')
+    const said = await runStatus<string>(
+      'Stage all',
+      'stage_all',
+      expectStaged === undefined ? {} : { expectStaged }
+    )
     if (said !== null && open) store.viewer = sideOf(open.path)
     return said
   }
@@ -1344,7 +1528,7 @@ export function useGit() {
   async function unstageFiles(paths: string[]) {
     const open = openWorkingFile('staged')
     const taken = !!open && paths.includes(open.path)
-    const said = await run<string>('Unstage', 'unstage', { paths })
+    const said = await runStatus<string>('Unstage', 'unstage', { paths })
     // Only where there is really something left: a staged change the work tree
     // already matches leaves nothing on either side.
     if (said !== null && taken) store.viewer = sideOf(open.path)
@@ -1371,6 +1555,315 @@ export function useGit() {
     const text = [out.stdout, out.stderr].filter((s) => s.trim()).join('\n')
     note(`${label}: ${text || (out.ok ? 'done' : `exit ${out.code}`)}`, out.ok ? 'info' : 'error')
     return out.ok
+  }
+
+  // --- keeping in step with the remote -------------------------------------
+
+  /**
+   * The remote-tracking tips worth watching across a fetch: what the branch
+   * you are on follows, and the trunk's copy on its remote.
+   */
+  function watched(): Record<string, string> {
+    const locals = store.refs?.locals ?? []
+    const names = new Set<string>()
+    const head = locals.find((one) => one.is_head)
+    if (head?.upstream) names.add(head.upstream)
+    const trunk = store.trunk.name
+    if (trunk) {
+      const local = locals.find((one) => one.name === trunk)
+      if (local?.upstream) names.add(local.upstream)
+      else if (!local && trunk.includes('/')) names.add(trunk)
+    }
+    const tips: Record<string, string> = {}
+    for (const name of names) {
+      const oid = store.refs?.remotes.find((one) => `${one.remote}/${one.name}` === name)?.oid
+      if (oid) tips[name] = oid
+    }
+    return tips
+  }
+
+  /**
+   * What every fetch is followed by, once it has worked: the local trunk moved
+   * up to its remote when that is a plain fast-forward nobody is standing on,
+   * and the list of branches that look finished read again.
+   *
+   * `path` is the repository the fetch was for. Each step checks it is still
+   * the one open: the backend holds one repository at a time, and a tab
+   * switched mid-fetch must not have the next call land on the other one.
+   */
+  async function afterFetch(path: string) {
+    // Not while something else is under way: moving a ref in the middle of
+    // somebody's merge is not housekeeping.
+    if (!store.busy && store.repo?.path === path) {
+      const moved = await invoke<TrunkMove | null>('keep_trunk_current').catch((error) => {
+        note(`Could not bring the main branch up to date: ${String(error)}`, 'failed')
+        return null
+      })
+      if (moved) {
+        note(`${moved.branch} brought up to date with ${moved.upstream} (${commitCount(moved.commits)})`)
+      }
+    }
+    if (store.repo?.path !== path) return
+    await findTidy(path)
+  }
+
+  /** Reads the tidy list quietly, when the setting allows it. */
+  async function findTidy(path = store.repo?.path) {
+    if (!path || store.repo?.path !== path) return
+    if (useConfig().settings.value?.suggest_tidy === false) {
+      store.tidy = []
+      return
+    }
+    const found = await invoke<Tidy[]>('tidy_candidates').catch(() => null)
+    if (found && store.repo?.path === path) store.tidy = found
+  }
+
+  /**
+   * Says when the fetch brought commits for the branch you are on or for the
+   * trunk, with the button that brings them in.
+   */
+  async function announceMoves(path: string, before: Record<string, string>) {
+    if (useConfig().settings.value?.announce_remote_moves === false) return
+    const locals = store.refs?.locals ?? []
+    const head = locals.find((one) => one.is_head) ?? null
+    const trunk = trunkLocalName(store.trunk, locals)
+    for (const [name, old] of Object.entries(before)) {
+      const now = store.refs?.remotes.find((one) => `${one.remote}/${one.name}` === name)?.oid
+      if (!now || now === old) continue
+      const relation = await invoke<BranchRelation>('branch_relation', {
+        source: now,
+        target: old
+      }).catch(() => null)
+      if (store.repo?.path !== path) return
+      const count = relation?.ahead ?? 0
+      if (!count) continue
+      const toasts = useToasts()
+      if (head && head.upstream === name) {
+        if (head.behind > 0) {
+          toasts.offer(`${name} has ${commitCount(count)} you do not have yet`, [
+            { label: 'Pull', run: () => pullHere() }
+          ])
+        }
+      } else if (head && trunk && head.name !== trunk) {
+        toasts.offer(`${name} moved on by ${commitCount(count)}`, [
+          { label: `Update ${head.name}`, run: () => updateFromTrunk(head.name) }
+        ])
+      } else {
+        toasts.info(`${name} moved on by ${commitCount(count)}`)
+      }
+    }
+  }
+
+  /** The pull the toolbar's button does, for a notice to offer. */
+  async function pullHere() {
+    const outcome = await guard('Pull', () => invoke<MergeOutcome>('pull', {}))
+    if (outcome) note(`Pull: ${outcome.message}`, outcome.ok ? 'info' : 'error')
+    if (outcome?.conflicts.length) store.resolving = outcome.conflicts[0] ?? null
+    await refresh()
+    return outcome
+  }
+
+  /**
+   * The fetch on a timer, and the one when a project opens.
+   *
+   * Not counted as busy, so nothing on screen locks for the length of a
+   * network round trip; and only the repository's own remote, so a fork
+   * added for a review and deleted since cannot fail it. A failure is written
+   * in the log and nowhere else — nobody asked for this one, and a notice
+   * every ten minutes about a remote that is down is a notice to ignore.
+   */
+  async function fetchQuietly() {
+    const path = store.repo?.path
+    if (!path) return false
+    const before = watched()
+    const out = await invoke<CmdOutput>('fetch_primary').catch((error) => {
+      note(`Background fetch: ${String(error)}`, 'failed')
+      return null
+    })
+    if (store.repo?.path !== path) return false
+    if (!out?.ok) {
+      if (out) note(`Background fetch: ${out.stderr.trim() || `exit ${out.code}`}`, 'failed')
+      return false
+    }
+    await afterFetch(path)
+    if (store.repo?.path !== path) return true
+    // While something else is running its own refresh is on the way, and
+    // the watcher has seen the refs move; reading now would only race it.
+    if (!store.busy) await refresh()
+    if (store.repo?.path !== path) return true
+    await announceMoves(path, before)
+    const forge = useForge()
+    if (forge.usable.value) void forge.loadReviews()
+    return true
+  }
+
+  /**
+   * A fetch the user asked for failed. When a remote it names is one this
+   * app added to look at somebody's review, offer to take it off: that is
+   * what a fork deleted after its pull request was merged looks like.
+   */
+  async function offerToDropDeadRemotes(out: CmdOutput, asked?: string) {
+    const named = failedRemotes(`${out.stdout}\n${out.stderr}`, asked)
+    if (!named.length) return
+    const ours = await invoke<string[]>('review_remotes').catch(() => [] as string[])
+    for (const remote of named.filter((name) => ours.includes(name))) {
+      useToasts().offer(
+        `${remote} did not answer. It was added to check out a review.`,
+        [
+          {
+            label: `Remove ${remote}`,
+            run: () => run<string>('Remove remote', 'remote_remove', { name: remote })
+          }
+        ]
+      )
+    }
+  }
+
+  /** Reads whether a refused push only lost to older copies of its own commits. */
+  async function markRewritten(branch: string) {
+    const preview = await invoke<PushPreview>('push_preview', { branch }).catch(() => null)
+    if (preview?.rewritten && store.pushBlocked?.branch === branch) {
+      store.pushBlocked = { ...store.pushBlocked, rewritten: true }
+    }
+  }
+
+  /**
+   * Fetches, then rebases `branch` onto the trunk as its remote has it or
+   * merges that in, whichever the setting says. Conflicts open the resolver.
+   */
+  async function updateFromTrunk(branch: string, how?: 'rebase' | 'merge') {
+    const outcome = await guard('Update from main', () =>
+      invoke<MergeOutcome>('update_from_trunk', { branch, how: how ?? null })
+    )
+    if (outcome) {
+      note(outcome.message, level(outcome))
+      if (outcome.ok) useToasts().info(outcome.message.split('\n')[0] ?? outcome.message)
+      if (outcome.conflicts.length) store.resolving = outcome.conflicts[0] ?? null
+    }
+    await refresh()
+    return outcome
+  }
+
+  /**
+   * Deletes local branches, and offers them back.
+   *
+   * Each goes with the commit it pointed at when it was offered: one that has
+   * moved since holds work the list never showed, and the backend leaves it
+   * alone. The whole batch is one step in the undo history, and the notice's
+   * Undo takes that very step, so ⌘Z and the notice cannot disagree about
+   * what is left to undo.
+   */
+  async function deleteBranches(branches: Doomed[]) {
+    const removal = await guard('Delete branches', () =>
+      invoke<Removal>('delete_branches', { branches })
+    )
+    if (removal) {
+      for (const refused of removal.refused) note(`Not deleted: ${refused}`, 'error')
+      const gone = removal.removed
+      if (gone.length) {
+        const title =
+          gone.length === 1 ? `Deleted ${gone[0]!.name}` : `Deleted ${gone.length} branches`
+        note(`${title}: ${gone.map((one) => `${one.name} (was ${one.oid.slice(0, 7)})`).join(', ')}`)
+        const step = removal.step
+        useToasts().offer(
+          title,
+          step == null ? [] : [{ label: 'Undo', run: () => undoDeletion(step) }]
+        )
+      }
+    }
+    await refresh()
+    if (removal?.removed.length) {
+      const taken = new Set(removal.removed.map((one) => one.name))
+      store.tidy = store.tidy.filter((one) => !taken.has(one.name))
+    }
+    return removal
+  }
+
+  /** Undoes the history step a deletion recorded, from its notice. */
+  async function undoDeletion(step: number) {
+    const said = await run<string>('Undo', 'undo_step', { id: step })
+    if (said) {
+      note(said)
+      useToasts().info(said.split('\n')[0] ?? said)
+    }
+    await findTidy()
+    return said
+  }
+
+  /**
+   * Pushes a branch, unless it is one worth a second look first — then the
+   * toolbar asks, and `confirmPush` (or the gone-upstream strip) is the
+   * answer. Null when it asked rather than pushed.
+   *
+   * Every push the window offers comes through here: the toolbar, commit and
+   * push, a home row, the review dialog. Those used to call `pushBranch`
+   * straight, and skipped both questions — so committing and pushing a branch
+   * whose pull request had been merged quietly put the deleted remote branch
+   * back, and a push to main from the commit box never asked.
+   *
+   * `recreate` is the gone-upstream strip's own "push it back": that question
+   * has been answered, the protected one has not.
+   */
+  async function requestPush(branch: string, setUpstream: boolean, recreate = false) {
+    // The repository this was asked in. The protected check can wait on the
+    // forge, and a push sent after a tab switch would go to the other tab.
+    const repo = aimedAt()
+    const local = store.refs?.locals.find((one) => one.name === branch)
+    if (!recreate && local?.gone && !local.upstream) {
+      store.pushGone = { branch, gone: local.gone }
+      return null
+    }
+    const reason = await protectedPushWarning(
+      branch,
+      store.trunk,
+      store.refs?.locals ?? [],
+      !!useConfig().settings.value?.warn_push_to_trunk,
+      (name) => useForge().isProtected(name)
+    )
+    if (aimedAt() !== repo) {
+      note(`Did not push ${branch}: another repository was opened while it was being checked.`)
+      return null
+    }
+    if (reason) {
+      store.pushConfirm = { branch, setUpstream, reason }
+      return null
+    }
+    return pushBranch(branch, setUpstream)
+  }
+
+  async function pushBranch(branch: string, setUpstream: boolean) {
+    // A branch that already tracks something goes back where it came from,
+    // whichever remote that is — and so does one whose upstream was deleted,
+    // which a push now puts back under the name it had. Only a new branch
+    // has to be told, and the answer is the repository's own remote — never
+    // a fork added to look at somebody's review.
+    const local = store.refs?.locals.find((b) => b.name === branch)
+    const upstream = local?.upstream ?? null
+    const tracked = (upstream ?? local?.gone ?? null)?.split('/')[0] ?? null
+    const primary = tracked ? null : await invoke<string | null>('primary_remote').catch(() => null)
+    const target = tracked ?? primary ?? 'origin'
+    const out = await guard('Push', () =>
+      invoke<CmdOutput>('push', {
+        remoteName: target,
+        branch,
+        force: false,
+        setUpstream
+      })
+    )
+    const ok = report('Push', out)
+    afterPush(branch, setUpstream, ok)
+    store.pushBlocked =
+      out && isRejectedForBeingBehind(out)
+        ? {
+            remote: target,
+            branch,
+            upstream,
+            message: `${out.stdout}\n${out.stderr}`.trim()
+          }
+        : null
+    if (store.pushBlocked) await markRewritten(branch)
+    await refresh()
+    return ok
   }
 
   return {
@@ -1489,8 +1982,13 @@ export function useGit() {
       guard('Read branch', () => invoke<BranchDeletion>('delete_branch_preview', { name })),
     /** Names the branch this repository is organised around; null forgets it. */
     setTrunk: (name: string | null) => run<string>('Main branch', 'set_trunk_branch', { name }),
-    renameBranch: (from: string, to: string) =>
-      run<string>('Rename branch', 'rename_branch', { from, to }),
+    renameBranch: async (from: string, to: string) => {
+      const repo = store.repo?.path
+      const said = await run<string>('Rename branch', 'rename_branch', { from, to })
+      // The message being written for it goes along with the name.
+      if (said !== null) moveDraft(repo, from, to)
+      return said
+    },
     setUpstream: (branch: string, upstream: string) =>
       run<string>('Set upstream', 'set_upstream', { branch, upstream }),
     unsetUpstream: (branch: string) => run<string>('Unset upstream', 'unset_upstream', { branch }),
@@ -1513,7 +2011,7 @@ export function useGit() {
       const some = lines ? `${lines.added.length + lines.removed.length} lines` : 'hunk'
       const verb =
         action === 'stage' ? 'Stage' : action === 'unstage' ? 'Unstage' : 'Discard'
-      return run<string>(`${verb} ${some}`, 'apply_hunk', {
+      return runStatus<string>(`${verb} ${some}`, 'apply_hunk', {
         path,
         hunkIndex,
         action,
@@ -1542,6 +2040,20 @@ export function useGit() {
     deleteUntracked: (paths: string[]) => throwAway('Delete', 'delete_untracked', paths),
     commit: (message: string, amend = false) =>
       run<string>('Commit', 'commit', { message, amend }),
+    /**
+     * Commits, and says whether a hook stopped it and what the hook changed,
+     * rather than only that it failed. `noVerify` skips the hooks, and is only
+     * ever passed from a button that says so.
+     */
+    commitAttempt: (message: string, amend = false, noVerify = false) =>
+      run<CommitAttempt>('Commit', 'commit_attempt', { message, amend, noVerify }),
+    /** What in the staged diff is worth a second look before committing. */
+    commitGuard: (debug = false) =>
+      guard('Check what is staged', () => invoke<GuardFinding[]>('commit_guard', { debug })),
+    /** The unstaged file to read after this one; see `stageFiles`. */
+    nextToRead,
+    /** Which side a path still has something to show on, staged first. */
+    sideOf,
     amendDraft: () => guard('Read HEAD', () => invoke<AmendDraft>('amend_draft')),
     rewordCheck: (oid: string) =>
       guard('Read commit', () => invoke<RewordCheck>('reword_check', { oid })),
@@ -1614,8 +2126,12 @@ export function useGit() {
     },
 
     fetch: async (remote?: string) => {
+      const path = store.repo?.path
       const out = await guard('Fetch', () => invoke<CmdOutput>('fetch', { remote }))
       const ok = report('Fetch', out)
+      if (out && !out.ok) void offerToDropDeadRemotes(out, remote)
+      // Even a fetch that failed on one remote has usually brought the rest.
+      if (out && path) await afterFetch(path)
       await refresh()
       // A fetch asks what moved on the other side, and on a profile signed in
       // to a forge the reviews are part of that answer: one opened, merged or
@@ -1654,6 +2170,7 @@ export function useGit() {
         invoke<CmdOutput>('push', { remoteName, branch, force, setUpstream, lease })
       )
       const ok = report(force ? 'Force push' : 'Push', out)
+      afterPush(branch, setUpstream, ok)
       // A rejection for being behind has an answer; hand it to the toolbar
       // instead of leaving the user to read git's advice in the log.
       store.pushBlocked =
@@ -1665,6 +2182,7 @@ export function useGit() {
               message: `${out.stdout}\n${out.stderr}`.trim()
             }
           : null
+      if (store.pushBlocked) await markRewritten(branch)
       await refresh()
       return ok
     },
@@ -1684,36 +2202,7 @@ export function useGit() {
       await refresh()
       return outcome
     },
-    pushBranch: async (branch: string, setUpstream: boolean) => {
-      // A branch that already tracks something goes back where it came from,
-      // whichever remote that is; only a new branch has to be told, and the
-      // answer is the repository's own remote — never a fork added to look
-      // at somebody's review.
-      const upstream = store.refs?.locals.find((b) => b.name === branch)?.upstream ?? null
-      const tracked = upstream?.split('/')[0] ?? null
-      const primary = tracked ? null : await invoke<string | null>('primary_remote').catch(() => null)
-      const target = tracked ?? primary ?? 'origin'
-      const out = await guard('Push', () =>
-        invoke<CmdOutput>('push', {
-          remoteName: target,
-          branch,
-          force: false,
-          setUpstream
-        })
-      )
-      const ok = report('Push', out)
-      store.pushBlocked =
-        out && isRejectedForBeingBehind(out)
-          ? {
-              remote: target,
-              branch,
-              upstream,
-              message: `${out.stdout}\n${out.stderr}`.trim()
-            }
-          : null
-      await refresh()
-      return ok
-    },
+    pushBranch,
     deleteRemoteBranch: async (remoteName: string, branch: string) => {
       const out = await guard('Delete on remote', () =>
         invoke<CmdOutput>('delete_remote_branch', { remoteName, branch })
@@ -1810,7 +2299,45 @@ export function useGit() {
     conflictDiscard: (paths: string[]) =>
       run<string>('Throw away the conflicts', 'conflict_discard', { paths }),
     /** Which conflicted files still have git's markers in them. */
-    conflictMarked: () => guard('Read conflicts', () => invoke<string[]>('conflict_marked'))
+    conflictMarked: () => guard('Read conflicts', () => invoke<string[]>('conflict_marked')),
+
+    /** Takes a step that can no longer be taken out of the undo history. */
+    forgetStep: (id: number) => run<string>('Forget step', 'history_forget', { id }),
+    /** Where HEAD and the current branch have been, newest first. Read only. */
+    reflogMoments: (limit = 200) =>
+      guard('Read the reflog', () => invoke<Moment[]>('reflog_moments', { limit })),
+    /** Stashes that fell off the list. Runs `git fsck`, so only on request. */
+    lostStashes: () =>
+      guard('Look for dropped stashes', () => invoke<LostStash[]>('lost_stashes')),
+    /** Puts a stash commit back on the stash list. */
+    restoreStash: (oid: string) => run<string>('Restore stash', 'restore_stash', { oid }),
+    /** Makes a branch at a commit without checking it out: always safe. */
+    createBranchAt: (name: string, start: string) =>
+      run<string>('Create branch', 'create_branch', { name, start, checkout: false }),
+    fetchQuietly,
+    findTidy,
+    updateFromTrunk,
+    deleteBranches,
+    undoDeletion,
+    requestPush,
+    /** The answer to the toolbar's "push straight to main?" question. */
+    confirmPush: async (go: boolean) => {
+      const asked = store.pushConfirm
+      store.pushConfirm = null
+      if (go && asked) return pushBranch(asked.branch, asked.setUpstream)
+      return null
+    },
+    /**
+     * Fetches, then starts a branch from the trunk as its remote has it, or
+     * from `from`, tracking nothing and carrying open changes along.
+     */
+    startWork: async (name: string, from?: string) => {
+      const said = await run<string>('Start work', 'start_work', { name, from: from ?? null })
+      if (said) useToasts().info(said.split('\n')[0] ?? said)
+      return said
+    },
+    /** What new work starts from: the trunk as its remote has it. */
+    trunkTarget: () => invoke<string | null>('trunk_target').catch(() => null)
   }
 }
 

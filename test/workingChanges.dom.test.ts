@@ -7,6 +7,7 @@ import ContextMenu from '~/components/ContextMenu.vue'
 import FileList from '~/components/FileList.vue'
 import AppModal from '~/components/AppModal.vue'
 import DiscardConflictsDialog from '~/components/DiscardConflictsDialog.vue'
+import { resetDrafts } from '~/composables/useCommitDraft'
 import { useGit } from '~/composables/useGit'
 
 vi.mock('@tauri-apps/api/core', () => ({ invoke: vi.fn() }))
@@ -28,6 +29,9 @@ const Host = {
 }
 
 beforeEach(() => {
+  // The commit message outlives the panel now; each test starts without one.
+  localStorage.clear()
+  resetDrafts()
   calls = []
   asked.mockReset()
   asked.mockImplementation(async (cmd: string, args?: Record<string, unknown>) => {
@@ -70,11 +74,11 @@ describe('the working tree panel', () => {
     expect(labels.some((one) => one.includes('Delete this file'))).toBe(true)
     expect(labels.some((one) => one.includes('Discard changes'))).toBe(false)
 
-    // It asks first: nothing in git holds a copy of an untracked file.
+    // It asks first: the only copy is the one the app saves before deleting.
     await items.find((one) => one.text().includes('Delete this file'))!.trigger('click')
     await flushPromises()
     expect(calls.some((call) => call.cmd === 'delete_untracked')).toBe(false)
-    expect(wrapper.text()).toContain('Deleting cannot be undone')
+    expect(wrapper.text()).toContain('Undo in the history menu brings it back')
 
     await wrapper
       .findAll('button')
@@ -244,7 +248,7 @@ describe('committing from the panel', () => {
   it('goes back to the main view, with changes still left over', async () => {
     asked.mockImplementation(async (cmd: string, args?: Record<string, unknown>) => {
       calls.push({ cmd, args: args ?? {} })
-      if (cmd === 'commit') return 'Committed 1 file'
+      if (cmd === 'commit_attempt') return { ok: true, output: 'Committed 1 file', hook: null }
       return null
     })
     git.store.status = {
@@ -259,14 +263,14 @@ describe('committing from the panel', () => {
     await wrapper.find('.btn-primary').trigger('click')
     await flushPromises()
 
-    expect(calls.some((call) => call.cmd === 'commit')).toBe(true)
+    expect(calls.some((call) => call.cmd === 'commit_attempt')).toBe(true)
     expect(git.store.viewer).toBeNull()
   })
 
   it('stays where it is when git refused the commit', async () => {
     asked.mockImplementation(async (cmd: string, args?: Record<string, unknown>) => {
       calls.push({ cmd, args: args ?? {} })
-      if (cmd === 'commit') throw new Error('the hook said no')
+      if (cmd === 'commit_attempt') throw new Error('the hook said no')
       return null
     })
     git.store.status = {

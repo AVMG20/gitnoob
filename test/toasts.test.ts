@@ -79,3 +79,28 @@ describe('the notices in the corner', () => {
     expect(toasts.items.value[0]!.title).toContain('Nothing staged')
   })
 })
+
+describe('an offer made about one repository', () => {
+  it('runs its buttons only while that repository is in front', async () => {
+    const { aimAt } = await import('~/composables/useInvoke')
+    aimAt('/work/one')
+    const ran: string[] = []
+    const made = toasts.offer('one has 2 commits you do not have yet', [
+      { label: 'Pull', run: () => { ran.push('pull') } }
+    ])
+    aimAt('/work/two')
+    await toasts.act(made, made.actions![0]!)
+    expect(ran).toEqual([])
+    expect(toasts.items.value.map((one) => one.title)).toEqual([
+      'That was about one. Switch back to it to do this; nothing was changed.'
+    ])
+
+    aimAt('/work/one')
+    const again = toasts.offer('one has 2 commits you do not have yet', [
+      { label: 'Pull', run: () => { ran.push('pull') } }
+    ])
+    await toasts.act(again.id, again.actions![0]!)
+    expect(ran).toEqual(['pull'])
+    aimAt(null)
+  })
+})

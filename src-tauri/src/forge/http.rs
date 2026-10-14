@@ -14,8 +14,17 @@ pub(super) struct Call {
     pub(super) kind: ForgeKind,
     pub(super) host: String,
     pub(super) token: String,
+    /// The project reviews live in. Not necessarily the remote HEAD tracks:
+    /// see `target`.
     pub(super) slug: RepoSlug,
+    /// The remote that project is known by here.
+    #[allow(dead_code)]
+    pub(super) remote: String,
     pub(super) current_branch: Option<String>,
+    pub(super) current: Current,
+    /// The remotes and HEAD as they were read, for the calls that need to say
+    /// where a branch was pushed.
+    pub(super) local: Local,
 }
 
 /// The forge, host and token of the active profile: everything a request needs
@@ -36,25 +45,6 @@ pub fn account(state: &AppState) -> Result<(ForgeKind, String, String), String> 
         profile.host.clone()
     };
     Ok((profile.forge, host, token))
-}
-
-pub(super) fn prepare(state: &AppState) -> Result<Call, String> {
-    let (kind, host, token) = account(state)?;
-    let slug = remote_slug(state)
-        .ok_or_else(|| "Could not work out the project from the git remote".to_string())?;
-    let current_branch = state.repo().ok().and_then(|repo| {
-        repo.head()
-            .ok()
-            .and_then(|head| head.shorthand().map(|s| s.to_string()))
-    });
-
-    Ok(Call {
-        kind,
-        host,
-        token,
-        slug,
-        current_branch,
-    })
 }
 
 pub(super) fn client() -> Result<reqwest::Client, String> {

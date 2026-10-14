@@ -2,11 +2,22 @@
 import { computed, onMounted, onUnmounted } from 'vue'
 import { TriangleAlert, X } from 'lucide-vue-next'
 import { useGit } from '~/composables/useGit'
+import { useRewrite } from '~/composables/useRewrite'
 
 const git = useGit()
+const rewrite = useRewrite()
 const store = git.store
 
 const remaining = computed(() => store.status?.conflicted.length ?? 0)
+
+/** The pick or revert that stopped, in the words its abort button uses. */
+const picking = computed(() => {
+  const now = store.progress
+  if (!now) return null
+  if (now.cherry_picking) return 'cherry-pick'
+  if (now.reverting) return 'revert'
+  return null
+})
 
 function close() {
   store.resolving = null
@@ -57,6 +68,27 @@ onUnmounted(() => window.removeEventListener('keydown', onKey))
       >
         Abort merge
       </button>
+      <!-- A pick or a revert that stopped is abandoned as a whole too: with a
+           list of several, that is the only way back to where it started. -->
+      <template v-else-if="picking">
+        <button
+          class="btn"
+          data-test="skip-pick"
+          :disabled="store.busy"
+          title="Leave this commit out and apply the rest"
+          @click="rewrite.sequenceSkip()"
+        >
+          Skip this commit
+        </button>
+        <button
+          class="btn"
+          data-test="abort-pick"
+          :disabled="store.busy"
+          @click="rewrite.sequenceAbort()"
+        >
+          Abort {{ picking }}
+        </button>
+      </template>
       <button class="btn icon" title="Close (Esc)" @click="close">
         <X :size="16" />
       </button>

@@ -37,6 +37,8 @@ pub(super) fn github_review(item: &serde_json::Value, current: Option<&str>) -> 
         head_sha: string(item, &["head", "sha"]),
         source: head_from,
         warning: None,
+        checks: None,
+        review_state: None,
     }
 }
 
@@ -46,6 +48,11 @@ pub(super) fn github_found_review(node: &serde_json::Value, current: Option<&str
     let source = string(node, &["headRefName"]);
     let base_repo = string(node, &["baseRepository", "nameWithOwner"]);
     let head_repo = string(node, &["headRepository", "nameWithOwner"]);
+    let standing = if node.get("commits").is_some() || node.get("reviewDecision").is_some() {
+        github_standing(node)
+    } else {
+        (None, None)
+    };
     let head_from = (!head_repo.is_empty()).then(|| ReviewSource {
         owner: string(node, &["headRepository", "owner", "login"]),
         is_fork: head_repo != base_repo,
@@ -75,6 +82,9 @@ pub(super) fn github_found_review(node: &serde_json::Value, current: Option<&str
         head_sha: string(node, &["headRefOid"]),
         source: head_from,
         warning: None,
+        // Only a search that asked for the standing carries it.
+        checks: standing.0,
+        review_state: standing.1,
     }
 }
 
@@ -292,8 +302,19 @@ pub(super) async fn github_graphql(
     query: &str,
     variables: serde_json::Value,
 ) -> Result<serde_json::Value, String> {
+    graphql(http, token, &github_graphql_url(host), query, variables).await
+}
+
+/// One GraphQL question to whichever forge answers at `url`.
+pub(super) async fn graphql(
+    http: &reqwest::Client,
+    token: &str,
+    url: &str,
+    query: &str,
+    variables: serde_json::Value,
+) -> Result<serde_json::Value, String> {
     let response = http
-        .post(github_graphql_url(host))
+        .post(url)
         .bearer_auth(token)
         .json(&serde_json::json!({ "query": query, "variables": variables }))
         .send()
@@ -312,6 +333,98 @@ pub(super) async fn github_graphql(
         return Err(string(problem, &["message"]));
     }
     Ok(body.get("data").cloned().unwrap_or(serde_json::Value::Null))
+}
+
+/// What GraphQL is asked about a pull request to say how it stands: the
+/// checks on its last commit and where the reviewing is.
+pub(super) const GITHUB_STANDING: &str = "reviewDecision \
+    latestOpinionatedReviews(first:20){nodes{state}} \
+    commits(last:1){nodes{commit{statusCheckRollup{state}}}}";
+
+/// GitHub's rolled-up check state in this app's four words.
+pub(super) fn github_rollup(state: &str) -> &'static str {
+    match state {
+        "SUCCESS" => "success",
+        "FAILURE" | "ERROR" => "failure",
+        "PENDING" | "EXPECTED" => "pending",
+        _ => "none",
+    }
+}
+
+/// How a pull request stands, from a node carrying `GITHUB_STANDING`.
+///
+/// `reviewDecision` is only filled in where the repository requires reviews;
+/// everywhere else it stays empty however many people approved, so the latest
+/// opinion of each reviewer is read instead: one request for changes is the
+/// answer, then any approval.
+pub(super) fn github_standing(node: &serde_json::Value) -> (Option<String>, Option<String>) {
+    let checks = node
+        .pointer("/commits/nodes/0/commit/statusCheckRollup/state")
+        .and_then(|v| v.as_str())
+        .map(github_rollup)
+        .unwrap_or("none")
+        .to_string();
+    let decision = match string(node, &["reviewDecision"]).as_str() {
+        "APPROVED" => Some("approved"),
+        "CHANGES_REQUESTED" => Some("changes_requested"),
+        other => {
+            let states: Vec<String> = node
+                .pointer("/latestOpinionatedReviews/nodes")
+                .and_then(|v| v.as_array())
+                .map(|list| list.iter().map(|one| string(one, &["state"])).collect())
+                .unwrap_or_default();
+            if states.iter().any(|s| s == "CHANGES_REQUESTED") {
+                Some("changes_requested")
+            } else if other == "REVIEW_REQUIRED" {
+                Some("review_required")
+            } else if states.iter().any(|s| s == "APPROVED") {
+                Some("approved")
+            } else {
+                None
+            }
+        }
+    };
+    (Some(checks), decision.map(str::to_string))
+}
+
+/// How each of a handful of pull requests stands, asked in one request with
+/// an alias per number. A forge that will not answer leaves them unknown.
+pub(super) async fn github_standings(
+    http: &reqwest::Client,
+    call: &Call,
+    numbers: &[i64],
+) -> HashMap<i64, (Option<String>, Option<String>)> {
+    let mut out = HashMap::new();
+    if numbers.is_empty() {
+        return out;
+    }
+    let asks: Vec<String> = numbers
+        .iter()
+        .map(|n| format!("p{n}: pullRequest(number:{n}){{number {GITHUB_STANDING}}}"))
+        .collect();
+    let query = format!(
+        "query($owner:String!,$name:String!){{repository(owner:$owner,name:$name){{{}}}}}",
+        asks.join(" ")
+    );
+    let Ok(data) = github_graphql(
+        http,
+        &call.token,
+        &call.host,
+        &query,
+        serde_json::json!({ "owner": call.slug.owner, "name": call.slug.name }),
+    )
+    .await
+    else {
+        return out;
+    };
+    for number in numbers {
+        if let Some(node) = data.pointer(&format!("/repository/p{number}")) {
+            if !node.is_null() {
+                out.insert(*number, github_standing(node));
+            }
+        }
+    }
+    out
 }
 
 /// What each of a GitHub pull request's review threads knows about itself,

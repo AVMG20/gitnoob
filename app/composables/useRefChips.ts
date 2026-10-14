@@ -141,3 +141,76 @@ export function ghostTitle(chip: RefChip): string {
   if (chip.head) return `On ${chip.name} — the branch you are on`
   return `On ${chip.name}\nDouble-click to check it out`
 }
+
+/** What a review badge needs to know about a review. */
+export interface BadgeReview {
+  number: number
+  source_branch: string
+  is_current: boolean
+  checks?: string | null
+  review_state?: string | null
+  draft?: boolean
+  source?: { is_fork: boolean } | null
+}
+
+/** What a local branch says about where it is pushed. */
+export interface BadgeBranch {
+  name: string
+  upstream: string | null
+}
+
+/**
+ * The open review a branch chip stands for, when there is one.
+ *
+ * The branch checked out has its review worked out by the forge already —
+ * by what it tracks, not by its name. Any other branch is matched by the
+ * name it has on its remote: `fix` tracking `origin/arno/fix` is the review
+ * from `arno/fix`. A fork's review is somebody else's branch, never ours.
+ */
+export function reviewForBranch<R extends BadgeReview>(
+  name: string,
+  head: boolean,
+  reviews: R[],
+  locals: BadgeBranch[]
+): R | null {
+  if (head) {
+    const current = reviews.find((one) => one.is_current)
+    if (current) return current
+  }
+  const local = locals.find((one) => one.name === name)
+  const upstream = local?.upstream ?? null
+  const there = upstream ? upstream.slice(upstream.indexOf('/') + 1) : name
+  return reviews.find((one) => one.source_branch === there && !one.source?.is_fork) ?? null
+}
+
+/** How a badge looks: its colour, and the sentence its tooltip says. */
+export function badgeLook(review: BadgeReview, sigil: string) {
+  const tone =
+    review.checks === 'failure'
+      ? 'failing'
+      : review.checks === 'pending'
+        ? 'pending'
+        : review.checks === 'success'
+          ? 'passing'
+          : 'none'
+  const checks = {
+    failing: 'checks failing',
+    pending: 'checks running',
+    passing: 'checks passing',
+    none: 'no checks'
+  }[tone]
+  const verdict =
+    review.review_state === 'approved'
+      ? 'approved'
+      : review.review_state === 'changes_requested'
+        ? 'changes requested'
+        : review.review_state === 'review_required'
+          ? 'waiting for review'
+          : null
+  const parts = [`${sigil}${review.number}`, review.draft ? 'draft' : null, checks, verdict]
+  return {
+    tone,
+    text: `${sigil}${review.number}`,
+    title: parts.filter(Boolean).join(' · ')
+  }
+}

@@ -78,6 +78,20 @@ async function copy(text: string) {
         </button>
       </div>
 
+      <p v-if="toast.note" class="note">{{ toast.note }}</p>
+      <div v-if="toast.actions?.length" class="actions">
+        <button
+          v-for="(action, at) in toast.actions"
+          :key="action.label"
+          class="btn"
+          :class="{ 'btn-primary': at === 0 }"
+          data-testid="toast-action"
+          @click="toasts.act(toast, action)"
+        >
+          {{ action.label }}
+        </button>
+      </div>
+
       <div v-if="toast.detail" class="more">
         <button class="link" @click="toggle(toast.id)">
           {{ opened.has(toast.id) ? 'Hide what git said' : 'What git said' }}
@@ -197,6 +211,29 @@ async function copy(text: string) {
   gap: 10px;
   margin-top: 5px;
   padding-left: 21px;
+}
+
+/* An offer's own words and its answers, lined up under the title. */
+.note {
+  margin: 4px 0 0;
+  padding-left: 21px;
+  font-size: 12px;
+  line-height: 1.45;
+  color: var(--text-dim);
+}
+
+.actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-top: 7px;
+  padding-left: 21px;
+}
+
+.actions .btn {
+  min-height: 24px;
+  padding: 2px 10px;
+  font-size: 12px;
 }
 
 .link {

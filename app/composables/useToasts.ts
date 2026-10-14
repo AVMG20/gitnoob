@@ -1,5 +1,6 @@
 import { ref } from 'vue'
 import { explain } from './gitErrors'
+import { aimedAt } from './useInvoke'
 
 /**
  * The notices in the corner of the window.
@@ -31,7 +32,25 @@ export interface Toast {
   /** How many times this same thing has happened in a row. */
   count: number
   at: number
+  /** Buttons a notice can carry, for the ones that offer something. */
+  actions?: ToastAction[]
+  /** A line under the title in the app's own words, shown as it is. */
+  note?: string | null
+  /**
+   * The repository an offer was made about, or null for one made with none
+   * open. Its buttons only run while that repository is the one in front.
+   */
+  repo?: string | null
 }
+
+/** One button on a notice. Running it dismisses the notice. */
+export interface ToastAction {
+  label: string
+  run: () => unknown
+}
+
+/** How long an offer stays up: long enough to be read and decided on. */
+const OFFER_MS = 30_000
 
 /** How long a piece of good news stays up. */
 const INFO_MS = 5000
@@ -92,7 +111,7 @@ function clear() {
 function fade(toast: Toast) {
   forget(toast.id)
   if (held.value) return
-  const after = toast.level === 'info' ? INFO_MS : ERROR_MS
+  const after = toast.actions?.length ? OFFER_MS : toast.level === 'info' ? INFO_MS : ERROR_MS
   timers.set(
     toast.id,
     setTimeout(() => dismiss(toast.id), after)
@@ -117,7 +136,11 @@ function hold(on: boolean) {
 }
 
 /** Puts one up, or counts up the one already saying it. */
-function raise(level: ToastLevel, title: string, detail: string | null = null): Toast {
+function raise(
+  level: ToastLevel,
+  title: string,
+  detail: string | null = null
+): Toast {
   const now = Date.now()
   const same = items.value.find(
     (one) =>
@@ -144,12 +167,71 @@ function raise(level: ToastLevel, title: string, detail: string | null = null): 
   return toast
 }
 
+/**
+ * A notice that offers something: a question with its answers as buttons.
+ *
+ * For the automation that should not just happen — opening a pull request
+ * after a push, deleting a merged branch, using another profile — the offer is
+ * made here and the click is the decision. Never counted up with an earlier
+ * one: two offers are two questions.
+ */
+function offer(title: string, actions: ToastAction[], note: string | null = null): Toast {
+  const toast: Toast = {
+    id: ++seq,
+    level: 'info',
+    title,
+    detail: null,
+    count: 1,
+    at: Date.now(),
+    actions,
+    note,
+    repo: aimedAt()
+  }
+  items.value = [...items.value, toast]
+  while (items.value.length > LIMIT) {
+    const oldest = items.value[0]
+    if (!oldest) break
+    dismiss(oldest.id)
+  }
+  fade(toast)
+  return toast
+}
+
+/** The last part of a path, for saying which repository a notice was about. */
+function folder(path: string) {
+  return path.split(/[\\/]/).filter(Boolean).pop() ?? path
+}
+
+/**
+ * Runs one of a notice's buttons and takes the notice away.
+ *
+ * A button is a closure over calls that go to whichever repository is in
+ * front when it is clicked, and an offer stays up for half a minute: long
+ * enough to switch tabs and click "Pull" or "Use the profile's" on a question
+ * that was asked about the other one. So an offer remembers the repository it
+ * was made in, and a click while another one is in front does nothing but say
+ * so.
+ */
+async function act(toast: Toast | number, action: ToastAction) {
+  const id = typeof toast === 'number' ? toast : toast.id
+  const found = typeof toast === 'number' ? items.value.find((one) => one.id === id) : toast
+  dismiss(id)
+  const repo = found?.repo ?? null
+  if (repo !== null && aimedAt() !== repo) {
+    raise('info', `That was about ${folder(repo)}. Switch back to it to do this; nothing was changed.`)
+    return
+  }
+  await action.run()
+}
+
 export function useToasts() {
   return {
     items,
     dismiss,
     clear,
     hold,
+    offer,
+    act,
     /**
      * Good news, which takes itself away again.
      *

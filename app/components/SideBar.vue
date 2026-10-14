@@ -27,6 +27,7 @@ import {
   Plus,
   RefreshCw,
   Search,
+  Sprout,
   Tag,
   Trash2,
   Upload,
@@ -47,6 +48,7 @@ import { useDragDrop } from '~/composables/useDragDrop'
 import { useForge, type Review } from '~/composables/useForge'
 import { useReview } from '~/composables/useReview'
 import { useConfig } from '~/composables/useConfig'
+import { tidyKey, trunkLocalName } from '~/composables/useSync'
 
 /** A worktree row opens its folder as a project tab, which is the shell's job. */
 const emit = defineEmits<{
@@ -103,6 +105,14 @@ watch(open, () => {
 const filter = ref('')
 /** The branch whose deletion is being confirmed. */
 const deleting = ref<string | null>(null)
+/** A remote branch new work is being started from, while the dialog is up. */
+const startingFrom = ref<string | null>(null)
+/** The tidy dialog, and the list the user last dismissed the strip for. */
+const tidying = ref(false)
+const tidyDismissed = ref('')
+const tidyShown = computed(
+  () => store.tidy.length > 0 && tidyDismissed.value !== tidyKey(store.tidy)
+)
 /** The stash whose drop is being confirmed, by index; null when none is. */
 const dropping = ref<number | null>(null)
 /** Set while the new pull request dialog is open. */
@@ -720,6 +730,15 @@ async function onDropOnBranch(event: MouseEvent, target: string, targetIsRemote:
   const behind = relation?.behind ?? 0
   const merged = ahead === 0
   const fastForward = ahead > 0 && behind === 0
+  // Worked out in memory before anything is dropped: whether the merge goes
+  // through on its own. Null on a git too old to ask.
+  const conflicted = relation?.conflicts?.length ?? 0
+  const trial =
+    relation?.clean === true
+      ? ' · merges cleanly'
+      : relation?.clean === false
+        ? ` · conflicts in ${conflicted} ${conflicted === 1 ? 'file' : 'files'}`
+        : ''
 
   if (merged) {
     menu.show(
@@ -745,7 +764,11 @@ async function onDropOnBranch(event: MouseEvent, target: string, targetIsRemote:
       {
         label: `Merge ${source} into ${target}`,
         icon: GitMerge,
-        hint: fastForward ? 'forces a merge commit' : '',
+        hint: fastForward
+          ? 'forces a merge commit'
+          : relation?.clean === false
+            ? `${conflicted} to resolve`
+            : '',
         action: async () => {
           const outcome = await git.mergeInto(source, target, fastForward)
           if (outcome?.conflicts.length) store.resolving = outcome.conflicts[0] ?? null
@@ -780,11 +803,16 @@ async function onDropOnBranch(event: MouseEvent, target: string, targetIsRemote:
           ]
         : [])
     ],
-    `${ahead} ahead · ${behind} behind`
+    `${ahead} ahead · ${behind} behind${trial}`
   )
 }
 
 // --- context menus
+
+/** Where a push of `name` lands, which is not always the branch it follows. */
+function pushTo(name: string) {
+  return store.refs?.locals.find((one) => one.name === name)?.push_to ?? null
+}
 
 function localMenu(event: MouseEvent, name: string, upstream: string | null) {
   const isHead = name === head.value
@@ -810,10 +838,25 @@ function localMenu(event: MouseEvent, name: string, upstream: string | null) {
         }
       },
       {
-        label: upstream ? `Push to ${upstream}` : 'Push and set upstream',
+        label: upstream
+          ? `Push to ${pushTo(name) ?? upstream}`
+          : goneOf(name)
+            ? `Push to recreate ${goneOf(name)}`
+            : 'Push and set upstream',
         icon: Upload,
-        action: () => git.pushBranch(name, !upstream)
+        hint: !upstream && goneOf(name) ? 'deleted on the remote' : '',
+        action: () => git.requestPush(name, !upstream && !goneOf(name))
       },
+      ...(trunkLocal.value && name !== trunkLocal.value
+        ? [
+            {
+              label: `Update from ${trunkLocal.value}`,
+              icon: Download,
+              hint: 'fetches first',
+              action: () => git.updateFromTrunk(name)
+            }
+          ]
+        : []),
       { label: 'Check out', icon: GitBranch, disabled: isHead, action: () => git.checkout(name) },
       {
         label: 'Open in a new worktree…',
@@ -917,6 +960,14 @@ function localMenu(event: MouseEvent, name: string, upstream: string | null) {
   )
 }
 
+/** The trunk by its local name, for "Update from main". */
+const trunkLocal = computed(() => trunkLocalName(store.trunk, store.refs?.locals ?? []))
+
+/** The deleted upstream a local branch still names, if it does. */
+function goneOf(name: string) {
+  return store.refs?.locals.find((one) => one.name === name)?.gone ?? null
+}
+
 function remoteMenu(event: MouseEvent, remote: string, name: string) {
   const full = `${remote}/${name}`
   menu.show(
@@ -926,6 +977,16 @@ function remoteMenu(event: MouseEvent, remote: string, name: string) {
         label: 'Check out as a local branch',
         icon: GitBranch,
         action: () => git.checkout(full)
+      },
+      {
+        // A branch of your own that starts here and follows nothing — not a
+        // local copy of this one, whose Push would go straight back to it.
+        label: 'New branch from here…',
+        icon: Sprout,
+        hint: 'fetches first',
+        action: () => {
+          startingFrom.value = full
+        }
       },
       {
         // The branch may not exist here yet; the backend creates it following
@@ -1595,6 +1656,21 @@ async function removeSubmodule(one: Submodule) {
         Local
         <span class="count">{{ locals.length }}</span>
       </button>
+      <!-- Branches a fetch found finished. Only a strip: nothing goes until
+           the list has been looked at and a button pressed. -->
+      <div v-if="tidyShown" class="tidy-strip">
+        <button class="tidy-open" @click="tidying = true">
+          {{ store.tidy.length }} {{ store.tidy.length === 1 ? 'branch' : 'branches' }} merged or
+          gone
+        </button>
+        <button
+          class="tidy-close"
+          title="Not now"
+          @click="tidyDismissed = tidyKey(store.tidy)"
+        >
+          <X :size="12" />
+        </button>
+      </div>
       <div v-if="open.locals" class="group" :style="sizeOf('locals')">
         <template v-for="row in localShelf" :key="row.key">
           <button
@@ -1657,7 +1733,13 @@ async function removeSubmodule(one: Submodule) {
                   : 'Taken as the main branch — right-click another to change it'
               "
             />
-            <Cloud v-if="!row.item.upstream" :size="11" class="faint no-upstream" />
+            <Cloud
+              v-if="!row.item.upstream"
+              :size="11"
+              class="faint no-upstream"
+              :class="{ gone: row.item.gone }"
+              :title="row.item.gone ? `${row.item.gone} was deleted on the remote` : undefined"
+            />
           </div>
         </template>
       </div>
@@ -2020,6 +2102,13 @@ async function removeSubmodule(one: Submodule) {
     />
 
     <DeleteBranchDialog v-if="deleting" :name="deleting" @close="deleting = null" />
+    <BranchDialog
+      v-if="startingFrom"
+      fresh
+      :start="startingFrom"
+      @close="startingFrom = null"
+    />
+    <TidyDialog v-if="tidying" @close="tidying = false" />
     <RemoteDialog
       v-if="remoteForm !== null"
       :name="remoteForm === 'add' ? undefined : remoteForm"
@@ -2030,6 +2119,46 @@ async function removeSubmodule(one: Submodule) {
 </template>
 
 <style scoped>
+/* "3 branches merged or gone": a quiet line above the local branches. */
+.tidy-strip {
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  margin: 2px var(--inset, 6px) 4px;
+  padding: 2px 4px 2px 8px;
+  border-radius: var(--radius-sm);
+  background: var(--primary-bg);
+  font-size: 11.5px;
+}
+
+.tidy-open {
+  flex: 1;
+  min-width: 0;
+  text-align: left;
+  color: var(--accent-soft);
+  font-weight: 600;
+}
+
+.tidy-open:hover {
+  text-decoration: underline;
+}
+
+.tidy-close {
+  display: flex;
+  padding: 2px;
+  color: var(--text-faint);
+  border-radius: var(--radius-sm);
+}
+
+.tidy-close:hover {
+  color: var(--text);
+}
+
+.no-upstream.gone {
+  color: var(--amber);
+}
+
 /* The sidebar is chrome: the shell paints it in the canvas tone and draws the
    hairline beside it, so it paints nothing of its own round the outside. */
 .side {

@@ -538,7 +538,17 @@ function move(by: number) {
     : { path: next.path, side: next.side }
 }
 
-/** Stage, unstage or discard one hunk, then reload so the view is honest. */
+/**
+ * Stage, unstage or discard one hunk, then reload so the view is honest —
+ * without losing the reader's place.
+ *
+ * It used to reload as though the file had just been opened, which put the
+ * page back at the top: in a long file every hunk staged was a scroll back
+ * down to the next one. Now the hunk that takes the acted-on one's place — the
+ * next, once this one has gone to the other side — lands where its heading
+ * was. When nothing is left on this side the file is done with, and the
+ * viewer moves on the way staging a whole file does.
+ */
 async function onHunk(
   index: number,
   action: 'stage' | 'unstage' | 'discard',
@@ -546,8 +556,37 @@ async function onHunk(
 ) {
   const current = target.value
   if (!current || current.commit) return
-  await git.applyHunk(current.path, index, action, lines)
-  await load()
+  const side = current.side ?? 'unstaged'
+  const box = body.value
+  // Where the heading sat in the box, kept on screen: a heading scrolled
+  // past (the pinned copy was the one pressed) puts the next one at the top.
+  const before = diffRows(diff.value?.hunks ?? []).rows.find(
+    (row) => row.kind === 'head' && row.hunk === index
+  )
+  const offset = box && before ? Math.max(0, rowsTop(box) + before.top - box.scrollTop) : 0
+  // Read before the status moves, the way the file buttons do it.
+  const next = side === 'unstaged' ? git.nextToRead(current.path) : null
+
+  const said = await git.applyHunk(current.path, index, action, lines)
+  if (target.value !== current) return
+  await load(false)
+  if (target.value !== current) return
+
+  const hunks = diff.value?.hunks ?? []
+  if (said !== null && !hunks.length) {
+    // Nothing left on this side. Staging or discarding goes on to the next
+    // file to read; unstaging follows the file to where its changes now are.
+    store.viewer =
+      side === 'unstaged' ? (next ? { path: next, side: 'unstaged' } : null) : git.sideOf(current.path)
+    return
+  }
+  if (!box) return
+  await nextTick()
+  const laid = diffRows(hunks).rows.filter((row) => row.kind === 'head')
+  const landing = laid[Math.min(index, laid.length - 1)]
+  if (!landing) return
+  box.scrollTop = Math.max(0, rowsTop(box) + landing.top - offset)
+  top.value = box.scrollTop
 }
 
 function onKey(event: KeyboardEvent) {
@@ -690,10 +729,14 @@ onUnmounted(() => window.removeEventListener('keydown', onKey))
       <!-- Discard left, stage right, matching the hunk buttons in the diff
            below: the destructive one is never where the hand already is. -->
       <template v-if="!target.commit">
+        <!-- Only beside the unstaged copy. From the staged one it threw away
+             the edits on disk — not what was on screen — while the staged
+             copy it was showing stayed exactly as it was. -->
         <button
+          v-if="target.side !== 'staged'"
           class="btn danger"
           :disabled="store.busy"
-          title="Throw away the changes to this file"
+          title="Throw away the unstaged changes to this file"
           @click="git.discard([target.path])"
         >
           <Undo2 :size="14" /> Discard

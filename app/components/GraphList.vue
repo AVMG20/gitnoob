@@ -14,7 +14,10 @@ import {
   GitCommitHorizontal,
   GitMerge,
   MonitorDot,
+  PenLine,
+  Scissors,
   Search,
+  Wrench,
   Settings2,
   Tag,
   Trash2,
@@ -42,11 +45,14 @@ import {
   hiddenRefs,
   lineChips,
   refChips,
+  reviewForBranch,
   type RefChip
 } from '~/composables/useRefChips'
+import { useForge } from '~/composables/useForge'
 import { avatarFor, initials, tint } from '~/composables/useAvatars'
 import { signatureLook, signatureTitle } from '~/composables/useSigning'
 import { useRebase } from '~/composables/useRebase'
+import { useRewrite } from '~/composables/useRewrite'
 import { useContextMenu } from '~/composables/useContextMenu'
 import { useDragDrop } from '~/composables/useDragDrop'
 import { keyLabel, useShortcuts } from '~/composables/useShortcuts'
@@ -57,7 +63,15 @@ import { useBranchNaming } from '~/composables/useBranchNaming'
 
 const git = useGit()
 const store = git.store
+
+/** The open review a local branch chip stands for, for the badge after it. */
+const forgeReviews = useForge().store
+function chipReview(chip: RefChip) {
+  if (chip.kind !== 'local' || !forgeReviews.reviews.length) return null
+  return reviewForBranch(chip.name, chip.head, forgeReviews.reviews, store.refs?.locals ?? [])
+}
 const rebase = useRebase()
+const rewrite = useRewrite()
 const menu = useContextMenu()
 const drag = useDragDrop()
 const config = useConfig()
@@ -996,6 +1010,28 @@ function commitMenu(event: MouseEvent, row: GraphRow) {
           squashing.value = picked.length > 1 ? picked : [row.parents[0]!, row.oid]
         }
       },
+      // Rewrites from this one commit. Each opens a dialog that reads what it
+      // would involve first — pushed, a merge in the way — and says so.
+      {
+        label: 'Fix up this commit with the staged changes…',
+        icon: Wrench,
+        disabled: store.repo?.detached || !(store.status?.staged.length ?? 0),
+        hint: store.status?.staged.length ? 'fold them in' : 'nothing staged',
+        action: () => rewrite.open({ kind: 'fixup', oid: row.oid })
+      },
+      {
+        label: "Amend this commit's message…",
+        icon: PenLine,
+        disabled: store.repo?.detached,
+        action: () => rewrite.open({ kind: 'reword', oid: row.oid })
+      },
+      {
+        label: 'Split this commit…',
+        icon: Scissors,
+        disabled: store.repo?.detached || row.parents.length !== 1,
+        hint: row.parents.length === 1 ? 'commit it in pieces' : 'not here',
+        action: () => rewrite.open({ kind: 'split', oid: row.oid })
+      },
       { separator: true, label: '' },
       {
         label:
@@ -1142,6 +1178,16 @@ function wipMenu(event: MouseEvent) {
         danger: true,
         disabled: !(store.status?.unstaged.length ?? 0),
         action: () => git.discard((store.status?.unstaged ?? []).map((e) => e.path))
+      },
+      { separator: true, label: '' },
+      {
+        // Each staged hunk goes into the commit of yours that last touched
+        // those lines. The dialog shows that plan before anything moves.
+        label: 'Absorb staged changes into their commits…',
+        icon: Wrench,
+        disabled: store.repo?.detached || !(store.status?.staged.length ?? 0),
+        hint: store.status?.staged.length ? 'shows the plan first' : 'nothing staged',
+        action: () => rewrite.open({ kind: 'absorb' })
       }
     ],
     'Uncommitted changes'
@@ -1456,6 +1502,13 @@ onUnmounted(() => {
                   class="glyph"
                 />
               </span>
+              <!-- The open review of the branch whose chip is the one drawn. -->
+              <template
+                v-for="found in item.refs[0] ? [chipReview(item.refs[0])] : []"
+                :key="`review-${item.row.oid}`"
+              >
+                <ReviewBadge v-if="found" :review="found" class="chip-review" />
+              </template>
               <!-- After the chips, not before them. In front, the counter
                    indented the name behind it by its own width, so the one row
                    in ten that carries several refs was the one row whose name
@@ -1809,6 +1862,7 @@ onUnmounted(() => {
       @done="clearMarks()"
       @close="squashing = null"
     />
+    <RewriteDialog v-if="rewrite.store.dialog" />
   </section>
 </template>
 
@@ -2255,6 +2309,11 @@ onUnmounted(() => {
 /* It has been answered — the chips it stood for are all on show. */
 .col-refs.open .more-refs {
   display: none;
+}
+
+/* The open review beside its branch, a step apart from the chip. */
+.chip-review {
+  margin-left: 4px;
 }
 
 /* The counter for the refs not on show. Deliberately quiet: it is a way in,

@@ -39,6 +39,8 @@ pub(super) fn gitlab_review(
             is_fork: false,
         }),
         warning: None,
+        checks: None,
+        review_state: None,
     };
     (review, from_fork.then_some(source_project).flatten())
 }
@@ -209,5 +211,126 @@ pub(super) fn gitlab_draft_title(title: &str, draft: bool) -> String {
         format!("Draft: {bare}")
     } else {
         bare
+    }
+}
+
+/// Where GitLab answers GraphQL.
+pub(super) fn gitlab_graphql_url(host: &str) -> String {
+    format!("https://{host}/api/graphql")
+}
+
+/// What GraphQL is asked about a merge request to say how it stands.
+pub(super) const GITLAB_STANDING: &str =
+    "iid headPipeline{status} approvedBy{nodes{username}} detailedMergeStatus";
+
+/// GitLab's pipeline status in this app's four words. GraphQL shouts it and
+/// REST does not, so either case is read.
+pub(super) fn gitlab_pipeline(status: &str) -> &'static str {
+    match status.to_ascii_lowercase().as_str() {
+        "" => "none",
+        "success" => "success",
+        "failed" => "failure",
+        "canceled" | "canceling" | "skipped" | "manual" => "none",
+        // created, pending, running, preparing, scheduled, waiting_for_resource
+        _ => "pending",
+    }
+}
+
+/// How a merge request stands, from a node carrying `GITLAB_STANDING`.
+///
+/// Changes requested shows up in the detailed merge status where the install
+/// has the verdict at all. Approved means somebody approved, not that the
+/// rules are met: a project that needs no approvals would otherwise read as
+/// approved by nobody, which is not news worth a badge.
+pub(super) fn gitlab_standing(node: &serde_json::Value) -> (Option<String>, Option<String>) {
+    let checks = gitlab_pipeline(&string(node, &["headPipeline", "status"])).to_string();
+    let approvals = node
+        .pointer("/approvedBy/nodes")
+        .and_then(|v| v.as_array())
+        .map(|list| list.len())
+        .unwrap_or(0);
+    let decision = match string(node, &["detailedMergeStatus"]).as_str() {
+        "REQUESTED_CHANGES" => Some("changes_requested"),
+        _ if approvals > 0 => Some("approved"),
+        "NOT_APPROVED" => Some("review_required"),
+        _ => None,
+    };
+    (Some(checks), decision.map(str::to_string))
+}
+
+/// How each of a handful of merge requests stands, in one request.
+pub(super) async fn gitlab_standings(
+    http: &reqwest::Client,
+    call: &Call,
+    numbers: &[i64],
+) -> HashMap<i64, (Option<String>, Option<String>)> {
+    let mut out = HashMap::new();
+    if numbers.is_empty() {
+        return out;
+    }
+    let query = format!(
+        "query($path:ID!,$iids:[String!]){{project(fullPath:$path){{mergeRequests(iids:$iids){{nodes{{{GITLAB_STANDING}}}}}}}}}"
+    );
+    let iids: Vec<String> = numbers.iter().map(|n| n.to_string()).collect();
+    let Ok(data) = graphql(
+        http,
+        &call.token,
+        &gitlab_graphql_url(&call.host),
+        &query,
+        serde_json::json!({ "path": call.slug.full(), "iids": iids }),
+    )
+    .await
+    else {
+        return out;
+    };
+    for node in data
+        .pointer("/project/mergeRequests/nodes")
+        .and_then(|v| v.as_array())
+        .unwrap_or(&Vec::new())
+    {
+        let iid = string(node, &["iid"]).parse::<i64>().unwrap_or(0);
+        if iid > 0 {
+            out.insert(iid, gitlab_standing(node));
+        }
+    }
+    out
+}
+
+/// A merge request as GitLab's GraphQL describes it, in the shape `Review`
+/// takes everywhere else.
+pub(super) fn gitlab_found_review(node: &serde_json::Value) -> Review {
+    let project = string(node, &["project", "fullPath"]);
+    let source_project = string(node, &["sourceProject", "fullPath"]);
+    let fork = !source_project.is_empty() && !source_project.eq_ignore_ascii_case(&project);
+    let (checks, review_state) = gitlab_standing(node);
+    let from_fork = |path: &[&str]| {
+        if fork {
+            string(node, path)
+        } else {
+            String::new()
+        }
+    };
+    Review {
+        number: string(node, &["iid"]).parse().unwrap_or(0),
+        title: string(node, &["title"]),
+        author: string(node, &["author", "username"]),
+        state: string(node, &["state"]),
+        draft: node.get("draft").and_then(|v| v.as_bool()).unwrap_or(false),
+        is_current: false,
+        source_branch: string(node, &["sourceBranch"]),
+        target_branch: string(node, &["targetBranch"]),
+        url: string(node, &["webUrl"]),
+        updated_at: string(node, &["updatedAt"]),
+        head_sha: string(node, &["diffHeadSha"]),
+        source: Some(ReviewSource {
+            full_name: from_fork(&["sourceProject", "fullPath"]),
+            owner: from_fork(&["sourceProject", "namespace", "path"]),
+            ssh_url: from_fork(&["sourceProject", "sshUrlToRepo"]),
+            https_url: from_fork(&["sourceProject", "httpUrlToRepo"]),
+            is_fork: fork,
+        }),
+        warning: None,
+        checks,
+        review_state,
     }
 }

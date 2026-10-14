@@ -74,15 +74,22 @@ pub struct Candidate {
 
 /// The commits between `onto` and HEAD, oldest first — the order git replays
 /// them in, and so the order the plan is read in.
+///
+/// A range with a merge in it is refused rather than listed. The plan is
+/// replayed without `--rebase-merges`, which lays the merged commits out in a
+/// line and throws the merge away, along with whatever was resolved inside
+/// it. Leaving the merge out of the list used to hide exactly that.
 pub fn plan(state: &AppState, onto: &str) -> Result<Vec<Candidate>, String> {
     let root = state.path()?;
     let range = format!("{onto}..HEAD");
+    if let Some(why) = merge_in_range(&root, &range) {
+        return Err(why);
+    }
     let raw = git_cmd::run_checked(
         &root,
         &[
             "log",
             "--reverse",
-            "--no-merges",
             "--no-show-signature",
             "--format=%H%x1f%an%x1f%ae%x1f%at%x1f%s",
             &range,
@@ -95,11 +102,65 @@ pub fn plan(state: &AppState, onto: &str) -> Result<Vec<Candidate>, String> {
 
     // Which of them a remote already has. One command for the lot rather than
     // one per commit, and a repository with no remotes simply answers none.
-    let published = published_commits(&root);
+    let unpushed = unpushed_in(&root, &range);
     for one in &mut found {
-        one.pushed = published.contains(&one.oid);
+        one.pushed = !unpushed.contains(&one.oid);
     }
     Ok(found)
+}
+
+/// Why a range cannot be replayed as a straight line, or `None` when it can.
+///
+/// Every rewrite here — the plan, a fixup, a split, a message change — runs
+/// without `--rebase-merges`, so a merge inside the range would come out the
+/// other side flattened. Said up front, naming the merge, so the answer is
+/// "start at or above that one" rather than a history quietly redrawn.
+pub fn merge_in_range(root: &Path, range: &str) -> Option<String> {
+    let newest = git_cmd::run(
+        root,
+        &[
+            "log",
+            "--merges",
+            "-1",
+            "--no-show-signature",
+            "--format=%h%x1f%s",
+            range,
+        ],
+    )
+    .ok()
+    .filter(|out| out.ok)
+    .map(|out| out.stdout.trim().to_string())
+    .filter(|line| !line.is_empty())?;
+    let (short, subject) = newest.split_once('\u{1f}').unwrap_or((&newest, ""));
+    Some(format!(
+        "There is a merge commit in the way ({short} {subject}). Replaying the commits around \
+         it would flatten the merge and lose whatever was resolved inside it, so this only works \
+         on the commits above the newest merge."
+    ))
+}
+
+/// The commits in `range` that no remote-tracking branch has.
+///
+/// `--not --remotes` asks the whole question, however long ago the commit was
+/// pushed. It used to be a list of the newest two thousand remote commits,
+/// which in a busy repository missed anything older and called it unpushed —
+/// and the warning about a force push went missing exactly when it mattered.
+pub fn unpushed_in(root: &Path, range: &str) -> Vec<String> {
+    git_cmd::run(root, &["rev-list", range, "--not", "--remotes"])
+        .ok()
+        .filter(|out| out.ok)
+        .map(|out| out.stdout.lines().map(|l| l.trim().to_string()).collect())
+        .unwrap_or_default()
+}
+
+/// Whether some remote-tracking branch already has this commit.
+pub fn is_published(root: &Path, oid: &str) -> bool {
+    // A remote has it exactly when nothing is left of it once everything the
+    // remotes reach is taken away.
+    git_cmd::run(root, &["rev-list", "-n", "1", oid, "--not", "--remotes"])
+        .ok()
+        .filter(|out| out.ok)
+        .is_some_and(|out| out.stdout.trim().is_empty())
 }
 
 fn read_plan(raw: &str) -> Vec<Candidate> {
@@ -127,51 +188,300 @@ fn read_plan(raw: &str) -> Vec<Candidate> {
         .collect()
 }
 
-/// Every commit reachable from a remote-tracking branch, so the plan can say
-/// which of its entries a rewrite would strand.
-fn published_commits(root: &Path) -> Vec<String> {
-    let Ok(out) = git_cmd::run(
-        root,
-        &["log", "--format=%H", "--remotes", "--max-count=2000"],
-    ) else {
-        return Vec::new();
-    };
-    if !out.ok {
-        return Vec::new();
-    }
-    out.stdout.lines().map(|l| l.trim().to_string()).collect()
-}
-
 /// The todo list git will be handed.
 ///
 /// A `squash` or `fixup` with nothing above it to fold into is not a plan git
 /// will accept, so it is refused here where it can be explained rather than
 /// there where it cannot.
 pub fn todo_text(steps: &[Step]) -> Result<String, String> {
+    todo_with_refs(steps, &[])
+}
+
+/// The todo list, with an `update-ref` line for every stacked branch.
+///
+/// `--update-refs` would have git write those lines itself, but the list git
+/// writes is the one the window's plan is copied over, so they are put back
+/// here: each branch goes after the commit it pointed at, or after the fold
+/// that commit ends up inside, which is where git puts them too. A branch on a
+/// dropped commit stays at that place in the list and so lands on whatever
+/// was kept before it.
+pub fn todo_with_refs(steps: &[Step], stacked: &[(String, String)]) -> Result<String, String> {
     let mut lines = Vec::new();
     let mut has_root = false;
+    let mut pending: Vec<&str> = Vec::new();
+    let flush = |lines: &mut Vec<String>, pending: &mut Vec<&str>| {
+        for name in pending.drain(..) {
+            lines.push(format!("update-ref refs/heads/{name}"));
+        }
+    };
     for step in steps {
-        if matches!(step.action, Action::Squash | Action::Fixup) && !has_root {
+        let folds = matches!(step.action, Action::Squash | Action::Fixup);
+        if folds && !has_root {
             return Err(
                 "The first commit of a rebase has nothing above it to fold into. Move it down, or pick it."
                     .to_string(),
             );
         }
-        if step.action == Action::Drop {
+        if step.action != Action::Drop {
+            // A ref is never put between a commit and what folds into it:
+            // the branch would be left on the half-made commit.
+            if !folds {
+                flush(&mut lines, &mut pending);
+                has_root = true;
+            }
             // A dropped commit is left out rather than written as `drop`: both
             // work, and a shorter list is a list with less to go wrong in it.
-            continue;
+            lines.push(format!("{} {}", step.action.word(), step.oid));
         }
-        if !matches!(step.action, Action::Squash | Action::Fixup) {
-            has_root = true;
-        }
-        lines.push(format!("{} {}", step.action.word(), step.oid));
+        pending.extend(
+            stacked
+                .iter()
+                .filter(|(_, oid)| *oid == step.oid)
+                .map(|(name, _)| name.as_str()),
+        );
     }
-    if lines.is_empty() {
+    if !lines.iter().any(|line| !line.starts_with("update-ref")) {
         return Err("That plan drops every commit. Use reset instead.".to_string());
     }
+    flush(&mut lines, &mut pending);
     lines.push(String::new());
     Ok(lines.join("\n"))
+}
+
+// --- what every rewrite runs with --------------------------------------------
+
+/// The settings every command that can stop on a conflict runs with.
+///
+/// `diff3` puts the merge base into the markers, which is the third pane of
+/// the resolver; without it a cherry-pick or a squash that stopped showed only
+/// two sides of a three-sided question. `rerere` remembers how a conflict was
+/// resolved and answers the same conflict the same way next time. Both are
+/// given on the command line, so the user's own git config is never written.
+pub fn conflict_flags(state: &AppState) -> Vec<String> {
+    let mut flags = vec!["-c".to_string(), "merge.conflictStyle=diff3".to_string()];
+    flags.extend(rerere_flags(state));
+    flags
+}
+
+/// `-c rerere.enabled=…` saying what the app's setting says, or nothing when
+/// the user set `rerere.enabled` in their own git config.
+///
+/// Off has to be said out loud: once `.git/rr-cache` exists, git takes rerere
+/// to be on whenever the config is silent, so leaving the flag out did not
+/// turn it off at all. A value the user configured themselves, at any level,
+/// is theirs, and is left to stand.
+pub fn rerere_flags(state: &AppState) -> Vec<String> {
+    let Ok(root) = state.path() else {
+        return Vec::new();
+    };
+    if user_set_rerere(&root) {
+        return Vec::new();
+    }
+    let value = if rerere_on(state) { "true" } else { "false" };
+    vec!["-c".to_string(), format!("rerere.enabled={value}")]
+}
+
+/// Whether `rerere.enabled` is set anywhere in the user's git config.
+fn user_set_rerere(root: &Path) -> bool {
+    git2::Repository::open(root)
+        .and_then(|repo| repo.config())
+        .and_then(|mut config| config.snapshot())
+        .is_ok_and(|config| config.get_bool("rerere.enabled").is_ok())
+}
+
+/// Whether this repository has rerere turned on in the app. Off unless it
+/// was turned on for this one.
+pub fn rerere_on(state: &AppState) -> bool {
+    let Ok(root) = state.path() else {
+        return false;
+    };
+    let here = root.to_string_lossy().to_string();
+    state.config().global.rerere_on.contains(&here)
+}
+
+/// Turns rerere on or off for the repository that is open.
+pub fn set_rerere(state: &AppState, enabled: bool) -> Result<bool, String> {
+    let here = state.path()?.to_string_lossy().to_string();
+    state.update_config(|config| {
+        let list = &mut config.global.rerere_on;
+        list.retain(|path| *path != here);
+        if enabled {
+            list.push(here.clone());
+        }
+    })?;
+    Ok(enabled)
+}
+
+/// The version of git on the path, as `(major, minor)`, read once.
+pub fn git_version() -> Option<(u32, u32)> {
+    static FOUND: std::sync::OnceLock<Option<(u32, u32)>> = std::sync::OnceLock::new();
+    *FOUND.get_or_init(|| {
+        let mut command = std::process::Command::new("git");
+        git_cmd::quiet(&mut command);
+        let out = command.arg("version").output().ok()?;
+        parse_version(&String::from_utf8_lossy(&out.stdout))
+    })
+}
+
+/// `git version 2.50.1 (Apple Git-155)`, `git version 2.45.1.windows.1`.
+fn parse_version(text: &str) -> Option<(u32, u32)> {
+    let number = text
+        .split_whitespace()
+        .find(|word| word.chars().next().is_some_and(|c| c.is_ascii_digit()))?;
+    let mut parts = number.split('.');
+    let major = parts.next()?.parse().ok()?;
+    let minor = parts.next()?.parse().ok()?;
+    Some((major, minor))
+}
+
+/// Whether stacked branches should move with a rebase: the setting is on and
+/// git is new enough to do it (2.38 brought `--update-refs`).
+///
+/// Never on a detached HEAD: with no branch being rebased there is nothing for
+/// the others to be stacked on, and moving them would be a surprise.
+pub fn update_refs_on(state: &AppState) -> bool {
+    state.config().global.update_refs
+        && git_version().is_some_and(|found| found >= (2, 38))
+        && journal::current_branch(state).is_some()
+}
+
+/// The local branches a rebase of `range` would carry along: every one whose
+/// tip is among the commits being replayed, except the one checked out here
+/// and any checked out in another worktree, which git will not move.
+pub fn stacked_branches(state: &AppState, range: &str) -> Vec<(String, String)> {
+    stacked_and_held(state, range).0
+}
+
+/// [`stacked_branches`], and beside it the branches on the replayed commits
+/// that are left out of it on purpose: a backup at the tip, a colleague's
+/// branch. Git's own `--update-refs` would move those too.
+pub fn stacked_and_held(state: &AppState, range: &str) -> (Vec<(String, String)>, Vec<String>) {
+    let none = || (Vec::new(), Vec::new());
+    let Ok(root) = state.path() else {
+        return none();
+    };
+    let replayed: std::collections::HashSet<String> = git_cmd::run(&root, &["rev-list", range])
+        .ok()
+        .filter(|out| out.ok)
+        .map(|out| out.stdout.lines().map(|l| l.trim().to_string()).collect())
+        .unwrap_or_default();
+    if replayed.is_empty() {
+        return none();
+    }
+    let elsewhere: Vec<String> = git_cmd::run(&root, &["worktree", "list", "--porcelain"])
+        .ok()
+        .filter(|out| out.ok)
+        .map(|out| {
+            out.stdout
+                .lines()
+                .filter_map(|line| line.strip_prefix("branch refs/heads/"))
+                .map(str::to_string)
+                .collect()
+        })
+        .unwrap_or_default();
+    // Nothing rides along with a detached HEAD: there is no branch being
+    // rebased for the others to be stacked on.
+    let Some(here) = journal::current_branch(state) else {
+        return none();
+    };
+    let Ok(repo) = state.repo() else {
+        return none();
+    };
+    let Ok(branches) = repo.branches(Some(git2::BranchType::Local)) else {
+        return none();
+    };
+    let head_tip = journal::head_at(&root);
+    let mut found = Vec::new();
+    let mut held = Vec::new();
+    for (branch, _) in branches.flatten() {
+        let Some(name) = branch.name().ok().flatten().map(str::to_string) else {
+            continue;
+        };
+        let Some(oid) = branch.get().target().map(|oid| oid.to_string()) else {
+            continue;
+        };
+        if name == here || elsewhere.contains(&name) || !replayed.contains(&oid) {
+            continue;
+        }
+        // A branch on the very tip is not stacked on anything: it is the
+        // same work under another name — a backup made before the rebase,
+        // most often — and moving it takes away the very copy it was kept
+        // as. git's own `--update-refs` moves it; this list leaves it be.
+        if head_tip.as_deref() == Some(oid.as_str()) {
+            held.push(name);
+            continue;
+        }
+        // One that follows a remote branch of another name is somebody
+        // else's branch, checked out here to look at: not ours to rewrite.
+        if crate::refs::configured_upstream(&repo, &name)
+            .is_some_and(|(remote, merge)| remote != "." && merge != name)
+        {
+            held.push(name);
+            continue;
+        }
+        found.push((name, oid));
+    }
+    found.sort();
+    held.sort();
+    (found, held)
+}
+
+/// Where a rebase that may stop remembers which branches it was carrying, so
+/// the one that finishes it — a continue, maybe after a restart — can say
+/// which of them moved.
+const CARRIED: &str = "gitnoob-update-refs";
+
+pub fn remember_carried(git_dir: &Path, stacked: &[(String, String)]) {
+    let file = git_dir.join(CARRIED);
+    if stacked.is_empty() {
+        let _ = std::fs::remove_file(file);
+        return;
+    }
+    let text: Vec<String> = stacked
+        .iter()
+        .map(|(name, oid)| format!("{oid} {name}"))
+        .collect();
+    let _ = std::fs::write(file, text.join("\n") + "\n");
+}
+
+/// The branches the rebase that just ended moved, said once and forgotten.
+///
+/// Their old tips stay in each branch's reflog (`<branch>@{1}`, entry
+/// "rebase (update-refs)"), which is the way back for any of them; the note
+/// names the old commit so it can be found without knowing that.
+pub fn carried_note(state: &AppState, git_dir: &Path) -> Option<String> {
+    let file = git_dir.join(CARRIED);
+    let text = std::fs::read_to_string(&file).ok()?;
+    let _ = std::fs::remove_file(&file);
+    let repo = state.repo().ok()?;
+    let mut moved = Vec::new();
+    for line in text.lines() {
+        let Some((old, name)) = line.split_once(' ') else {
+            continue;
+        };
+        let now = repo
+            .find_branch(name, git2::BranchType::Local)
+            .ok()
+            .and_then(|branch| branch.get().target())
+            .map(|oid| oid.to_string());
+        if now.as_deref().is_some_and(|now| now != old) {
+            moved.push(format!("{name} (was {})", &old[..old.len().min(7)]));
+        }
+    }
+    (!moved.is_empty()).then(|| {
+        format!(
+            "Also moved {}. The old tips are in each branch's reflog.",
+            moved.join(", ")
+        )
+    })
+}
+
+/// `said`, with the stacked branches that moved underneath it.
+pub fn with_carried(state: &AppState, git_dir: &Path, said: String) -> String {
+    match carried_note(state, git_dir) {
+        Some(note) => format!("{}\n{note}", said.trim_end()),
+        None => said,
+    }
 }
 
 /// The command git will run in place of an editor.
@@ -184,7 +494,7 @@ pub fn todo_text(steps: &[Step]) -> Result<String, String> {
 /// test suite: the test binary is not this app and cannot answer
 /// `--write-todo`, so without it nothing that starts a rebase could be covered
 /// end to end. Nothing in the app sets it.
-fn sequence_editor(list: &Path) -> Result<String, String> {
+pub(crate) fn sequence_editor(list: &Path) -> Result<String, String> {
     let head = match std::env::var("GITNOOB_SEQUENCE_EDITOR") {
         Ok(over) if !over.trim().is_empty() => over,
         _ => {
@@ -208,7 +518,13 @@ fn shell_quote(path: &Path) -> String {
 /// Starts the rebase, with the window's plan in place of git's editor.
 pub fn start(state: &AppState, onto: &str, steps: Vec<Step>) -> Result<String, String> {
     let root = state.path()?;
-    let todo = todo_text(&steps)?;
+    // Asked again here rather than trusted from the plan: the branch can have
+    // moved between the pane opening and the button being pressed.
+    if let Some(why) = merge_in_range(&root, &format!("{onto}..HEAD")) {
+        return Err(why);
+    }
+    let stacked = carried_by(state, Some(onto));
+    let todo = todo_with_refs(&steps, &stacked)?;
 
     // The oids the window called rewords, which go in as `edit`. Remembered on
     // disk rather than in memory so that closing the window part-way through a
@@ -219,14 +535,57 @@ pub fn start(state: &AppState, onto: &str, steps: Vec<Step>) -> Result<String, S
         .map(|s| s.oid.as_str())
         .collect();
 
-    run_todo(
-        &root,
+    let before = journal::head_oid(state);
+    let branch = journal::current_branch(state);
+    let short: String = onto.chars().take(7).collect();
+    let label = format!("Interactive rebase onto {short}");
+
+    let said = run_todo(
+        state,
         Some(onto),
         &todo,
         &rewords,
         "true",
+        &stacked,
         format!("Rebased onto {onto}"),
-    )
+    )?;
+    // One that stopped — for a conflict, an edit or a reword — is recorded
+    // whole by whatever finishes it.
+    if said == "Rebase stopped" {
+        journal::begin_pending(state, "rebase", label, branch, before);
+    } else {
+        journal::record(
+            state,
+            "rebase",
+            label,
+            branch,
+            before,
+            journal::head_oid(state),
+            Mode::Hard,
+            true,
+        );
+    }
+    Ok(said)
+}
+
+/// The branches a rewrite from `base` would carry, when that is switched on.
+pub(crate) fn carried_by(state: &AppState, base: Option<&str>) -> Vec<(String, String)> {
+    carried_and_held(state, base).0
+}
+
+/// [`carried_by`], with the branches on those commits it leaves alone.
+pub(crate) fn carried_and_held(
+    state: &AppState,
+    base: Option<&str>,
+) -> (Vec<(String, String)>, Vec<String>) {
+    if !update_refs_on(state) {
+        return (Vec::new(), Vec::new());
+    }
+    let range = match base {
+        Some(base) => format!("{base}..HEAD"),
+        None => "HEAD".to_string(),
+    };
+    stacked_and_held(state, &range)
 }
 
 /// Hands git a todo list and lets it replay.
@@ -234,14 +593,17 @@ pub fn start(state: &AppState, onto: &str, steps: Vec<Step>) -> Result<String, S
 /// Everything that starts a rebase here goes through this: the plan the pane
 /// built, and the fold a squash asks for. `onto` is `None` for a rebase that
 /// reaches the repository's first commit, which git spells `--root`.
-fn run_todo(
-    root: &Path,
+pub(crate) fn run_todo(
+    state: &AppState,
     onto: Option<&str>,
     todo: &str,
     rewords: &[&str],
     editor: &str,
+    stacked: &[(String, String)],
     done: String,
 ) -> Result<String, String> {
+    let root = state.path()?;
+    let root = root.as_path();
     let git_dir = crate::remote::git_dir(root)?;
     // Refused here, before anything is written: git would refuse anyway, but
     // by then the todo and rewords files of the rebase that IS running would
@@ -257,8 +619,11 @@ fn run_todo(
     let _ = std::fs::write(git_dir.join("gitnoob-rebase-rewords"), rewords.join("\n"));
 
     let list_editor = sequence_editor(&list)?;
+    remember_carried(&git_dir, stacked);
 
-    let mut args: Vec<&str> = vec!["rebase", "-i", "--autostash"];
+    let flags = conflict_flags(state);
+    let mut args: Vec<&str> = flags.iter().map(String::as_str).collect();
+    args.extend(["rebase", "-i", "--autostash"]);
     match onto {
         Some(onto) => args.push(onto),
         None => args.push("--root"),
@@ -279,17 +644,22 @@ fn run_todo(
         ],
     )?;
 
-    if out.ok {
+    if out.ok && !still_rebasing(&git_dir) {
         clear_marks(&git_dir);
-        return Ok(done);
+        return Ok(with_carried(state, &git_dir, done));
     }
     // A rebase that stops is not a rebase that failed: it stopped for an edit,
     // a reword or a conflict, and the window has a strip for each of those.
-    if git_dir.join("rebase-merge").exists() || git_dir.join("rebase-apply").exists() {
+    if still_rebasing(&git_dir) {
         return Ok("Rebase stopped".to_string());
     }
     clear_marks(&git_dir);
+    let _ = carried_note(state, &git_dir);
     Err(one_message(&out))
+}
+
+fn still_rebasing(git_dir: &Path) -> bool {
+    git_dir.join("rebase-merge").exists() || git_dir.join("rebase-apply").exists()
 }
 
 // --- squash ------------------------------------------------------------------
@@ -468,13 +838,12 @@ pub fn squash_preview(state: &AppState, oids: &[String]) -> Result<SquashPreview
         found.chain.iter().take(found.fold).cloned().collect()
     };
 
-    let published = published_commits(&root);
     // Anything git cannot read is left out rather than made into an error: it
     // is already the reason for a refusal, and the dialog has more to say about
     // that than "bad object" does.
     let mut commits: Vec<Folded> = subjects
         .iter()
-        .filter_map(|oid| read_folded(&root, oid, &published))
+        .filter_map(|oid| read_folded(&root, oid))
         .collect();
     if found.refusal.is_some() {
         commits.sort_by_key(|one| one.time);
@@ -490,7 +859,7 @@ pub fn squash_preview(state: &AppState, oids: &[String]) -> Result<SquashPreview
     })
 }
 
-fn read_folded(root: &Path, oid: &str, published: &[String]) -> Option<Folded> {
+fn read_folded(root: &Path, oid: &str) -> Option<Folded> {
     let raw = git_cmd::run_checked(
         root,
         &[
@@ -510,7 +879,7 @@ fn read_folded(root: &Path, oid: &str, published: &[String]) -> Option<Folded> {
     let message = parts.next().unwrap_or("").trim().to_string();
     Some(Folded {
         short: full.chars().take(7).collect(),
-        pushed: published.contains(&full),
+        pushed: is_published(root, &full),
         oid: full,
         summary,
         message,
@@ -540,17 +909,27 @@ fn joined_message(commits: &[Folded]) -> String {
 /// the wrong message without a word said. A squash-commit that fails is
 /// retried on continue, message and all, because the message is git's own
 /// state by then.
+#[cfg(test)]
 fn squash_todo(chain: &[String], fold: usize) -> String {
-    let mut lines: Vec<String> = Vec::with_capacity(chain.len() + 1);
-    for (at, oid) in chain.iter().enumerate() {
-        if at == 0 || at >= fold {
-            lines.push(format!("pick {oid}"));
-        } else {
-            lines.push(format!("squash {oid}"));
-        }
-    }
-    lines.push(String::new());
-    lines.join("\n")
+    squash_todo_with(chain, fold, &[])
+}
+
+/// The same list, carrying the stacked branches along.
+fn squash_todo_with(chain: &[String], fold: usize, stacked: &[(String, String)]) -> String {
+    let steps: Vec<Step> = chain
+        .iter()
+        .enumerate()
+        .map(|(at, oid)| Step {
+            oid: oid.clone(),
+            action: if at == 0 || at >= fold {
+                Action::Pick
+            } else {
+                Action::Squash
+            },
+        })
+        .collect();
+    // The first step is always a pick, so this cannot be refused.
+    todo_with_refs(&steps, stacked).unwrap_or_default()
 }
 
 /// Folds a run of commits into one carrying `message`.
@@ -570,24 +949,33 @@ pub fn squash(state: &AppState, oids: &[String], message: &str) -> Result<String
     std::fs::write(&note, format!("{text}\n"))
         .map_err(|e| format!("Could not write the message: {e}"))?;
 
-    let todo = squash_todo(&found.chain, found.fold);
+    let stacked = carried_by(state, found.base.as_deref());
+    let todo = squash_todo_with(&found.chain, found.fold, &stacked);
     let editor = sequence_editor(&note)?;
     let before = journal::head_oid(state);
     let branch = journal::current_branch(state);
     let folded = found.fold;
 
     let said = run_todo(
-        &root,
+        state,
         found.base.as_deref(),
         &todo,
         &[],
         &editor,
+        &stacked,
         format!("Squashed {folded} commits into one"),
     )?;
 
     // A rebase that stopped has not finished folding, so there is nothing whole
     // to step back from yet; the strip under the toolbar takes it from here.
     if said == "Rebase stopped" {
+        journal::begin_pending(
+            state,
+            "squash",
+            format!("Squash {folded} commits"),
+            branch,
+            before,
+        );
         return Ok("The squash stopped part-way — resolve it, then continue".to_string());
     }
 
@@ -620,6 +1008,8 @@ pub struct Progress {
     pub rewording: bool,
     /// The message that commit carries now, to start the box off with.
     pub message: Option<String>,
+    /// The subject of the commit being split, when this stop is a split.
+    pub splitting: Option<String>,
 }
 
 pub fn progress(state: &AppState) -> Result<Option<Progress>, String> {
@@ -654,6 +1044,9 @@ pub fn progress(state: &AppState) -> Result<Option<Progress>, String> {
         ),
         None => (None, None),
     };
+    let splitting = crate::rewrite::splitting(&git_dir)
+        .filter(|oid| stopped.as_deref() == Some(oid.as_str()))
+        .and_then(|_| summary.clone());
 
     Ok(Some(Progress {
         at: number("msgnum"),
@@ -662,6 +1055,7 @@ pub fn progress(state: &AppState) -> Result<Option<Progress>, String> {
         summary,
         rewording,
         message,
+        splitting,
     }))
 }
 
@@ -691,20 +1085,29 @@ fn message_of(root: &Path, oid: &str) -> Option<String> {
 /// A rebase a visit left stopped on another branch's behalf ends here as
 /// surely as from the conflict sheet, so this one goes home too.
 pub fn resume(state: &AppState) -> Result<String, String> {
-    let root = state.path()?;
-    let git_dir = crate::remote::git_dir(&root)?;
-    let leg = crate::remote::trip(state);
-    let out = git_cmd::run_with_env(&root, &["rebase", "--continue"], &[("GIT_EDITOR", "true")])?;
-    settle(&git_dir, out, "Rebase finished").map(|said| crate::remote::and_home(state, leg, said))
+    step_on(state, "--continue")
 }
 
 /// Leaves the commit it stopped at out and moves on.
 pub fn skip(state: &AppState) -> Result<String, String> {
+    step_on(state, "--skip")
+}
+
+/// `rebase --continue` or `--skip`, with the same settings the rebase started
+/// with: the next commit can stop on a conflict as well, and that one deserves
+/// its base pane and its remembered resolution as much as the first did.
+fn step_on(state: &AppState, how: &str) -> Result<String, String> {
     let root = state.path()?;
     let git_dir = crate::remote::git_dir(&root)?;
     let leg = crate::remote::trip(state);
-    let out = git_cmd::run_with_env(&root, &["rebase", "--skip"], &[("GIT_EDITOR", "true")])?;
-    settle(&git_dir, out, "Rebase finished").map(|said| crate::remote::and_home(state, leg, said))
+    let waiting = journal::pending(state);
+    let flags = conflict_flags(state);
+    let mut args: Vec<&str> = flags.iter().map(String::as_str).collect();
+    args.extend(["rebase", how]);
+    let out = git_cmd::run_with_env(&root, &args, &[("GIT_EDITOR", "true")])?;
+    journal::finish_pending(state, waiting);
+    settle(state, &git_dir, out, "Rebase finished")
+        .map(|said| crate::remote::and_home(state, leg, said))
 }
 
 /// Puts the branch back exactly as it was before the rebase started.
@@ -712,14 +1115,21 @@ pub fn abort(state: &AppState) -> Result<String, String> {
     let root = state.path()?;
     let git_dir = crate::remote::git_dir(&root)?;
     let leg = crate::remote::trip(state);
+    let waiting = journal::pending(state);
+    // A split's files are where its work is; the abort resets them.
+    let kept = crate::rewrite::keep_for_abort(state)?;
+    crate::rewrite::clear_for_abort(state);
     let out = git_cmd::run(&root, &["rebase", "--abort"])?;
+    journal::finish_pending(state, waiting);
     clear_marks(&git_dir);
+    // Nothing was moved: git only moves the stacked branches at the very end.
+    let _ = std::fs::remove_file(git_dir.join(CARRIED));
     if out.ok {
-        Ok(crate::remote::and_home(
-            state,
-            leg,
-            "Rebase abandoned; the branch is as it was".to_string(),
-        ))
+        let mut said = "Rebase abandoned; the branch is as it was".to_string();
+        if let Some(kept) = kept {
+            said = format!("{said}\n{kept}");
+        }
+        Ok(crate::remote::and_home(state, leg, said))
     } else {
         Err(one_message(&out))
     }
@@ -740,28 +1150,36 @@ pub fn reword(state: &AppState, message: &str) -> Result<String, String> {
 }
 
 /// What a `--continue` or `--skip` left behind.
-fn settle(git_dir: &Path, out: git_cmd::CmdOutput, done: &str) -> Result<String, String> {
-    let still_going =
-        git_dir.join("rebase-merge").exists() || git_dir.join("rebase-apply").exists();
-    if still_going {
+fn settle(
+    state: &AppState,
+    git_dir: &Path,
+    out: git_cmd::CmdOutput,
+    done: &str,
+) -> Result<String, String> {
+    if still_rebasing(git_dir) {
         return Ok("Rebase stopped".to_string());
     }
     clear_marks(git_dir);
+    let said = carried_note(state, git_dir);
     if out.ok {
-        Ok(done.to_string())
+        Ok(match said {
+            Some(note) => format!("{done}\n{note}"),
+            None => done.to_string(),
+        })
     } else {
         Err(one_message(&out))
     }
 }
 
 /// The files this app leaves beside git's own, once there is no rebase left.
-fn clear_marks(git_dir: &Path) {
+pub(crate) fn clear_marks(git_dir: &Path) {
     let _ = std::fs::remove_file(git_dir.join("gitnoob-rebase-todo"));
     let _ = std::fs::remove_file(git_dir.join("gitnoob-rebase-rewords"));
     let _ = std::fs::remove_file(git_dir.join("gitnoob-squash-message"));
+    let _ = std::fs::remove_file(git_dir.join(crate::rewrite::SPLIT));
 }
 
-fn one_message(out: &git_cmd::CmdOutput) -> String {
+pub(crate) fn one_message(out: &git_cmd::CmdOutput) -> String {
     let text = if out.stderr.trim().is_empty() {
         out.stdout.trim()
     } else {
@@ -783,6 +1201,17 @@ mod tests {
             oid: oid.to_string(),
             action,
         }
+    }
+
+    #[test]
+    fn reads_the_git_version_whatever_the_platform_adds_to_it() {
+        assert_eq!(
+            parse_version("git version 2.50.1 (Apple Git-155)\n"),
+            Some((2, 50))
+        );
+        assert_eq!(parse_version("git version 2.45.1.windows.1"), Some((2, 45)));
+        assert_eq!(parse_version("git version 2.37.0"), Some((2, 37)));
+        assert_eq!(parse_version("nonsense"), None);
     }
 
     #[test]

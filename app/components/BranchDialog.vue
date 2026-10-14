@@ -9,6 +9,12 @@ const props = defineProps<{
   /** Shown instead of the raw starting point, when the caller has something
       more readable to say than a hash. */
   startLabel?: string
+  /**
+   * Starting work rather than only making a branch: the start point's remote
+   * is fetched first, and the branch tracks nothing until it is pushed. The
+   * start point is the trunk as its remote has it unless one is given.
+   */
+  fresh?: boolean
 }>()
 const emit = defineEmits<{ close: [] }>()
 
@@ -17,6 +23,14 @@ const store = git.store
 
 const name = ref('')
 const start = ref(props.start ?? '')
+
+// Starting work from the trunk: ask the backend what that is right now, so
+// the box shows `origin/main` rather than staying empty.
+if (props.fresh && !props.start) {
+  void git.trunkTarget().then((target) => {
+    if (target && !start.value) start.value = target
+  })
+}
 
 const taken = computed(() =>
   store.refs?.locals.some((b) => b.name === name.value.trim()) ?? false
@@ -30,13 +44,15 @@ async function submit() {
   // Null is the only failure: a command that succeeds quietly still returns a
   // string, and an empty one would otherwise leave the dialog open saying the
   // branch it had just made already exists.
-  const created = await git.createBranch(name.value.trim(), start.value.trim() || undefined)
+  const created = props.fresh
+    ? await git.startWork(name.value.trim(), start.value.trim() || undefined)
+    : await git.createBranch(name.value.trim(), start.value.trim() || undefined)
   if (created !== null) emit('close')
 }
 </script>
 
 <template>
-  <AppModal title="New branch" :width="440" @close="emit('close')">
+  <AppModal :title="props.fresh ? 'Start work' : 'New branch'" :width="440" @close="emit('close')">
     <label class="field">
       <span class="label">Name</span>
       <input
@@ -52,7 +68,11 @@ async function submit() {
     <label class="field">
       <span class="label">Starting point</span>
       <input v-model="start" type="text" :placeholder="store.repo?.head ?? 'HEAD'" />
-      <span v-if="props.startLabel" class="hint faint">
+      <span v-if="props.fresh" class="hint faint">
+        Fetched first, so this is the newest there is. The new branch tracks nothing until you
+        push it, and your open changes come along.
+      </span>
+      <span v-else-if="props.startLabel" class="hint faint">
         Branching from <span class="mono">{{ props.startLabel }}</span
         >. Change it here to start somewhere else.
       </span>
@@ -62,7 +82,7 @@ async function submit() {
     <template #footer>
       <button class="btn btn-ghost" @click="emit('close')">Cancel</button>
       <button class="btn btn-primary" :disabled="store.busy || invalid" @click="submit">
-        Create and check out
+        {{ props.fresh ? 'Fetch and start' : 'Create and check out' }}
       </button>
     </template>
   </AppModal>

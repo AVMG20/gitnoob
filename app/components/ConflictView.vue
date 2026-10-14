@@ -8,6 +8,7 @@ import {
   FileCheck2,
   Layers,
   ListChecks,
+  RotateCcw,
   Sparkles,
   Trash2,
   Undo2
@@ -23,12 +24,18 @@ import { highlightWhole, languageFor } from '~/composables/useHighlight'
 import { windowOf, type Mark } from '~/composables/useCode'
 import { usePanes } from '~/composables/usePanes'
 import { useContextMenu, type MenuItem } from '~/composables/useContextMenu'
+import { useRewrite } from '~/composables/useRewrite'
 import {
   HEAD,
   ROW,
   buildGrid,
+  conflictHash,
   conflictMarks,
+  forgetEnded,
   freshPick,
+  recall,
+  remember,
+  trivialNote,
   mapTop,
   originMarks,
   pickedLines,
@@ -49,6 +56,19 @@ const store = git.store
 const ai = useAi()
 const { layout } = usePanes()
 const menu = useContextMenu()
+const rewrite = useRewrite()
+
+/** Files resolved so far in what is under way, which can still be reopened. */
+const resolvedFiles = ref<string[]>([])
+
+/**
+ * What the remembered choices are filed under: what git is part-way through,
+ * or — for conflicts nothing is running for, a stash that would not go back
+ * on — simply that there are conflicts.
+ */
+const operation = computed(
+  () => store.progress?.operation ?? (store.status?.conflicted.length ? 'conflicts' : null)
+)
 
 type Conflict = Extract<ConflictBlock, { kind: 'conflict' }>
 
@@ -133,8 +153,14 @@ const deletedBy = computed(() => {
   if (stages.value.ours && !stages.value.theirs) return 'theirs'
   return null
 })
+/** rerere wrote last time's answer into this file, and it is waiting on a yes. */
+const byRerere = computed(() => wholeFile.value && !!file.value?.rerere)
+
 const explanation = computed(() => {
   if (!wholeFile.value) return null
+  if (byRerere.value) {
+    return `Resolved the way you did last time — git remembered how this exact conflict was answered before and wrote that answer into the file. Read it, then accept it, or take a side instead.`
+  }
   if (deletedBy.value === 'ours') {
     return `This file is gone on the branch you are on, and changed on the other side. There are no lines to merge — either bring it back with those changes, or leave it deleted.`
   }
@@ -401,6 +427,17 @@ function pickAt(index: number) {
   return picks.value[index]
 }
 
+/**
+ * What a region that only looks different says about itself, while the
+ * answer taken for it up front still stands.
+ */
+function trivialOf(index: number) {
+  const block = conflicts.value[index]
+  const pick = picks.value[index]
+  if (!block || !pick || stanceOf(pick) !== 'ours') return null
+  return trivialNote(block)
+}
+
 function edit(index: number, change: (pick: Pick) => void) {
   const pick = picks.value[index]
   if (!pick) return
@@ -602,6 +639,24 @@ function fits(saved: Pick[], blocks: Conflict[]): boolean {
   })
 }
 
+/** Where the choices for a file are filed outside this window. */
+function filedAs(target: string, read: ConflictFile | null) {
+  const repo = store.repo?.path
+  if (!repo || !operation.value || !read) return null
+  return { repo, operation: operation.value, path: target, hash: conflictHash(read.blocks) }
+}
+
+/** Writes the choices on screen down, so a restart does not lose them. */
+function keepChoices() {
+  if (!path.value || !picks.value.length) return
+  const where = filedAs(path.value, file.value)
+  if (!where) return
+  remember(where.repo, where.operation, where.path, where.hash, {
+    picks: picks.value,
+    asked: asked.value
+  })
+}
+
 async function load(target: string) {
   // Hold on to what the file being left had, before its picks are replaced.
   if (path.value && path.value !== target && picks.value.length) {
@@ -615,7 +670,11 @@ async function load(target: string) {
   const blocks = (file.value?.blocks ?? []).filter(
     (block): block is Conflict => block.kind === 'conflict'
   )
-  const saved = kept.get(target)
+  const where = filedAs(target, file.value)
+  const stored = where ? recall(where.repo, where.operation, where.path, where.hash) : null
+  const saved =
+    kept.get(target) ??
+    (stored ? { picks: stored.picks, asked: stored.asked as Wanted | null } : undefined)
   // A file that changed on disk since it was last looked at is a different
   // file, and answers made about the old one no longer line up with it.
   const usable = saved && fits(saved.picks, blocks) ? saved : null
@@ -720,11 +779,11 @@ async function stageEvery() {
 /**
  * Walks every conflicted file, asking the model for each region in turn.
  *
- * Each file is read, answered region by region and written once, rather than
- * written after each answer: a half-answered file staged in the middle of a run
- * that then fails is worse than one nobody has touched. A file with no regions
- * — one side deleted it, or it is binary — has nothing to ask about and is left
- * for a person.
+ * The answers go in as choices, exactly as if the AI button had been pressed
+ * on each region by hand, and nothing is written or staged: a merge is where a
+ * model is most likely to be confidently wrong, so every file waits for a
+ * person to read it and mark it resolved. A file with no regions — one side
+ * deleted it, or it is binary — has nothing to ask about and is left as is.
  */
 async function aiEveryFile() {
   askingSweep.value = false
@@ -736,27 +795,56 @@ async function aiEveryFile() {
     const blocks = (read?.blocks ?? []).filter(
       (block): block is Conflict => block.kind === 'conflict'
     )
-    if (!blocks.length) continue
-    const choices: Resolution[] = []
+    if (!read || !blocks.length) continue
+    const answered: Pick[] = []
     for (const block of blocks) {
       const lines = await ai.resolveConflict(name, block.index).catch((error) => {
         git.note(`AI resolve: ${String(error)}`, 'error')
         return null
       })
-      // One refusal ends the run: the rest would fail the same way, and the
-      // files answered so far are already written and staged.
-      if (!lines) {
-        sweeping.value = null
-        await afterAll(`The model answered ${done} of ${targets.length} files`)
-        return
-      }
-      choices.push({ take_ours: true, take_theirs: true, ours_first: true, custom: lines })
+      // One refusal ends the run: the rest would fail the same way.
+      if (!lines) break
+      answered.push({ ...freshPick(block), custom: lines, touched: true })
     }
-    if ((await git.conflictResolve(name, choices)) === null) break
+    if (answered.length < blocks.length) break
+    if (name === path.value) {
+      picks.value = answered
+      asked.value = null
+    } else {
+      kept.set(name, { picks: answered, asked: null })
+      const where = filedAs(name, read)
+      if (where) {
+        remember(where.repo, where.operation, where.path, where.hash, {
+          picks: answered,
+          asked: null
+        })
+      }
+    }
     done += 1
   }
   sweeping.value = null
-  await afterAll(`The model answered ${done} of ${targets.length} files — read them before committing`)
+  git.note(
+    `The model answered ${done} of ${targets.length} files. Nothing is staged — read each one and mark it resolved.`
+  )
+}
+
+/** The files resolved so far, read again whenever the list of open ones moves. */
+async function readResolved() {
+  resolvedFiles.value = await rewrite.resolvedFiles()
+}
+
+/**
+ * Puts a resolved file's conflict back, so it can be answered again.
+ *
+ * The choices it was resolved with are still filed under its conflict, so the
+ * regions come back the way they were left rather than from scratch.
+ */
+async function reopen(name: string) {
+  const said = await rewrite.reopen(name)
+  if (said === null) return
+  kept.delete(name)
+  await readResolved()
+  await load(name)
 }
 
 /** The model, over more than the one region on screen. */
@@ -844,6 +932,20 @@ const countOf = (index: number, side: Side) => {
 }
 
 watch(picks, preview, { deep: true })
+watch(picks, keepChoices, { deep: true })
+watch(asked, keepChoices)
+
+// Once what was under way is over, what was chosen for it is of no use to
+// anything — and an old answer must never be handed to a new conflict that
+// happens to look the same. Only read once the window knows what is running.
+watch(
+  () => [store.progress, operation.value] as const,
+  ([progress, current]) => {
+    const repo = store.repo?.path
+    if (progress && repo) forgetEnded(repo, current)
+  },
+  { immediate: true }
+)
 // The base pane changes how tall every region is, so the panes have to be put
 // back where they were rather than left at a now-meaningless offset.
 watch(withBase, async () => {
@@ -869,6 +971,7 @@ watch(
     // Which of them still read as conflicts decides whether staging the lot is
     // offered at all, and that changes with every write in the work tree.
     stillMarked.value = list.length ? ((await git.conflictMarked()) ?? list) : []
+    await readResolved()
   },
   { immediate: true }
 )
@@ -925,6 +1028,32 @@ onUnmounted(() => window.removeEventListener('keydown', onKey))
             <span class="faint truncate small">{{ name }}</span>
           </span>
         </button>
+        <!-- Resolved is not final until the commit: git still has both sides,
+             and a file answered too quickly can be put back. -->
+        <template v-if="resolvedFiles.length">
+          <div class="section-title resolved-title">Resolved</div>
+          <div
+            v-for="name in resolvedFiles"
+            :key="`resolved-${name}`"
+            class="rail-file resolved"
+            :title="name"
+            data-test="resolved-file"
+          >
+            <span class="rail-text">
+              <span class="truncate">{{ name.split('/').pop() }}</span>
+              <span class="faint truncate small">{{ name }}</span>
+            </span>
+            <button
+              class="pill-btn"
+              :disabled="store.busy"
+              title="Put the conflict markers back and answer it again"
+              data-test="reopen"
+              @click="reopen(name)"
+            >
+              <RotateCcw :size="10" /> Reopen
+            </button>
+          </div>
+        </template>
       </div>
 
       <div class="work">
@@ -933,6 +1062,7 @@ onUnmounted(() => window.removeEventListener('keydown', onKey))
         <div class="toolbar">
           <span class="file-name mono truncate" :title="path ?? ''">{{ path }}</span>
           <span v-if="loading" class="chip">reading…</span>
+          <span v-else-if="byRerere" class="chip" data-test="rerere-chip">resolved like last time</span>
           <span v-else-if="wholeFile" class="chip">whole file</span>
           <template v-else>
             <span class="chip">
@@ -983,7 +1113,17 @@ onUnmounted(() => window.removeEventListener('keydown', onKey))
             <ChevronDown :size="11" />
           </button>
           <button
-            v-if="wholeFile"
+            v-if="byRerere"
+            class="btn btn-primary tiny"
+            :disabled="store.busy"
+            data-test="accept-rerere"
+            title="Stage last time's answer as it stands in the file"
+            @click="keepAsIs"
+          >
+            Accept
+          </button>
+          <button
+            v-else-if="wholeFile"
             class="btn btn-primary tiny"
             :disabled="store.busy"
             title="Stage the file exactly as it is on disk"
@@ -1090,6 +1230,11 @@ onUnmounted(() => window.removeEventListener('keydown', onKey))
         </div>
 
         <p v-if="explanation" class="explain">{{ explanation }}</p>
+        <p v-if="file?.lockfile" class="explain" data-test="lockfile-hint">
+          This is a lockfile. Merging it line by line rarely gives a file the package manager
+          agrees with: take one whole side, then run the install again to regenerate it, and
+          commit what that writes.
+        </p>
 
         <div class="panes">
           <div v-for="pane in panes" :key="pane.side" class="pane" :class="`side-${pane.side}`">
@@ -1154,6 +1299,14 @@ onUnmounted(() => window.removeEventListener('keydown', onKey))
                       <span class="count">
                         {{ countOf(row.conflict, pane.side) }}
                         {{ countOf(row.conflict, pane.side) === 1 ? 'line' : 'lines' }}
+                      </span>
+                      <span
+                        v-if="pane.side === 'ours' && trivialOf(row.conflict)"
+                        class="chip trivial"
+                        data-test="trivial-chip"
+                        title="The two sides differ only in spacing, so ours was taken. Tick theirs to change it."
+                      >
+                        {{ trivialOf(row.conflict) }}
                       </span>
                       <span class="head-space" />
                       <button
@@ -1311,7 +1464,8 @@ onUnmounted(() => window.removeEventListener('keydown', onKey))
     >
       <p class="ask">
         Every conflict in all {{ files.length }} {{ files.length === 1 ? 'file' : 'files' }} goes to
-        the model, one call each, and each file is written and staged as its answers come back.
+        the model, one call each. Its answers fill in the regions; nothing is written or staged
+        until you have read each file and marked it resolved.
       </p>
       <p class="ask dim">
         A merge is exactly where a model is most likely to be confidently wrong. Read what it wrote
@@ -1470,6 +1624,26 @@ onUnmounted(() => window.removeEventListener('keydown', onKey))
 .chip.edited-chip {
   color: var(--purple-soft);
   background: var(--info-bg);
+}
+
+/* An answer the resolver took on its own: worth seeing, not worth alarm. */
+.chip.trivial {
+  font-size: 10.5px;
+  color: var(--text-faint);
+}
+
+/* Resolved files sit under the open ones, quieter, with a way back. */
+.rail .resolved-title {
+  margin-top: 8px;
+}
+
+.rail-file.resolved {
+  justify-content: space-between;
+  color: var(--text-dim);
+}
+
+.rail-file.resolved .pill-btn {
+  flex: none;
 }
 
 /* How much of the file has been answered, which is the one thing a count of

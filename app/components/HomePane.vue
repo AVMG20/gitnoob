@@ -2,11 +2,15 @@
 import { computed, onMounted, onUnmounted, ref } from 'vue'
 import { open as pickFolder } from '@tauri-apps/plugin-dialog'
 import {
+  Archive,
   ArrowDown,
   ArrowUp,
+  CircleX,
+  Eye,
   FolderOpen,
   FolderX,
   GitBranch,
+  MessageSquareWarning,
   Pencil,
   Plus,
   RefreshCw,
@@ -15,7 +19,18 @@ import {
   Shuffle,
   X
 } from 'lucide-vue-next'
-import { ago, short, useHome, type RepoCard } from '~/composables/useHome'
+import {
+  ago,
+  needsMe,
+  short,
+  useHome,
+  type RepoCard,
+  type Waiting,
+  type WaitingAction,
+  type WaitingKind
+} from '~/composables/useHome'
+import { invoke } from '~/composables/useInvoke'
+import type { HomeAct } from '~/composables/useForgeNudges'
 import { useConfig } from '~/composables/useConfig'
 import { keyLabel } from '~/composables/useShortcuts'
 import { pickTips, type Tip } from '~/composables/useTips'
@@ -34,7 +49,7 @@ import { pickTips, type Tip } from '~/composables/useTips'
  * subject as the figures above it at a longer range, and because a band that
  * wide either leads the page or interrupts it.
  */
-const emit = defineEmits<{ open: [string]; clone: []; init: [] }>()
+const emit = defineEmits<{ open: [string]; clone: []; init: []; act: [HomeAct] }>()
 
 const home = useHome()
 const config = useConfig()
@@ -227,54 +242,60 @@ const months = computed(() => {
   return out.reverse()
 })
 
-/** What is worth doing something about, in the order it is worth doing it. */
-interface Waiting {
-  text: string
-  where: string
-  path: string
-  action: string
-  kind: 'gone' | 'dirty' | 'ahead'
+/**
+ * What is worth doing something about, in the order it is worth doing it:
+ * what the forges are waiting on you for, then work that exists only on this
+ * disk, then the loose ends. See `needsMe`.
+ */
+const attention = computed(() => needsMe(home.repos.value, home.store.inbox))
+
+/** Eight is what the card holds without becoming a second project list. */
+const waiting = computed(() => attention.value.slice(0, 8))
+
+const ICONS: Record<WaitingKind, unknown> = {
+  gone: FolderX,
+  dirty: Pencil,
+  ahead: ArrowUp,
+  unpushed: ArrowUp,
+  behind: ArrowDown,
+  stash: Archive,
+  stale: GitBranch,
+  requested: Eye,
+  failing: CircleX,
+  changes: MessageSquareWarning
 }
 
-const attention = computed(() => {
-  const rows: Waiting[] = []
-  for (const repo of home.repos.value) {
-    if (!repo.exists) {
-      rows.push({
-        text: 'Folder is not there any more',
-        where: repo.name,
-        path: repo.path,
-        action: 'Forget',
-        kind: 'gone'
-      })
-      continue
-    }
-    if (repo.dirty) {
-      rows.push({
-        text: `${repo.dirty} uncommitted ${repo.dirty === 1 ? 'change' : 'changes'}`,
-        where: repo.name,
-        path: repo.path,
-        action: 'Open',
-        kind: 'dirty'
-      })
-    }
-    if (repo.ahead) {
-      rows.push({
-        text: `${repo.ahead} ${repo.ahead === 1 ? 'commit' : 'commits'} not on origin`,
-        where: `${repo.name} · ${repo.branch}`,
-        path: repo.path,
-        action: 'Open',
-        kind: 'ahead'
-      })
-    }
+/**
+ * Does what a row's button says. Forgetting happens here; anything that
+ * writes to a repository opens it and runs there; a review with no clone on
+ * this machine opens on the forge.
+ */
+async function perform(one: Waiting, action: WaitingAction) {
+  if (action.forget) {
+    const repo = home.repos.value.find((r) => r.path === one.path)
+    if (repo) await forgetGone(repo)
+    return
   }
-  return rows
-})
+  if (action.url) {
+    await invoke('open_external', { url: action.url }).catch(() => {})
+    return
+  }
+  if (action.act) {
+    if (action.act.action === 'open') emit('open', action.act.path)
+    else emit('act', action.act)
+  }
+}
 
-/** Six is what the card holds without becoming a second project list. */
-const waiting = computed(() => attention.value.slice(0, 6))
-
-const ICONS = { gone: FolderX, dirty: Pencil, ahead: ArrowUp }
+/**
+ * Takes a project whose folder has gone off the list, tab and all: there is
+ * nothing to open, so leaving it open helps nobody.
+ */
+async function forgetGone(repo: RepoCard) {
+  if (open.value.has(repo.path)) await config.closeProject(repo.path)
+  await config.forgetProject(repo.path)
+  const summary = home.store.summary
+  if (summary) summary.repos = summary.repos.filter((one) => one.path !== repo.path)
+}
 
 /**
  * Three tips, swapped every so often.
@@ -485,6 +506,16 @@ function choose(repo: RepoCard) {
           <span v-if="home.store.summary?.author" class="head-note mono">
             {{ home.store.summary.author }}
           </span>
+          <!-- Said rather than counted as everybody's: with no address there
+               is no telling your commits from anybody else's. -->
+          <span
+            v-if="home.store.summary?.uncounted?.length"
+            class="head-note"
+            data-testid="uncounted"
+            :title="home.store.summary.uncounted.join(', ')"
+          >
+            {{ home.store.summary.uncounted.length }} not counted: no commit email set
+          </span>
           <span class="legend">
             Less
             <span v-for="step in [0, 1, 2, 3, 4]" :key="step" class="swatch" :class="`l${step}`" />
@@ -636,10 +667,25 @@ function choose(repo: RepoCard) {
                   <span class="line-main">{{ one.text }}</span>
                   <span class="line-where">{{ one.where }}</span>
                 </span>
-                <button class="link" @click="emit('open', one.path)">{{ one.action }}</button>
+                <button
+                  v-for="action in one.actions"
+                  :key="action.label"
+                  class="link"
+                  :data-testid="`waiting-${one.kind}`"
+                  @click="perform(one, action)"
+                >
+                  {{ action.label }}
+                </button>
               </li>
               <li v-if="!waiting.length" class="line quiet">
                 Nothing waiting — everything is committed and pushed.
+              </li>
+              <li
+                v-for="problem in home.store.inbox?.errors ?? []"
+                :key="problem"
+                class="line quiet"
+              >
+                Could not ask {{ problem }}
               </li>
               <li v-if="attention.length > waiting.length" class="line quiet">
                 and {{ attention.length - waiting.length }} more, in the list beside this.

@@ -67,8 +67,19 @@ export function useAi() {
     configured,
     refreshStatus,
     loadModels,
-    commitMessage: () =>
-      run('commit message', () => invoke<CommitMessage>('ai_commit_message')),
+    /**
+     * A message for what is about to be committed. `amend` describes HEAD's
+     * change with the staged one on top, which is what an amend makes; `draft`
+     * is what is already in the box, handed over to be finished rather than
+     * replaced.
+     */
+    commitMessage: (options: { amend?: boolean; draft?: string } = {}) =>
+      run('commit message', () =>
+        invoke<CommitMessage>('ai_commit_message', {
+          amend: options.amend ?? false,
+          draft: options.draft?.trim() ? options.draft : null
+        })
+      ),
     /** A message for a commit that already exists, written from its own diff. */
     commitMessageFor: (oid: string) =>
       run('commit message', () => invoke<CommitMessage>('ai_commit_message_for', { oid })),

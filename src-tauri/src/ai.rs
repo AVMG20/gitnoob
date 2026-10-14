@@ -435,26 +435,264 @@ async fn complete(state: &AppState, system: &str, user: String) -> Result<String
 }
 
 /// Writes a commit message from what is staged.
-pub async fn commit_message(state: &AppState) -> Result<CommitMessage, String> {
+///
+/// `amend` describes the commit an amend will make, which is HEAD's own change
+/// with whatever is staged on top: describing the staged part alone wrote a
+/// message for a fraction of the commit and replaced the one it had.
+///
+/// `draft` is whatever is in the box already. It is handed over to be
+/// finished rather than thrown away — a ticket prefix, half a sentence, the
+/// message being amended — so pressing the button never costs what was typed.
+pub async fn commit_message(
+    state: &AppState,
+    amend: bool,
+    draft: Option<String>,
+) -> Result<CommitMessage, String> {
     let root = state.path()?;
     // Gather everything before the await; no git handles cross it.
-    let diff = git_cmd::run_checked(
-        &root,
-        &[
-            "diff",
-            "--cached",
-            "--no-color",
-            "--unified=3",
-            "--stat-width=200",
-        ],
-    )?;
-    if diff.trim().is_empty() {
-        return Err("Nothing is staged, so there is nothing to describe".to_string());
+    let base = if amend {
+        // HEAD's parent, or the empty tree for a first commit.
+        Some(
+            git_cmd::run(&root, &["rev-parse", "--verify", "--quiet", "HEAD^"])
+                .ok()
+                .filter(|out| out.ok)
+                .map(|out| out.stdout.trim().to_string())
+                .filter(|oid| !oid.is_empty())
+                .unwrap_or_else(|| EMPTY_TREE.to_string()),
+        )
+    } else {
+        None
+    };
+    // `--` after the base, here and below: a ref is never read as a path, nor
+    // a path as a ref.
+    let mut args = crate::work::plain_diff();
+    args.push("--cached");
+    if let Some(base) = &base {
+        args.push(base);
     }
-    let files = git_cmd::run_checked(&root, &["diff", "--cached", "--name-status"])?;
-    let recent = git_cmd::run_checked(&root, &["log", "-8", "--format=%s"]).unwrap_or_default();
+    args.push("--");
+    let diff = git_cmd::run_checked(&root, &args)?;
+    if diff.trim().is_empty() {
+        return Err(if amend {
+            "The amended commit would change nothing, so there is nothing to describe".to_string()
+        } else {
+            "Nothing is staged, so there is nothing to describe".to_string()
+        });
+    }
+    let mut numbers = crate::work::plain_diff();
+    numbers.extend(["--cached", "--numstat"]);
+    if let Some(base) = &base {
+        numbers.push(base);
+    }
+    numbers.push("--");
+    let numstat = git_cmd::run_checked(&root, &numbers).unwrap_or_default();
+    let mut names = crate::work::plain_diff();
+    names.extend(["--cached", "--name-status"]);
+    if let Some(base) = &base {
+        names.push(base);
+    }
+    names.push("--");
+    let files = git_cmd::run_checked(&root, &names)?;
+    // The commit being amended is the one being described, so its own subject
+    // is not "recent history" — it is in the draft, if anywhere.
+    let recent = if amend {
+        git_cmd::run_checked(&root, &["log", "-8", "--format=%s", "HEAD^", "--"])
+            .unwrap_or_default()
+    } else {
+        git_cmd::run_checked(&root, &["log", "-8", "--format=%s"]).unwrap_or_default()
+    };
 
-    describe_change(state, "Staged diff", &files, &diff, &recent).await
+    let mut context = String::new();
+    if let Some(branch) = crate::journal::current_branch(state) {
+        context.push_str(&format!(
+            "Branch: {branch}\nIf the branch name carries a ticket id such as ABC-123, the \
+             team expects it at the start of the summary as `ABC-123: `.\n\n"
+        ));
+    }
+    if let Some(draft) = draft.as_deref().map(str::trim).filter(|d| !d.is_empty()) {
+        context.push_str(&format!(
+            "The developer has already started this message. Keep what they wrote — its \
+             wording, any ticket prefix, any facts in it — and complete or tighten it \
+             rather than replacing it:\n{draft}\n\n"
+        ));
+    }
+
+    let fitted = fit_diff(&diff, &numstat, MAX_DIFF_CHARS);
+    let label = if amend {
+        "Diff of the amended commit"
+    } else {
+        "Staged diff"
+    };
+    describe_change(state, label, &files, &fitted, &recent, &context).await
+}
+
+/// Lockfiles: thousands of lines a commit message has nothing to say about.
+const LOCKFILES: &[&str] = &[
+    "package-lock.json",
+    "npm-shrinkwrap.json",
+    "yarn.lock",
+    "pnpm-lock.yaml",
+    "bun.lock",
+    "bun.lockb",
+    "deno.lock",
+    "Cargo.lock",
+    "composer.lock",
+    "Gemfile.lock",
+    "poetry.lock",
+    "Pipfile.lock",
+    "uv.lock",
+    "go.sum",
+    "flake.lock",
+    "mix.lock",
+    "pubspec.lock",
+    "Podfile.lock",
+    "packages.lock.json",
+];
+
+/// Why a file's diff is left out of what the model reads, if it is.
+fn left_out(path: &str, chunk: &str) -> Option<&'static str> {
+    let name = path.rsplit('/').next().unwrap_or(path);
+    if LOCKFILES.contains(&name) {
+        return Some("lockfile");
+    }
+    if chunk.contains("\nBinary files ") || chunk.contains("\nGIT binary patch") {
+        return Some("binary");
+    }
+    let lower = name.to_ascii_lowercase();
+    const MADE: [&str; 9] = [
+        ".min.js",
+        ".min.css",
+        ".js.map",
+        ".css.map",
+        ".pb.go",
+        "_pb2.py",
+        ".g.dart",
+        ".freezed.dart",
+        ".snap",
+    ];
+    if MADE.iter().any(|tail| lower.ends_with(tail)) || lower.contains(".generated.") {
+        return Some("generated");
+    }
+    let mut body = chunk.lines().skip_while(|line| !line.starts_with("@@"));
+    if body
+        .by_ref()
+        .take(12)
+        .any(|line| line.contains("@generated") || line.contains("DO NOT EDIT"))
+    {
+        return Some("generated");
+    }
+    if chunk.lines().any(|line| line.len() > 1_000) {
+        return Some("minified");
+    }
+    None
+}
+
+/// The diff cut down to `budget` characters so that every file is in it.
+///
+/// It used to be the first 48,000 characters, which is the first few files —
+/// a lockfile that sorted early could be the whole of what the model saw.
+/// Now lockfiles, binaries and generated or minified files are one line each,
+/// and what is left is shared out: small files whole, and the big ones an
+/// equal slice of the rest, so a large rewrite cannot crowd out the one-line
+/// fix next to it.
+fn fit_diff(diff: &str, numstat: &str, budget: usize) -> String {
+    // `added  removed  path` per file, `-` for a binary.
+    let counts: std::collections::HashMap<&str, (&str, &str)> = numstat
+        .lines()
+        .filter_map(|line| {
+            let mut parts = line.splitn(3, '\t');
+            let added = parts.next()?;
+            let removed = parts.next()?;
+            Some((parts.next()?, (added, removed)))
+        })
+        .collect();
+
+    let mut chunks: Vec<&str> = Vec::new();
+    let mut start = 0;
+    for (at, _) in diff.match_indices("diff --git ") {
+        if at > 0 && diff.as_bytes()[at - 1] == b'\n' && at > start {
+            chunks.push(&diff[start..at]);
+            start = at;
+        }
+    }
+    chunks.push(&diff[start..]);
+
+    let mut out: Vec<String> = Vec::with_capacity(chunks.len());
+    let mut kept: Vec<(usize, &str)> = Vec::new();
+    for chunk in &chunks {
+        let path = chunk_path(chunk);
+        match left_out(&path, chunk) {
+            Some(why) => {
+                let (added, removed) = counts.get(path.as_str()).copied().unwrap_or(("?", "?"));
+                out.push(format!(
+                    "{path}: {why}, +{added} −{removed} lines (contents left out)\n"
+                ));
+            }
+            None => {
+                kept.push((out.len(), chunk));
+                out.push(String::new());
+            }
+        }
+    }
+
+    let spent: usize = out.iter().map(|line| line.chars().count()).sum();
+    let mut left = budget.saturating_sub(spent);
+    // Smallest first, so whatever a small file does not use is there for the
+    // larger ones after it.
+    let mut order: Vec<usize> = (0..kept.len()).collect();
+    order.sort_by_key(|&i| kept[i].1.len());
+    for (taken, &i) in order.iter().enumerate() {
+        let (slot, chunk) = kept[i];
+        let share = left / (order.len() - taken);
+        let fitted = cut_to(chunk, share);
+        left = left.saturating_sub(fitted.chars().count());
+        out[slot] = fitted;
+    }
+    out.concat()
+}
+
+/// The path a file's piece of a diff is about, from its `+++` line (or `---`
+/// for a deletion).
+fn chunk_path(chunk: &str) -> String {
+    let named = |prefix: &str, side: &str| {
+        chunk
+            .lines()
+            .find(|line| line.starts_with(prefix))
+            .map(|line| line[prefix.len()..].trim_matches('"').to_string())
+            .filter(|name| name != "/dev/null")
+            .map(|name| name.strip_prefix(side).map(str::to_string).unwrap_or(name))
+    };
+    named("+++ ", "b/")
+        .or_else(|| named("--- ", "a/"))
+        .or_else(|| {
+            let first = chunk.lines().next()?;
+            Some(first.rsplit(" b/").next()?.to_string())
+        })
+        .unwrap_or_default()
+}
+
+/// A file's piece of the diff in at most `limit` characters, cut at a line and
+/// saying how much is missing.
+fn cut_to(chunk: &str, limit: usize) -> String {
+    if chunk.chars().count() <= limit {
+        return chunk.to_string();
+    }
+    let mut out = String::new();
+    let mut used = 0;
+    let mut lines = chunk.lines();
+    for line in lines.by_ref() {
+        let cost = line.chars().count() + 1;
+        if used + cost > limit {
+            // That line is the first one left out.
+            let rest = 1 + lines.count();
+            out.push_str(&format!("… {rest} more lines of this file left out\n"));
+            return out;
+        }
+        out.push_str(line);
+        out.push('\n');
+        used += cost;
+    }
+    out
 }
 
 /// Writes a commit message from a commit that already exists.
@@ -469,17 +707,32 @@ pub async fn commit_message_for(state: &AppState, oid: &str) -> Result<CommitMes
     let oid = checked_ref(oid)?;
     let diff = git_cmd::run_checked(
         &root,
-        &["show", "--no-color", "--unified=3", "--format=", &oid],
+        &[
+            "show",
+            "--no-ext-diff",
+            "--no-textconv",
+            "--no-color",
+            "--unified=3",
+            "--format=",
+            &oid,
+            "--",
+        ],
     )?;
     if diff.trim().is_empty() {
         return Err("That commit changed nothing, so there is nothing to describe".to_string());
     }
-    let files = git_cmd::run_checked(&root, &["show", "--name-status", "--format=", &oid])?;
+    let files = git_cmd::run_checked(&root, &["show", "--name-status", "--format=", &oid, "--"])?;
     // A root commit has no parent to walk back from; tone is a nicety anyway.
-    let recent = git_cmd::run_checked(&root, &["log", "-8", "--format=%s", &format!("{oid}^")])
-        .unwrap_or_default();
+    let recent = git_cmd::run_checked(
+        &root,
+        &["log", "-8", "--format=%s", &format!("{oid}^"), "--"],
+    )
+    .unwrap_or_default();
 
-    describe_change(state, "Diff", &files, &diff, &recent).await
+    let numstat = git_cmd::run_checked(&root, &["show", "--numstat", "--format=", &oid, "--"])
+        .unwrap_or_default();
+    let fitted = fit_diff(&diff, &numstat, MAX_DIFF_CHARS);
+    describe_change(state, "Diff", &files, &fitted, &recent, "").await
 }
 
 /// Writes one message for the commits a squash would fold.
@@ -514,23 +767,15 @@ pub async fn squash_message(state: &AppState, oids: &[String]) -> Result<CommitM
         .filter(|oid| !oid.is_empty())
         .unwrap_or_else(|| EMPTY_TREE.to_string());
 
-    let diff = git_cmd::run_checked(
-        &root,
-        &[
-            "diff",
-            "--no-color",
-            "--unified=3",
-            "--stat-width=200",
-            &base,
-            newest,
-        ],
-    )?;
+    let mut args = crate::work::plain_diff();
+    args.extend([base.as_str(), newest.as_str(), "--"]);
+    let diff = git_cmd::run_checked(&root, &args)?;
     if diff.trim().is_empty() {
         return Err(
             "Those commits change nothing together, so there is nothing to describe.".to_string(),
         );
     }
-    let files = git_cmd::run_checked(&root, &["diff", "--name-status", &base, newest])?;
+    let files = git_cmd::run_checked(&root, &["diff", "--name-status", &base, newest, "--"])?;
     // What the commits say about themselves, which is the part of the join
     // worth keeping. Subjects from before the run set the tone.
     let folded = git_cmd::run_checked(
@@ -540,11 +785,12 @@ pub async fn squash_message(state: &AppState, oids: &[String]) -> Result<CommitM
             "--reverse",
             "--format=%B",
             &format!("{base}..{newest}"),
+            "--",
         ],
     )
     .unwrap_or_default();
     let recent =
-        git_cmd::run_checked(&root, &["log", "-8", "--format=%s", &base]).unwrap_or_default();
+        git_cmd::run_checked(&root, &["log", "-8", "--format=%s", &base, "--"]).unwrap_or_default();
 
     let truncated = diff.chars().count() > MAX_DIFF_CHARS;
     let short: String = diff.chars().take(MAX_DIFF_CHARS).collect();
@@ -565,7 +811,9 @@ async fn describe_change(
     files: &str,
     diff: &str,
     recent: &str,
+    context: &str,
 ) -> Result<CommitMessage, String> {
+    // Already fitted to the budget by the caller; this is only the backstop.
     let truncated = diff.chars().count() > MAX_DIFF_CHARS;
     let diff: String = diff.chars().take(MAX_DIFF_CHARS).collect();
     // Whatever the user has in the settings box, which is the default until
@@ -573,7 +821,7 @@ async fn describe_change(
     let system = commit_prompt(&state.config().global.ai);
 
     let prompt = format!(
-        "Files changed:\n{files}\n\nRecent commit subjects in this repository, \
+        "{context}Files changed:\n{files}\n\nRecent commit subjects in this repository, \
          for the vocabulary this codebase uses:\n{recent}\n\n{label}{}:\n{diff}",
         if truncated { " (truncated)" } else { "" }
     );
@@ -604,8 +852,12 @@ pub async fn review_message(
     target: String,
 ) -> Result<CommitMessage, String> {
     let root = state.path()?;
-    let source = checked_ref(&source)?;
-    let target = resolve_ref(&root, &checked_ref(&target)?)?;
+    // The target as the forge has it: a local `main` that has not been pulled
+    // for a week would put everybody else's week into "what this branch
+    // does". The source as it is here, or on a remote when it is not.
+    let preferred = crate::forge::known_target(state).map(|chosen| chosen.remote);
+    let target = resolve_target(&root, &checked_ref(&target)?, preferred.as_deref())?;
+    let source = resolve_ref(&root, &checked_ref(&source)?)?;
     if source == target {
         return Err("The two branches are the same".to_string());
     }
@@ -619,6 +871,7 @@ pub async fn review_message(
             "--max-count=40",
             "--format=%s%n%b%n---",
             &range,
+            "--",
         ],
     )?;
     if log.trim().is_empty() {
@@ -635,6 +888,7 @@ pub async fn review_message(
             "--stat",
             "--stat-width=200",
             &format!("{target}...{source}"),
+            "--",
         ],
     )
     .unwrap_or_default();
@@ -674,7 +928,7 @@ fn checked_ref(name: &str) -> Result<String, String> {
 /// The target of a review is often a branch nobody has checked out — `develop`
 /// exists on the forge and locally only as `origin/develop` — so a plain name
 /// that resolves to nothing is tried again against each remote.
-fn resolve_ref(root: &std::path::Path, name: &str) -> Result<String, String> {
+pub fn resolve_ref(root: &std::path::Path, name: &str) -> Result<String, String> {
     let exists = |candidate: &str| {
         git_cmd::run_checked(
             root,
@@ -700,6 +954,51 @@ fn resolve_ref(root: &std::path::Path, name: &str) -> Result<String, String> {
     Err(format!(
         "{name} is not a branch this repository knows about"
     ))
+}
+
+/// Finds the ref a review's target means: the remote-tracking copy first —
+/// the reviews' own remote, then origin, then any — and the local branch only
+/// when no remote has it. A name that already says which remote is taken as
+/// it is.
+pub fn resolve_target(
+    root: &std::path::Path,
+    name: &str,
+    preferred: Option<&str>,
+) -> Result<String, String> {
+    let exists = |candidate: &str| {
+        git_cmd::run_checked(
+            root,
+            &[
+                "rev-parse",
+                "--verify",
+                "--quiet",
+                &format!("{candidate}^{{commit}}"),
+            ],
+        )
+        .is_ok()
+    };
+    let remotes: Vec<String> = git_cmd::run_checked(root, &["remote"])
+        .unwrap_or_default()
+        .lines()
+        .map(|r| r.trim().to_string())
+        .filter(|r| !r.is_empty())
+        .collect();
+    if remotes.iter().any(|r| name.starts_with(&format!("{r}/"))) && exists(name) {
+        return Ok(name.to_string());
+    }
+    let mut order: Vec<&str> = Vec::new();
+    order.extend(preferred.filter(|p| remotes.iter().any(|r| r == p)));
+    if remotes.iter().any(|r| r == "origin") {
+        order.push("origin");
+    }
+    order.extend(remotes.iter().map(String::as_str));
+    for remote in order {
+        let candidate = format!("refs/remotes/{remote}/{name}");
+        if exists(&candidate) {
+            return Ok(format!("{remote}/{name}"));
+        }
+    }
+    resolve_ref(root, name)
 }
 
 /// Resolves one conflict region.
@@ -1265,5 +1564,70 @@ mod tests {
         assert!(resolution_of(&r, "m")
             .unwrap_err()
             .contains("ran out of tokens"));
+    }
+
+    fn file_diff(path: &str, lines: usize, width: usize) -> String {
+        let mut text = format!(
+            "diff --git a/{path} b/{path}\nindex 1..2 100644\n--- a/{path}\n+++ b/{path}\n@@ -1,0 +1,{lines} @@\n"
+        );
+        for n in 0..lines {
+            text.push_str(&format!("+{}\n", format!("{n} ").repeat(width / 2)));
+        }
+        text
+    }
+
+    #[test]
+    fn a_lockfile_is_one_line_and_never_crowds_out_the_code() {
+        let diff = format!(
+            "{}{}",
+            file_diff("Cargo.lock", 5_000, 40),
+            file_diff("src/main.rs", 3, 10)
+        );
+        let numstat = "5000\t0\tCargo.lock\n3\t0\tsrc/main.rs\n";
+        let fitted = fit_diff(&diff, numstat, 4_000);
+        assert!(fitted.contains("Cargo.lock: lockfile, +5000 −0 lines (contents left out)"));
+        assert!(fitted.contains("+++ b/src/main.rs"));
+        assert!(fitted.chars().count() <= 4_000);
+    }
+
+    #[test]
+    fn every_file_gets_a_share_of_the_budget() {
+        let diff = format!(
+            "{}{}{}",
+            file_diff("big.rs", 2_000, 60),
+            file_diff("small.rs", 2, 10),
+            file_diff("other.rs", 2_000, 60)
+        );
+        let fitted = fit_diff(&diff, "", 6_000);
+        // The small one whole, both big ones present and cut.
+        assert!(fitted.contains("+++ b/small.rs"));
+        assert!(fitted.contains("+++ b/big.rs"));
+        assert!(fitted.contains("+++ b/other.rs"));
+        assert_eq!(
+            fitted.matches("more lines of this file left out").count(),
+            2
+        );
+        assert!(fitted.chars().count() <= 6_000);
+        // In the order git printed them.
+        assert!(fitted.find("big.rs").unwrap() < fitted.find("small.rs").unwrap());
+    }
+
+    #[test]
+    fn minified_and_binary_files_are_summarised() {
+        let minified = file_diff("app.bundle.js", 1, 3_000);
+        let binary = "diff --git a/logo.png b/logo.png\nindex 1..2 100644\nBinary files a/logo.png and b/logo.png differ\n";
+        let fitted = fit_diff(
+            &format!("{minified}{binary}"),
+            "1\t0\tapp.bundle.js\n-\t-\tlogo.png\n",
+            10_000,
+        );
+        assert!(fitted.contains("app.bundle.js: minified"));
+        assert!(fitted.contains("logo.png: binary"));
+    }
+
+    #[test]
+    fn a_small_diff_passes_through_untouched() {
+        let diff = file_diff("a.rs", 3, 10);
+        assert_eq!(fit_diff(&diff, "", 48_000), diff);
     }
 }

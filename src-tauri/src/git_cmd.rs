@@ -30,6 +30,30 @@ pub fn ssh_command() -> Option<String> {
     SSH_COMMAND.lock().unwrap().clone()
 }
 
+/// The exceptions: repositories that answer to a profile other than the
+/// active one, by path, with that profile's key (or `None` for "leave ssh
+/// alone" when that profile pins none).
+static SSH_BY_REPO: Mutex<Vec<(std::path::PathBuf, Option<String>)>> = Mutex::new(Vec::new());
+
+/// Points the git commands run inside these repositories at their own
+/// profile's key. Called alongside `set_ssh_command`.
+pub fn set_repo_ssh_commands(commands: Vec<(std::path::PathBuf, Option<String>)>) {
+    *SSH_BY_REPO.lock().unwrap() = commands;
+}
+
+/// The command for git run in `cwd`: the repository's own profile's, when it
+/// has one, and the active profile's otherwise.
+fn ssh_command_for(cwd: &Path) -> Option<String> {
+    let exceptions = SSH_BY_REPO.lock().unwrap();
+    match exceptions.iter().find(|(root, _)| cwd == root.as_path()) {
+        Some((_, command)) => command.clone(),
+        None => {
+            drop(exceptions);
+            ssh_command()
+        }
+    }
+}
+
 /// One `git` invocation, written the way it would be typed.
 ///
 /// The window is a way to learn git, not only a way to avoid it, so every
@@ -55,6 +79,12 @@ pub fn report_to(reporter: impl Fn(GitCommand) + Send + Sync + 'static) {
 /// several per refresh — and listing them would bury the one command the user
 /// actually caused.
 fn is_query(args: &[&str]) -> bool {
+    // `git -c key=value diff …` is still a diff. The settings in front are
+    // there to pin how it prints, not to change what kind of command it is.
+    let mut args = args;
+    while let ["-c", _, rest @ ..] = args {
+        args = rest;
+    }
     const READS: &[&str] = &[
         "rev-parse",
         "merge-base",
@@ -145,7 +175,7 @@ fn git(cwd: &Path, args: &[&str]) -> Command {
         // match would just never fire.
         .env("LC_ALL", "C")
         .env("LANG", "C");
-    if let Some(ssh) = ssh_command() {
+    if let Some(ssh) = ssh_command_for(cwd) {
         command.env("GIT_SSH_COMMAND", ssh);
     }
     command
@@ -394,6 +424,8 @@ mod tests {
     fn questions_are_not_reported_but_changes_are() {
         assert!(is_query(&["status", "--porcelain"]));
         assert!(is_query(&["diff", "--cached"]));
+        assert!(is_query(&["-c", "diff.noprefix=false", "diff", "--cached"]));
+        assert!(!is_query(&["-c", "core.hooksPath=x", "commit", "-m", "x"]));
         assert!(is_query(&["branch", "--format=%(refname)"]));
         assert!(is_query(&["stash", "list"]));
         assert!(is_query(&["stash", "show", "--name-only", "stash@{0}"]));

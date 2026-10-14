@@ -8,7 +8,7 @@
 //! fork as a remote, fetch the one branch, and check that out, which is what a
 //! person would type by hand.
 
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 
 use crate::config::ForgeKind;
 use crate::git_cmd;
@@ -143,6 +143,8 @@ fn remote_named(state: &AppState, owner: &str, url: &str) -> Result<String, Stri
         suffix += 1;
     }
     remote::remote_add(state, &name, url)?;
+    // Remembered, so a fetch that later fails on it can offer to take it off.
+    let _ = remote::mark_review_remote(state, &name);
     Ok(name)
 }
 
@@ -240,6 +242,342 @@ fn free_name(state: &AppState, base: &str) -> String {
         suffix += 1;
     }
     name
+}
+
+// --- after a merge ------------------------------------------------------------
+//
+// A review merged on the forge leaves the clone standing on a branch whose work
+// now lives on the trunk, with a trunk that is behind. What anybody types next is
+// the same every time: fetch, switch to the trunk, pull it, delete the branch.
+// The first three cannot lose anything and happen by themselves; deleting is
+// offered and never done here.
+
+/// What tidying up after a merge did, and what it leaves to the user.
+#[derive(Serialize, Debug, Default)]
+pub struct AfterMerge {
+    /// What happened, in a sentence or two.
+    pub message: String,
+    /// The trunk, when the switch to it happened.
+    pub switched_to: Option<String>,
+    /// The local branch that carried the merged work, when it can be deleted
+    /// without losing anything that was not in the review.
+    pub branch: Option<String>,
+    /// Where that branch pointed, so a deletion can be undone.
+    pub sha: Option<String>,
+    /// Commits on the local branch that the review did not have. When there
+    /// are any, the branch is not offered for deletion.
+    pub extra: usize,
+}
+
+/// Fetches, steps off the merged branch onto the trunk and fast-forwards it.
+///
+/// `merged` is the review's source branch as the forge names it; the local
+/// branch is the one tracking it, or the one of that name. `head` is the
+/// review's head commit, which counts as published even once the forge has
+/// deleted the branch it was on. `switch` is the setting: off, and only the
+/// fetch happens.
+///
+/// `from` is where the review's branch lived, when the forge said. A review
+/// from a fork is somebody else's branch: one of mine that happens to share
+/// its name — `feature`, or `main` — is no branch of the review's, and is
+/// neither switched off nor offered for deletion. Nor is the trunk, ever.
+///
+/// The repository is read once, at the start. The fetch takes as long as the
+/// network does, and the switch after it used to read the path again — by
+/// which time the window could be showing another repository, which then got
+/// checked out onto its trunk.
+pub fn after_merge(
+    state: &AppState,
+    merged: &str,
+    head: Option<&str>,
+    remote: Option<&str>,
+    switch: bool,
+    from: Option<&ReviewFrom>,
+) -> Result<AfterMerge, String> {
+    // Every helper below asks the state for its path; this copy keeps the one
+    // read now, whatever the window does in the meantime.
+    let state = &state.pinned();
+    let path = state.path()?;
+    let local = crate::forge::Local::read(state)?;
+    let fork = from.is_some_and(|from| from.fork);
+    let trunk = trunk_here(state);
+    // The upstream's own project has to be the review's, when that is known:
+    // a branch of the same name on another remote is another branch.
+    // GitLab names no repository for a review from the project itself, and
+    // the window passes that on as an empty name: unknown, not another one.
+    let repo = from
+        .and_then(|from| from.repo.as_deref())
+        .filter(|repo| !repo.is_empty());
+    let same_project = |remote_name: &str| match repo {
+        Some(repo) => local
+            .slug_of(remote_name)
+            .is_some_and(|slug| format!("{}/{}", slug.owner, slug.name).eq_ignore_ascii_case(repo)),
+        None => remote.map_or(true, |wanted| wanted == remote_name),
+    };
+    let tracks_it = |name: &str| {
+        local
+            .upstreams
+            .get(name)
+            .map(|(remote_name, branch)| branch == merged && same_project(remote_name))
+            .unwrap_or(false)
+    };
+    let carrying = if fork {
+        None
+    } else {
+        match &local.head {
+            Some(head)
+                if tracks_it(head) || (head == merged && !local.upstreams.contains_key(head)) =>
+            {
+                Some(head.clone())
+            }
+            _ => {
+                let mut names: Vec<&String> =
+                    local.upstreams.keys().filter(|n| tracks_it(n)).collect();
+                names.sort();
+                names.first().map(|name| name.to_string()).or_else(|| {
+                    (refs::has_local_branch(state, merged) && !local.upstreams.contains_key(merged))
+                        .then(|| merged.to_string())
+                })
+            }
+        }
+    }
+    .filter(|name| Some(name) != trunk.as_ref());
+
+    // Counted before the fetch prunes the branch the forge just deleted: after
+    // that, a squash-merged branch's commits are on no remote at all.
+    let extra = match &carrying {
+        Some(name) => {
+            let tip = format!("refs/heads/{name}");
+            let mut args = vec!["rev-list", "--count", tip.as_str(), "--not", "--remotes"];
+            let head = head.filter(|sha| refs::has_commit(state, sha));
+            if let Some(sha) = head {
+                args.push(sha);
+            }
+            git_cmd::run_checked(&path, &args)
+                .ok()
+                .and_then(|out| out.trim().parse::<usize>().ok())
+                .unwrap_or(0)
+        }
+        None => 0,
+    };
+    let sha = carrying
+        .as_ref()
+        .and_then(|name| {
+            git_cmd::run_checked(
+                &path,
+                &[
+                    "rev-parse",
+                    "--verify",
+                    "--quiet",
+                    &format!("refs/heads/{name}"),
+                ],
+            )
+            .ok()
+        })
+        .map(|out| out.trim().to_string());
+
+    let mut said: Vec<String> = Vec::new();
+    if let Ok(out) = remote::fetch(state, remote) {
+        if !out.ok {
+            said.push(
+                "The fetch afterwards did not work, so the branches here may be behind".to_string(),
+            );
+        }
+    }
+
+    let mut switched_to = None;
+    let on_it = carrying.is_some() && carrying == local.head;
+    if switch && on_it {
+        let dirty = git_cmd::run_checked(&path, &["status", "--porcelain", "--untracked-files=no"])
+            .map(|out| !out.trim().is_empty())
+            .unwrap_or(true);
+        match (dirty, trunk.clone()) {
+            (true, Some(trunk)) => said.push(format!(
+                "You have changes here, so I stayed on {}. Commit or stash them, then switch to {trunk} and pull.",
+                local.head.clone().unwrap_or_default()
+            )),
+            (_, None) => said.push("There is no main branch to switch to".to_string()),
+            (false, Some(trunk)) if Some(&trunk) == local.head.as_ref() => {}
+            (false, Some(trunk)) => {
+                let behind_note = fast_forward(state, &trunk);
+                match refs::checkout(state, &trunk) {
+                    Ok(_) => {
+                        said.push(match behind_note {
+                            Some(note) => format!("Switched to {trunk}; {note}"),
+                            None => format!("Switched to {trunk}, which is up to date"),
+                        });
+                        switched_to = Some(trunk);
+                    }
+                    Err(error) => said.push(format!("Could not switch to {trunk}: {error}")),
+                }
+            }
+        }
+    }
+
+    let kept = carrying.clone().unwrap_or_else(|| merged.to_string());
+    let offered = carrying.filter(|_| extra == 0);
+    if extra > 0 {
+        said.push(format!(
+            "{kept} has {extra} commit{} that {} not on the forge, so it is kept",
+            if extra == 1 { "" } else { "s" },
+            if extra == 1 { "is" } else { "are" }
+        ));
+    }
+    Ok(AfterMerge {
+        message: said.join(". "),
+        switched_to,
+        branch: offered,
+        sha,
+        extra,
+    })
+}
+
+/// Where a merged review's branch lived, as the forge said.
+#[derive(serde::Deserialize, Debug, Clone, Default)]
+pub struct ReviewFrom {
+    /// It came from a fork: somebody else's repository.
+    #[serde(default)]
+    pub fork: bool,
+    /// `owner/name` of the repository the branch was in.
+    #[serde(default)]
+    pub repo: Option<String>,
+}
+
+/// The trunk as a local branch name: `main` even when only `origin/main`
+/// exists yet, which checking out creates.
+fn trunk_here(state: &AppState) -> Option<String> {
+    let name = refs::trunk(state).name?;
+    if refs::has_local_branch(state, &name) {
+        return Some(name);
+    }
+    let remotes = remote::remotes(state).unwrap_or_default();
+    for remote in remotes {
+        if let Some(rest) = name.strip_prefix(&format!("{remote}/")) {
+            return Some(rest.to_string());
+        }
+    }
+    Some(name)
+}
+
+/// Moves a local branch that is not checked out up to what it tracks, when
+/// that is a fast-forward and nothing else. Says what it did, or why not.
+fn fast_forward(state: &AppState, branch: &str) -> Option<String> {
+    let path = state.path().ok()?;
+    if !refs::has_local_branch(state, branch) {
+        return None;
+    }
+    let upstream = refs::upstream_of(state, branch)?;
+    let theirs = format!("refs/remotes/{upstream}");
+    let ours = format!("refs/heads/{branch}");
+    let before = git_cmd::run_checked(&path, &["rev-parse", "--verify", "--quiet", &ours]).ok()?;
+    // A fetch from this repository into itself: git refuses anything but a
+    // fast-forward without a `+`, and refuses a branch checked out in another
+    // worktree, which is exactly the care this needs.
+    let out = git_cmd::run(
+        &path,
+        &["fetch", "--no-tags", ".", &format!("{theirs}:{ours}")],
+    )
+    .ok()?;
+    if !out.ok {
+        return Some(format!(
+            "it has commits {upstream} does not, so it was not fast-forwarded"
+        ));
+    }
+    let after = git_cmd::run_checked(&path, &["rev-parse", "--verify", "--quiet", &ours]).ok()?;
+    (before.trim() != after.trim()).then(|| format!("fast-forwarded to {upstream}"))
+}
+
+/// Deletes the branch a merge left behind, if it is still where it was when
+/// the deletion was offered. A branch that moved since has work the offer did
+/// not know about.
+pub fn delete_merged(state: &AppState, name: &str, sha: &str) -> Result<String, String> {
+    // Read once, as for `after_merge`.
+    let state = &state.pinned();
+    let path = state.path()?;
+    let now = git_cmd::run_checked(
+        &path,
+        &[
+            "rev-parse",
+            "--verify",
+            "--quiet",
+            &format!("refs/heads/{name}"),
+        ],
+    )
+    .map(|out| out.trim().to_string())
+    .map_err(|_| format!("There is no branch called {name} any more"))?;
+    if now != sha {
+        return Err(format!(
+            "{name} has moved since the merge, so it was not deleted"
+        ));
+    }
+    if crate::journal::current_branch(state).as_deref() == Some(name) {
+        return Err(format!("{name} is checked out, so it was not deleted"));
+    }
+    refs::delete_branch(state, name, true)?;
+    Ok(format!(
+        "Deleted {name} (it was at {})",
+        &sha[..sha.len().min(7)]
+    ))
+}
+
+/// One commit a new review would carry, for writing its description.
+#[derive(Serialize, Debug, Clone, PartialEq)]
+pub struct DraftCommit {
+    pub subject: String,
+    pub body: String,
+}
+
+/// The commits on `source` that `target` does not have, oldest first, for
+/// filling in a new review. The target as the forge has it where a remote
+/// copy exists, for the same reason the AI description reads it that way.
+pub fn branch_commits(
+    state: &AppState,
+    source: &str,
+    target: &str,
+) -> Result<Vec<DraftCommit>, String> {
+    let root = state.path()?;
+    let preferred = crate::forge::known_target(state).map(|chosen| chosen.remote);
+    let target = crate::ai::resolve_target(&root, target, preferred.as_deref())?;
+    let source = crate::ai::resolve_ref(&root, source)?;
+    let repo = state.repo()?;
+    let find = |name: &str| {
+        repo.revparse_single(name)
+            .and_then(|object| object.peel_to_commit())
+            .map(|commit| commit.id())
+            .map_err(|e| e.message().to_string())
+    };
+    let mut walk = repo.revwalk().map_err(|e| e.message().to_string())?;
+    walk.push(find(&source)?)
+        .map_err(|e| e.message().to_string())?;
+    walk.hide(find(&target)?)
+        .map_err(|e| e.message().to_string())?;
+    walk.set_sorting(git2::Sort::TOPOLOGICAL | git2::Sort::REVERSE)
+        .map_err(|e| e.message().to_string())?;
+    let mut out = Vec::new();
+    for oid in walk.flatten().take(100) {
+        let Ok(commit) = repo.find_commit(oid) else {
+            continue;
+        };
+        if commit.parent_count() > 1 {
+            continue;
+        }
+        let message = commit.message().unwrap_or("").to_string();
+        let (subject, body) = message.split_once('\n').unwrap_or((&message, ""));
+        out.push(DraftCommit {
+            subject: subject.trim().to_string(),
+            body: body.trim().to_string(),
+        });
+    }
+    Ok(out)
+}
+
+/// Puts a deleted branch back where it was.
+pub fn restore_branch(state: &AppState, name: &str, sha: &str) -> Result<String, String> {
+    if refs::has_local_branch(state, name) {
+        return Err(format!("There is a branch called {name} already"));
+    }
+    refs::create_branch(state, name, Some(sha), false)?;
+    Ok(format!("Restored {name}"))
 }
 
 #[cfg(test)]

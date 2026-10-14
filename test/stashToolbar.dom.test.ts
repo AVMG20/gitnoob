@@ -88,7 +88,7 @@ describe('the toolbar while a stash is picked', () => {
     const wrapper = show()
     git.store.selected = 'c1'
     await flushPromises()
-    expect(labels(wrapper)).toEqual(['Fetch', 'Pull', 'Push', 'Branch', 'Stash'])
+    expect(labels(wrapper)).toEqual(['Fetch', 'Pull', 'Push', 'Branch', 'Start', 'Stash'])
     expect(wrapper.find('.stash-actions').exists()).toBe(false)
   })
 
@@ -154,7 +154,7 @@ describe('the toolbar while a stash is picked', () => {
     await flushPromises()
     await wrapper.findAll('.actions .btn')[0]!.trigger('click')
     await flushPromises()
-    expect(labels(wrapper)).toEqual(['Fetch', 'Pull', 'Push', 'Branch', 'Stash'])
+    expect(labels(wrapper)).toEqual(['Fetch', 'Pull', 'Push', 'Branch', 'Start', 'Stash'])
   })
 
   it('asks for a name before turning one into a branch', async () => {

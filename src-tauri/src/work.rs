@@ -44,8 +44,40 @@ pub fn stage(state: &AppState, paths: &[String]) -> Result<String, String> {
 }
 
 pub fn stage_all(state: &AppState) -> Result<String, String> {
+    stage_all_expecting(state, None)
+}
+
+/// Stages everything, after checking the index against what the caller saw.
+///
+/// `Some(false)` is "stage everything and commit" from a list that showed
+/// nothing staged. What is staged by the time it runs — a `git add -p` in a
+/// terminal a moment ago — was picked by hand, and sweeping the rest in on
+/// top of it would commit it with everything else, unseen. So that refuses.
+pub fn stage_all_expecting(
+    state: &AppState,
+    expect_staged: Option<bool>,
+) -> Result<String, String> {
     let root = state.path()?;
+    if expect_staged == Some(false) && index_differs_from_head(&root)? {
+        return Err(
+            "Something was staged since the list was read, so nothing more was staged. Look at \
+             what is staged and commit again."
+                .to_string(),
+        );
+    }
     git_cmd::run_checked(&root, &["add", "--all"])
+}
+
+/// Whether anything is staged: the index differs from HEAD's tree, or holds
+/// anything at all on a branch with no commits yet.
+fn index_differs_from_head(root: &Path) -> Result<bool, String> {
+    let repo = git2::Repository::open(root).map_err(|e| e.message().to_string())?;
+    let tree = repo.head().ok().and_then(|head| head.peel_to_tree().ok());
+    let index = repo.index().map_err(|e| e.message().to_string())?;
+    let diff = repo
+        .diff_tree_to_index(tree.as_ref(), Some(&index), None)
+        .map_err(|e| e.message().to_string())?;
+    Ok(diff.deltas().len() > 0)
 }
 
 pub fn unstage(state: &AppState, paths: &[String]) -> Result<String, String> {
@@ -54,9 +86,29 @@ pub fn unstage(state: &AppState, paths: &[String]) -> Result<String, String> {
     // carries leaves the file both moved and deleted in the index.
     let both = with_both_halves(state, paths, Side::Staged);
     let pathspecs = literal_pathspecs(&both);
-    let mut args = vec!["restore", "--staged", "--"];
+    // Before the first commit there is no HEAD for `restore --staged` to take
+    // the index back to, and it fails with "could not resolve HEAD". Taking a
+    // file out of the index is all unstaging means there, and `rm --cached`
+    // does exactly that and nothing to the file on disk. `-f` because rm
+    // otherwise refuses a file whose staged copy differs from the one on disk
+    // — which is the ordinary state of a file edited after it was staged, and
+    // the copy on disk is the one that stays.
+    let mut args = if unborn(state) {
+        vec!["rm", "--cached", "-r", "-f", "--quiet", "--"]
+    } else {
+        vec!["restore", "--staged", "--"]
+    };
     args.extend(pathspecs.iter().map(String::as_str));
     git_cmd::run_checked(&root, &args)
+}
+
+/// Whether HEAD names a branch that has no commits yet.
+pub(crate) fn unborn(state: &AppState) -> bool {
+    let Ok(repo) = state.repo() else {
+        return false;
+    };
+    let unborn = matches!(repo.head(), Err(e) if e.code() == git2::ErrorCode::UnbornBranch);
+    unborn
 }
 
 /// Which side of the index a path was read off.
@@ -147,10 +199,42 @@ pub fn discard(state: &AppState, paths: &[String]) -> Result<String, String> {
     if aimed.is_empty() {
         return Ok(String::new());
     }
-    let pathspecs = literal_pathspecs(&aimed);
-    let mut args = vec!["restore", "--worktree", "--"];
-    args.extend(pathspecs.iter().map(String::as_str));
-    git_cmd::run_checked(&root, &args)
+    let label = match aimed.as_slice() {
+        [one] => format!("Discard changes to {one}"),
+        many => format!("Discard changes to {} files", many.len()),
+    };
+    throw_away_saved(state, &root, &aimed, "discard", label, || {
+        let pathspecs = literal_pathspecs(&aimed);
+        let mut args = vec!["restore", "--worktree", "--"];
+        args.extend(pathspecs.iter().map(String::as_str));
+        git_cmd::run_checked(&root, &args)
+    })
+}
+
+/// Throws files away with what they held saved first, and puts the throwing
+/// away on the undo history.
+///
+/// Every file in `paths` is written into the object database before `act`
+/// runs, and looked at again after. Whatever changed between the two is the
+/// step: undoing it writes the saved bytes back, as long as nothing has
+/// touched those files since. Recorded even when `act` fails, since a command
+/// that stopped half-way may still have thrown some of them away.
+fn throw_away_saved<T>(
+    state: &AppState,
+    root: &Path,
+    paths: &[String],
+    kind: &str,
+    label: String,
+    act: impl FnOnce() -> Result<T, String>,
+) -> Result<T, String> {
+    let before = crate::recover::look(root, paths, true)?;
+    let said = act();
+    if let Ok(after) = crate::recover::look(root, paths, true) {
+        let mut entry = journal::Entry::new(kind, label, Mode::Files, true);
+        entry.files = crate::recover::changes(before, after);
+        journal::record_entry_at(state, root, entry);
+    }
+    said
 }
 
 /// Deletes files git is not tracking, which is what discarding one comes to.
@@ -164,10 +248,18 @@ pub fn delete_untracked(state: &AppState, paths: &[String]) -> Result<String, St
         return Err("Nothing to delete".to_string());
     }
     let root = state.path()?;
-    let pathspecs = literal_pathspecs(paths);
-    let mut args = vec!["clean", "-f", "-d", "--"];
-    args.extend(pathspecs.iter().map(String::as_str));
-    git_cmd::run_checked(&root, &args)?;
+    // A folder full of untracked files is one row; every file in it is saved.
+    let files = crate::recover::untracked_under(&root, paths)?;
+    let label = match files.as_slice() {
+        [one] => format!("Delete {one}"),
+        many => format!("Delete {} untracked files", many.len()),
+    };
+    throw_away_saved(state, &root, &files, "delete-untracked", label, || {
+        let pathspecs = literal_pathspecs(paths);
+        let mut args = vec!["clean", "-f", "-d", "--"];
+        args.extend(pathspecs.iter().map(String::as_str));
+        git_cmd::run_checked(&root, &args)
+    })?;
     Ok(format!(
         "Deleted {} {}",
         paths.len(),
@@ -176,39 +268,251 @@ pub fn delete_untracked(state: &AppState, paths: &[String]) -> Result<String, St
 }
 
 pub fn commit(state: &AppState, message: &str, amend: bool) -> Result<String, String> {
-    let root = state.path()?;
+    commit_with(state, &state.path()?, message, amend, false)
+}
+
+/// A commit, with `--no-verify` when the user asked for the hooks to be
+/// skipped. Only ever on an explicit click: a hook is the repository's own
+/// rule, and stepping round it is not something to do on anyone's behalf.
+fn commit_with(
+    state: &AppState,
+    root: &Path,
+    message: &str,
+    amend: bool,
+    no_verify: bool,
+) -> Result<String, String> {
+    let root = root.to_path_buf();
     if message.trim().is_empty() {
         return Err("A commit needs a message".to_string());
     }
-    let before = journal::head_oid(state);
-    let branch = journal::current_branch(state);
+    // Everything below reads `root`, never the state's path again: a hook can
+    // take long enough for the window to have moved to another repository,
+    // and this commit's undo step and its trip home belong to this one.
+    let before = journal::head_at(&root);
+    let branch = journal::branch_at(&root);
 
     // Read now: whether this commit is the one that concludes a paused visit's
     // merge depends on what git was in the middle of before it.
-    let leg = crate::remote::trip(state);
+    let leg = crate::remote::trip_at(&root);
+    // The same for the history: a commit that finishes a merge is the end of
+    // that merge, and a commit in the middle of a rebase is part of it.
+    let running = journal::running_at(&root);
+    let waiting = journal::pending_at(&root);
 
-    let mut args = vec!["commit", "-m", message];
+    // A commit that concludes a merge, pick or revert is the moment git
+    // records how its conflicts were resolved, so rerere has to be on for it
+    // as it was for the command that stopped.
+    let concluding = crate::remote::git_dir(&root).is_ok_and(|dir| {
+        ["MERGE_HEAD", "CHERRY_PICK_HEAD", "REVERT_HEAD"]
+            .iter()
+            .any(|name| dir.join(name).exists())
+    });
+    let rerere = if concluding {
+        crate::rebase::rerere_flags(state)
+    } else {
+        Vec::new()
+    };
+    let mut args: Vec<&str> = rerere.iter().map(String::as_str).collect();
+    args.extend(["commit", "-m", message]);
     if amend {
         args.push("--amend");
     }
+    if no_verify {
+        args.push("--no-verify");
+    }
     let output = git_cmd::run_checked(&root, &args)?;
 
-    // Undo is a soft reset back to `before`: for an amend that is the commit
-    // that was replaced, which still exists as an object.
     let summary = message.lines().next().unwrap_or("").trim().to_string();
-    journal::record(
-        state,
-        if amend { "amend" } else { "commit" },
-        format!("{}: {summary}", if amend { "Amend" } else { "Commit" }),
-        branch,
-        before,
-        journal::head_oid(state),
-        Mode::Soft,
-        false,
-    );
+    match running {
+        // A merge finished by hand is still a merge. Recorded as a commit, its
+        // undo was a soft reset that left the whole merged branch staged as
+        // if it were your own work — and the next commit squashed it in and
+        // lost the second parent. As a merge it is undone the way any merge
+        // is: back to the commit before it, other open work kept.
+        Some("merge") if !amend => match waiting {
+            Some(waiting) => journal::finish_pending_at(state, &root, Some(waiting)),
+            None => {
+                let mut entry =
+                    journal::Entry::new("merge", format!("Merge: {summary}"), Mode::Hard, true);
+                entry.branch = branch;
+                entry.before = before;
+                entry.after = journal::head_at(&root);
+                journal::record_entry_at(state, &root, entry);
+            }
+        },
+        // The rebase records itself, whole, when it finishes.
+        Some("rebase") => {}
+        // Undo is a soft reset back to `before`: for an amend that is the
+        // commit that was replaced, which still exists as an object.
+        _ => {
+            let mut entry = journal::Entry::new(
+                if amend { "amend" } else { "commit" },
+                format!("{}: {summary}", if amend { "Amend" } else { "Commit" }),
+                Mode::Soft,
+                false,
+            );
+            entry.branch = branch;
+            entry.before = before;
+            entry.after = journal::head_at(&root);
+            journal::record_entry_at(state, &root, entry);
+        }
+    }
     // The commit that concludes a merge made on another branch's behalf is
     // also the end of that trip.
-    Ok(crate::remote::and_home(state, leg, output))
+    Ok(crate::remote::and_home_at(&root, leg, output))
+}
+
+/// How a commit went, told in enough detail to offer a way on when it did not.
+#[derive(Serialize, Debug)]
+pub struct CommitAttempt {
+    pub ok: bool,
+    /// Git's answer on success; everything git and the hooks printed otherwise.
+    pub output: String,
+    /// Set when the commit was stopped and a hook is what stopped it.
+    pub hook: Option<HookStop>,
+}
+
+#[derive(Serialize, Debug, Default)]
+pub struct HookStop {
+    /// The hooks this repository runs on a commit, by name.
+    pub hooks: Vec<String>,
+    /// Staged files the hook rewrote on disk. Staging them again picks up
+    /// exactly what the hook did, because nothing else was unstaged in them.
+    pub changed: Vec<String>,
+    /// Staged files the hook rewrote that already had unstaged edits of the
+    /// user's own. Staging those would sweep the edits into the commit too,
+    /// so they are named and left alone.
+    pub mixed: Vec<String>,
+}
+
+/// Commits, and when that fails, says whether a hook stopped it and what the
+/// hook did to the files on its way out.
+///
+/// Formatters run from a pre-commit hook rewrite the files they object to and
+/// then fail, leaving the fixed copy on disk and the unfixed one staged. The
+/// way on is to stage what the hook wrote — but only where that is all there
+/// is to stage, which is why every staged file is fingerprinted before the
+/// commit runs and compared after.
+pub fn commit_attempt(
+    state: &AppState,
+    message: &str,
+    amend: bool,
+    no_verify: bool,
+) -> Result<CommitAttempt, String> {
+    let root = state.path()?;
+    let status = crate::refs::status(state)?;
+    let staged: Vec<String> = status
+        .staged
+        .iter()
+        .filter(|entry| entry.kind != "deleted")
+        .map(|entry| entry.path.clone())
+        .collect();
+    let dirty: BTreeSet<&str> = status.unstaged.iter().map(|e| e.path.as_str()).collect();
+    let before: Vec<Option<git2::Oid>> = staged.iter().map(|p| disk_oid(&root, p)).collect();
+
+    match commit_with(state, &root, message, amend, no_verify) {
+        Ok(output) => Ok(CommitAttempt {
+            ok: true,
+            output,
+            hook: None,
+        }),
+        Err(output) => {
+            let hooks = commit_hooks(&root, no_verify);
+            let hook = (!hooks.is_empty() && !git_said_no(&output)).then(|| {
+                let mut stop = HookStop {
+                    hooks,
+                    ..HookStop::default()
+                };
+                for (path, was) in staged.iter().zip(before) {
+                    if disk_oid(&root, path) == was {
+                        continue;
+                    }
+                    if dirty.contains(path.as_str()) {
+                        stop.mixed.push(path.clone());
+                    } else {
+                        stop.changed.push(path.clone());
+                    }
+                }
+                stop
+            });
+            Ok(CommitAttempt {
+                ok: false,
+                output,
+                hook,
+            })
+        }
+    }
+}
+
+/// The blob a file on disk would be, or `None` when there is no file.
+fn disk_oid(root: &Path, path: &str) -> Option<git2::Oid> {
+    let full = root.join(path);
+    if !full.is_file() {
+        return None;
+    }
+    git2::Oid::hash_file(git2::ObjectType::Blob, full).ok()
+}
+
+/// The hooks a `git commit` here would run, by name.
+///
+/// Asked through `--git-path`, which follows `core.hooksPath` (husky and its
+/// kind live in `.husky`) and a linked worktree's shared hooks alike.
+/// `--no-verify` skips two of the three; `prepare-commit-msg` runs anyway.
+fn commit_hooks(root: &Path, no_verify: bool) -> Vec<String> {
+    let names: &[&str] = if no_verify {
+        &["prepare-commit-msg"]
+    } else {
+        &["pre-commit", "prepare-commit-msg", "commit-msg"]
+    };
+    names
+        .iter()
+        .filter(|name| {
+            let Ok(found) =
+                git_cmd::run_checked(root, &["rev-parse", "--git-path", &format!("hooks/{name}")])
+            else {
+                return false;
+            };
+            runnable(&root.join(found.trim()))
+        })
+        .map(|name| name.to_string())
+        .collect()
+}
+
+/// Whether git would run this file as a hook. Git skips one that is not
+/// executable, with a hint, rather than failing on it.
+fn runnable(path: &Path) -> bool {
+    let Ok(meta) = fs::metadata(path) else {
+        return false;
+    };
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        meta.is_file() && meta.permissions().mode() & 0o111 != 0
+    }
+    #[cfg(not(unix))]
+    {
+        meta.is_file()
+    }
+}
+
+/// Failures git reports itself, which no hook is to blame for even when the
+/// repository has hooks.
+fn git_said_no(output: &str) -> bool {
+    const OWN: &[&str] = &[
+        "nothing to commit",
+        "nothing added to commit",
+        "no changes added to commit",
+        "Please tell me who you are",
+        "unable to auto-detect email",
+        "gpg failed to sign",
+        "failed to write commit object",
+        "index.lock",
+        "You have unmerged paths",
+        "Committing is not possible because you have unmerged files",
+        // The app's own refusal, before git is even asked.
+        "A commit needs a message",
+    ];
+    OWN.iter().any(|own| output.contains(own))
 }
 
 /// Loads HEAD's message so the amend dialog can start from it, and reports
@@ -410,14 +714,132 @@ pub fn stash_pop(state: &AppState, index: usize) -> Result<String, String> {
         .ok_or_else(|| "That stash is no longer there".to_string())?;
     // A pop that conflicts does not drop the entry, so this is as undoable as
     // an apply — and worth remembering for the same reason.
-    let said = git_cmd::run_checked(&root, &["stash", "pop", &format!("stash@{{{at}}}")]);
+    // Read before it goes: the line it has in the list is what putting it back
+    // has to recreate.
+    let message = journal::stash_message_at(&root, &oid);
+    let held = before_stash(&root, &oid);
+    let said = git_cmd::run_checked(
+        &root,
+        &[
+            DIFF3[0],
+            DIFF3[1],
+            "stash",
+            "pop",
+            &format!("stash@{{{at}}}"),
+        ],
+    );
     remember_applied(&root, &oid, said.is_err());
-    // Only a pop that stopped: one that went through took the entry off the
-    // list with it, and putting the files back would leave the work nowhere.
     if said.is_err() && has_unmerged(&root) {
-        record_applied(state, &oid, true);
+        record_applied(state, &root, &oid, true, held);
+    } else if said.is_ok() {
+        record_popped(state, &root, &oid, message, held);
     }
     said
+}
+
+/// What the paths a stash touches hold just before it goes on: the index
+/// entry and the file, each saved so it can be written back.
+///
+/// Undoing an apply used to put every one of those paths back to what HEAD
+/// has, index and all. A stash goes on over staged work in a file — git
+/// merges into it — and that undo threw the staged work away with the stash.
+/// With this kept, the undo puts back exactly what was there.
+pub struct BeforeStash {
+    staged: Vec<journal::Staged>,
+    files: Vec<(String, Option<journal::Saved>)>,
+}
+
+/// Reads [`BeforeStash`] for `oid`, or `None` when it cannot be read — the undo then
+/// falls back to the branch's copy, as it always did.
+pub fn before_stash(root: &Path, oid: &str) -> Option<BeforeStash> {
+    let touched = stash_touched_paths(root, oid).ok()?;
+    let repo = git2::Repository::open(root).ok()?;
+    let index = repo.index().ok()?;
+    let staged = touched
+        .iter()
+        .map(|path| journal::Staged {
+            path: path.clone(),
+            index: index
+                .get_path(Path::new(path), 0)
+                .map(|found| journal::IndexSaved {
+                    mode: format!("{:o}", found.mode),
+                    blob: found.id.to_string(),
+                }),
+        })
+        .collect();
+    let paths: Vec<String> = touched.into_iter().collect();
+    let files = crate::recover::look(root, &paths, true).ok()?;
+    Some(BeforeStash { staged, files })
+}
+
+/// Writes what [`before_stash`] read onto the step, with what the apply left beside
+/// it so the undo can tell whether the files were worked on since.
+pub fn keep_before(root: &Path, held: Option<BeforeStash>, entry: &mut journal::Entry) {
+    entry.staged = Vec::new();
+    entry.files = Vec::new();
+    let Some(held) = held else { return };
+    let paths: Vec<String> = held.files.iter().map(|(path, _)| path.clone()).collect();
+    let Ok(after) = crate::recover::look(root, &paths, false) else {
+        return;
+    };
+    let mut after: HashMap<String, Option<journal::Saved>> = after.into_iter().collect();
+    entry.files = held
+        .files
+        .into_iter()
+        .map(|(path, before)| journal::FileSave {
+            after: after.remove(&path).unwrap_or(None),
+            path,
+            before,
+        })
+        .collect();
+    entry.staged = held.staged;
+}
+
+/// Puts a pop that went through on the undo stack.
+///
+/// The entry is off the list, so undoing it is two things: the files go back
+/// to what the branch has, as for an apply, and the stash goes back on the
+/// list. The fingerprint is what stops the first half from taking anything
+/// done to those files since.
+fn record_popped(
+    state: &AppState,
+    root: &Path,
+    oid: &str,
+    message: Option<String>,
+    held: Option<BeforeStash>,
+) {
+    let label = message
+        .as_deref()
+        .map(|said| split_subject(said).1)
+        .unwrap_or_else(|| "a stash".to_string());
+    let mut entry = journal::Entry::new("stash-pop", format!("Pop: {label}"), Mode::Pop, true);
+    entry.branch = journal::branch_at(root);
+    entry.before = applied_fingerprint(root, oid);
+    entry.after = Some(oid.to_string());
+    entry.message = message;
+    entry.head = journal::head_at(root);
+    keep_before(root, held, &mut entry);
+    journal::record_entry_at(state, root, entry);
+}
+
+/// What the files a stash touched look like now, for an apply or pop that has
+/// just gone on. See [`fingerprint`].
+pub fn applied_fingerprint(root: &Path, oid: &str) -> Option<String> {
+    let touched = stash_touched_paths(root, oid).ok()?;
+    fingerprint(root, &touched)
+}
+
+/// Refuses if any file a stash touched has changed since `taken` was read.
+pub fn applied_unchanged(root: &Path, oid: &str, taken: Option<&str>) -> Result<(), String> {
+    let Some(taken) = taken else { return Ok(()) };
+    let touched = stash_touched_paths(root, oid)?;
+    match moved_since(root, &touched, taken) {
+        Some(path) => Err(format!(
+            "{path} has been worked on since the stash went on, so taking it back off would \
+             throw that away. Discard it yourself if that is what you meant."
+        )),
+        None => Ok(()),
+    }
 }
 
 /// What the files a stash touched look like right now, one line each.
@@ -478,7 +900,13 @@ fn moved_since(root: &Path, paths: &BTreeSet<String>, taken: &str) -> Option<Str
 /// stopped on a conflict carries none — a half-merged file is git's mess, not
 /// anybody's work, and backing out of it has to stay possible however much
 /// resolving has been half-done.
-fn record_applied(state: &AppState, oid: &str, conflicted: bool) {
+fn record_applied(
+    state: &AppState,
+    root: &Path,
+    oid: &str,
+    conflicted: bool,
+    held: Option<BeforeStash>,
+) {
     let label = stash_list(state)
         .ok()
         .and_then(|listed| {
@@ -490,21 +918,17 @@ fn record_applied(state: &AppState, oid: &str, conflicted: bool) {
         .unwrap_or_else(|| "a stash".to_string());
     let taken = (!conflicted)
         .then(|| {
-            let root = state.path().ok()?;
-            let touched = stash_touched_paths(&root, oid).ok()?;
-            fingerprint(&root, &touched)
+            let touched = stash_touched_paths(root, oid).ok()?;
+            fingerprint(root, &touched)
         })
         .flatten();
-    journal::record(
-        state,
-        "stash-apply",
-        format!("Apply: {label}"),
-        journal::current_branch(state),
-        taken,
-        Some(oid.to_string()),
-        Mode::Apply,
-        true,
-    );
+    let mut entry =
+        journal::Entry::new("stash-apply", format!("Apply: {label}"), Mode::Apply, true);
+    entry.branch = journal::branch_at(root);
+    entry.before = taken;
+    entry.after = Some(oid.to_string());
+    keep_before(root, held, &mut entry);
+    journal::record_entry_at(state, root, entry);
 }
 
 // --- stash -----------------------------------------------------------------
@@ -703,13 +1127,14 @@ pub fn stash_apply(state: &AppState, index: usize) -> Result<String, String> {
     // Applying the commit id itself, rather than `stash@{index}` again, means
     // the list shifting under this call — a push or drop elsewhere — cannot
     // land it on an entry other than the one just looked up.
-    let said = git_cmd::run_checked(&root, &["stash", "apply", &oid]);
+    let held = before_stash(&root, &oid);
+    let said = git_cmd::run_checked(&root, &[DIFF3[0], DIFF3[1], "stash", "apply", &oid]);
     remember_applied(&root, &oid, said.is_err());
     let conflicted = said.is_err() && has_unmerged(&root);
     // An apply that git refused outright changed nothing, and there is
     // nothing to step back out of.
     if said.is_ok() || conflicted {
-        record_applied(state, &oid, conflicted);
+        record_applied(state, &root, &oid, conflicted, held);
     }
     said?;
     Ok(format!("Applied {name}"))
@@ -780,8 +1205,16 @@ pub fn undo_stash_apply(state: &AppState) -> Result<String, String> {
     let oid =
         applied_stash(&root).ok_or_else(|| "There is no stash apply to undo here".to_string())?;
     // The marker is only written for an apply that stopped, which is backed
-    // out of whatever state the resolving got to.
-    undo_applied(state, &oid, None)
+    // out of whatever state the resolving got to. What the paths held before
+    // it went on is on that apply's step in the history, when it is there.
+    let stacks = state.journal_at(&root, |journal| journal.stacks());
+    let step = stacks.undo.into_iter().find(|entry| {
+        matches!(entry.mode, Mode::Apply | Mode::Pop) && entry.after.as_deref() == Some(&oid)
+    });
+    let (staged, files) = step
+        .map(|entry| (entry.staged, entry.files))
+        .unwrap_or_default();
+    undo_applied_at(&root, &oid, None, &staged, &files)
 }
 
 /// Takes a named stash back off the tree. See [`undo_stash_apply`].
@@ -790,7 +1223,22 @@ pub fn undo_stash_apply(state: &AppState) -> Result<String, String> {
 /// cleanly; `None` for one that stopped on a conflict, which is always backed
 /// out of. See [`record_applied`].
 pub fn undo_applied(state: &AppState, oid: &str, taken: Option<&str>) -> Result<String, String> {
-    let root = state.path()?;
+    undo_applied_at(&state.path()?, oid, taken, &[], &[])
+}
+
+/// [`undo_applied`] in a work tree read once by the caller.
+///
+/// `staged` and `files` are what [`before_stash`] read before the stash went on, when
+/// the step has them: those are put back exactly. A step without them, from
+/// an older version, falls back to the branch's copy of each path.
+pub fn undo_applied_at(
+    root: &Path,
+    oid: &str,
+    taken: Option<&str>,
+    staged: &[journal::Staged],
+    files: &[journal::FileSave],
+) -> Result<String, String> {
+    let root = root.to_path_buf();
 
     // Only the paths the stash brought in. A reset of the whole tree would be
     // simpler and would take everything else standing in it — a file edited
@@ -811,6 +1259,17 @@ pub fn undo_applied(state: &AppState, oid: &str, taken: Option<&str>) -> Result<
                  throw that away. Discard it yourself if that is what you meant."
             ));
         }
+    }
+
+    if !staged.is_empty() {
+        let put_back = put_back_held(&root, taken.is_some(), staged, files)?;
+        if let Some(marker) = applied_marker(&root) {
+            let _ = std::fs::remove_file(marker);
+        }
+        return Ok(format!(
+            "Put {put_back} {} back — the stash is still on the list",
+            if put_back == 1 { "file" } else { "files" }
+        ));
     }
 
     let mut put_back = 0usize;
@@ -854,6 +1313,49 @@ pub fn undo_applied(state: &AppState, oid: &str, taken: Option<&str>) -> Result<
     ))
 }
 
+/// Puts back what the index and the files held before a stash went on.
+///
+/// With `check`, for an apply that landed cleanly, every file has to read
+/// exactly as the apply left it first; one that stopped is git's mess and is
+/// backed out of whatever the resolving got to. The index goes first, entry by
+/// entry — a conflicted path's three stages are cleared and the old entry put
+/// in their place — and then the files are written.
+fn put_back_held(
+    root: &Path,
+    check: bool,
+    staged: &[journal::Staged],
+    files: &[journal::FileSave],
+) -> Result<usize, String> {
+    if check {
+        crate::recover::check_files(root, files, true)?;
+    }
+    let width = staged
+        .iter()
+        .find_map(|one| one.index.as_ref().map(|found| found.blob.len()))
+        .unwrap_or(40);
+    let none = "0".repeat(width);
+    let mut input = String::new();
+    for one in staged {
+        // Mode 0 takes the path out of the index, every stage of it.
+        input.push_str(&format!("0 {none}\t{}\0", one.path));
+        if let Some(found) = &one.index {
+            input.push_str(&format!("{} {}\t{}\0", found.mode, found.blob, one.path));
+        }
+    }
+    let said = git_cmd::run_with_input(root, &["update-index", "-z", "--index-info"], &input)?;
+    if !said.ok {
+        return Err(format!(
+            "Could not put the index back: {}",
+            said.stderr.trim()
+        ));
+    }
+    let count = crate::recover::write_files(root, files, true)?;
+    // The entries were written without the files' stat data; a refresh
+    // keeps every one of them from reading as modified.
+    let _ = git_cmd::run(root, &["update-index", "-q", "--refresh"]);
+    Ok(count.max(staged.len()))
+}
+
 /// Whether the commit that is checked out has this path in it.
 fn in_head(root: &Path, path: &str) -> bool {
     git_cmd::run_checked(root, &["cat-file", "-e", &format!("HEAD:{path}")]).is_ok()
@@ -877,7 +1379,25 @@ pub fn stash_drop(state: &AppState, index: usize) -> Result<String, String> {
     // cannot make this drop the wrong entry.
     let at = journal::stash_index(state, &oid)
         .ok_or_else(|| "That stash is no longer there".to_string())?;
+    let line = journal::stash_message_at(&root, &oid);
     git_cmd::run_checked(&root, &["stash", "drop", &format!("stash@{{{at}}}")])?;
+
+    // The commit outlives the entry: nothing points at it any more, but git
+    // keeps it until a garbage collection, and `stash store` puts it back on
+    // the list exactly as it read.
+    let label = line
+        .as_deref()
+        .map(|said| split_subject(said).1)
+        .unwrap_or_else(|| name.clone());
+    let mut entry = journal::Entry::new(
+        "stash-drop",
+        format!("Drop stash: {label}"),
+        Mode::Drop,
+        false,
+    );
+    entry.after = Some(oid);
+    entry.message = line;
+    journal::record_entry_at(state, &root, entry);
     Ok(format!("Dropped {name}"))
 }
 
@@ -939,7 +1459,8 @@ pub fn stash_apply_many(
     };
 
     for (_, oid, message) in picked {
-        let out = git_cmd::run(&root, &["stash", "apply", &oid])?;
+        let held = before_stash(&root, &oid);
+        let out = git_cmd::run(&root, &[DIFF3[0], DIFF3[1], "stash", "apply", &oid])?;
         if !out.ok {
             let reason = if out.stderr.trim().is_empty() {
                 out.stdout.trim().to_string()
@@ -950,7 +1471,7 @@ pub fn stash_apply_many(
             // this is the entry whose mess is in the tree.
             if has_unmerged(&root) {
                 remember_applied(&root, &oid, true);
-                record_applied(state, &oid, true);
+                record_applied(state, &root, &oid, true, held);
             }
             run.stopped = Some(StashStop { message, reason });
             run.conflicted = unmerged_paths(&root);
@@ -958,15 +1479,16 @@ pub fn stash_apply_many(
         }
         run.applied.push(message);
         // Each one steps back on its own, newest first — the same order they
-        // went on, reversed. A dropped stash has nowhere to go back to, so a
-        // pop of several records nothing.
+        // went on, reversed. A popped one is put back on the list by its undo.
         if drop_after {
+            let line = journal::stash_message_at(&root, &oid);
             // Re-resolved from the commit id: every drop renumbers the rest.
             if let Some(at) = journal::stash_index(state, &oid) {
                 git_cmd::run_checked(&root, &["stash", "drop", &format!("stash@{{{at}}}")])?;
+                record_popped(state, &root, &oid, line, held);
             }
         } else {
-            record_applied(state, &oid, false);
+            record_applied(state, &root, &oid, false, held);
         }
     }
 
@@ -1095,39 +1617,71 @@ fn pop_top(root: &Path) -> Result<String, String> {
 
 /// Pops one stash by its `stash@{n}` selector, the same way as [`pop_top`].
 pub fn pop_stash(root: &Path, selector: &str) -> Result<String, String> {
-    git_cmd::run_checked(root, &["stash", "pop", "--index", selector]).or_else(|error| {
+    git_cmd::run_checked(
+        root,
+        &[DIFF3[0], DIFF3[1], "stash", "pop", "--index", selector],
+    )
+    .or_else(|error| {
         if has_unmerged(root) {
             Err(error)
         } else {
-            git_cmd::run_checked(root, &["stash", "pop", selector])
+            git_cmd::run_checked(root, &[DIFF3[0], DIFF3[1], "stash", "pop", selector])
         }
     })
 }
 
+/// Puts the merge base into the markers of a stash that will not go back on
+/// cleanly, so the resolver can show it as a third pane the way it does for a
+/// merge.
+const DIFF3: [&str; 2] = ["-c", "merge.conflictStyle=diff3"];
+
 /// Every path a stash entry touches, tracked or not.
 ///
-/// Plain `git stash show` leaves out anything that only lives in the third,
-/// untracked-files parent an auto-stash always has, since it was pushed with
-/// `--include-untracked`; asking for that parent too is what `--include-untracked`
-/// on `show` itself is for.
+/// Read from the stash commit itself: its tree against the commit it was
+/// taken on, with no rename detection — a move is a deletion and an addition,
+/// and both halves have to go back — plus everything in the third,
+/// untracked-files parent an auto-stash always has. `git stash show
+/// --name-only` used to be asked instead, and it quotes a name with anything
+/// outside ASCII in it, which then matched no file, and folds a move into
+/// one line naming only where it went.
 /// Sorted, so a fingerprint taken now and one taken later line up, and so the
 /// files go back in the same order every time.
 fn stash_touched_paths(root: &Path, selector: &str) -> Result<BTreeSet<String>, String> {
-    let raw = git_cmd::run_checked(
-        root,
-        &[
-            "stash",
-            "show",
-            "--include-untracked",
-            "--name-only",
-            selector,
-        ],
-    )?;
-    Ok(raw
-        .lines()
-        .map(str::to_string)
-        .filter(|l| !l.is_empty())
-        .collect())
+    let repo = git2::Repository::open(root).map_err(|e| e.message().to_string())?;
+    let stash = repo
+        .revparse_single(selector)
+        .and_then(|found| found.peel_to_commit())
+        .map_err(|_| format!("There is no stash {selector}"))?;
+    let base = stash.parent(0).map_err(|e| e.message().to_string())?;
+    let base_tree = base.tree().map_err(|e| e.message().to_string())?;
+    let tree = stash.tree().map_err(|e| e.message().to_string())?;
+    let diff = repo
+        .diff_tree_to_tree(Some(&base_tree), Some(&tree), None)
+        .map_err(|e| e.message().to_string())?;
+    let mut paths = BTreeSet::new();
+    for delta in diff.deltas() {
+        for file in [delta.old_file(), delta.new_file()] {
+            if file.id().is_zero() {
+                continue;
+            }
+            if let Some(path) = file.path() {
+                paths.insert(path.to_string_lossy().into_owned());
+            }
+        }
+    }
+    if let Ok(untracked) = stash.parent(2) {
+        let tree = untracked.tree().map_err(|e| e.message().to_string())?;
+        tree.walk(git2::TreeWalkMode::PreOrder, |dir, item| {
+            if item.kind() != Some(git2::ObjectType::Tree) {
+                if let Some(name) = item.name() {
+                    paths.insert(format!("{dir}{name}"));
+                }
+            }
+            git2::TreeWalkResult::Ok
+        })
+        .map_err(|e| e.message().to_string())?;
+    }
+    Ok(paths)
 }
 
 /// The branch an auto-stash was taken on, read back out of its message.
@@ -1190,17 +1744,26 @@ pub fn undo_restore(state: &AppState) -> Result<String, String> {
         Here,
     }
     let home = stashed_on(&top).map(str::to_string);
-    let back = match (&home, crate::journal::current_branch(state)) {
-        (Some(home), Some(here)) if home != &here => Back::Branch(home.clone()),
+    let here = crate::journal::current_branch(state);
+    let back = match (&home, &here) {
+        (Some(home), Some(here)) if home != here => Back::Branch(home.clone()),
         _ => match crate::journal::take_step_standing_here(state) {
             Some((before, label)) => Back::Step { before, label },
-            // Nothing on record moved the branch: put the work back here.
-            None => Back::Here,
+            // Not on record — a pull or rebase from before a restart, or one
+            // made in a terminal. The branch's own log still says what moved
+            // it last and from where.
+            None => match here
+                .as_deref()
+                .and_then(|branch| moved_by_last(&root, branch))
+            {
+                Some((before, label)) => Back::Step { before, label },
+                None => Back::Here,
+            },
         },
     };
 
     // Clears the half-applied pop: conflicted files, and whatever else came
-    // out of the stash cleanly.
+    // out of the stash cleanly. The stash still holds all of it.
     git_cmd::run_checked(&root, &["reset", "--hard", "HEAD"])?;
     match &back {
         Back::Branch(home) => {
@@ -1209,15 +1772,70 @@ pub fn undo_restore(state: &AppState) -> Result<String, String> {
         Back::Step { before, .. } => {
             git_cmd::run_checked(&root, &["reset", "--hard", before])?;
         }
-        Back::Here => {}
+        Back::Here => {
+            // Nothing says where the work came from, and popping it onto the
+            // same commit again would only stop on the same conflict. The
+            // tree is clean and the work stays where it is safe: in the stash.
+            if let Ok(held) = git_cmd::run_checked(&root, &["rev-parse", "stash@{0}"]) {
+                clean_stash_leftovers(&root, held.trim());
+            }
+            return Ok(
+                "The conflicted files are cleared, and your changes are still in the stash at \
+                 the top of the list — putting them back on this commit would stop on the same \
+                 conflict. Apply it once the branch is where the work belongs."
+                    .to_string(),
+            );
+        }
     }
 
     pop_top(&root)?;
     Ok(match back {
         Back::Branch(branch) => format!("Back on {branch}, with your changes"),
         Back::Step { label, .. } => format!("Undid: {label}, and your changes are back"),
-        Back::Here => "Your changes are back".to_string(),
+        Back::Here => unreachable!("answered above"),
     })
+}
+
+/// Where a branch was before the pull, merge or rebase that moved it last,
+/// read from the branch's own reflog, when that move is what it stands on.
+fn moved_by_last(root: &Path, branch: &str) -> Option<(String, String)> {
+    let repo = git2::Repository::open(root).ok()?;
+    let head = repo.head().ok()?.target()?;
+    let reflog = repo.reflog(&format!("refs/heads/{branch}")).ok()?;
+    let last = reflog.get(0)?;
+    let said = last.message().unwrap_or("");
+    let moved = ["pull", "merge", "rebase"]
+        .iter()
+        .any(|verb| said.starts_with(verb));
+    if !moved || last.id_new() != head || last.id_old().is_zero() {
+        return None;
+    }
+    let label = said.split(':').next().unwrap_or(said).trim().to_string();
+    Some((last.id_old().to_string(), label))
+}
+
+/// Removes the files a half-applied stash wrote that `reset --hard` leaves:
+/// the untracked ones it carries in its third parent, named literally. They
+/// are copies of what the stash still holds, and left in place they make the
+/// next apply refuse over files that "already exist".
+fn clean_stash_leftovers(root: &Path, held: &str) {
+    let Ok(listed) = git_cmd::run_checked(
+        root,
+        &["ls-tree", "-r", "--name-only", &format!("{held}^3")],
+    ) else {
+        return;
+    };
+    let specs: Vec<String> = listed
+        .lines()
+        .filter(|line| !line.is_empty())
+        .map(|path| format!(":(literal){path}"))
+        .collect();
+    if specs.is_empty() {
+        return;
+    }
+    let mut args = vec!["clean", "-f", "-d", "--"];
+    args.extend(specs.iter().map(String::as_str));
+    let _ = git_cmd::run_checked(root, &args);
 }
 
 // --- moving a branch and replaying commits ---------------------------------
@@ -1233,6 +1851,10 @@ pub enum ResetMode {
     Mixed,
     /// Move everything. Uncommitted work is destroyed.
     Hard,
+    /// Move the branch and the files it changes, keeping uncommitted work.
+    /// Git refuses, and nothing moves, when a file with uncommitted changes is
+    /// one the move would have to change. The reset the reflog view offers.
+    Keep,
 }
 
 impl ResetMode {
@@ -1241,6 +1863,7 @@ impl ResetMode {
             ResetMode::Soft => "--soft",
             ResetMode::Mixed => "--mixed",
             ResetMode::Hard => "--hard",
+            ResetMode::Keep => "--keep",
         }
     }
 }
@@ -1330,7 +1953,7 @@ pub fn reset(state: &AppState, oid: &str, mode: ResetMode) -> Result<String, Str
     let before = journal::head_oid(state);
     let branch = journal::current_branch(state);
 
-    git_cmd::run_checked(&root, &["reset", mode.flag(), oid])?;
+    git_cmd::run_checked(&root, &["reset", mode.flag(), oid, "--"])?;
 
     let short: String = oid.chars().take(7).collect();
     journal::record(
@@ -1341,12 +1964,12 @@ pub fn reset(state: &AppState, oid: &str, mode: ResetMode) -> Result<String, Str
         before,
         journal::head_oid(state),
         // Undoing a hard reset has to put the working tree back too.
-        if mode == ResetMode::Hard {
+        if matches!(mode, ResetMode::Hard | ResetMode::Keep) {
             Mode::Hard
         } else {
             Mode::Soft
         },
-        mode == ResetMode::Hard,
+        matches!(mode, ResetMode::Hard | ResetMode::Keep),
     );
     Ok(format!("Branch moved to {short}"))
 }
@@ -1382,7 +2005,19 @@ pub fn cherry_pick(
     let branch = journal::current_branch(state);
     let ordered = in_history_order(state, oids)?;
 
-    let mut args: Vec<&str> = vec!["cherry-pick"];
+    // A run of picks that is still part-way through has to be finished or
+    // abandoned first; git would say "already in progress" in fewer words.
+    if let Some((kind, _)) = sequence(&crate::remote::git_dir(&root)?) {
+        return Err(format!(
+            "A {kind} of several commits is still part-way through. Continue or abort it first."
+        ));
+    }
+
+    // diff3 so the resolver has the base to show, rerere so a conflict that
+    // was resolved before is answered the same way.
+    let flags = crate::rebase::conflict_flags(state);
+    let mut args: Vec<&str> = flags.iter().map(String::as_str).collect();
+    args.push("cherry-pick");
     if options.no_commit {
         args.push("--no-commit");
     }
@@ -1490,7 +2125,10 @@ pub fn revert(state: &AppState, oid: &str) -> Result<String, String> {
     let before = journal::head_oid(state);
     let branch = journal::current_branch(state);
 
-    let out = git_cmd::run(&root, &["revert", "--no-edit", oid])?;
+    let flags = crate::rebase::conflict_flags(state);
+    let mut args: Vec<&str> = flags.iter().map(String::as_str).collect();
+    args.extend(["revert", "--no-edit", oid]);
+    let out = git_cmd::run(&root, &args)?;
     if !out.ok {
         let conflicts = crate::conflict::list(state).unwrap_or_default();
         if conflicts.is_empty() {
@@ -1518,6 +2156,205 @@ pub fn revert(state: &AppState, oid: &str) -> Result<String, String> {
         true,
     );
     Ok(format!("Reverted {short}"))
+}
+
+// --- a run of picks or reverts that stopped ----------------------------------
+//
+// `git cherry-pick a b c` that stops on `b` leaves two things: the conflict
+// (`CHERRY_PICK_HEAD`), and the list of what is still to come in
+// `.git/sequencer`. Committing the fix clears the first and not the second, so
+// `c` was silently never applied, and the next pick of several failed with
+// "a cherry-pick is already in progress". Only `--continue` works the list, so
+// that is what the way on is, with `--skip` and `--abort` beside it.
+
+/// The run git's sequencer is part-way through: `"cherry-pick"` or `"revert"`,
+/// and how many commits its list still holds. `None` when there is no list.
+pub fn sequence(git_dir: &Path) -> Option<(String, usize)> {
+    let todo = std::fs::read_to_string(git_dir.join("sequencer").join("todo")).ok()?;
+    let steps: Vec<&str> = todo
+        .lines()
+        .map(str::trim)
+        .filter(|line| !line.is_empty() && !line.starts_with('#'))
+        .collect();
+    let kind = match steps.first()?.split_whitespace().next()? {
+        "revert" | "r" => "revert",
+        _ => "cherry-pick",
+    };
+    Some((kind.to_string(), steps.len()))
+}
+
+/// What a continue, skip or abort of a run left behind.
+#[derive(Serialize, Debug)]
+pub struct SequenceOutcome {
+    /// The run is over, one way or the other.
+    pub finished: bool,
+    pub message: String,
+    /// Files it stopped on next, if it stopped again.
+    pub conflicts: Vec<String>,
+}
+
+/// Which run is under way, from the sequencer or from the one commit git
+/// stopped on when there is no list.
+fn running_sequence(git_dir: &Path) -> Option<&'static str> {
+    if let Some((kind, _)) = sequence(git_dir) {
+        return Some(if kind == "revert" {
+            "revert"
+        } else {
+            "cherry-pick"
+        });
+    }
+    if git_dir.join("CHERRY_PICK_HEAD").exists() {
+        return Some("cherry-pick");
+    }
+    if git_dir.join("REVERT_HEAD").exists() {
+        return Some("revert");
+    }
+    None
+}
+
+/// Carries on with the run: commits the stopped commit if that has not been
+/// done by hand, then applies the rest of the list.
+pub fn sequence_continue(state: &AppState) -> Result<SequenceOutcome, String> {
+    sequence_step(state, "--continue")
+}
+
+/// Leaves the stopped commit out and applies the rest.
+pub fn sequence_skip(state: &AppState) -> Result<SequenceOutcome, String> {
+    sequence_step(state, "--skip")
+}
+
+fn sequence_step(state: &AppState, how: &str) -> Result<SequenceOutcome, String> {
+    let root = state.path()?;
+    let git_dir = crate::remote::git_dir(&root)?;
+    let kind = running_sequence(&git_dir)
+        .ok_or_else(|| "No cherry-pick or revert is part-way through".to_string())?;
+    if how == "--continue" && has_unmerged(&root) {
+        return Err("Some files are still conflicted. Resolve them first.".to_string());
+    }
+
+    // Where the run started, for the undo step once it is over. The sequencer
+    // writes it down; a single stopped commit has no list and starts here.
+    let started = std::fs::read_to_string(git_dir.join("sequencer").join("head"))
+        .ok()
+        .map(|text| text.trim().to_string())
+        .filter(|oid| !oid.is_empty())
+        .or_else(|| journal::head_oid(state));
+    let branch = journal::current_branch(state);
+    let leg = crate::remote::trip(state);
+
+    let flags = crate::rebase::conflict_flags(state);
+    let mut args: Vec<&str> = flags.iter().map(String::as_str).collect();
+    args.extend([kind, how]);
+    // Continuing commits the stopped one with the message git prepared, the
+    // way saving the editor unchanged would.
+    let out = git_cmd::run_with_env(&root, &args, &[("GIT_EDITOR", "true")])?;
+
+    let conflicts = crate::conflict::list(state).unwrap_or_default();
+    if running_sequence(&git_dir).is_some() {
+        if !conflicts.is_empty() {
+            return Ok(SequenceOutcome {
+                finished: false,
+                message: format!(
+                    "The {kind} stopped again, with conflicts in {}",
+                    conflicts.join(", ")
+                ),
+                conflicts,
+            });
+        }
+        if !out.ok {
+            return Err(git_words(&out));
+        }
+        return Ok(SequenceOutcome {
+            finished: false,
+            message: format!("The {kind} stopped part-way"),
+            conflicts,
+        });
+    }
+    if !out.ok {
+        return Err(git_words(&out));
+    }
+
+    journal::record(
+        state,
+        kind,
+        if kind == "revert" {
+            "Revert commits".to_string()
+        } else {
+            "Cherry-pick commits".to_string()
+        },
+        branch,
+        started,
+        journal::head_oid(state),
+        Mode::Hard,
+        true,
+    );
+    let done = if kind == "revert" {
+        "Revert finished"
+    } else {
+        "Cherry-pick finished"
+    };
+    Ok(SequenceOutcome {
+        finished: true,
+        message: crate::remote::and_home(state, leg, done.to_string()),
+        conflicts,
+    })
+}
+
+/// Abandons the run and puts the branch back where it started.
+///
+/// Git only rewinds while HEAD is where the run left it. A commit made by
+/// hand since — the stopped one, committed from the box — makes it stop the
+/// run and leave the branch alone rather than throw that commit away, and
+/// that is said rather than passed off as a full abort.
+pub fn sequence_abort(state: &AppState) -> Result<SequenceOutcome, String> {
+    let root = state.path()?;
+    let git_dir = crate::remote::git_dir(&root)?;
+    let kind = running_sequence(&git_dir)
+        .ok_or_else(|| "No cherry-pick or revert is part-way through".to_string())?;
+    let started = std::fs::read_to_string(git_dir.join("sequencer").join("head"))
+        .ok()
+        .map(|text| text.trim().to_string());
+    let leg = crate::remote::trip(state);
+    let out = git_cmd::run(&root, &[kind, "--abort"])?;
+    if !out.ok {
+        return Err(git_words(&out));
+    }
+    let now = journal::head_oid(state);
+    let message = match (&started, &now) {
+        (Some(was), Some(now)) if was != now => format!(
+            "The {kind} was stopped, but git left the branch where it is: it moved since the run \
+             started (a commit made by hand), and rewinding would throw that away. Undo or \
+             reset to {} to go back all the way.",
+            &was[..was.len().min(7)]
+        ),
+        _ => format!("{} abandoned; the branch is as it was", capitalise(kind)),
+    };
+    Ok(SequenceOutcome {
+        finished: true,
+        message: crate::remote::and_home(state, leg, message),
+        conflicts: Vec::new(),
+    })
+}
+
+fn capitalise(text: &str) -> String {
+    let mut chars = text.chars();
+    match chars.next() {
+        Some(first) => first.to_uppercase().collect::<String>() + chars.as_str(),
+        None => String::new(),
+    }
+}
+
+fn git_words(out: &git_cmd::CmdOutput) -> String {
+    let text = if out.stderr.trim().is_empty() {
+        out.stdout.trim()
+    } else {
+        out.stderr.trim()
+    };
+    if text.is_empty() {
+        format!("git exited {}", out.code)
+    } else {
+        text.to_string()
+    }
 }
 
 /// Creates a tag, annotated when a message is given.
@@ -1638,24 +2475,12 @@ pub fn apply_hunk(
     // Unstaging reads the index-versus-HEAD diff; the other two read the
     // working tree against the index.
     let pathspec = format!(":(literal){path}");
-    let diff = if action == HunkAction::Unstage {
-        git_cmd::run_checked(
-            &root,
-            &[
-                "diff",
-                "--cached",
-                "--no-color",
-                "--unified=3",
-                "--",
-                &pathspec,
-            ],
-        )?
-    } else {
-        git_cmd::run_checked(
-            &root,
-            &["diff", "--no-color", "--unified=3", "--", &pathspec],
-        )?
-    };
+    let mut args = plain_diff();
+    if action == HunkAction::Unstage {
+        args.push("--cached");
+    }
+    args.extend(["--", pathspec.as_str()]);
+    let diff = git_cmd::run_checked(&root, &args)?;
 
     if diff.trim().is_empty() {
         return Err(format!(
@@ -1686,7 +2511,25 @@ pub fn apply_hunk(
         HunkAction::Discard => &["apply", "--reverse", "--whitespace=nowarn", "-"],
     };
 
-    let out = git_cmd::run_with_input(&root, args, &patch)?;
+    let what = match count {
+        Some(1) => "one line".to_string(),
+        Some(many) => format!("{many} lines"),
+        None => "one hunk".to_string(),
+    };
+    let out = if action == HunkAction::Discard {
+        // The one hunk action that loses anything: what those lines said is
+        // in no commit and no index, so the file is saved before they go.
+        throw_away_saved(
+            state,
+            &root,
+            &[path.to_string()],
+            "discard",
+            format!("Discard {what} of {path}"),
+            || git_cmd::run_with_input(&root, args, &patch),
+        )?
+    } else {
+        git_cmd::run_with_input(&root, args, &patch)?
+    };
     if !out.ok {
         let detail = if out.stderr.trim().is_empty() {
             out.stdout
@@ -1696,11 +2539,6 @@ pub fn apply_hunk(
         return Err(format!("git could not apply that hunk: {}", detail.trim()));
     }
 
-    let what = match count {
-        Some(1) => "one line".to_string(),
-        Some(many) => format!("{many} lines"),
-        None => "one hunk".to_string(),
-    };
     Ok(match action {
         HunkAction::Stage => format!("Staged {what} of {path}"),
         HunkAction::Unstage => format!("Unstaged {what} of {path}"),
@@ -1708,11 +2546,60 @@ pub fn apply_hunk(
     })
 }
 
+/// The start of a `git diff` that prints the patch the window is showing.
+///
+/// The hunks on screen come from libgit2 (`diff.rs`: Myers, the indent
+/// heuristic, three lines of context, hunks never merged), and the buttons
+/// name a hunk by its position. The patch handed to `git apply` comes from the
+/// CLI, which reads the user's config: `diff.algorithm=histogram` cuts the file
+/// into different hunks, `diff.interHunkContext` merges neighbours, so "the
+/// second hunk" is a different change — and `diff.external`, `color.diff=always`
+/// or `diff.noprefix` give `git apply` something it cannot read at all. Every
+/// one of those is pinned here, as a `-c` (harmless on a git too old to know
+/// the setting) and, where there is one, as a flag as well.
+pub fn plain_diff() -> Vec<&'static str> {
+    vec![
+        "-c",
+        "diff.noprefix=false",
+        "-c",
+        "diff.mnemonicPrefix=false",
+        "-c",
+        "diff.relative=false",
+        "-c",
+        "diff.suppressBlankEmpty=false",
+        "-c",
+        "diff.srcPrefix=a/",
+        "-c",
+        "diff.dstPrefix=b/",
+        "diff",
+        "--no-ext-diff",
+        "--no-textconv",
+        "--no-color",
+        "--src-prefix=a/",
+        "--dst-prefix=b/",
+        "--diff-algorithm=myers",
+        "--indent-heuristic",
+        "--unified=3",
+        "--inter-hunk-context=0",
+    ]
+}
+
+/// The lines of a diff with whatever ends them other than `\n` left on.
+///
+/// `str::lines` takes a `\r` off along with the `\n`, and a file checked in
+/// with CRLF endings has a `\r` on every line of its patch. Joined back up with
+/// bare `\n`s the patch no longer matches the file, and `git apply` says it
+/// does not apply.
+fn patch_lines(diff: &str) -> impl Iterator<Item = &str> {
+    diff.split_inclusive('\n')
+        .map(|line| line.strip_suffix('\n').unwrap_or(line))
+}
+
 /// Splits a diff into its header and its hunks, as text.
 fn split_hunks(diff: &str) -> (Vec<&str>, Vec<Vec<&str>>) {
     let mut header: Vec<&str> = Vec::new();
     let mut hunks: Vec<Vec<&str>> = Vec::new();
-    for line in diff.lines() {
+    for line in patch_lines(diff) {
         if line.starts_with("@@") {
             hunks.push(vec![line]);
         } else if let Some(current) = hunks.last_mut() {
@@ -1756,6 +2643,16 @@ fn header_starts(header: &str) -> Option<(u32, u32)> {
 ///
 /// The counts in the `@@` header are then whatever survived, which is why they
 /// are recomputed rather than carried over.
+///
+/// A file whose last line has no newline needs one more step. Git writes that
+/// line as `-x`, a `\ No newline at end of file` remark, and `+x` again with
+/// the newline on if anything was added after it. Leave the `-x` unpicked
+/// going forwards and it is context still missing its newline, with picked
+/// lines after it: `git apply` glued them onto it, `a\nb` and a picked `+c`
+/// staged `a\nbc`. So the pair is brought in by itself — the line is taken
+/// out without its newline and put back with one. Backwards the same line,
+/// picked, is restored with lines kept after it, so it is restored with its
+/// newline: the remark goes.
 fn partial_hunk_patch(
     diff: &str,
     hunk_index: usize,
@@ -1776,6 +2673,14 @@ fn partial_hunk_patch(
     // Whether the line just written was kept, so the "no newline" remark that
     // belongs to it can follow it or go with it.
     let mut kept_last = true;
+    // The line just written, when it was a `-` line: where it is in `body`,
+    // and whether it was picked or turned into context.
+    let mut last_minus: Option<(usize, bool)> = None;
+    // The old side's last line, without its newline, kept as context going
+    // forwards: where it is in `body`.
+    let mut bare_context: Option<usize> = None;
+    // The old side's last line, picked going backwards: where its remark is.
+    let mut bare_removed: Option<usize> = None;
 
     for line in hunk.iter().skip(1) {
         let mut chars = line.chars();
@@ -1783,6 +2688,22 @@ fn partial_hunk_patch(
             Some('+') => {
                 let picked = lines.added.contains(&new_at);
                 new_at += 1;
+                last_minus = None;
+                if picked != reverse {
+                    if let Some(at) = bare_context.take().filter(|_| !reverse) {
+                        // Forwards: take the bare line out and put it back
+                        // with its newline, so what follows starts a line of
+                        // its own. The counts are what the context had.
+                        let text = body[at][1..].to_string();
+                        body[at] = format!("-{text}");
+                        body.push(format!("+{text}"));
+                    }
+                    if let Some(at) = bare_removed.take().filter(|_| reverse) {
+                        // Backwards, a line left in as context: the restored
+                        // line has a line after it now.
+                        body.remove(at);
+                    }
+                }
                 if picked {
                     body.push((*line).to_string());
                     new_count += 1;
@@ -1805,24 +2726,33 @@ fn partial_hunk_patch(
                     body.push((*line).to_string());
                     old_count += 1;
                     kept_last = true;
+                    last_minus = Some((body.len() - 1, true));
                 } else if reverse {
                     kept_last = false;
+                    last_minus = None;
                 } else {
                     // Not being taken out after all, so it stays as context.
                     body.push(format!(" {}", chars.as_str()));
                     old_count += 1;
                     new_count += 1;
                     kept_last = true;
+                    last_minus = Some((body.len() - 1, false));
                 }
             }
             Some('\\') => {
                 // "No newline at end of file" belongs to the line above it.
                 if kept_last {
                     body.push((*line).to_string());
+                    match last_minus.take() {
+                        Some((at, false)) => bare_context = Some(at),
+                        Some((_, true)) => bare_removed = Some(body.len() - 1),
+                        None => {}
+                    }
                 }
             }
             // Context, and the empty line git writes for a blank context line.
             _ => {
+                last_minus = None;
                 body.push((*line).to_string());
                 old_at += 1;
                 new_at += 1;
@@ -1837,6 +2767,21 @@ fn partial_hunk_patch(
         return Err("None of those lines are changes".to_string());
     }
 
+    // A side that was empty — a file being created, or one being deleted — is
+    // numbered from 0. Once some of its lines survive as context it is not
+    // empty any more, and git counts a non-empty side from 1.
+    let old_start = if old_count > 0 {
+        old_start.max(1)
+    } else {
+        old_start
+    };
+    let new_start = if new_count > 0 {
+        new_start.max(1)
+    } else {
+        new_start
+    };
+    let header = reshaped_header(&header, old_count > 0, new_count > 0);
+
     let mut patch = header.join("\n");
     patch.push('\n');
     patch.push_str(&format!(
@@ -1846,6 +2791,56 @@ fn partial_hunk_patch(
     // `git apply` insists on a trailing newline.
     patch.push('\n');
     Ok(patch)
+}
+
+/// The file header for a patch that only takes part of a creation or a
+/// deletion.
+///
+/// Staged for the first time, a file's patch says "new file" and starts from
+/// `/dev/null`. Taking back some of its lines — unstaging them, or unstaging
+/// on a branch with no commits, where every staged file is new — leaves the
+/// rest as context, and a creation with context is something `git apply`
+/// refuses: the file it says is new would already have to hold those lines.
+/// So when lines survive on the side the header calls empty, the header is
+/// rewritten into an ordinary edit of the file under its own name. Deletion
+/// is the same the other way round.
+fn reshaped_header(header: &[&str], old_kept: bool, new_kept: bool) -> Vec<String> {
+    let created = header.contains(&"--- /dev/null");
+    let deleted = header.contains(&"+++ /dev/null");
+    let fix_old = created && old_kept;
+    let fix_new = deleted && new_kept;
+    if !fix_old && !fix_new {
+        return header.iter().map(|line| line.to_string()).collect();
+    }
+    // The other side names the file, with git's own quoting if it has any.
+    let named = |prefix: &str, from: char, to: char| -> Option<String> {
+        let line = header.iter().find(|line| line.starts_with(prefix))?;
+        let rest = &line[prefix.len()..];
+        let renamed = if let Some(tail) = rest.strip_prefix('"') {
+            format!("\"{to}{}", tail.strip_prefix(from).unwrap_or(tail))
+        } else {
+            format!("{to}{}", rest.strip_prefix(from).unwrap_or(rest))
+        };
+        Some(renamed)
+    };
+    let old_name = fix_old.then(|| named("+++ ", 'b', 'a')).flatten();
+    let new_name = fix_new.then(|| named("--- ", 'a', 'b')).flatten();
+    header
+        .iter()
+        .filter(|line| {
+            // The mode belongs to the creation or deletion that is no longer
+            // what this patch is, and the index line names a blob on the
+            // empty side that does not exist.
+            !(fix_old && line.starts_with("new file mode")
+                || fix_new && line.starts_with("deleted file mode")
+                || line.starts_with("index "))
+        })
+        .map(|line| match (*line, &old_name, &new_name) {
+            ("--- /dev/null", Some(name), _) => format!("--- {name}"),
+            ("+++ /dev/null", _, Some(name)) => format!("+++ {name}"),
+            _ => line.to_string(),
+        })
+        .collect()
 }
 
 fn missing_hunk(hunks: &[Vec<&str>]) -> String {

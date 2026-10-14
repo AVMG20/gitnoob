@@ -27,10 +27,27 @@ const remoteOnly = computed(() => {
 
 const path = store.repo?.path ?? null
 /** What was here when this dialog last closed on this repository, if anything. */
-const saved: ReviewDraft | null = path && forge.store.draftFor === path ? forge.store.draft : null
+const kept: ReviewDraft | null = path && forge.store.draftFor === path ? forge.store.draft : null
+/** What a push or the home tab asked this dialog to start with, which wins
+    over a draft left from before: it is the reason the dialog is open. */
+const asked = forge.store.compose
+const saved: ReviewDraft | null = asked
+  ? {
+      source: asked.source,
+      target: asked.target ?? '',
+      title: asked.title ?? '',
+      body: asked.body ?? '',
+      draft: false,
+      assignees: [],
+      reviewers: [],
+      edited: !!asked.title
+    }
+  : kept
 
 const source = ref(saved?.source ?? (store.repo?.detached ? '' : store.repo?.head ?? ''))
 const target = ref(saved?.target ?? '')
+/** Whether the target is still a guess, and may follow a better one. */
+let guessedTarget = !saved?.target
 const title = ref(saved?.title ?? '')
 const body = ref(saved?.body ?? '')
 const draft = ref(saved?.draft ?? false)
@@ -76,12 +93,29 @@ const unpushed = computed(
   () => !!branch.value && (!branch.value.upstream || branch.value.ahead > 0)
 )
 
-/** main, master, whatever this repository actually calls its trunk. */
+/**
+ * Where a review goes by default: the branch the forge calls the project's
+ * default, then the one this repository was told is its trunk, then the usual
+ * names. Only then whatever branch there is — alphabetically first is not a
+ * reason to merge anywhere.
+ */
 function guessTarget(): string {
   const names = [...locals.value.map((b) => b.name), ...remoteOnly.value.map((b) => b.name)].filter(
     (name) => name !== source.value
   )
-  return names.find((n) => n === 'main') ?? names.find((n) => n === 'master') ?? names[0] ?? 'main'
+  const preferred = [
+    forge.facts.value?.default_branch,
+    store.trunk.name?.replace(/^[^/]+\//, ''),
+    store.trunk.name,
+    'main',
+    'master'
+  ]
+  for (const name of preferred) {
+    if (name && name !== source.value && names.includes(name)) return name
+  }
+  const known = forge.facts.value?.default_branch
+  if (known && known !== source.value) return known
+  return names[0] ?? 'main'
 }
 
 /** The tip commit's subject says what a branch is for better than its name. */
@@ -127,14 +161,35 @@ function leave(keep: boolean) {
 // The title is a guess until it is typed in; while it is still a guess it
 // follows whichever branch is being merged.
 watch(source, () => {
-  if (target.value === source.value) target.value = guessTarget()
+  if (target.value === source.value) guess()
   if (!edited.value) title.value = guessTitle()
 })
 
-onMounted(() => {
+onMounted(async () => {
   forge.loadMembers()
   ai.refreshStatus()
+  // The forge's own default branch is the best guess there is; it arrives
+  // after the first paint, and replaces the guess only while it is one.
+  await forge.loadFacts()
+  if (guessedTarget) guess()
 })
+
+/** Sets the target to the guess, without it counting as a choice. */
+let guessing = false
+function guess() {
+  guessing = true
+  target.value = guessTarget()
+  guessing = false
+}
+
+// Picked by hand, the target is a choice and no later guess replaces it.
+watch(
+  target,
+  () => {
+    if (!guessing) guessedTarget = false
+  },
+  { flush: 'sync' }
+)
 
 /** Everyone on the project, with the signed-in account first. */
 const people = computed(() => {
@@ -164,11 +219,20 @@ function assignToMe() {
   assignees.value = [...assignees.value, me]
 }
 
+/**
+ * The same push the toolbar makes, questions included: a branch whose remote
+ * copy was deleted, or a push straight to main, is asked about under the
+ * toolbar rather than pushed from here without a word.
+ */
 async function push() {
   if (!source.value) return
   working.value = true
-  await git.pushBranch(source.value, !branch.value?.upstream)
+  error.value = null
+  const pushed = await git.requestPush(source.value, !branch.value?.upstream)
   working.value = false
+  if (pushed === null && (git.store.pushGone || git.store.pushConfirm)) {
+    error.value = 'Not pushed yet: there is a question about it under the toolbar.'
+  }
 }
 
 /** Writes both fields from the commits this branch has and the target does not. */
@@ -217,7 +281,7 @@ async function submit(andOpen: boolean) {
       reviewers: reviewers.value
     })
     await forge.loadReviews()
-    git.note(`Opened !${review.number} ${review.title}`)
+    git.note(`Opened ${forge.sigil.value}${review.number} ${review.title}`)
     // GitHub takes the people in requests of their own, after the pull request
     // itself; if one of those failed the review still exists, and saying so is
     // more use than an error that suggests nothing happened.

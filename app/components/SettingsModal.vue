@@ -24,8 +24,10 @@ import {
   FORGE_LABELS,
   OPENROUTER_SECRET,
   REASONING_LEVELS,
+  COMMIT_FLOW_DEFAULTS,
   emptyProfile,
   useConfig,
+  type CommitFlowSettings,
   type ForgeKind,
   type Profile
 } from '~/composables/useConfig'
@@ -35,19 +37,46 @@ import { useAi } from '~/composables/useAi'
 import { useGit } from '~/composables/useGit'
 import { describeKey, useSsh } from '~/composables/useSsh'
 import { SYSTEM_PAIR, useTheme } from '~/composables/useTheme'
-import { SHORTCUTS, SHORTCUT_GROUPS, keyLabel } from '~/composables/useShortcuts'
+import {
+  SHORTCUTS,
+  SHORTCUT_GROUPS,
+  clashFor,
+  eventChord,
+  isRebindable,
+  keyLabel,
+  keysFor,
+  type Shortcut
+} from '~/composables/useShortcuts'
 import { useColumns } from '~/composables/useColumns'
 import { useUpdates } from '~/composables/useUpdates'
 import { useZoom } from '~/composables/useZoom'
 import { useSyntax } from '~/composables/useSyntax'
 import { highlightWhole } from '~/composables/useHighlight'
 import SearchSelect from '~/components/SearchSelect.vue'
+import { useRewrite } from '~/composables/useRewrite'
 
 const config = useConfig()
 const forge = useForge()
 const ssh = useSsh()
 const ai = useAi()
 const git = useGit()
+
+// Remembering conflict resolutions is per repository, read from the backend
+// for the one that is open: the list it is kept in names repositories by the
+// path the backend knows them by.
+const rewrite = useRewrite()
+const rerere = ref(false)
+async function readRerere() {
+  if (git.store.repo) rerere.value = await rewrite.rerereEnabled()
+}
+async function toggleRerere(enabled: boolean) {
+  const now = await rewrite.setRerere(enabled)
+  if (now !== null) rerere.value = now
+  // The global settings are saved whole, so the copy here has to carry the
+  // new list or the next change elsewhere would put the old one back.
+  await config.load()
+}
+onMounted(readRerere)
 const { choice, themes, setTheme, contrast, contrasts, setContrast } = useTheme()
 
 /** Porcelain and Graphite, for the card that follows the system between them. */
@@ -120,6 +149,73 @@ const shortcutGroups = computed(() =>
     rows: SHORTCUTS.filter((one) => one.group === group)
   })).filter((one) => one.rows.length)
 )
+
+// --- moving a key
+//
+// A row's button listens for the next chord pressed on it. Escape gives up; a
+// chord without ⌘/Ctrl or Alt is refused, since a bare letter would fire
+// while reading; and one that another shortcut already answers to in the same
+// place is refused with its name, rather than one of the two going quiet.
+const capturing = ref<string | null>(null)
+const captureNote = ref<string | null>(null)
+
+function startCapture(id: string) {
+  capturing.value = capturing.value === id ? null : id
+  captureNote.value = null
+}
+
+function stopCapture() {
+  capturing.value = null
+}
+
+const movedKeys = computed(() => config.settings.value?.shortcuts ?? {})
+
+async function saveKeys(next: Record<string, string>) {
+  await patchGlobal({ shortcuts: next })
+}
+
+async function onCaptureKey(event: KeyboardEvent, row: Shortcut) {
+  if (capturing.value !== row.id) return
+  event.preventDefault()
+  event.stopPropagation()
+  if (event.key === 'Escape') {
+    stopCapture()
+    return
+  }
+  if (['Meta', 'Control', 'Shift', 'Alt'].includes(event.key)) return
+  const chord = eventChord(event)
+  if (!/^(mod|alt)\+/.test(chord)) {
+    captureNote.value = `Hold ${keyLabel('mod')} or ${keyLabel('alt')} with the key.`
+    return
+  }
+  const clash = clashFor(row, chord)
+  if (clash) {
+    captureNote.value = `${keyLabel(chord)} already does “${clash.label}”. Move that one first.`
+    return
+  }
+  const next = { ...movedKeys.value }
+  if (chord.toLowerCase() === row.keys.toLowerCase()) delete next[row.id]
+  else next[row.id] = chord
+  stopCapture()
+  captureNote.value = null
+  await saveKeys(next)
+}
+
+async function resetKey(id: string) {
+  const next = { ...movedKeys.value }
+  delete next[id]
+  await saveKeys(next)
+}
+
+// --- the commit box
+const commitFlow = computed<CommitFlowSettings>(() => ({
+  ...COMMIT_FLOW_DEFAULTS,
+  ...(config.settings.value?.commit ?? {})
+}))
+
+function patchCommit(patch: Partial<CommitFlowSettings>) {
+  return patchGlobal({ commit: { ...commitFlow.value, ...patch } })
+}
 
 // --- profiles
 const editing = ref<Profile | null>(null)
@@ -377,8 +473,7 @@ onMounted(async () => {
           <span v-if="updates.store.stage === 'available'" class="nav-dot" />
         </button>
         <p class="nav-note faint">
-          Profiles hold their own forge, identity and open projects. Everything under AI,
-          Appearance and Behaviour is shared across all of them.
+          Each profile has its own forge, identity and projects. All other settings are shared.
         </p>
       </nav>
 
@@ -389,8 +484,8 @@ onMounted(async () => {
         <section v-if="section === 'profiles'">
           <h2>Profiles</h2>
           <p class="dim intro">
-            One per context: work on GitLab, personal on GitHub. Switching swaps the forge, the
-            commit identity and the open project tabs.
+            One per account, such as work and personal. Switching changes the forge, the commit
+            identity and the open tabs.
           </p>
 
           <div class="list">
@@ -471,10 +566,8 @@ onMounted(async () => {
                 <KeyRound :size="12" /> Access token
               </span>
               <span class="hint faint">
-                A password gitnoob uses to talk to {{ FORGE_LABELS[editing.forge] }} on your
-                behalf, so it can list pull requests and open them for you. Make one under
-                Settings → Developer settings → Personal access tokens, and paste it here.
-                Pushing and pulling do not need it — that is the ssh key below.
+                Lets gitnoob list and open pull requests on {{ FORGE_LABELS[editing.forge] }}.
+                Pushing and pulling don't need it; they use the SSH key.
               </span>
               <button class="btn btn-ghost token-link" @click="openTokenPage">
                 <component :is="forgeIcon(editing.forge)" :size="14" />
@@ -492,7 +585,7 @@ onMounted(async () => {
                 "
               />
               <span class="hint faint">
-                Kept in the operating system's keychain, never in the config file.
+                Stored in the system keychain, not in the config file.
               </span>
             </div>
 
@@ -517,9 +610,8 @@ onMounted(async () => {
                 </option>
               </select>
               <span class="hint faint">
-                Pins this profile to one key, so a work account and a personal account can share a
-                machine without ssh offering the wrong one first. Every fetch, pull and push made
-                while this profile is active uses it and nothing else.
+                While this profile is active, fetch, pull and push use only this key. Useful when
+                work and personal accounts share a machine.
               </span>
               <button
                 v-if="editing.forge !== 'none'"
@@ -577,9 +669,9 @@ onMounted(async () => {
                 />
               </div>
               <span class="hint faint">
-                Written to each repository as <span class="mono">user.signingkey</span> and
-                <span class="mono">gpg.format</span> when it is opened under this profile. Your
-                global git config is never touched.
+                Set as <span class="mono">user.signingkey</span> and
+                <span class="mono">gpg.format</span> in repositories opened with this profile. Your
+                global git config is not changed.
               </span>
             </div>
 
@@ -594,8 +686,8 @@ onMounted(async () => {
               <span>
                 Sign every commit
                 <span class="sub faint">
-                  Sets <span class="mono">commit.gpgsign</span> on repositories opened under this
-                  profile. Unticked leaves whatever each repository already says.
+                  Sets <span class="mono">commit.gpgsign</span> in repositories opened with this
+                  profile. Unticked leaves each repository's setting alone.
                 </span>
               </span>
             </label>
@@ -625,8 +717,28 @@ onMounted(async () => {
               </label>
             </div>
             <p class="hint faint no-top">
-              Every repository you open under this profile commits as this person. Opening one
-              says so at the bottom of the window when it changes what was there before.
+              Repositories opened with this profile commit with this name and email. You get a note
+              when that changes a repository's settings.
+            </p>
+
+            <label v-if="editing.forge !== 'none'" class="field">
+              <span class="label">Only for these owners (optional)</span>
+              <input
+                type="text"
+                data-testid="profile-owners"
+                placeholder="acme, acme-labs"
+                :value="(editing.owners ?? []).join(', ')"
+                @change="
+                  editing.owners = ($event.target as HTMLInputElement).value
+                    .split(',')
+                    .map((one) => one.trim())
+                    .filter(Boolean)
+                "
+              />
+            </label>
+            <p v-if="editing.forge !== 'none'" class="hint faint no-top">
+              For when two profiles share a host: repositories under these accounts or groups use
+              this profile.
             </p>
 
             <div class="editor-actions">
@@ -655,8 +767,8 @@ onMounted(async () => {
         <section v-else-if="section === 'ai'">
           <h2>AI</h2>
           <p class="dim intro">
-            Everything goes through OpenRouter, so one key covers every model. The key is stored in
-            the keychain and only ever leaves this machine in a request to OpenRouter.
+            Requests go through OpenRouter, so one key works for every model. The key is stored in
+            the keychain and only sent to OpenRouter.
           </p>
 
           <label class="field">
@@ -697,9 +809,8 @@ onMounted(async () => {
             </select>
           </label>
           <p class="hint faint no-top">
-            OpenRouter's own effort levels, passed on to whichever model you picked. Thinking
-            tokens are billed, and a commit message rarely needs them — a model that cannot reason
-            ignores this either way.
+            How much the model reasons first. Thinking tokens cost money and commit messages rarely
+            need them. Models that can't reason ignore this.
           </p>
 
           <label class="field narrow">
@@ -715,9 +826,8 @@ onMounted(async () => {
             />
           </label>
           <p class="hint faint no-top">
-            The most the model may write for one answer, thinking included. A conflict is given
-            more room when both sides are bigger than this. Raise it if answers come back cut
-            off; lower it to cap what one request can cost.
+            The longest answer the model may give, thinking included. Raise it if answers get cut
+            off; lower it to limit cost. Large conflicts get more.
           </p>
 
           <!-- The instructions themselves rather than a choice between two of
@@ -735,16 +845,15 @@ onMounted(async () => {
             />
           </label>
           <p class="hint faint no-top">
-            What the model is told before it sees the diff. The default asks for one short summary
-            line and a body only where the change needs one. Saved when you click away.
+            Sent to the model along with the diff. Saved when you click away.
             <button v-if="promptChanged" class="link" @click="resetCommitPrompt">
               Put the default back
             </button>
           </p>
 
           <p class="hint faint">
-            With a key and a model set, you get a Generate button on the commit box and
-            "Resolve with AI" in the conflict resolver.
+            With a key and a model set, the commit box gets a Generate button and the conflict
+            resolver gets "Resolve with AI".
           </p>
         </section>
 
@@ -752,9 +861,8 @@ onMounted(async () => {
         <section v-else-if="section === 'appearance'">
           <h2>Appearance</h2>
           <p class="dim intro">
-            {{ themes.length }} themes, counted here rather than claimed: {{ themeCount('Light') }}
-            light, {{ themeCount('Semi-dark') }} semi-dark, {{ themeCount('Dark') }} dark. The
-            choice is shared across every repository.
+            {{ themes.length }} themes: {{ themeCount('Light') }} light,
+            {{ themeCount('Semi-dark') }} semi-dark, {{ themeCount('Dark') }} dark.
           </p>
 
           <div class="themes">
@@ -798,7 +906,7 @@ onMounted(async () => {
 
           <h3 class="sub">Contrast</h3>
           <p class="dim intro">
-            How hard the dimmed text and the lines between panels work, on whichever theme is on.
+            How strong dimmed text and panel borders are.
           </p>
           <div class="sizes">
             <button
@@ -815,10 +923,8 @@ onMounted(async () => {
 
           <h3 class="sub">Text size</h3>
           <p class="dim intro">
-            How large the window draws everything — text, rows and the graph together, so the
-            commit list stays in step with the lines drawn through it.
-            {{ keyLabel('mod+=') }} and {{ keyLabel('mod+-') }} step through the same sizes, and
-            {{ keyLabel('mod+0') }} comes back here.
+            Scales text, rows and the graph together. {{ keyLabel('mod+=') }} and
+            {{ keyLabel('mod+-') }} step through these sizes, {{ keyLabel('mod+0') }} resets.
           </p>
           <div class="sizes">
             <button
@@ -835,9 +941,8 @@ onMounted(async () => {
 
           <h3 class="sub">Syntax colours</h3>
           <p class="dim intro">
-            Which theme code is coloured with in a diff and in an open file. These are Shiki's
-            themes, the same ones VS Code loads, so search by the name you already know it by.
-            Dark and light are marked: a dark theme under a light window is hard going.
+            Colours for code in diffs and open files. These are the same themes VS Code uses, each
+            marked dark or light.
           </p>
           <SearchSelect
             v-model="chosenSyntax"
@@ -854,9 +959,8 @@ onMounted(async () => {
 
           <h3 class="sub">Columns in the commit list</h3>
           <p class="dim intro">
-            Which columns are drawn. Drag the line between two headings to resize one, and
-            double-click that line to put it back. Right-clicking the headings offers the same
-            list.
+            Drag the edge between two headings to resize a column; double-click it to reset.
+            Right-clicking the headings shows this list too.
           </p>
           <div class="cols">
             <label v-for="column in cols.columns" :key="column.id" class="check">
@@ -872,19 +976,46 @@ onMounted(async () => {
         <section v-else-if="section === 'shortcuts'">
           <h2>Shortcuts</h2>
           <p class="dim intro">
-            Every key the window listens for, and where it has to be pressed. None of them fire
-            while a dialog is open, or while the caret is in a box that takes text.
+            Every shortcut and where it works. None of them work while a dialog is open or while
+            you're typing in a text field.
           </p>
 
           <div v-for="one in shortcutGroups" :key="one.group" class="keys-group">
             <h3>{{ one.group }}</h3>
             <div v-for="row in one.rows" :key="row.id" class="keys-row">
-              <kbd class="keys">{{ keyLabel(row.keys) }}</kbd>
+              <kbd class="keys" :class="{ moved: movedKeys[row.id] }">{{
+                keyLabel(keysFor(row.id))
+              }}</kbd>
               <span class="keys-what">
                 {{ row.label }}
                 <span v-if="row.note" class="faint small block">{{ row.note }}</span>
+                <span v-if="capturing === row.id && captureNote" class="small block capture-note">
+                  {{ captureNote }}
+                </span>
               </span>
-              <span class="faint small keys-where">{{ row.where }}</span>
+              <span class="faint small keys-where">
+                {{ row.where }}
+                <span v-if="isRebindable(row)" class="rebind">
+                  <button
+                    class="btn tiny"
+                    :class="{ on: capturing === row.id }"
+                    :title="capturing === row.id ? 'Press the new keys, or Esc' : 'Bind this to other keys'"
+                    @click="startCapture(row.id)"
+                    @keydown="onCaptureKey($event, row)"
+                    @blur="capturing === row.id && stopCapture()"
+                  >
+                    {{ capturing === row.id ? 'Press keys…' : 'Change' }}
+                  </button>
+                  <button
+                    v-if="movedKeys[row.id]"
+                    class="btn tiny ghost"
+                    :title="`Back to ${keyLabel(row.keys)}`"
+                    @click="resetKey(row.id)"
+                  >
+                    Reset
+                  </button>
+                </span>
+              </span>
             </div>
           </div>
         </section>
@@ -893,8 +1024,8 @@ onMounted(async () => {
         <section v-else-if="section === 'updates'">
           <h2>Updates</h2>
           <p class="dim intro">
-            Releases are built for macOS, Windows and Linux and published on GitHub. This window
-            can fetch one and install it over itself.
+            Releases for macOS, Windows and Linux are published on GitHub. The app can download and
+            install them itself.
           </p>
 
           <div class="field">
@@ -957,8 +1088,7 @@ onMounted(async () => {
               </button>
             </div>
             <p class="hint faint">
-              The app closes while the new version is written, and comes back on its own. Nothing
-              in your repositories is touched.
+              The app closes while it updates, then reopens. Your repositories are not touched.
             </p>
           </div>
 
@@ -971,29 +1101,29 @@ onMounted(async () => {
             <span>
               <strong>Look for a new version at launch</strong>
               <span class="faint block">
-                One request to GitHub when the window opens, asking only which release is newest.
-                Off, and the button above is the only check.
+                Asks GitHub for the latest release when the app opens. When off, only the button
+                above checks.
               </span>
             </span>
           </label>
 
           <p class="hint faint">
-            Every download is signed with the project's release key and verified before it is
-            written, so a file that key never signed is refused.
+            Updates are signed with the project's release key and verified before they are
+            installed.
             <a href="#" @click.prevent="forge.open(RELEASES_URL)">
               All releases <ExternalLink :size="11" />
             </a>
           </p>
           <p v-if="linux" class="hint faint no-top">
-            On Linux this works for the AppImage. Installed from the .deb or .rpm, update through
-            your package manager or download the next release by hand.
+            On Linux this works for the AppImage. If you installed the .deb or .rpm, update through
+            your package manager.
           </p>
         </section>
 
         <!-- Behaviour -->
         <section v-else>
           <h2>Behaviour</h2>
-          <p class="dim intro">The quiet housekeeping that saves remembering commands.</p>
+          <p class="dim intro">What the app does for you around git.</p>
 
           <label class="check">
             <input
@@ -1004,8 +1134,7 @@ onMounted(async () => {
             <span>
               <strong>Fetch when a project opens</strong>
               <span class="faint block">
-                So the ahead/behind counts on screen are true straight away rather than whatever
-                they were last session.
+                Keeps the ahead/behind counts up to date from the start.
               </span>
             </span>
           </label>
@@ -1020,7 +1149,7 @@ onMounted(async () => {
                 :value="config.settings.value?.auto_fetch_minutes"
                 @change="patchGlobal({ auto_fetch_minutes: Number(($event.target as HTMLInputElement).value) })"
               />
-              <span class="faint">minutes — 0 turns it off</span>
+              <span class="faint">minutes (0 turns it off)</span>
             </span>
           </label>
 
@@ -1033,14 +1162,47 @@ onMounted(async () => {
             <span>
               <strong>Stash and restore around branch switches and pulls</strong>
               <span class="faint block">
-                Uncommitted work is stashed, the operation runs, then the work comes back. Without
-                this, git refuses and you tidy up by hand.
+                Uncommitted changes are stashed first and restored afterwards. Without this, git
+                refuses while you have changes.
+              </span>
+            </span>
+          </label>
+
+          <label class="check">
+            <input
+              type="checkbox"
+              :checked="config.settings.value?.update_refs ?? false"
+              @change="patchGlobal({ update_refs: ($event.target as HTMLInputElement).checked })"
+            />
+            <span>
+              <strong>Move stacked branches along with a rebase</strong>
+              <span class="faint block">
+                Branches built on the rebased branch move with it (git's
+                <span class="mono">--update-refs</span>, git 2.38+). Branches at the tip, such as
+                backups, and branches that track a remote branch with a different name are left
+                alone.
+              </span>
+            </span>
+          </label>
+
+          <label v-if="git.store.repo" class="check" data-test="rerere-setting">
+            <input
+              type="checkbox"
+              :checked="rerere"
+              @change="toggleRerere(($event.target as HTMLInputElement).checked)"
+            />
+            <span>
+              <strong>Remember how conflicts were resolved in this repository</strong>
+              <span class="faint block">
+                Uses git's rerere to suggest resolutions you made before; you still accept each one.
+                Once used, git does this in the terminal too for this repository, unless
+                <span class="mono">rerere.enabled</span> is false in your git config.
               </span>
             </span>
           </label>
 
           <label class="field">
-            <span class="label">If a remote branch's local branch has diverged when checking it out</span>
+            <span class="label">When a checked-out remote branch has diverged locally</span>
             <select
               :value="config.settings.value?.diverged_checkout"
               @change="patchGlobal({ diverged_checkout: ($event.target as HTMLSelectElement).value })"
@@ -1052,9 +1214,8 @@ onMounted(async () => {
             </select>
           </label>
           <p class="hint faint no-top">
-            Double-clicking a remote branch checks out its local branch and pulls it up to date
-            when that is a plain fast-forward. This decides what happens on the rare day both
-            sides have commits of their own.
+            Double-clicking a remote branch checks out its local branch and fast-forwards it. This
+            is for when both sides have new commits.
           </p>
 
           <label class="check">
@@ -1068,11 +1229,80 @@ onMounted(async () => {
             <span>
               <strong>Open worktrees in the current tab</strong>
               <span class="faint block">
-                Clicking a worktree in the sidebar turns this tab into it, instead of opening it as
-                a tab of its own. Right-click a worktree for the other one either way.
+                Clicking a worktree in the sidebar opens it in this tab instead of a new one.
+                Right-click for the other option.
               </span>
             </span>
           </label>
+
+          <label class="check">
+            <input
+              type="checkbox"
+              data-testid="setting-post-merge"
+              :checked="config.settings.value?.post_merge_switch !== false"
+              @change="
+                patchGlobal({ post_merge_switch: ($event.target as HTMLInputElement).checked })
+              "
+            />
+            <span>
+              <strong>After merging a review, switch to the main branch</strong>
+              <span class="faint block">
+                If the merged branch is checked out and there are no uncommitted changes, switches
+                to main and fast-forwards it. Deleting the branch is offered, never automatic.
+              </span>
+            </span>
+          </label>
+
+          <label class="check">
+            <input
+              type="checkbox"
+              :checked="config.settings.value?.offer_review_after_push !== false"
+              @change="
+                patchGlobal({ offer_review_after_push: ($event.target as HTMLInputElement).checked
+                })
+              "
+            />
+            <span>
+              <strong>Offer to open a pull request after a branch's first push</strong>
+              <span class="faint block">
+                Shows a notice with the pull request filled in from the branch's commits. Nothing is
+                created until you confirm.
+              </span>
+            </span>
+          </label>
+
+          <label class="check">
+            <input
+              type="checkbox"
+              :checked="config.settings.value?.check_notifications !== false"
+              @change="
+                patchGlobal({ check_notifications: ($event.target as HTMLInputElement).checked })
+              "
+            />
+            <span>
+              <strong>Watch checks and reviews on my pull requests</strong>
+              <span class="faint block">
+                Sends a system notification when checks pass or fail, or when someone reviews.
+              </span>
+            </span>
+          </label>
+
+          <label class="field">
+            <span class="label">When a repository belongs to another profile</span>
+            <select
+              :value="config.settings.value?.profile_match ?? 'ask'"
+              @change="patchGlobal({ profile_match: ($event.target as HTMLSelectElement).value as 'ask' })"
+            >
+              <option value="ask">Ask whether to use that profile for it</option>
+              <option value="switch">Use that profile for it</option>
+              <option value="off">Do nothing</option>
+            </select>
+          </label>
+          <p class="hint faint no-top">
+            A repository on another forge, or under an owner another profile is for. The other
+            profile's token, SSH key and identity are used for that repository only. Its remote URL
+            is never changed without asking.
+          </p>
 
           <label class="check">
             <input
@@ -1085,10 +1315,9 @@ onMounted(async () => {
             <span>
               <strong>Check signatures in the commit list</strong>
               <span class="faint block">
-                Puts a mark beside every signed commit, and says which of them cannot be trusted.
-                Off by default because it runs gpg or ssh-keygen once per commit on the page,
-                which on a large repository is the slowest thing on the screen. The commit you
-                have selected is checked either way.
+                Marks signed commits and flags ones that can't be trusted. Off by default because it
+                runs gpg or ssh-keygen for every visible commit, which is slow on large
+                repositories. The selected commit is always checked.
               </span>
             </span>
           </label>
@@ -1105,9 +1334,56 @@ onMounted(async () => {
             <span>
               <strong>Show a picture for each author</strong>
               <span class="faint block">
-                Looked up from the author's email address on GitHub and Gravatar — and on GitLab
-                for a GitLab project — then kept on this machine. Off, and initials are drawn
-                instead and nothing leaves the app.
+                Looked up by email on GitHub and Gravatar (and GitLab for GitLab projects), then
+                cached. When off, initials are shown and nothing is sent.
+              </span>
+            </span>
+          </label>
+
+          <label class="check">
+            <input
+              type="checkbox"
+              :checked="commitFlow.ticket_prefix"
+              @change="patchCommit({ ticket_prefix: ($event.target as HTMLInputElement).checked })"
+            />
+            <span>
+              <strong>Start the commit message with the branch's ticket</strong>
+              <span class="faint block">
+                On a branch like <span class="mono">feature/ABC-123-login</span> an empty message
+                starts with <span class="mono">ABC-123: </span>. The AI always sees the branch name.
+              </span>
+            </span>
+          </label>
+
+          <label class="check">
+            <input
+              type="checkbox"
+              :checked="commitFlow.guard"
+              @change="patchCommit({ guard: ($event.target as HTMLInputElement).checked })"
+            />
+            <span>
+              <strong>Look over what is staged before committing</strong>
+              <span class="faint block">
+                Warns about conflict markers, real-looking keys and tokens, and files like
+                <span class="mono">.env</span> or <span class="mono">id_rsa</span>. You can still
+                commit.
+              </span>
+            </span>
+          </label>
+
+          <label class="check" :class="{ dim: !commitFlow.guard }">
+            <input
+              type="checkbox"
+              :disabled="!commitFlow.guard"
+              :checked="commitFlow.guard_debug"
+              @change="patchCommit({ guard_debug: ($event.target as HTMLInputElement).checked })"
+            />
+            <span>
+              <strong>Also point out debugging left in</strong>
+              <span class="faint block">
+                <span class="mono">console.log</span>, <span class="mono">dbg!</span>,
+                <span class="mono">dd(</span> and <span class="mono">var_dump</span> on added
+                lines. Off by default, since plenty of code uses them on purpose.
               </span>
             </span>
           </label>
@@ -1122,6 +1398,90 @@ onMounted(async () => {
               :value="config.settings.value?.graph_page_size"
               @change="patchGlobal({ graph_page_size: Number(($event.target as HTMLInputElement).value) })"
             />
+          </label>
+
+          <h3 class="sub">Staying in sync with the remote</h3>
+
+          <label class="check">
+            <input
+              type="checkbox"
+              :checked="config.settings.value?.keep_trunk_current !== false"
+              @change="
+                patchGlobal({ keep_trunk_current: ($event.target as HTMLInputElement).checked })
+              "
+            />
+            <span>
+              <strong>Keep the local main branch current</strong>
+              <span class="faint block">
+                After each fetch, fast-forwards main to the remote when it has no commits of its own
+                and isn't checked out. Nothing can be lost.
+              </span>
+            </span>
+          </label>
+
+          <label class="check">
+            <input
+              type="checkbox"
+              :checked="config.settings.value?.announce_remote_moves !== false"
+              @change="
+                patchGlobal({ announce_remote_moves: ($event.target as HTMLInputElement).checked })
+              "
+            />
+            <span>
+              <strong>Say when the remote moves on</strong>
+              <span class="faint block">
+                When a background fetch brings new commits for your branch or main, a notice says
+                how many and offers to pull them.
+              </span>
+            </span>
+          </label>
+
+          <label class="check">
+            <input
+              type="checkbox"
+              :checked="config.settings.value?.suggest_tidy !== false"
+              @change="patchGlobal({ suggest_tidy: ($event.target as HTMLInputElement).checked })"
+            />
+            <span>
+              <strong>Offer to tidy away finished branches</strong>
+              <span class="faint block">
+                After a fetch, the sidebar lists local branches that were merged, squashed, or whose
+                remote branch was deleted. Nothing is deleted without a click, and deletions can be
+                undone.
+              </span>
+            </span>
+          </label>
+
+          <label class="field">
+            <span class="label">Update from main</span>
+            <select
+              :value="config.settings.value?.update_from_trunk ?? 'auto'"
+              @change="patchGlobal({ update_from_trunk: ($event.target as HTMLSelectElement).value })"
+            >
+              <option value="auto">Rebase branches only I have, merge into pushed ones</option>
+              <option value="rebase">Always rebase onto main</option>
+              <option value="merge">Always merge main in</option>
+            </select>
+          </label>
+          <p class="hint faint no-top">
+            Rebasing keeps history linear, but a pushed branch then needs a force push. Merging
+            never rewrites pushed commits.
+          </p>
+
+          <label class="check">
+            <input
+              type="checkbox"
+              :checked="config.settings.value?.warn_push_to_trunk"
+              @change="
+                patchGlobal({ warn_push_to_trunk: ($event.target as HTMLInputElement).checked })
+              "
+            />
+            <span>
+              <strong>Ask before pushing straight to main</strong>
+              <span class="faint block">
+                For teams where everything reaches main through a pull request.
+              </span>
+            </span>
           </label>
         </section>
       </div>
@@ -1661,6 +2021,28 @@ select {
 
 .keys-where {
   text-align: right;
+}
+
+/* A key moved from the one it ships with: the accent, so a changed binding is
+   findable at a glance. */
+.keys.moved {
+  border-color: var(--primary-line);
+}
+
+.rebind {
+  display: inline-flex;
+  gap: 4px;
+  margin-left: 6px;
+}
+
+.rebind .btn.on {
+  background: var(--primary-bg);
+  border-color: var(--primary-line);
+}
+
+.capture-note {
+  color: var(--amber-soft);
+  margin-top: 2px;
 }
 
 .sub {

@@ -14,6 +14,7 @@ import { FORGE_LABELS, useConfig } from '~/composables/useConfig'
 import { useForge } from '~/composables/useForge'
 import { useAi } from '~/composables/useAi'
 import { useUpdates } from '~/composables/useUpdates'
+import { aimedAt } from '~/composables/useInvoke'
 
 const config = useConfig()
 const forge = useForge()
@@ -48,6 +49,24 @@ function iconFor(forgeKind: string) {
 watch(open, (showing) => {
   if (showing) forge.loadFaces()
 })
+
+/** The open repository answers to a profile other than the active one. */
+const bound = computed(
+  () =>
+    !!forge.store.status?.profile &&
+    !!profile.value &&
+    forge.store.status.profile !== profile.value.id
+)
+
+/** Back to the active profile for this repository. */
+async function unbind() {
+  const path = aimedAt()
+  open.value = false
+  if (!path) return
+  await config.setRepoProfile(path, null)
+  await forge.refreshStatus()
+  void forge.loadReviews()
+}
 
 async function pick(id: string) {
   open.value = false
@@ -89,6 +108,13 @@ async function pick(id: string) {
         </div>
 
         <div class="rows">
+          <!-- A repository given to another profile talks to the forge as that
+               profile: said here, where the account is read, with the way back. -->
+          <div v-if="bound" class="row" data-testid="bound-profile">
+            <span class="faint">This repository uses</span>
+            <span class="small">{{ forge.store.status?.profile_name }}</span>
+            <button class="link small" @click="unbind">Use {{ profile?.name }}</button>
+          </div>
           <!-- Named for what it is from the outside: an account you are signed
                in to, not the token that does the signing in. -->
           <div v-if="profile?.forge && profile.forge !== 'none'" class="row">
@@ -288,6 +314,15 @@ async function pick(id: string) {
 
 .ok {
   color: var(--green);
+}
+
+.link {
+  padding: 0;
+  color: var(--accent);
+}
+
+.link:hover {
+  text-decoration: underline;
 }
 
 .item {

@@ -1,4 +1,4 @@
-import { invoke } from './useInvoke'
+import { aimedAt, invoke } from './useInvoke'
 import { computed, reactive } from 'vue'
 import { useConfig, type ForgeKind } from '~/composables/useConfig'
 import { forgetAvatars } from '~/composables/useAvatars'
@@ -15,7 +15,49 @@ export interface ForgeStatus {
   has_token: boolean
   user: string | null
   slug: RepoSlug | null
+  /** Why the forge cannot be asked about this repository, when it cannot. */
   error: string | null
+  /** The profile the repository answers to, which may not be the active one. */
+  profile?: string | null
+  profile_name?: string | null
+  /** The remote the reviews live on. */
+  remote?: string | null
+}
+
+/** What the forge project is: default branch, merge methods, parent. */
+export interface RepoFacts {
+  full_name: string
+  default_branch: string
+  /** `merge`, `squash`, `rebase`: the ones the project allows. */
+  merge_methods: MergeMethod[]
+  parent: string | null
+  id: number
+}
+
+export type MergeMethod = 'merge' | 'squash' | 'rebase'
+
+/** One thing a forge says needs you, from the home tab's inbox. */
+export interface InboxRow {
+  kind: 'requested' | 'failing' | 'changes'
+  host: string
+  repo: string
+  profile: string
+  /** The project on disk this review belongs to, when there is one. */
+  path: string | null
+  review: Review
+}
+
+export interface Inbox {
+  rows: InboxRow[]
+  errors: string[]
+}
+
+/** What the new-review dialog starts with when something else opens it. */
+export interface ReviewCompose {
+  source: string
+  target?: string
+  title?: string
+  body?: string
 }
 
 /** Someone a review can be handed to. */
@@ -73,6 +115,10 @@ export interface Review {
   source: ReviewSource | null
   /** Set when the review opened but something after it did not. */
   warning: string | null
+  /** The checks on its head in one word, when the forge said. */
+  checks?: 'success' | 'failure' | 'pending' | 'none' | null
+  /** Where the reviewing stands, when the forge said. */
+  review_state?: 'approved' | 'changes_requested' | 'review_required' | null
 }
 
 /** Somebody a review names: its author, an assignee, a reviewer. */
@@ -192,8 +238,18 @@ const store = reactive({
   repos: [] as ForgeRepo[],
   reposFor: null as string | null,
   loadingRepos: false,
-  reposError: null as string | null
+  reposError: null as string | null,
+  /** The project `reviews` were read for, so a slow answer for another tab
+      is not drawn in this one. */
+  reviewsFor: null as string | null,
+  /** What the forge project is, by project id. */
+  facts: {} as Record<string, RepoFacts>,
+  /** A new review someone asked to start: a push, the home tab. */
+  compose: null as ReviewCompose | null
 })
+
+/** Branch protection already asked this session, by project and branch. */
+const protectedBranches = new Map<string, boolean>()
 
 /** How many open reviews the list asks for; `forge::reviews` uses the same. */
 export const LISTED = 50
@@ -219,8 +275,18 @@ export function useForge() {
     return 'the forge'
   })
 
+  /**
+   * Reads which forge, account and project the repository in front answers to.
+   *
+   * Guarded like `loadReviews`: finding the project can mean a request to the
+   * forge, and an answer for the tab that was in front when it was asked is
+   * dropped once another one is, rather than landing on it.
+   */
   async function refreshStatus() {
-    store.status = await invoke<ForgeStatus>('forge_status').catch(() => null)
+    const asked = aimedAt() ?? ''
+    const found = await invoke<ForgeStatus>('forge_status').catch(() => null)
+    if ((aimedAt() ?? '') !== asked) return
+    store.status = found
     await loadMe()
   }
 
@@ -262,26 +328,93 @@ export function useForge() {
       host alone, switching between them kept the first one's face and login. */
   function profileId() {
     if (!store.status || store.status.kind === 'none') return null
-    const active = useConfig().profile.value?.id ?? ''
+    // The profile the repository answers to, which is the active one unless
+    // the repository was given another.
+    const active = store.status.profile ?? useConfig().profile.value?.id ?? ''
     return `${active}:${store.status.kind}@${store.status.host}`
   }
 
+  /** The repository and project a list belongs to. Both, since two tabs can
+      be clones of one project and one tab can change project. */
+  function listId() {
+    return `${aimedAt() ?? ''}|${projectId() ?? ''}`
+  }
+
+  /**
+   * Reads the open reviews of the repository in front.
+   *
+   * Guarded like the details and members are: a slow answer for the tab that
+   * was in front when it was asked is dropped once another tab is, rather
+   * than drawn as that tab's reviews.
+   */
   async function loadReviews() {
     if (!usable.value) {
       store.reviews = []
+      store.reviewsFor = null
+      store.error = store.status?.error ?? null
       return
     }
+    const asked = listId()
+    if (store.reviewsFor !== asked) store.reviews = []
     store.loading = true
     store.error = null
     try {
-      store.reviews = await invoke<Review[]>('forge_reviews')
+      const found = await invoke<Review[]>('forge_reviews')
+      if (listId() !== asked) return
+      store.reviews = found
+      store.reviewsFor = asked
     } catch (error) {
+      if (listId() !== asked) return
       store.error = String(error)
       store.reviews = []
     } finally {
-      store.loading = false
+      if (listId() === asked) store.loading = false
     }
   }
+
+  /** What the forge project is — default branch, merge methods — once a session. */
+  async function loadFacts(): Promise<RepoFacts | null> {
+    const id = projectId()
+    if (!usable.value || !id) return null
+    if (store.facts[id]) return store.facts[id]
+    try {
+      const found = await invoke<RepoFacts>('forge_repo_info')
+      store.facts[id] = found
+      return found
+    } catch {
+      return null
+    }
+  }
+
+  /** The facts already read for the project in front, without asking. */
+  const facts = computed(() => {
+    const id = projectId()
+    return id ? (store.facts[id] ?? null) : null
+  })
+
+  /**
+   * Whether the forge protects a branch, for a warning before pushing to it.
+   *
+   * `remote` is the remote being pushed to, whose project's rules apply; left
+   * out, the project the reviews live in. Null when the forge cannot be asked
+   * — a warning that is not sure is not a warning. Kept for the session.
+   */
+  async function isProtected(branch: string, remote?: string | null): Promise<boolean | null> {
+    if (!usable.value) return null
+    const key = `${projectId()}|${remote ?? ''}|${branch}`
+    const known = protectedBranches.get(key)
+    if (known !== undefined) return known
+    try {
+      const answer = await invoke<boolean>('forge_is_protected', { branch, remote: remote ?? null })
+      protectedBranches.set(key, answer)
+      return answer
+    } catch {
+      return null
+    }
+  }
+
+  /** The review for the branch checked out, when the list has one. */
+  const currentReview = computed(() => store.reviews.find((one) => one.is_current) ?? null)
 
   /**
    * Asks the forge for open reviews matching the filter.
@@ -440,6 +573,16 @@ export function useForge() {
     refreshStatus,
     loadFaces,
     loadReviews,
+    loadFacts,
+    facts,
+    isProtected,
+    currentReview,
+    /** Opens the new-review dialog with what a push or the home tab knows. */
+    compose: (start: ReviewCompose) => {
+      store.compose = start
+    },
+    /** What every account says is waiting on you, for the home tab. */
+    inbox: () => invoke<Inbox>('forge_inbox'),
     searchReviews,
     projectId,
     loadReviewDetail,

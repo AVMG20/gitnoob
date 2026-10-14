@@ -7,7 +7,9 @@ use crate::state::AppState;
 mod github;
 mod gitlab;
 mod http;
+mod inbox;
 mod people;
+mod target;
 mod types;
 
 pub use types::*;
@@ -15,7 +17,10 @@ pub use types::*;
 use github::*;
 use gitlab::*;
 pub use http::*;
+pub use inbox::*;
 pub use people::*;
+use target::prepare;
+pub use target::*;
 
 /// The repositories the active profile's token can see.
 ///
@@ -135,55 +140,58 @@ pub fn parse_remote(url: &str) -> Option<RepoSlug> {
         name: name.to_string(),
     })
 }
-/// Reads the push URL of the remote a branch tracks, falling back to `origin`.
+/// The project the open repository's reviews live in, without asking the
+/// forge: see `target` for the order. Never follows HEAD.
 pub fn remote_slug(state: &AppState) -> Option<RepoSlug> {
-    let repo = state.repo().ok()?;
-    let preferred = repo
-        .head()
-        .ok()
-        .and_then(|head| head.shorthand().map(|s| s.to_string()))
-        .and_then(|branch| {
-            repo.branch_upstream_remote(&format!("refs/heads/{branch}"))
-                .ok()
-        })
-        .and_then(|buf| buf.as_str().map(|s| s.to_string()));
-
-    let name = preferred.unwrap_or_else(|| "origin".to_string());
-    let remote = repo
-        .find_remote(&name)
-        .or_else(|_| repo.find_remote("origin"))
-        .ok()?;
-    remote.url().and_then(parse_remote)
+    known_target(state).map(|chosen| chosen.slug)
 }
-pub fn status(state: &AppState) -> ForgeStatus {
+/// Which forge the open repository talks to, through which profile, and about
+/// which project.
+///
+/// Async because finding the project can mean asking the forge what origin was
+/// forked from; that answer is kept for the session.
+pub async fn status(state: &AppState) -> ForgeStatus {
     let config = state.config();
-    let profile = config.active();
-    let kind = profile.map(|p| p.forge).unwrap_or_default();
-    let host = profile
-        .map(|p| {
-            if p.host.is_empty() {
-                p.forge.default_host().to_string()
-            } else {
-                p.host.clone()
-            }
-        })
+    let path = state
+        .path()
+        .ok()
+        .map(|p| p.to_string_lossy().into_owned())
         .unwrap_or_default();
+    let profile = config.profile_for(&path).cloned();
+    let kind = profile.as_ref().map(|p| p.forge).unwrap_or_default();
+    let host = profile.as_ref().map(profile_host).unwrap_or_default();
     let has_token = profile
+        .as_ref()
         .map(|p| config::secret_get(&config::forge_key(&p.id)).is_some())
         .unwrap_or(false);
+
+    // The full answer when there is an account to ask with; the one that needs
+    // no network otherwise, so a profile without a token still names the
+    // project in the settings.
+    let (slug, remote, error) = if has_token && kind != ForgeKind::None {
+        match prepare(state).await {
+            Ok(call) => (Some(call.slug), Some(call.remote), None),
+            Err(error) => (remote_slug(state), None, Some(error)),
+        }
+    } else {
+        (remote_slug(state), None, None)
+    };
 
     ForgeStatus {
         kind,
         host,
         has_token,
         user: None,
-        slug: remote_slug(state),
-        error: None,
+        slug,
+        error,
+        profile: profile.as_ref().map(|p| p.id.clone()),
+        profile_name: profile.as_ref().map(|p| p.name.clone()),
+        remote,
     }
 }
 /// Checks a token and returns the account it belongs to.
 pub async fn check(state: &AppState) -> Result<String, String> {
-    let call = prepare(state)?;
+    let call = prepare(state).await?;
     let base = api_base(call.kind, &call.host);
     let url = match call.kind {
         ForgeKind::GitHub => format!("{base}/user"),
@@ -216,7 +224,10 @@ pub async fn check(state: &AppState) -> Result<String, String> {
 /// account whether or not the folder open right now is hosted on that forge,
 /// and the profile menu wants the face either way.
 pub async fn me(state: &AppState) -> Result<ForgeUser, String> {
-    let (kind, host, token) = account(state)?;
+    // The account the open repository answers to, which is the active one
+    // unless the repository was given another.
+    let (profile, host, token) = repo_account(state)?;
+    let kind = profile.forge;
     let base = api_base(kind, &host);
 
     let response = client()?
@@ -248,7 +259,6 @@ pub async fn me(state: &AppState) -> Result<ForgeUser, String> {
     // one case where the two are known to be the same person, so say so and the
     // user's own face appears in the graph without a lookup that would miss.
     if let Some(picture) = &avatar {
-        let config = state.config();
         // Every address the account admits to. GitLab keeps three — the one it
         // logs in with, the one it shows publicly, and the one it writes into
         // commits — and it is the last of those that the history is drawn from.
@@ -257,11 +267,7 @@ pub async fn me(state: &AppState) -> Result<ForgeUser, String> {
             .filter_map(|field| body.get(*field).and_then(|v| v.as_str()))
             .map(String::from)
             .collect();
-        addresses.extend(
-            config
-                .active()
-                .and_then(|profile| profile.git_email.clone()),
-        );
+        addresses.extend(profile.git_email.clone());
         for address in addresses {
             avatar::note(&address, picture);
         }
@@ -272,7 +278,7 @@ pub async fn me(state: &AppState) -> Result<ForgeUser, String> {
     Ok(ForgeUser { login, id, avatar })
 }
 pub async fn reviews(state: &AppState) -> Result<Vec<Review>, String> {
-    let call = prepare(state)?;
+    let call = prepare(state).await?;
     let base = api_base(call.kind, &call.host);
     let http = client()?;
 
@@ -303,13 +309,103 @@ pub async fn reviews(state: &AppState) -> Result<Vec<Review>, String> {
     }
     let items: Vec<serde_json::Value> = response.json().await.map_err(|e| e.to_string())?;
 
-    if call.kind == ForgeKind::GitHub {
-        return Ok(items
-            .iter()
-            .map(|item| github_review(item, call.current_branch.as_deref()))
-            .collect());
+    let mut out = if call.kind == ForgeKind::GitHub {
+        items.iter().map(|item| github_review(item, None)).collect()
+    } else {
+        gitlab_reviews(&http, &base, &call, &items).await
+    };
+    mark_current(&mut out, &call);
+
+    // The list is the fifty newest. The branch checked out may well have a
+    // review further back than that, and that is the one review this window
+    // most wants to know about — so it is asked for by its head.
+    if !out.iter().any(|review| review.is_current) {
+        if let Some(mine) = current_review(&http, &base, &call).await {
+            if !out.iter().any(|review| review.number == mine.number) {
+                out.push(mine);
+            }
+            mark_current(&mut out, &call);
+        }
     }
-    Ok(gitlab_reviews(&http, &base, &call, &items).await)
+
+    // How each one stands: the checks on its head and where the reviewing is.
+    // One more request for the whole list, and one that is allowed to fail.
+    let numbers: Vec<i64> = out.iter().map(|review| review.number).collect();
+    let standings = match call.kind {
+        ForgeKind::GitHub => github_standings(&http, &call, &numbers).await,
+        _ => gitlab_standings(&http, &call, &numbers).await,
+    };
+    for review in &mut out {
+        if let Some((checks, decision)) = standings.get(&review.number) {
+            review.checks = checks.clone();
+            review.review_state = decision.clone();
+        }
+    }
+    Ok(out)
+}
+
+/// Marks the review for the branch checked out, by what that branch tracks.
+fn mark_current(reviews: &mut [Review], call: &Call) {
+    let forge = call.slug.full();
+    for review in reviews.iter_mut() {
+        review.is_current = is_current(review, &call.current, &forge);
+    }
+}
+
+/// The open review whose head is the branch checked out, asked for directly.
+///
+/// Not on the trunk: a review from the default branch is somebody's mistake,
+/// and asking on every refresh of the branch most people sit on would be a
+/// request spent on nothing.
+async fn current_review(http: &reqwest::Client, base: &str, call: &Call) -> Option<Review> {
+    let local = call.current.branch.as_deref()?;
+    let branch = call
+        .current
+        .upstream_branch
+        .clone()
+        .unwrap_or_else(|| local.to_string());
+    let repo = call
+        .current
+        .upstream_repo
+        .clone()
+        .unwrap_or_else(|| call.slug.full());
+    if let Ok(known) = facts(http, call.kind, &call.host, &call.token, &call.slug).await {
+        if known.default_branch == branch && repo.eq_ignore_ascii_case(&call.slug.full()) {
+            return None;
+        }
+    }
+    let owner = repo
+        .rsplit_once('/')
+        .map(|(owner, _)| owner)
+        .unwrap_or(&repo);
+
+    let found = match call.kind {
+        ForgeKind::GitHub => {
+            let url = format!(
+                "{base}/repos/{}/pulls?state=open&per_page=5&head={}",
+                call.slug.full(),
+                urlencode(&format!("{owner}:{branch}"))
+            );
+            let items: Vec<serde_json::Value> =
+                serde_json::from_value(fetch(http, &call.token, &url).await.ok()?).ok()?;
+            items.iter().map(|item| github_review(item, None)).collect()
+        }
+        ForgeKind::GitLab => {
+            let url = format!(
+                "{base}/projects/{}/merge_requests?state=opened&per_page=20&source_branch={}",
+                urlencode(&call.slug.full()),
+                urlencode(&branch)
+            );
+            let items: Vec<serde_json::Value> =
+                serde_json::from_value(fetch(http, &call.token, &url).await.ok()?).ok()?;
+            gitlab_reviews(http, base, call, &items).await
+        }
+        ForgeKind::None => Vec::new(),
+    };
+    let forge = call.slug.full();
+    found
+        .into_iter()
+        .find(|review| is_current(review, &call.current, &forge))
 }
 
 /// Open reviews the forge finds for what was typed into the filter.
@@ -319,10 +415,17 @@ pub async fn reviews(state: &AppState) -> Result<Vec<Review>, String> {
 /// for a handful: a number is looked up directly, anything else goes to the
 /// forge's own search over titles and descriptions.
 pub async fn search_reviews(state: &AppState, text: &str) -> Result<Vec<Review>, String> {
-    let call = prepare(state)?;
+    let call = prepare(state).await?;
+    let mut found = search_with(&call, text).await?;
+    mark_current(&mut found, &call);
+    Ok(found)
+}
+
+async fn search_with(call: &Call, text: &str) -> Result<Vec<Review>, String> {
     let base = api_base(call.kind, &call.host);
     let http = client()?;
-    let current = call.current_branch.as_deref();
+    // Which one is checked out is decided afterwards, by what it tracks.
+    let current: Option<&str> = None;
 
     match (call.kind, review_query(text)) {
         (_, ReviewQuery::Empty) => Ok(Vec::new()),
@@ -403,7 +506,7 @@ pub async fn search_reviews(state: &AppState, text: &str) -> Result<Vec<Review>,
                 return Err(describe(response).await);
             }
             let items: Vec<serde_json::Value> = response.json().await.map_err(|e| e.to_string())?;
-            Ok(gitlab_reviews(&http, &base, &call, &items).await)
+            Ok(gitlab_reviews(&http, &base, call, &items).await)
         }
     }
 }
@@ -445,7 +548,7 @@ async fn gitlab_reviews(
     // same fork are the normal shape of a busy project.
     let mut known: HashMap<i64, Option<ReviewSource>> = HashMap::new();
     for item in items {
-        let (mut review, fork) = gitlab_review(item, call.current_branch.as_deref());
+        let (mut review, fork) = gitlab_review(item, None);
         if let Some(id) = fork {
             let source = match known.get(&id) {
                 Some(found) => found.clone(),
@@ -463,7 +566,7 @@ async fn gitlab_reviews(
 }
 /// Everything one review says about itself.
 pub async fn review_detail(state: &AppState, number: i64) -> Result<ReviewDetail, String> {
-    let call = prepare(state)?;
+    let call = prepare(state).await?;
     let base = api_base(call.kind, &call.host);
     let http = client()?;
 
@@ -580,7 +683,7 @@ pub async fn review_detail(state: &AppState, number: i64) -> Result<ReviewDetail
 /// Assignees and reviewers come from the same list on both forges, so one
 /// lookup feeds both pickers.
 pub async fn members(state: &AppState) -> Result<Vec<Member>, String> {
-    let call = prepare(state)?;
+    let call = prepare(state).await?;
     let base = api_base(call.kind, &call.host);
     let http = client()?;
 
@@ -661,6 +764,11 @@ pub async fn members(state: &AppState) -> Result<Vec<Member>, String> {
     Ok(people)
 }
 /// Opens a pull request or merge request.
+///
+/// From the project's own branch, or from a fork: a contributor whose origin
+/// is their fork pushes there and opens the review on the project it was
+/// forked from, which GitHub spells `owner:branch` and GitLab as a merge
+/// request posted to the fork, aimed at the parent.
 // Everything a forge insists on knowing to open a request, and there are
 // eight of them. Bundling them into a struct would only move the list.
 #[allow(clippy::too_many_arguments)]
@@ -674,14 +782,16 @@ pub async fn create_review(
     assignees: Vec<Member>,
     reviewers: Vec<Member>,
 ) -> Result<Review, String> {
-    let call = prepare(state)?;
+    let call = prepare(state).await?;
     // The dialog names the branch to merge; HEAD is only the fallback for a
     // caller that has nothing to say about it.
     let source = source
         .filter(|name| !name.trim().is_empty())
         .or_else(|| call.current_branch.clone())
         .ok_or_else(|| "HEAD is detached; choose a branch to merge from".to_string())?;
-    if source == target {
+    let (head_repo, head_branch) = pushed_to(&call.local, &call.slug, &source);
+    let from_fork = !head_repo.full().eq_ignore_ascii_case(&call.slug.full());
+    if !from_fork && head_branch == target {
         return Err("A branch cannot be merged into itself".to_string());
     }
     let base = api_base(call.kind, &call.host);
@@ -690,13 +800,18 @@ pub async fn create_review(
     let response = match call.kind {
         ForgeKind::GitHub => {
             let url = format!("{base}/repos/{}/pulls", call.slug.full());
+            let head = if from_fork {
+                format!("{}:{head_branch}", head_repo.owner)
+            } else {
+                head_branch.clone()
+            };
             http.post(url)
                 .bearer_auth(&call.token)
                 .header("Accept", "application/vnd.github+json")
                 .json(&serde_json::json!({
                     "title": title,
                     "body": body,
-                    "head": source,
+                    "head": head,
                     "base": target,
                     "draft": draft,
                 }))
@@ -704,25 +819,34 @@ pub async fn create_review(
                 .await
         }
         ForgeKind::GitLab => {
-            let project = urlencode(&call.slug.full());
-            let url = format!("{base}/projects/{project}/merge_requests");
             // GitLab has no draft flag; the convention is a title prefix.
             let title = if draft && !title.starts_with("Draft:") {
                 format!("Draft: {title}")
             } else {
                 title
             };
+            let mut payload = serde_json::json!({
+                "title": title,
+                "description": body,
+                "source_branch": head_branch,
+                "target_branch": target,
+                // GitLab takes the people with the merge request itself.
+                "assignee_ids": assignees.iter().map(|m| m.id).collect::<Vec<_>>(),
+                "reviewer_ids": reviewers.iter().map(|m| m.id).collect::<Vec<_>>(),
+            });
+            // From a fork the request is made on the fork, naming the project
+            // it should land in by number.
+            let posted_to = if from_fork {
+                let parent = facts(&http, call.kind, &call.host, &call.token, &call.slug).await?;
+                payload["target_project_id"] = serde_json::json!(parent.id);
+                head_repo.full()
+            } else {
+                call.slug.full()
+            };
+            let url = format!("{base}/projects/{}/merge_requests", urlencode(&posted_to));
             http.post(url)
                 .bearer_auth(&call.token)
-                .json(&serde_json::json!({
-                    "title": title,
-                    "description": body,
-                    "source_branch": source,
-                    "target_branch": target,
-                    // GitLab takes the people with the merge request itself.
-                    "assignee_ids": assignees.iter().map(|m| m.id).collect::<Vec<_>>(),
-                    "reviewer_ids": reviewers.iter().map(|m| m.id).collect::<Vec<_>>(),
-                }))
+                .json(&payload)
                 .send()
                 .await
         }
@@ -734,12 +858,23 @@ pub async fn create_review(
         return Err(describe(response).await);
     }
     let item: serde_json::Value = response.json().await.map_err(|e| e.to_string())?;
-    // A review opened from here always comes from this repository, so the
-    // fork lookup gitlab_review may ask for has nothing to find.
     let mut review = match call.kind {
-        ForgeKind::GitHub => github_review(&item, Some(&source)),
-        _ => gitlab_review(&item, Some(&source)).0,
+        ForgeKind::GitHub => github_review(&item, None),
+        _ => {
+            let (mut review, _) = gitlab_review(&item, None);
+            if from_fork {
+                review.source = Some(ReviewSource {
+                    full_name: head_repo.full(),
+                    owner: head_repo.owner.clone(),
+                    ssh_url: String::new(),
+                    https_url: String::new(),
+                    is_fork: true,
+                });
+            }
+            review
+        }
     };
+    review.is_current = is_current(&review, &call.current, &call.slug.full());
 
     if call.kind == ForgeKind::GitHub {
         review.warning = github_people(&http, &call, review.number, &assignees, &reviewers).await;
@@ -751,33 +886,45 @@ pub async fn create_review(
 /// For everything the API does not carry — labels, milestones, the template a
 /// project wants filled in — the honest answer is to hand the work over rather
 /// than grow a form that will always be a subset of the forge's own.
-pub fn compare_url(
+pub async fn compare_url(
     state: &AppState,
     source: &str,
     target: &str,
     title: &str,
     body: &str,
 ) -> Result<String, String> {
-    let (kind, host, _) = account(state)?;
-    let slug = remote_slug(state)
-        .ok_or_else(|| "Could not work out the project from the git remote".to_string())?;
-    let path = slug.full();
+    let call = prepare(state).await?;
+    let host = &call.host;
+    let path = call.slug.full();
+    let (head_repo, head_branch) = pushed_to(&call.local, &call.slug, source);
+    let from_fork = !head_repo.full().eq_ignore_ascii_case(&path);
 
-    Ok(match kind {
+    Ok(match call.kind {
         // GitHub reads the branches out of the path, so those two keep their
-        // slashes; everything else is a query value.
-        ForgeKind::GitHub => format!(
-            "https://{host}/{path}/compare/{target}...{source}?expand=1&title={}&body={}",
-            urlencode(title),
-            urlencode(body)
-        ),
+        // slashes; everything else is a query value. A fork's branch is
+        // named with its owner in front.
+        ForgeKind::GitHub => {
+            let head = if from_fork {
+                format!("{}:{head_branch}", head_repo.owner)
+            } else {
+                head_branch
+            };
+            format!(
+                "https://{host}/{path}/compare/{target}...{head}?expand=1&title={}&body={}",
+                urlencode(title),
+                urlencode(body)
+            )
+        }
+        // GitLab opens a merge request from the project the branch is in; a
+        // fork's form already aims at the project it was forked from.
         ForgeKind::GitLab => format!(
-            "https://{host}/{path}/-/merge_requests/new\
+            "https://{host}/{}/-/merge_requests/new\
              ?merge_request%5Bsource_branch%5D={}\
              &merge_request%5Btarget_branch%5D={}\
              &merge_request%5Btitle%5D={}\
              &merge_request%5Bdescription%5D={}",
-            urlencode(source),
+            if from_fork { head_repo.full() } else { path },
+            urlencode(&head_branch),
             urlencode(target),
             urlencode(title),
             urlencode(body)
@@ -826,7 +973,7 @@ fn count_patch_lines(patch: &str) -> (i64, i64) {
 
 /// Everything said under one review: the conversation and every diff thread.
 pub async fn review_comments(state: &AppState, number: i64) -> Result<Vec<ReviewComment>, String> {
-    let call = prepare(state)?;
+    let call = prepare(state).await?;
     let base = api_base(call.kind, &call.host);
     let http = client()?;
     let slug = call.slug.full();
@@ -902,7 +1049,7 @@ pub async fn review_comments(state: &AppState, number: i64) -> Result<Vec<Review
 }
 /// Every file a review changes, counted across all of its commits.
 pub async fn review_files(state: &AppState, number: i64) -> Result<Vec<ReviewFileChange>, String> {
-    let call = prepare(state)?;
+    let call = prepare(state).await?;
     let base = api_base(call.kind, &call.host);
     let http = client()?;
     let slug = call.slug.full();
@@ -984,7 +1131,7 @@ pub async fn review_files(state: &AppState, number: i64) -> Result<Vec<ReviewFil
 }
 /// The commits a review's source branch puts ahead of its target.
 pub async fn review_commits(state: &AppState, number: i64) -> Result<Vec<ReviewCommit>, String> {
-    let call = prepare(state)?;
+    let call = prepare(state).await?;
     let base = api_base(call.kind, &call.host);
     let http = client()?;
     let slug = call.slug.full();
@@ -1060,7 +1207,7 @@ pub async fn review_commits(state: &AppState, number: i64) -> Result<Vec<ReviewC
 /// remarks; those are what the diff-comment calls are for, and each arrives as
 /// it is written instead of waiting to be submitted.
 pub async fn post_comment(state: &AppState, number: i64, body: &str) -> Result<(), String> {
-    let call = prepare(state)?;
+    let call = prepare(state).await?;
     let base = api_base(call.kind, &call.host);
     let http = client()?;
     let slug = call.slug.full();
@@ -1103,7 +1250,7 @@ pub async fn reply_comment(
     parent_id: i64,
     body: &str,
 ) -> Result<(), String> {
-    let call = prepare(state)?;
+    let call = prepare(state).await?;
     let base = api_base(call.kind, &call.host);
     let http = client()?;
     let slug = call.slug.full();
@@ -1190,7 +1337,7 @@ pub async fn add_diff_comment(
     side: &str,
     body: &str,
 ) -> Result<(), String> {
-    let call = prepare(state)?;
+    let call = prepare(state).await?;
     let base_api = api_base(call.kind, &call.host);
     let http = client()?;
     let slug = call.slug.full();
@@ -1259,7 +1406,7 @@ pub async fn submit_review(
     body: &str,
     comments: Vec<PendingComment>,
 ) -> Result<(), String> {
-    let call = prepare(state)?;
+    let call = prepare(state).await?;
     let base = api_base(call.kind, &call.host);
     let http = client()?;
     let slug = call.slug.full();
@@ -1375,7 +1522,27 @@ pub async fn submit_review(
     }
     Ok(())
 }
-/// Merges the review, squashed or not, or says why the forge refused.
+/// How a refusal for a moved head begins, so the page knows to read the
+/// review again rather than only show the words.
+pub const MOVED: &str = "New commits were pushed to this branch";
+
+/// Whether the forge refused a merge because the head is not the one the
+/// page showed: GitHub says "Head branch was modified", GitLab "SHA does not
+/// match HEAD", and both answer 409.
+pub fn head_moved(status: u16, text: &str) -> bool {
+    let text = text.to_ascii_lowercase();
+    status == 409
+        && (text.contains("head branch was modified")
+            || text.contains("sha does not match")
+            || text.contains("head of source branch"))
+}
+
+/// Merges the review — as a merge commit, squashed, or rebased — or says why
+/// the forge refused.
+///
+/// `sha` is the head the page showed. The forge is told to merge that and
+/// nothing newer, so commits pushed while the review was being read are never
+/// merged unseen; the refusal says so and the page reads the review again.
 ///
 /// Deleting the branch afterwards is one flag on GitLab and a request of its
 /// own on GitHub — and one this only makes for a branch in the repository
@@ -1383,13 +1550,19 @@ pub async fn submit_review(
 pub async fn merge_review(
     state: &AppState,
     number: i64,
-    squash: bool,
+    method: &str,
     delete_branch: bool,
+    sha: Option<String>,
 ) -> Result<String, String> {
-    let call = prepare(state)?;
+    let call = prepare(state).await?;
     let base = api_base(call.kind, &call.host);
     let http = client()?;
     let slug = call.slug.full();
+    let sha = sha.filter(|sha| !sha.trim().is_empty());
+    let method = match method {
+        "squash" | "rebase" => method,
+        _ => "merge",
+    };
 
     // GitHub needs the branch's name before the merge, since the answer to a
     // merge does not carry it and the pull request is closed by then.
@@ -1407,26 +1580,39 @@ pub async fn merge_review(
     };
 
     let response = match call.kind {
-        ForgeKind::GitHub => http
-            .put(format!("{base}/repos/{slug}/pulls/{number}/merge"))
-            .bearer_auth(&call.token)
-            .header("Accept", "application/vnd.github+json")
-            .json(&serde_json::json!({
-                "merge_method": if squash { "squash" } else { "merge" }
-            }))
-            .send()
-            .await
-            .map_err(|e| e.to_string())?,
+        ForgeKind::GitHub => {
+            let mut payload = serde_json::json!({ "merge_method": method });
+            if let Some(sha) = &sha {
+                payload["sha"] = serde_json::json!(sha);
+            }
+            http.put(format!("{base}/repos/{slug}/pulls/{number}/merge"))
+                .bearer_auth(&call.token)
+                .header("Accept", "application/vnd.github+json")
+                .json(&payload)
+                .send()
+                .await
+                .map_err(|e| e.to_string())?
+        }
         ForgeKind::GitLab => {
+            if method == "rebase" {
+                return Err(
+                    "GitLab merges the way the project is set up to; choose merge or squash"
+                        .to_string(),
+                );
+            }
             let project = urlencode(&slug);
+            let mut payload = serde_json::json!({
+                "squash": method == "squash",
+                "should_remove_source_branch": delete_branch
+            });
+            if let Some(sha) = &sha {
+                payload["sha"] = serde_json::json!(sha);
+            }
             http.put(format!(
                 "{base}/projects/{project}/merge_requests/{number}/merge"
             ))
             .bearer_auth(&call.token)
-            .json(&serde_json::json!({
-                "squash": squash,
-                "should_remove_source_branch": delete_branch
-            }))
+            .json(&payload)
             .send()
             .await
             .map_err(|e| e.to_string())?
@@ -1434,14 +1620,24 @@ pub async fn merge_review(
         ForgeKind::None => return Err("No forge configured".to_string()),
     };
     if !response.status().is_success() {
-        return Err(describe(response).await);
+        let status = response.status().as_u16();
+        let said = describe(response).await;
+        if head_moved(status, &said) {
+            return Err(format!(
+                "{MOVED} since this page was loaded, so nothing was merged. The review has been read again: look at the new commits, then merge."
+            ));
+        }
+        return Err(said);
     }
 
     // The merge landed either way: a branch that will not delete is worth
     // saying, not worth undoing the merge over.
     if let Some(branch) = branch.filter(|name| !name.is_empty()) {
         let gone = http
-            .delete(format!("{base}/repos/{slug}/git/refs/heads/{branch}"))
+            .delete(format!(
+                "{base}/repos/{slug}/git/refs/heads/{}",
+                urlencode_path(&branch)
+            ))
             .bearer_auth(&call.token)
             .header("Accept", "application/vnd.github+json")
             .send()
@@ -1457,7 +1653,7 @@ pub async fn merge_review(
 }
 /// Closes or reopens a review.
 pub async fn set_review_state(state: &AppState, number: i64, action: &str) -> Result<(), String> {
-    let call = prepare(state)?;
+    let call = prepare(state).await?;
     let base = api_base(call.kind, &call.host);
     let http = client()?;
     let slug = call.slug.full();
@@ -1514,7 +1710,7 @@ fn roll_up(checks: &[Check]) -> String {
 }
 /// Whether the review can land, what ran against it, and who has said what.
 pub async fn review_status(state: &AppState, number: i64) -> Result<ReviewStatus, String> {
-    let call = prepare(state)?;
+    let call = prepare(state).await?;
     let base = api_base(call.kind, &call.host);
     let http = client()?;
     let slug = call.slug.full();
@@ -1711,7 +1907,7 @@ pub async fn resolve_thread(
     thread: &str,
     resolved: bool,
 ) -> Result<(), String> {
-    let call = prepare(state)?;
+    let call = prepare(state).await?;
     let base = api_base(call.kind, &call.host);
     let http = client()?;
     if thread.is_empty() {
@@ -1767,7 +1963,7 @@ pub async fn set_review_people(
     assignees: Vec<Member>,
     reviewers: Vec<Member>,
 ) -> Result<(), String> {
-    let call = prepare(state)?;
+    let call = prepare(state).await?;
     let base = api_base(call.kind, &call.host);
     let http = client()?;
     let slug = call.slug.full();
@@ -1870,7 +2066,7 @@ pub async fn set_review_people(
 }
 /// Every label this project has, for the picker to offer.
 pub async fn project_labels(state: &AppState) -> Result<Vec<Label>, String> {
-    let call = prepare(state)?;
+    let call = prepare(state).await?;
     let base = api_base(call.kind, &call.host);
     let http = client()?;
     let slug = call.slug.full();
@@ -1897,7 +2093,7 @@ pub async fn project_labels(state: &AppState) -> Result<Vec<Label>, String> {
 }
 /// Sets the review's labels to exactly these.
 pub async fn set_labels(state: &AppState, number: i64, names: Vec<String>) -> Result<(), String> {
-    let call = prepare(state)?;
+    let call = prepare(state).await?;
     let base = api_base(call.kind, &call.host);
     let http = client()?;
     let slug = call.slug.full();
@@ -1934,7 +2130,7 @@ pub async fn update_review(
     title: &str,
     body: &str,
 ) -> Result<(), String> {
-    let call = prepare(state)?;
+    let call = prepare(state).await?;
     let base = api_base(call.kind, &call.host);
     let http = client()?;
     let slug = call.slug.full();
@@ -1966,7 +2162,7 @@ pub async fn update_review(
 }
 /// Marks the review ready to be read, or puts it back to a draft.
 pub async fn set_draft(state: &AppState, number: i64, draft: bool) -> Result<(), String> {
-    let call = prepare(state)?;
+    let call = prepare(state).await?;
     let base = api_base(call.kind, &call.host);
     let http = client()?;
     let slug = call.slug.full();
@@ -2036,7 +2232,7 @@ pub async fn set_draft(state: &AppState, number: i64, draft: bool) -> Result<(),
 /// the whole thing, which neither forge offers as part of the review itself —
 /// so the head sha is read off the review and the file fetched at it.
 pub async fn review_file_text(state: &AppState, number: i64, path: &str) -> Result<String, String> {
-    let call = prepare(state)?;
+    let call = prepare(state).await?;
     let base = api_base(call.kind, &call.host);
     let http = client()?;
     let slug = call.slug.full();
@@ -2112,6 +2308,161 @@ pub async fn review_file_text(state: &AppState, number: i64, path: &str) -> Resu
         return Err(describe(response).await);
     }
     response.text().await.map_err(|e| e.to_string())
+}
+
+/* ---------- the project itself --------------------------------------------- */
+
+/// What the open repository's forge project is: its default branch, the ways
+/// it lets a review merge, what it was forked from. Asked once a session.
+pub async fn repo_info(state: &AppState) -> Result<RepoFacts, String> {
+    let call = prepare(state).await?;
+    let http = client()?;
+    facts(&http, call.kind, &call.host, &call.token, &call.slug).await
+}
+
+/// Branch protection, as already asked this session.
+static PROTECTED: std::sync::Mutex<Option<HashMap<String, bool>>> = std::sync::Mutex::new(None);
+
+/// Whether the forge protects a branch.
+///
+/// Of the project reviews live in, or of the project `remote` points at when
+/// one is named — a push goes to a remote, and that is whose rules apply.
+/// Asked of the branch itself rather than of the protection rules, so a rule
+/// by pattern (`release/*`) counts as well. A branch the forge has never seen
+/// is not protected by anything it could name. Kept for the session: rules
+/// change rarely, and this is asked on the way to every push.
+pub async fn is_protected(
+    state: &AppState,
+    branch: &str,
+    remote: Option<&str>,
+) -> Result<bool, String> {
+    let call = prepare(state).await?;
+    let slug = match remote {
+        Some(name) => match call.local.slug_of(name) {
+            Some(slug) if same_host(&slug.host, &call.host) => slug.clone(),
+            Some(_) => return Ok(false),
+            None => return Err(format!("{name} is not a remote with a forge address")),
+        },
+        None => call.slug.clone(),
+    };
+    let key = format!(
+        "{:?}@{}/{}#{branch}",
+        call.kind,
+        canonical_host(&call.host),
+        slug.full().to_ascii_lowercase()
+    );
+    if let Some(known) = PROTECTED
+        .lock()
+        .unwrap()
+        .as_ref()
+        .and_then(|all| all.get(&key).copied())
+    {
+        return Ok(known);
+    }
+    let base = api_base(call.kind, &call.host);
+    let url = match call.kind {
+        ForgeKind::GitHub => format!(
+            "{base}/repos/{}/branches/{}",
+            slug.full(),
+            urlencode_path(branch)
+        ),
+        ForgeKind::GitLab => format!(
+            "{base}/projects/{}/repository/branches/{}",
+            urlencode(&slug.full()),
+            urlencode(branch)
+        ),
+        ForgeKind::None => return Err("No forge configured".to_string()),
+    };
+    let response = client()?
+        .get(url)
+        .bearer_auth(&call.token)
+        .header("Accept", "application/vnd.github+json")
+        .send()
+        .await
+        .map_err(|e| e.to_string())?;
+    let protected = if response.status() == reqwest::StatusCode::NOT_FOUND {
+        false
+    } else if response.status().is_success() {
+        let body: serde_json::Value = response.json().await.map_err(|e| e.to_string())?;
+        body.get("protected")
+            .and_then(|v| v.as_bool())
+            .unwrap_or(false)
+    } else {
+        return Err(describe(response).await);
+    };
+    PROTECTED
+        .lock()
+        .unwrap()
+        .get_or_insert_with(HashMap::new)
+        .insert(key, protected);
+    Ok(protected)
+}
+
+/// Asks somebody who has already reviewed to look again.
+///
+/// GitHub does it by asking for them as a reviewer once more. GitLab has a
+/// mutation of its own for it, which wants the account by number; the login
+/// is looked up first, since that is what a verdict carries.
+pub async fn rerequest_review(state: &AppState, number: i64, login: &str) -> Result<(), String> {
+    let call = prepare(state).await?;
+    let base = api_base(call.kind, &call.host);
+    let http = client()?;
+    let slug = call.slug.full();
+    if login.trim().is_empty() {
+        return Err("Nobody to ask".to_string());
+    }
+
+    match call.kind {
+        ForgeKind::GitHub => {
+            let response = http
+                .post(format!(
+                    "{base}/repos/{slug}/pulls/{number}/requested_reviewers"
+                ))
+                .bearer_auth(&call.token)
+                .header("Accept", "application/vnd.github+json")
+                .json(&serde_json::json!({ "reviewers": [login] }))
+                .send()
+                .await
+                .map_err(|e| e.to_string())?;
+            if !response.status().is_success() {
+                return Err(describe(response).await);
+            }
+        }
+        ForgeKind::GitLab => {
+            let found = fetch(
+                &http,
+                &call.token,
+                &format!("{base}/users?username={}", urlencode(login)),
+            )
+            .await?;
+            let id = found
+                .pointer("/0/id")
+                .and_then(|v| v.as_i64())
+                .ok_or_else(|| format!("GitLab does not know an account called {login}"))?;
+            const REREVIEW: &str = "mutation($path:ID!,$iid:String!,$user:UserID!){\
+                mergeRequestReviewerRereview(input:{projectPath:$path,iid:$iid,userId:$user}){errors}}";
+            let data = graphql(
+                &http,
+                &call.token,
+                &gitlab_graphql_url(&call.host),
+                REREVIEW,
+                serde_json::json!({
+                    "path": slug,
+                    "iid": number.to_string(),
+                    "user": format!("gid://gitlab/User/{id}")
+                }),
+            )
+            .await?;
+            if let Some(problem) = data
+                .pointer("/mergeRequestReviewerRereview/errors/0")
+                .and_then(|v| v.as_str())
+            {
+                return Err(problem.to_string());
+            }
+        }
+        ForgeKind::None => return Err("No forge configured".to_string()),
+    }
+    Ok(())
 }
 #[cfg(test)]
 mod tests {

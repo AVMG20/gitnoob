@@ -13,7 +13,13 @@ import { relativeTime, useGit, type ResetPreview } from '~/composables/useGit'
  * things worth knowing before it does: which commits leave the branch, and how
  * much uncommitted work goes with them.
  */
-const props = defineProps<{ oid: string }>()
+/*
+ * `keep` is the reset the history menu's reflog view asks for: the branch and
+ * the files it changes move, uncommitted work stays where it is, and git
+ * refuses — moving nothing — when a file with open changes is one the move
+ * would have to change. Nothing is thrown away, so there is no tick to ask for.
+ */
+const props = defineProps<{ oid: string; keep?: boolean }>()
 const emit = defineEmits<{ close: [] }>()
 
 const git = useGit()
@@ -27,12 +33,12 @@ const dirty = computed(
   () => (preview.value?.staged_files ?? 0) + (preview.value?.unstaged_files ?? 0)
 )
 /** The tick is only asked for when there is work on disk to lose. */
-const blocked = computed(() => dirty.value > 0 && !acknowledged.value)
+const blocked = computed(() => !props.keep && dirty.value > 0 && !acknowledged.value)
 
 async function apply() {
   if (blocked.value) return
   // Null means it failed; any string, empty or not, means it ran.
-  if ((await git.reset(props.oid, 'hard')) !== null) emit('close')
+  if ((await git.reset(props.oid, props.keep ? 'keep' : 'hard')) !== null) emit('close')
 }
 
 onMounted(async () => {
@@ -42,7 +48,7 @@ onMounted(async () => {
 
 <template>
   <AppModal
-    :title="`Hard reset ${preview?.branch ?? 'branch'} to ${preview?.short ?? ''}`"
+    :title="`${props.keep ? 'Reset' : 'Hard reset'} ${preview?.branch ?? 'branch'} to ${preview?.short ?? ''}`"
     :width="560"
     @close="emit('close')"
   >
@@ -75,7 +81,11 @@ onMounted(async () => {
 
       <!-- The one thing said about uncommitted work, and it is the tick: saying
            it in a banner above as well was the same sentence twice. -->
-      <label v-if="dirty" class="ack">
+      <p v-if="props.keep" class="kept dim">
+        Your uncommitted changes stay as they are. If one of them is in a file this reset has to
+        change, git refuses and nothing moves.
+      </p>
+      <label v-else-if="dirty" class="ack">
         <input v-model="acknowledged" type="checkbox" />
         Throw away {{ dirty }} uncommitted {{ dirty === 1 ? 'change' : 'changes' }}. Stash to keep
         them.
@@ -89,7 +99,7 @@ onMounted(async () => {
         :disabled="store.busy || !preview || blocked"
         @click="apply"
       >
-        Hard reset
+        {{ props.keep ? 'Reset branch' : 'Hard reset' }}
       </button>
     </template>
   </AppModal>
@@ -171,6 +181,12 @@ onMounted(async () => {
   color: var(--amber-soft);
   background: var(--warning-bg);
   border: 1px solid var(--warning-line);
+}
+
+.kept {
+  margin: 14px 0 0;
+  font-size: 12px;
+  line-height: 1.5;
 }
 
 .ack {

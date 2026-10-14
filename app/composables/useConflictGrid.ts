@@ -204,6 +204,19 @@ export type Stance = 'ours' | 'theirs' | 'both' | 'mixed' | 'dropped' | 'edited'
  * kept, and still counts as undecided until it has been looked at.
  */
 export function freshPick(block: Extract<ConflictBlock, { kind: 'conflict' }>): Pick {
+  // Two sides that only look different — the same lines, or spacing alone —
+  // have one answer, and it is taken up front: ours, already decided, shown
+  // as such on the region so it can still be changed. Nothing is staged until
+  // the file is marked resolved.
+  if (block.trivial) {
+    return {
+      ours: block.ours.map(() => true),
+      theirs: block.theirs.map(() => false),
+      ours_first: true,
+      custom: null,
+      touched: true
+    }
+  }
   const added = block.ours.length === 0 && block.theirs.length > 0
   return {
     ours: block.ours.map(() => true),
@@ -212,6 +225,103 @@ export function freshPick(block: Extract<ConflictBlock, { kind: 'conflict' }>): 
     custom: null,
     touched: false
   }
+}
+
+/** What a trivially different region says about itself on its head row. */
+export function trivialNote(block: Extract<ConflictBlock, { kind: 'conflict' }>): string | null {
+  if (block.trivial === 'whitespace') return 'whitespace-only, took ours — change'
+  if (block.trivial === 'same') return 'same on both sides, took ours — change'
+  return null
+}
+
+// --- choices that outlive the window ------------------------------------------
+//
+// Nothing is written until a file is marked resolved, so the choices made in
+// a file live in the window until then — and used to die with it. They are
+// kept in localStorage, filed under the repository, what git is part-way
+// through, the path and the conflict's own content, so a file that changed is
+// never handed answers about another. Storage can be missing or full; every
+// touch is guarded and the resolver works the same without it.
+
+const MEMORY = 'gitnoob.conflict-choices'
+
+export interface Remembered {
+  picks: Pick[]
+  asked: string | null
+}
+
+type Memory = Record<string, Remembered & { repo: string; operation: string }>
+
+function readMemory(): Memory {
+  try {
+    const text = globalThis.localStorage?.getItem(MEMORY)
+    const parsed = text ? JSON.parse(text) : {}
+    return parsed && typeof parsed === 'object' ? (parsed as Memory) : {}
+  } catch {
+    return {}
+  }
+}
+
+function writeMemory(memory: Memory) {
+  try {
+    globalThis.localStorage?.setItem(MEMORY, JSON.stringify(memory))
+  } catch {
+    // Full, or switched off: the choices simply last as long as the window.
+  }
+}
+
+/** A short hash of a file's conflicts, which is what makes a choice its own. */
+export function conflictHash(blocks: ConflictBlock[]): string {
+  let hash = 0x811c9dc5
+  const text = JSON.stringify(
+    blocks.filter((block) => block.kind === 'conflict').map((block) => {
+      const one = block as Extract<ConflictBlock, { kind: 'conflict' }>
+      return [one.ours, one.base, one.theirs]
+    })
+  )
+  for (let at = 0; at < text.length; at++) {
+    hash ^= text.charCodeAt(at)
+    hash = Math.imul(hash, 0x01000193) >>> 0
+  }
+  return hash.toString(16)
+}
+
+const memoryKey = (repo: string, operation: string, path: string, hash: string) =>
+  `${repo}\n${operation}\n${path}\n${hash}`
+
+export function recall(
+  repo: string,
+  operation: string,
+  path: string,
+  hash: string
+): Remembered | null {
+  const found = readMemory()[memoryKey(repo, operation, path, hash)]
+  return found ? { picks: found.picks, asked: found.asked } : null
+}
+
+export function remember(
+  repo: string,
+  operation: string,
+  path: string,
+  hash: string,
+  value: Remembered
+) {
+  const memory = readMemory()
+  memory[memoryKey(repo, operation, path, hash)] = { ...value, repo, operation }
+  writeMemory(memory)
+}
+
+/** Drops everything this repository kept for operations other than `current`. */
+export function forgetEnded(repo: string, current: string | null) {
+  const memory = readMemory()
+  let changed = false
+  for (const [key, value] of Object.entries(memory)) {
+    if (value.repo === repo && value.operation !== current) {
+      delete memory[key]
+      changed = true
+    }
+  }
+  if (changed) writeMemory(memory)
 }
 
 const whole = (flags: boolean[]) => flags.length > 0 && flags.every(Boolean)

@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed, ref, watch } from 'vue'
-import { Check, ExternalLink, Pencil, Plus, Tag } from 'lucide-vue-next'
+import { Check, ExternalLink, Pencil, Plus, RotateCw, Tag } from 'lucide-vue-next'
 import PersonFace from './PersonFace.vue'
 import PeoplePicker from './PeoplePicker.vue'
 import Spinner from './Spinner.vue'
@@ -245,6 +245,19 @@ watch(
             <component :is="verdicts[one.login]!.icon" :size="12" />
           </span>
           <span v-else class="faint waiting">waiting</span>
+          <!-- Somebody who has had their say can be asked to look again:
+               after the changes they asked for, usually. -->
+          <button
+            v-if="verdicts[one.login] && one.login !== forge.store.me?.login"
+            class="again"
+            data-testid="rerequest"
+            :disabled="store.acting !== null"
+            :title="`Ask ${one.name || one.login} to review again`"
+            @click="review.rerequest(one.login)"
+          >
+            <Spinner v-if="store.acting === `rerequest:${one.login}`" :size="11" />
+            <RotateCw v-else :size="12" />
+          </button>
         </li>
       </ul>
       <p v-else class="none faint">Nobody has been asked yet.</p>
@@ -511,6 +524,21 @@ h4 {
 
 .verdict.none {
   color: var(--text-faint);
+}
+
+.again {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 20px;
+  height: 20px;
+  border-radius: var(--radius-sm);
+  color: var(--text-faint);
+}
+
+.again:hover:not(:disabled) {
+  color: var(--text);
+  background: var(--bg-hover);
 }
 
 .waiting {

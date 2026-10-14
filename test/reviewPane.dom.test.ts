@@ -432,10 +432,12 @@ describe('ReviewPane', () => {
     await wrapper.find('[data-testid="merge-confirm"]').trigger('click')
     await flushPromises()
 
+    // With the head the page showed, so nothing pushed since is merged unseen.
     expect(vi.mocked(invoke)).toHaveBeenCalledWith('forge_merge_review', {
       number: 38,
-      squash: false,
-      deleteBranch: true
+      method: 'merge',
+      deleteBranch: true,
+      sha: 'f'.repeat(40)
     })
     // Settled reviews lose their merge button.
     expect(wrapper.find('[data-testid="merge-button"]').exists()).toBe(false)
@@ -452,8 +454,9 @@ describe('ReviewPane', () => {
     await flushPromises()
     expect(vi.mocked(invoke)).toHaveBeenCalledWith('forge_merge_review', {
       number: 38,
-      squash: true,
-      deleteBranch: false
+      method: 'squash',
+      deleteBranch: false,
+      sha: 'f'.repeat(40)
     })
   })
 

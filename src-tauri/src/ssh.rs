@@ -120,6 +120,19 @@ pub fn command_for(key: Option<&str>) -> Option<String> {
 pub fn apply(config: &Config) {
     let key = config.active().and_then(|p| p.ssh_key.clone());
     git_cmd::set_ssh_command(command_for(key.as_deref()));
+    // A repository given to another profile pushes with that profile's key.
+    let exceptions = config
+        .repo_profiles
+        .iter()
+        .filter_map(|(path, id)| {
+            let profile = config.profiles.iter().find(|p| &p.id == id)?;
+            Some((
+                std::path::PathBuf::from(path),
+                command_for(profile.ssh_key.as_deref()),
+            ))
+        })
+        .collect();
+    git_cmd::set_repo_ssh_commands(exceptions);
 }
 
 /// What `ssh -T` had to say.

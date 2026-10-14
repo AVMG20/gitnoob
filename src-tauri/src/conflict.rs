@@ -22,6 +22,11 @@ pub enum Block {
         has_base: bool,
         ours_label: String,
         theirs_label: String,
+        /// Set when the two sides only look different: `"same"` when they
+        /// are the same lines, `"whitespace"` when they differ in spacing or
+        /// line endings alone. The resolver takes ours for these up front and
+        /// says so, and still waits for the user to mark the file resolved.
+        trivial: Option<String>,
     },
 }
 
@@ -45,6 +50,13 @@ pub struct ConflictFile {
     /// What the index holds for this path, so a file with no conflict markers
     /// in it can still be explained rather than shown as two identical panes.
     pub stages: Stages,
+    /// Git's rerere wrote the resolution this conflict got last time into the
+    /// file. Still unmerged — nothing is staged until the user has looked —
+    /// but there is nothing left to pick through, only something to accept.
+    pub rerere: bool,
+    /// A lockfile, where merging lines by hand is the wrong answer: take one
+    /// side and let the package manager write the rest.
+    pub lockfile: bool,
     /// How the file on disk ends its lines. Parsing throws the endings away, so
     /// writing the resolution back has to put the right ones on again.
     #[serde(skip)]
@@ -155,10 +167,19 @@ pub fn list(state: &AppState) -> Result<Vec<String>, String> {
     Ok(out)
 }
 
+/// The one path, and only that path, as a pathspec.
+///
+/// A pathspec after `--` still wildmatches, so `a[b].txt` names `ab.txt` too:
+/// resolving the first used to check out, stage or delete the second along
+/// with it, edits and all. Every path this file hands git goes through here.
+fn literal(path: &str) -> String {
+    format!(":(literal){path}")
+}
+
 /// Which stages the index holds for a conflicted path.
 pub fn stages(state: &AppState, path: &str) -> Result<Stages, String> {
     let root = state.path()?;
-    let listed = git_cmd::run_checked(&root, &["ls-files", "--unmerged", "--", path])?;
+    let listed = git_cmd::run_checked(&root, &["ls-files", "--unmerged", "--", &literal(path)])?;
     Ok(parse_stages(&listed))
 }
 
@@ -232,6 +253,7 @@ pub fn read(state: &AppState, path: &str) -> Result<ConflictFile, String> {
 
         blocks.push(Block::Conflict {
             index: conflict_count,
+            trivial: trivial(&ours, &theirs).map(str::to_string),
             ours,
             base,
             theirs,
@@ -246,14 +268,110 @@ pub fn read(state: &AppState, path: &str) -> Result<ConflictFile, String> {
         blocks.push(Block::Context { lines: context });
     }
 
+    let stages = stages(state, path)?;
     Ok(ConflictFile {
         path: path.to_string(),
         blocks,
         conflict_count,
-        stages: stages(state, path)?,
+        rerere: conflict_count == 0 && by_rerere(state, path, &text, stages),
+        lockfile: is_lockfile(path),
+        stages,
         eol: detect_eol(&text),
         final_newline: text.ends_with('\n'),
     })
+}
+
+/// Whether two sides of a region only look different.
+///
+/// `"same"` when they are the same lines; `"whitespace"` when the only
+/// difference is at the ends of lines — a carriage return, trailing blanks —
+/// line for line. Either way there is no choice to make, only a confirmation,
+/// and the resolver can take one side up front.
+///
+/// Spacing anywhere else is not trivial. Indentation is what a Python block,
+/// a YAML key or a Makefile recipe means; spaces inside a string are part of
+/// the string; a blank line can end a block. Squeezing all of that away
+/// ticked regions whose two sides do different things.
+pub fn trivial(ours: &[String], theirs: &[String]) -> Option<&'static str> {
+    if ours == theirs {
+        return Some("same");
+    }
+    let ends = |lines: &[String]| -> Vec<String> {
+        lines
+            .iter()
+            .map(|line| line.trim_end().to_string())
+            .collect()
+    };
+    (ends(ours) == ends(theirs)).then_some("whitespace")
+}
+
+/// The lockfiles of the package managers people meet most. A conflict in one
+/// is answered by taking a side and regenerating, never by merging lines.
+fn is_lockfile(path: &str) -> bool {
+    const LOCKS: &[&str] = &[
+        "package-lock.json",
+        "npm-shrinkwrap.json",
+        "yarn.lock",
+        "pnpm-lock.yaml",
+        "bun.lockb",
+        "bun.lock",
+        "Cargo.lock",
+        "composer.lock",
+        "Gemfile.lock",
+        "poetry.lock",
+        "Pipfile.lock",
+        "uv.lock",
+        "go.sum",
+        "mix.lock",
+        "pubspec.lock",
+        "Podfile.lock",
+        "flake.lock",
+        "packages.lock.json",
+    ];
+    let name = path.rsplit('/').next().unwrap_or(path);
+    LOCKS.contains(&name)
+}
+
+/// Whether rerere is what took the markers out of this file.
+///
+/// With `rerere.autoupdate` off, a conflict rerere recognises is written out
+/// resolved and left unmerged for a person to look at. Git crosses it off its
+/// `MERGE_RR` list when it does that, and a file somebody fixed by hand is
+/// still on the list — that is the difference. Both sides have to be there
+/// and the file has to read as text: a whole-side conflict is something else.
+fn by_rerere(state: &AppState, path: &str, text: &str, stages: Stages) -> bool {
+    if !stages.ours || !stages.theirs || text.contains('\0') || has_markers(text) {
+        return false;
+    }
+    let Ok(root) = state.path() else {
+        return false;
+    };
+    let Ok(git_dir) = crate::remote::git_dir(&root) else {
+        return false;
+    };
+    let Ok(listed) = fs::read(git_dir.join("MERGE_RR")) else {
+        return false;
+    };
+    // `<id>\t<path>\0`, once per conflict rerere is still waiting on.
+    !listed
+        .split(|byte| *byte == 0)
+        .filter_map(|entry| entry.splitn(2, |byte| *byte == b'\t').nth(1))
+        .any(|named| named == path.as_bytes())
+}
+
+/// Tells rerere to write down the resolution just staged.
+///
+/// Git records it on its own at commit time, which is too late for a merge
+/// that is aborted and tried again — exactly when the remembered answer is
+/// wanted. Asking now costs one quiet command and changes nothing in the tree.
+fn remember_resolution(state: &AppState, root: &std::path::Path) {
+    let flags = crate::rebase::rerere_flags(state);
+    if flags.is_empty() {
+        return;
+    }
+    let mut args: Vec<&str> = flags.iter().map(String::as_str).collect();
+    args.push("rerere");
+    let _ = git_cmd::run(root, &args);
 }
 
 /// Renders the file the given resolutions produce, without writing it.
@@ -341,7 +459,8 @@ pub fn resolve(state: &AppState, path: &str, choices: &[Resolution]) -> Result<S
     let root = state.path()?;
     let full = root.join(path);
     fs::write(&full, text).map_err(|e| format!("Could not write {}: {}", full.display(), e))?;
-    git_cmd::run_checked(&root, &["add", "--", path])?;
+    git_cmd::run_checked(&root, &["add", "--", &literal(path)])?;
+    remember_resolution(state, &root);
     Ok(format!("Resolved {path}"))
 }
 
@@ -365,12 +484,13 @@ pub fn resolve_whole(state: &AppState, path: &str, side: &str) -> Result<String,
         // `-f` because the working tree holds the other side's content, which
         // git would otherwise refuse to throw away. That content is still in
         // the index stage it came from until the conflict is finished.
-        git_cmd::run_checked(&root, &["rm", "-f", "--", path])?;
+        git_cmd::run_checked(&root, &["rm", "-f", "--", &literal(path)])?;
         return Ok(format!("Deleted {path}, which is what {side} did to it"));
     }
 
-    git_cmd::run_checked(&root, &["checkout", flag, "--", path])?;
-    git_cmd::run_checked(&root, &["add", "--", path])?;
+    git_cmd::run_checked(&root, &["checkout", flag, "--", &literal(path)])?;
+    git_cmd::run_checked(&root, &["add", "--", &literal(path)])?;
+    remember_resolution(state, &root);
     Ok(format!("Resolved {path} using {side}"))
 }
 
@@ -472,11 +592,99 @@ pub fn resolve_as_is(state: &AppState, path: &str) -> Result<String, String> {
     let root = state.path()?;
     let full = root.join(path);
     if !full.exists() {
-        git_cmd::run_checked(&root, &["rm", "-f", "--", path])?;
+        git_cmd::run_checked(&root, &["rm", "-f", "--", &literal(path)])?;
         return Ok(format!("Deleted {path}"));
     }
-    git_cmd::run_checked(&root, &["add", "--", path])?;
+    git_cmd::run_checked(&root, &["add", "--", &literal(path)])?;
+    remember_resolution(state, &root);
     Ok(format!("Resolved {path} as it stands"))
+}
+
+/// The files that were conflicted in what is under way and have been resolved
+/// since, which are the ones that can still be reopened.
+///
+/// Git keeps the three sides of every path resolved during an operation (the
+/// index's resolve-undo record) until the next commit. That record is what
+/// makes a reopen possible, and what this reads. Nothing is offered when no
+/// merge, rebase, pick or revert is running, because then there is no
+/// conflict to go back to.
+pub fn resolved(state: &AppState) -> Result<Vec<String>, String> {
+    if !running(state) {
+        return Ok(Vec::new());
+    }
+    let root = state.path()?;
+    // `-z`, so a path with something unusual in it comes back as it is
+    // rather than in C-style quotes.
+    let listed = git_cmd::run_checked(&root, &["ls-files", "--resolve-undo", "-z"])?;
+    let open = list(state)?;
+    let mut out: Vec<String> = Vec::new();
+    for entry in listed.split('\0') {
+        let Some((_, path)) = entry.split_once('\t') else {
+            continue;
+        };
+        let path = path.to_string();
+        if !open.contains(&path) && !out.contains(&path) {
+            out.push(path);
+        }
+    }
+    out.sort();
+    Ok(out)
+}
+
+/// Puts the conflict markers back into a file that was resolved, so it can be
+/// answered again.
+///
+/// `git checkout -m` rebuilds the conflict from the three sides git kept when
+/// it was resolved. That replaces whatever the file says now, so it is refused
+/// while the file has changes nobody has staged — those would be lost — and
+/// while nothing is running, when there are no sides to rebuild it from.
+pub fn reopen(state: &AppState, path: &str) -> Result<String, String> {
+    if !running(state) {
+        return Err(
+            "Nothing is part-way through any more, so there is no conflict to go back to."
+                .to_string(),
+        );
+    }
+    let root = state.path()?;
+    let spec = literal(path);
+    let kept = git_cmd::run_checked(&root, &["ls-files", "--resolve-undo", "--", &spec])?;
+    if kept.trim().is_empty() {
+        return Err(format!(
+            "Git no longer has the two sides of {path}, so its conflict cannot be rebuilt."
+        ));
+    }
+    let unstaged = git_cmd::run(&root, &["diff", "--quiet", "--", &spec])?;
+    if !unstaged.ok {
+        return Err(format!(
+            "{path} has changes since it was resolved that are not staged. Reopening would \
+             replace them; stage or discard them first."
+        ));
+    }
+    // The answer rerere wrote down for this file is the one being taken back.
+    // Left in place, the next resolve of any other file replayed it into this
+    // one, and whatever it is resolved to now was never recorded over it.
+    let mut forget = crate::rebase::rerere_flags(state);
+    forget.extend(["rerere", "forget", "--", &spec].map(str::to_string));
+    let forget: Vec<&str> = forget.iter().map(String::as_str).collect();
+    let _ = git_cmd::run(&root, &forget);
+    git_cmd::run_checked(
+        &root,
+        &[
+            "-c",
+            "merge.conflictStyle=diff3",
+            "checkout",
+            "-m",
+            "--",
+            &spec,
+        ],
+    )?;
+    Ok(format!("Reopened {path}"))
+}
+
+/// Whether git is in the middle of something a reopened conflict belongs to.
+fn running(state: &AppState) -> bool {
+    crate::remote::in_progress(state)
+        .is_ok_and(|now| now.merging || now.rebasing || now.cherry_picking || now.reverting)
 }
 
 /// Ends a conflict by throwing both sides away and taking the file back to

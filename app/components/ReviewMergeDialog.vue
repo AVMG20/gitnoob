@@ -1,19 +1,22 @@
 <script setup lang="ts">
-import { computed, ref } from 'vue'
+import { computed, onMounted, ref } from 'vue'
 import { GitMerge } from 'lucide-vue-next'
 import AppModal from './AppModal.vue'
 import Spinner from './Spinner.vue'
 import { useReview } from '~/composables/useReview'
-import { useForge } from '~/composables/useForge'
+import { useForge, type MergeMethod } from '~/composables/useForge'
 import { mergeSummary } from '~/composables/reviewLook'
 import { useGit } from '~/composables/useGit'
+import { offerBranchCleanup } from '~/composables/useForgeNudges'
 
 /**
  * The last step before a branch lands.
  *
  * Merging used to be a button that changed its own label for three seconds
  * and then did it. This says what is about to happen instead — which commits,
- * in what shape, and what becomes of the branch — and asks once.
+ * in what shape, and what becomes of the branch — and asks once. It offers
+ * only the ways the project allows, and stays open with the forge's answer
+ * when the merge is refused, so the reason is read where the click was made.
  */
 const emit = defineEmits<{ close: [] }>()
 
@@ -22,8 +25,39 @@ const forge = useForge()
 const git = useGit()
 const store = review.store
 
-const squash = ref(false)
+const ALL: { value: MergeMethod; title: string; text: string }[] = [
+  { value: 'merge', title: 'Merge commit', text: 'Every commit of the branch, kept as it was written.' },
+  { value: 'squash', title: 'Squash and merge', text: 'One commit on the target, whatever the branch took.' },
+  { value: 'rebase', title: 'Rebase and merge', text: 'The commits replayed onto the target, one by one, with no merge commit.' }
+]
+
+/** The ways this project allows, in the order above; every one until it says. */
+const methods = computed(() => {
+  const allowed = forge.facts.value?.merge_methods
+  // GitLab merges the way the project is set up to; rebasing is not a
+  // choice made at the button there.
+  const offered = forge.store.status?.kind === 'gitlab' ? ALL.filter((m) => m.value !== 'rebase') : ALL
+  if (!allowed?.length) return offered
+  const kept = offered.filter((m) => allowed.includes(m.value))
+  return kept.length ? kept : offered
+})
+
+const method = ref<MergeMethod>('merge')
 const removeBranch = ref(false)
+const error = ref<string | null>(null)
+
+/** The first allowed way, unless the one chosen is still allowed. */
+function settle() {
+  if (!methods.value.some((m) => m.value === method.value)) {
+    method.value = methods.value[0]?.value ?? 'merge'
+  }
+}
+settle()
+
+onMounted(async () => {
+  await forge.loadFacts()
+  settle()
+})
 
 const one = computed(() => store.detail ?? store.current)
 const state = computed(() => {
@@ -43,10 +77,22 @@ const ours = computed(() => !store.current?.source?.is_fork)
 
 const commits = computed(() => store.commits.length)
 
+const label = computed(() => ALL.find((m) => m.value === method.value)?.title ?? 'Merge')
+
 async function merge() {
-  const note = await review.merge(squash.value, removeBranch.value && ours.value)
-  if (note) git.note(note)
+  error.value = null
+  const source = one.value?.source_branch ?? ''
+  const head = store.detail?.head_sha || store.current?.head_sha || null
+  const note = await review.merge(method.value, removeBranch.value && ours.value)
+  if (!note) {
+    // Refused: say why here, and leave the choice where it was.
+    error.value = forge.store.error ?? 'The forge did not merge it'
+    return
+  }
+  git.note(note)
   emit('close')
+  // The clone catches up with what just happened on the forge.
+  if (source) await offerBranchCleanup(source, head)
 }
 </script>
 
@@ -67,18 +113,11 @@ async function merge() {
     </p>
 
     <div class="choices">
-      <label class="choice">
-        <input v-model="squash" type="radio" :value="false" />
+      <label v-for="way in methods" :key="way.value" class="choice">
+        <input v-model="method" type="radio" :value="way.value" :data-testid="`merge-method-${way.value}`" />
         <span>
-          <strong>Merge commit</strong>
-          <em class="faint">Every commit of the branch, kept as it was written.</em>
-        </span>
-      </label>
-      <label class="choice">
-        <input v-model="squash" type="radio" :value="true" />
-        <span>
-          <strong>Squash and merge</strong>
-          <em class="faint">One commit on the target, whatever the branch took.</em>
+          <strong>{{ way.title }}</strong>
+          <em class="faint">{{ way.text }}</em>
         </span>
       </label>
     </div>
@@ -87,6 +126,8 @@ async function merge() {
       <input v-model="removeBranch" type="checkbox" data-testid="merge-delete-branch" />
       Delete <span class="mono">{{ one?.source_branch }}</span> afterwards
     </label>
+
+    <p v-if="error" class="refused" data-testid="merge-error">{{ error }}</p>
 
     <template #footer>
       <button class="btn" @click="emit('close')">Cancel</button>
@@ -98,7 +139,7 @@ async function merge() {
       >
         <Spinner v-if="store.acting === 'merge'" :size="12" />
         <GitMerge v-else :size="14" />
-        {{ squash ? 'Squash and merge' : 'Merge' }}
+        {{ method === 'merge' ? 'Merge' : label }}
       </button>
     </template>
   </AppModal>
@@ -204,6 +245,17 @@ async function merge() {
 
 .after input {
   accent-color: var(--accent);
+}
+
+.refused {
+  margin: 12px 0 0;
+  padding: 8px 11px;
+  border-radius: var(--radius);
+  border: 1px solid var(--danger-line);
+  background: var(--danger-bg);
+  color: var(--danger-soft);
+  font-size: 12px;
+  line-height: 1.45;
 }
 
 .go {

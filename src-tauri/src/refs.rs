@@ -33,6 +33,18 @@ pub struct LocalBranch {
     pub upstream: Option<String>,
     pub ahead: usize,
     pub behind: usize,
+    /// The upstream this branch is set to follow, when that ref no longer
+    /// exists — `origin/feature` after the branch was deleted on the remote
+    /// and a fetch pruned it. `upstream` is `None` then, and without this the
+    /// branch looked like one that had never been pushed: the toolbar offered
+    /// to push it and set the upstream, which put the deleted branch back.
+    pub gone: Option<String>,
+    /// Where a push of it lands, `remote/name`, when it follows something.
+    /// Not always `upstream`: a branch that follows `origin/main` without
+    /// being `main` is pushed under its own name (see
+    /// [`crate::remote::push_target`]), and a button that said "Push to
+    /// origin/main" would be describing a push that never happens.
+    pub push_to: Option<String>,
 }
 
 #[derive(Serialize)]
@@ -171,6 +183,16 @@ pub fn tree(state: &AppState) -> Result<RefTree, String> {
             }
             Err(_) => (None, 0, 0),
         };
+        let gone = if upstream.is_none() {
+            configured_upstream(&repo, &name).map(|(remote, merge)| tracking_name(&remote, &merge))
+        } else {
+            None
+        };
+        let push_to = upstream.as_ref().and_then(|_| {
+            let (remote, _) = configured_upstream(&repo, &name).filter(|(r, _)| r != ".")?;
+            let (dest, _) = crate::remote::push_target(&repo, &remote, &name);
+            Some(tracking_name(&remote, &dest))
+        });
 
         locals.push(LocalBranch {
             is_head: Some(&name) == head_name.as_ref(),
@@ -179,6 +201,8 @@ pub fn tree(state: &AppState) -> Result<RefTree, String> {
             upstream,
             ahead,
             behind,
+            gone,
+            push_to,
         });
     }
     locals.sort_by(|a, b| a.name.cmp(&b.name));
@@ -802,10 +826,13 @@ pub fn checkout_tracking(state: &AppState, local: &str, tracking: &str) -> Resul
 /// Creates a local branch at a revision and switches to it, for commits that
 /// arrived without a branch to hang them on.
 pub fn checkout_at(state: &AppState, local: &str, revision: &str) -> Result<String, String> {
+    // A raw commit has nothing to track, but `branch.autoSetupMerge=always`
+    // would still go looking; saying so keeps the answer the same everywhere.
     let args = vec![
         "switch".to_string(),
         "-c".to_string(),
         local.to_string(),
+        "--no-track".to_string(),
         "--".to_string(),
         revision.to_string(),
     ];
@@ -1019,6 +1046,35 @@ pub fn upstream_of(state: &AppState, name: &str) -> Option<String> {
     upstream.name().ok().flatten().map(|s| s.to_string())
 }
 
+/// What a local branch is set to follow, read from its config rather than by
+/// looking the ref up: the remote, and the branch's name *on that remote*.
+///
+/// The two differ more often than it seems. `alice-main` tracking
+/// `alice/main` is called `main` over there, and a push that assumed the
+/// local name made a new `alice-main` on Alice's remote. And the config
+/// outlives the ref: after a merged branch is deleted on the remote and
+/// pruned here, this still answers where it used to go.
+pub fn configured_upstream(repo: &Repository, branch: &str) -> Option<(String, String)> {
+    let config = repo.config().ok()?.snapshot().ok()?;
+    let remote = config.get_string(&format!("branch.{branch}.remote")).ok()?;
+    let merge = config.get_string(&format!("branch.{branch}.merge")).ok()?;
+    let merge = merge
+        .strip_prefix("refs/heads/")
+        .unwrap_or(&merge)
+        .to_string();
+    (!remote.is_empty() && !merge.is_empty()).then_some((remote, merge))
+}
+
+/// `origin` and `feature` as the remote-tracking name git shows,
+/// `origin/feature`. An upstream on `.` is a local branch and keeps its name.
+fn tracking_name(remote: &str, merge: &str) -> String {
+    if remote == "." {
+        merge.to_string()
+    } else {
+        format!("{remote}/{merge}")
+    }
+}
+
 /// Whether a revision is already in this clone's object store.
 pub fn has_commit(state: &AppState, revision: &str) -> bool {
     state
@@ -1076,6 +1132,16 @@ fn in_the_way(name: &str, error: &str) -> String {
     )
 }
 
+/// Creates a branch, and checks it out when asked to, carrying open work
+/// across the way a checkout does.
+///
+/// The new branch tracks nothing, unless it is being made from a remote
+/// branch of the same name — `feature` from `origin/feature` is the remote
+/// branch checked out by another route. Left to itself, git's
+/// `branch.autoSetupMerge` makes a branch started from `origin/main` track
+/// `origin/main`: its Push then went to main, its ahead and behind were
+/// counted against main, and its Pull pulled main. A branch started from
+/// somewhere is not a copy of it.
 pub fn create_branch(
     state: &AppState,
     name: &str,
@@ -1083,26 +1149,161 @@ pub fn create_branch(
     checkout: bool,
 ) -> Result<String, String> {
     let path = state.path()?;
+    let track = start.is_some_and(|start| same_name_on_a_remote(state, name, start));
+    let track_flag = if track { "--track" } else { "--no-track" };
     // `switch -c` ends its options at `--`, so a start point named like a flag
     // is still a start point. Plain `branch` has no such grammar — a `--`
     // there is read as a bogus second start point — hence `--end-of-options`.
-    let mut args: Vec<&str> = if checkout {
-        vec!["switch", "-c", name, "--"]
+    let carried = if checkout {
+        let mut args: Vec<String> = vec![
+            "switch".into(),
+            "-c".into(),
+            name.into(),
+            track_flag.into(),
+            "--".into(),
+        ];
+        if let Some(start) = start {
+            args.push(start.into());
+        }
+        switch(state, name, &args)?.contains(CARRIED)
     } else {
-        vec!["branch", END_OF_OPTIONS, name]
+        let mut args: Vec<&str> = vec!["branch", track_flag, END_OF_OPTIONS, name];
+        if let Some(start) = start {
+            args.push(start);
+        }
+        git_cmd::run_checked(&path, &args)?;
+        false
     };
-    if let Some(start) = start {
-        args.push(start);
-    }
     // `git switch -c` says "Switched to a new branch" on stderr, so its stdout
     // is empty on success. Say it ourselves rather than hand back nothing.
-    git_cmd::run_checked(&path, &args)?;
-    Ok(match (checkout, start) {
+    let mut said = match (checkout, start) {
         (true, Some(start)) => format!("Created {name} from {start} and checked it out"),
         (true, None) => format!("Created {name} and checked it out"),
         (false, Some(start)) => format!("Created {name} from {start}"),
         (false, None) => format!("Created {name}"),
-    })
+    };
+    if track {
+        said = format!("{said}, tracking {}", start.unwrap_or_default());
+    }
+    if carried {
+        said = format!("{said}, {CARRIED}");
+    }
+    Ok(said)
+}
+
+/// `start` is a remote-tracking branch called `name` on its remote.
+fn same_name_on_a_remote(state: &AppState, name: &str, start: &str) -> bool {
+    let Ok(repo) = state.repo() else {
+        return false;
+    };
+    if repo.find_branch(start, BranchType::Remote).is_err() {
+        return false;
+    }
+    remote_part(&repo, start).is_some_and(|(_, branch)| branch == name)
+}
+
+/// `origin/feature/x` split into the remote and the branch on it, by the
+/// remotes this clone actually has — a remote is allowed a slash in its name,
+/// and the first slash is not always the one between the two.
+pub fn remote_part(repo: &Repository, tracking: &str) -> Option<(String, String)> {
+    let remotes = repo.remotes().ok()?;
+    remotes
+        .iter()
+        .flatten()
+        .filter_map(|remote| {
+            tracking
+                .strip_prefix(remote)
+                .and_then(|rest| rest.strip_prefix('/'))
+                .filter(|branch| !branch.is_empty())
+                .map(|branch| (remote.to_string(), branch.to_string()))
+        })
+        // The longest remote name that fits, so `a/b` wins over `a`.
+        .max_by_key(|(remote, _)| remote.len())
+}
+
+/// Starts new work: the trunk as the remote has it right now, a branch off it
+/// that tracks nothing, and open changes carried over.
+///
+/// `from` is a remote branch to start from instead of the trunk. Either way
+/// its remote is fetched first, so "from main" means the main everybody else
+/// is on rather than whatever this clone last saw. A fetch that fails —
+/// offline, a key not loaded — is said, and the branch is made from what is
+/// here: starting from slightly old work is not worth refusing over.
+pub fn start_work(state: &AppState, name: &str, from: Option<&str>) -> Result<String, String> {
+    let from = match from {
+        Some(from) => from.to_string(),
+        None => trunk_target(state)
+            .ok_or_else(|| "There is no main branch here to start from".to_string())?,
+    };
+    if has_local_branch(state, name) {
+        return Err(format!("There is already a branch called {name}"));
+    }
+    let remote = {
+        let repo = state.repo()?;
+        remote_part(&repo, &from)
+            .filter(|_| repo.find_branch(&from, BranchType::Remote).is_ok())
+            .map(|(remote, _)| remote)
+    };
+    let mut note = String::new();
+    if let Some(remote) = &remote {
+        let failed = match remote::fetch(state, Some(remote)) {
+            Ok(out) if out.ok => None,
+            Ok(out) => Some(out.stderr.trim().to_string()),
+            Err(error) => Some(error),
+        };
+        if let Some(why) = failed {
+            note = format!(
+                "\nCould not fetch {remote}, so it starts from what was already here: {why}"
+            );
+        }
+    }
+    let args: Vec<String> = vec![
+        "switch".into(),
+        "-c".into(),
+        name.into(),
+        "--no-track".into(),
+        "--".into(),
+        from.clone(),
+    ];
+    let said = switch(state, name, &args)?;
+    let carried = if said.contains(CARRIED) {
+        format!(", {CARRIED}")
+    } else {
+        String::new()
+    };
+    Ok(format!("Started {name} from {from}{carried}{note}"))
+}
+
+/// What new work starts from and is brought up to date with: the trunk as its
+/// remote has it — `origin/main` rather than a local `main` that may be weeks
+/// behind. A trunk with no copy on any remote is its own answer.
+pub fn trunk_target(state: &AppState) -> Option<String> {
+    let trunk = {
+        let repo = state.repo().ok()?;
+        let trunk = trunk_of(&repo)?;
+        let Ok(local) = repo.find_branch(&trunk, BranchType::Local) else {
+            // Already a remote-tracking name.
+            return Some(trunk);
+        };
+        if let Some(up) = local
+            .upstream()
+            .ok()
+            .and_then(|up| up.name().ok().flatten().map(String::from))
+        {
+            return Some(up);
+        }
+        trunk
+    };
+    // A local trunk that was never told what it tracks still has a copy under
+    // the same name on the repository's own remote, most of the time.
+    if let Some(primary) = remote::primary(state) {
+        let candidate = format!("{primary}/{trunk}");
+        let repo = state.repo().ok()?;
+        if repo.find_branch(&candidate, BranchType::Remote).is_ok() {
+            return Some(candidate);
+        }
+    }
+    Some(trunk)
 }
 
 /// A copy of the branch on a remote, and what deleting it there would cost.
@@ -1184,10 +1385,42 @@ pub fn trunk_of(repo: &Repository) -> Option<String> {
     if let Some(chosen) = chosen_trunk(repo) {
         return Some(chosen);
     }
+    // The remote's own default branch, as the clone recorded it. A repository
+    // whose default is `develop` keeps a `main` around as often as not, and
+    // guessing by name measured every branch against the wrong one.
+    if let Some(default) = remote_default(repo) {
+        return Some(default);
+    }
     ["main", "master", "origin/main", "origin/master"]
         .into_iter()
         .find(|name| ref_exists(repo, name))
         .map(str::to_string)
+}
+
+/// The branch `origin/HEAD` points at, by its local name when there is a local
+/// branch of that name and as `origin/<name>` otherwise.
+///
+/// Only `origin`: a clone writes its HEAD, while a fork added to look at a
+/// review may have one of its own that says nothing about this repository.
+///
+/// Only while `origin/<name>` itself still exists. Git before 2.48 never
+/// rewrites `origin/HEAD` on a fetch, so a project that renamed `master` to
+/// `main` leaves it naming a remote branch that `--prune` took away — and a
+/// stale local `master` beside it would otherwise be chosen over the live
+/// `main` for good.
+fn remote_default(repo: &Repository) -> Option<String> {
+    let head = repo.find_reference("refs/remotes/origin/HEAD").ok()?;
+    let target = head.symbolic_target()?.to_string();
+    let branch = target.strip_prefix("refs/remotes/origin/")?;
+    if branch.is_empty() || branch == "HEAD" {
+        return None;
+    }
+    let remote = format!("origin/{branch}");
+    repo.find_branch(&remote, BranchType::Remote).ok()?;
+    if repo.find_branch(branch, BranchType::Local).is_ok() {
+        return Some(branch.to_string());
+    }
+    Some(remote)
 }
 
 /// Names the branch this repository is organised around, or forgets the name
@@ -1243,6 +1476,62 @@ pub struct BranchDeletion {
     /// Copies on any other remote: forks, mirrors, a colleague's clone. Named
     /// so nothing comes as a surprise, never deleted from here.
     pub other_remotes: Vec<String>,
+    /// How the work reached the trunk when it did: `merged` for an ancestor,
+    /// `squash` or `rebase` for copies a forge made on its way in. `None`
+    /// while the trunk does not hold it.
+    pub landed: Option<String>,
+    /// The upstream this branch was set to follow, when that ref has gone.
+    pub gone: Option<String>,
+}
+
+/// The commits "has this landed?" is measured against: the trunk as it is
+/// here, and the trunk as its remote has it.
+///
+/// A local `main` is only as current as the last time somebody pulled it, and
+/// a branch merged on GitHub this morning is in `origin/main` long before it
+/// is in that. Measured against the local one alone, it read as "commits left
+/// with no branch" and asked for a forced delete. Each comes with the name to
+/// say it was measured against.
+pub fn trunk_tips(repo: &Repository, trunk: &str) -> Vec<(String, git2::Oid)> {
+    let mut tips = Vec::new();
+    if let Ok(local) = repo.find_branch(trunk, BranchType::Local) {
+        if let Some(oid) = local.get().target() {
+            tips.push((trunk.to_string(), oid));
+        }
+        if let Ok(up) = local.upstream() {
+            if let (Some(name), Some(oid)) = (up.name().ok().flatten(), up.get().target()) {
+                tips.push((name.to_string(), oid));
+            }
+        }
+    } else if let Ok(remote) = repo.find_branch(trunk, BranchType::Remote) {
+        if let Some(oid) = remote.get().target() {
+            tips.push((trunk.to_string(), oid));
+        }
+    }
+    tips
+}
+
+/// Whether `oid` has landed on any of `tips`, and where and how: an ancestor
+/// first, since that is proof by history, and copies by patch-id after.
+fn landing(
+    repo: &Repository,
+    oid: git2::Oid,
+    tips: &[(String, git2::Oid)],
+) -> Option<(String, &'static str)> {
+    for (name, tip) in tips {
+        if *tip == oid || repo.graph_descendant_of(*tip, oid).unwrap_or(false) {
+            return Some((name.clone(), "merged"));
+        }
+    }
+    // The remote's copy first: that is where a forge's squash lands.
+    for (name, tip) in tips.iter().rev() {
+        match crate::graph::carried(repo, oid, *tip) {
+            Some(crate::graph::Carried::Squash) => return Some((name.clone(), "squash")),
+            Some(crate::graph::Carried::Rebase) => return Some((name.clone(), "rebase")),
+            None => {}
+        }
+    }
+    None
 }
 
 pub fn deletion_preview(state: &AppState, name: &str) -> Result<BranchDeletion, String> {
@@ -1278,21 +1567,25 @@ pub fn deletion_preview(state: &AppState, name: &str) -> Result<BranchDeletion, 
     // repository has no trunk at all keeps an answer for the odd clone that
     // has neither main nor master.
     let trunk = trunk(state);
-    let against_oid = trunk
+    let mut tips = trunk
         .name
         .as_deref()
-        .and_then(|name| {
-            repo.find_branch(name, BranchType::Local)
-                .or_else(|_| repo.find_branch(name, BranchType::Remote))
-                .ok()
-        })
-        .and_then(|found| found.get().target())
-        .or(head_oid);
-    let against = trunk.name.clone().or_else(|| head.clone());
-    let trunk_holds = match against_oid {
-        Some(base) => base == oid || repo.graph_descendant_of(base, oid).unwrap_or(false),
-        None => false,
-    };
+        .map(|name| trunk_tips(&repo, name))
+        .unwrap_or_default();
+    if tips.is_empty() {
+        if let Some(head_oid) = head_oid {
+            tips.push((head.clone().unwrap_or_else(|| "HEAD".to_string()), head_oid));
+        }
+    }
+    let landed = landing(&repo, oid, &tips);
+    // The name of whichever tip holds it, so "merged into origin/main" says
+    // where it was found when the local main has not caught up yet.
+    let against = landed
+        .as_ref()
+        .map(|(name, _)| name.clone())
+        .or_else(|| trunk.name.clone())
+        .or_else(|| head.clone());
+    let trunk_holds = landed.is_some();
 
     // The other local branches holding this history. `git branch --contains`
     // answers in one walk what a descendant check per branch would pay for
@@ -1327,12 +1620,21 @@ pub fn deletion_preview(state: &AppState, name: &str) -> Result<BranchDeletion, 
 
     // What this branch holds that the trunk does not. `trunk_holds` is the same
     // question asked as a yes or no; this is the number to put in the warning.
-    let only_here = match against_oid {
-        Some(base) => repo
-            .graph_ahead_behind(oid, base)
+    // Copies by patch-id cost nothing to lose: the work is on the trunk under
+    // other ids. Otherwise it is the fewest any of the trunk's tips is missing.
+    let only_here = if landed.is_some() {
+        0
+    } else {
+        tips.iter()
+            .filter_map(|(_, tip)| repo.graph_ahead_behind(oid, *tip).ok())
             .map(|(ahead, _)| ahead)
-            .unwrap_or(0),
-        None => 0,
+            .min()
+            .unwrap_or(0)
+    };
+    let gone = if branch.upstream().is_err() {
+        configured_upstream(&repo, name).map(|(remote, merge)| tracking_name(&remote, &merge))
+    } else {
+        None
     };
 
     let upstream_ref = branch.upstream().ok();
@@ -1375,13 +1677,17 @@ pub fn deletion_preview(state: &AppState, name: &str) -> Result<BranchDeletion, 
                 // What the remote holds that the trunk cannot reach: the same
                 // yardstick the local half uses, so the two halves of the
                 // answer agree with each other.
-                let base = against_oid.unwrap_or(oid);
-                let unmerged = remote_branch
-                    .get()
-                    .target()
-                    .and_then(|remote_oid| repo.graph_ahead_behind(base, remote_oid).ok())
-                    .map(|(_, behind)| behind)
-                    .unwrap_or(0);
+                let unmerged = match remote_branch.get().target() {
+                    Some(remote_oid) if landing(&repo, remote_oid, &tips).is_none() => tips
+                        .iter()
+                        .map(|(_, tip)| *tip)
+                        .chain(tips.is_empty().then_some(oid))
+                        .filter_map(|base| repo.graph_ahead_behind(base, remote_oid).ok())
+                        .map(|(_, behind)| behind)
+                        .min()
+                        .unwrap_or(0),
+                    _ => 0,
+                };
                 remote = Some(RemoteCopy {
                     name: full.to_string(),
                     remote: host.to_string(),
@@ -1409,13 +1715,22 @@ pub fn deletion_preview(state: &AppState, name: &str) -> Result<BranchDeletion, 
         unpushed,
         remote,
         other_remotes,
+        landed: landed.map(|(_, how)| how.to_string()),
+        gone,
     })
 }
 
 pub fn delete_branch(state: &AppState, name: &str, force: bool) -> Result<String, String> {
     let path = state.path()?;
     let flag = if force { "-D" } else { "-d" };
-    git_cmd::run_checked(&path, &["branch", flag, END_OF_OPTIONS, name])
+    // Read before it goes: where it pointed and what it tracked are what
+    // undoing the deletion puts back.
+    let snapshot = journal::snapshot_branch(&path, name);
+    let said = git_cmd::run_checked(&path, &["branch", flag, END_OF_OPTIONS, name])?;
+    if let Some(snapshot) = snapshot {
+        journal::record_branch_deleted(state, &path, snapshot);
+    }
+    Ok(said)
 }
 
 fn err(e: git2::Error) -> String {
@@ -1494,6 +1809,237 @@ pub fn stale_branches(state: &AppState) -> Result<Vec<String>, String> {
             track.contains("gone").then(|| name.to_string())
         })
         .collect())
+}
+
+/// A local branch that looks finished, and why.
+#[derive(Serialize, Debug, Clone)]
+pub struct Tidy {
+    pub name: String,
+    pub oid: String,
+    /// `merged` (an ancestor of the trunk, brought in by a merge), `squash`
+    /// or `rebase` (copies of its work are on the trunk), or `gone` (its
+    /// upstream was deleted, and nothing here proves the work landed).
+    pub reason: String,
+    /// The trunk ref the work was found on, e.g. `origin/main`.
+    pub into: Option<String>,
+    /// The upstream it followed, when that has been deleted on the remote.
+    pub gone: Option<String>,
+    /// Deleting it loses nothing: the work is on the trunk by history or by
+    /// patch. Only these are ticked to begin with.
+    pub proven: bool,
+}
+
+/// The local branches worth tidying away after a fetch.
+///
+/// Never the branch you are on, never one checked out in another worktree,
+/// never the trunk or another local copy of it. A branch that is merely an
+/// ancestor of the trunk's own line is left out as well: that is where a
+/// branch made from main this morning sits until its first commit, and a
+/// branch with nothing on it yet is not finished. One brought in by a merge
+/// commit, or squashed or rebased in by a forge, is.
+pub fn tidy_candidates(state: &AppState) -> Result<Vec<Tidy>, String> {
+    let checked_out: std::collections::HashSet<String> = crate::worktree::list(state)
+        .unwrap_or_default()
+        .into_iter()
+        .filter_map(|tree| tree.branch)
+        .collect();
+    let repo = state.repo()?;
+    let head = journal::current_branch(state);
+    let Some(trunk) = trunk_of(&repo) else {
+        return Ok(Vec::new());
+    };
+    let tips = trunk_tips(&repo, &trunk);
+    if tips.is_empty() {
+        return Ok(Vec::new());
+    }
+
+    let mut found = Vec::new();
+    for entry in repo.branches(Some(BranchType::Local)).map_err(err)? {
+        let (branch, _) = entry.map_err(err)?;
+        let Some(name) = branch.name().ok().flatten().map(String::from) else {
+            continue;
+        };
+        let Some(oid) = branch.get().target() else {
+            continue;
+        };
+        if name == trunk || Some(&name) == head.as_ref() || checked_out.contains(&name) {
+            continue;
+        }
+        let upstream = branch
+            .upstream()
+            .ok()
+            .and_then(|up| up.name().ok().flatten().map(String::from));
+        // Another local branch following the trunk is a copy of it, not work.
+        if upstream
+            .as_ref()
+            .is_some_and(|up| tips.iter().any(|(tip, _)| tip == up))
+        {
+            continue;
+        }
+        let gone = if upstream.is_none() {
+            configured_upstream(&repo, &name).map(|(remote, merge)| tracking_name(&remote, &merge))
+        } else {
+            None
+        };
+
+        let tidy = |reason: &str, into: Option<String>, proven: bool| Tidy {
+            name: name.clone(),
+            oid: oid.to_string(),
+            reason: reason.to_string(),
+            into,
+            gone: gone.clone(),
+            proven,
+        };
+        match landing(&repo, oid, &tips) {
+            Some((into, "merged")) => {
+                let tip = tips
+                    .iter()
+                    .find(|(name, _)| *name == into)
+                    .map(|(_, tip)| *tip);
+                let merged_in = tip.is_some_and(|tip| !on_first_parent_line(&repo, oid, tip));
+                if gone.is_some() || merged_in {
+                    found.push(tidy("merged", Some(into), true));
+                }
+            }
+            Some((into, how)) => found.push(tidy(how, Some(into), true)),
+            None if gone.is_some() => found.push(tidy("gone", None, false)),
+            None => {}
+        }
+    }
+    found.sort_by(|a, b| a.name.cmp(&b.name));
+    Ok(found)
+}
+
+/// Whether `oid` is on `tip`'s own line — reached by first parents alone —
+/// rather than brought in from the side by a merge.
+///
+/// Walked back by date and only so far. Running out of road says "on the
+/// line", which leaves the branch off the tidy list: a branch not offered is
+/// the cheap mistake.
+fn on_first_parent_line(repo: &Repository, oid: git2::Oid, tip: git2::Oid) -> bool {
+    let Ok(target) = repo.find_commit(oid) else {
+        return true;
+    };
+    // A day of slack for clocks that disagree between machines.
+    let floor = target.time().seconds() - 86_400;
+    let mut at = tip;
+    for _ in 0..20_000 {
+        if at == oid {
+            return true;
+        }
+        let Ok(commit) = repo.find_commit(at) else {
+            return true;
+        };
+        if commit.time().seconds() < floor {
+            return false;
+        }
+        match commit.parent_id(0) {
+            Ok(parent) => at = parent,
+            Err(_) => return false,
+        }
+    }
+    true
+}
+
+/// A branch taken away by [`delete_branches`], with what it takes to put it
+/// back exactly: where it pointed and what it followed.
+#[derive(Serialize, serde::Deserialize, Debug, Clone)]
+pub struct Removed {
+    pub name: String,
+    pub oid: String,
+    pub remote: Option<String>,
+    pub merge: Option<String>,
+}
+
+/// A branch to delete, with the commit it pointed at when the list was shown.
+#[derive(Serialize, serde::Deserialize, Debug, Clone)]
+pub struct Doomed {
+    pub name: String,
+    pub oid: String,
+}
+
+#[derive(Serialize, Debug)]
+pub struct Removal {
+    pub removed: Vec<Removed>,
+    /// One line per branch that was refused, and why.
+    pub refused: Vec<String>,
+    /// The undo step that puts them all back, for the notice's Undo.
+    pub step: Option<usize>,
+}
+
+/// Deletes local branches, each only while it still points where the list
+/// that offered it said.
+///
+/// By commit rather than by name: a branch that moved after the list was
+/// read — a commit in a terminal, a pull in another window — holds work the
+/// list never showed, and `git branch -D` would have taken it with it. That
+/// one is refused instead.
+///
+/// The whole batch is one step in the undo history, and its id is handed back
+/// so the notice that says what went can offer Undo through the history
+/// itself. The branch you are on and any branch checked out in another
+/// worktree are refused — git refuses those too, but saying so here keeps one
+/// refusal from stopping the rest.
+pub fn delete_branches(state: &AppState, branches: &[Doomed]) -> Result<Removal, String> {
+    let path = state.path()?;
+    let checked_out: std::collections::HashSet<String> = crate::worktree::list(state)
+        .unwrap_or_default()
+        .into_iter()
+        .filter_map(|tree| tree.branch)
+        .collect();
+    let head = journal::branch_at(&path);
+    let repo = Repository::open(&path).map_err(err)?;
+    let mut removed = Vec::new();
+    let mut refused = Vec::new();
+    let mut snapshots = Vec::new();
+    for Doomed { name, oid: shown } in branches {
+        if Some(name) == head.as_ref() {
+            refused.push(format!("{name}: you are on it"));
+            continue;
+        }
+        if checked_out.contains(name) {
+            refused.push(format!("{name}: checked out in another worktree"));
+            continue;
+        }
+        let Ok(branch) = repo.find_branch(name, BranchType::Local) else {
+            refused.push(format!("{name}: no such branch"));
+            continue;
+        };
+        let Some(oid) = branch.get().target() else {
+            refused.push(format!("{name}: points at nothing"));
+            continue;
+        };
+        if oid.to_string() != *shown {
+            refused.push(format!(
+                "{name}: it has moved since the list was read, so it was left alone"
+            ));
+            continue;
+        }
+        let upstream = configured_upstream(&repo, name);
+        let record = Removed {
+            name: name.clone(),
+            oid: oid.to_string(),
+            remote: upstream.as_ref().map(|(remote, _)| remote.clone()),
+            merge: upstream.map(|(_, merge)| merge),
+        };
+        let Some(snapshot) = journal::snapshot_branch(&path, name) else {
+            refused.push(format!("{name}: no such branch"));
+            continue;
+        };
+        match journal::delete_branch_at(&path, name, shown, &format!("tidy away {name}")) {
+            Ok(()) => {
+                snapshots.push(snapshot);
+                removed.push(record);
+            }
+            Err(error) => refused.push(format!("{name}: {error}")),
+        }
+    }
+    let step = journal::record_branches_deleted(state, &path, snapshots);
+    Ok(Removal {
+        removed,
+        refused,
+        step,
+    })
 }
 
 /// Adds a pattern to the repository's `.gitignore`, creating it if needed.

@@ -13,6 +13,7 @@ import { useTheme } from '~/composables/useTheme'
 import { useUpdates } from '~/composables/useUpdates'
 import { useShortcuts } from '~/composables/useShortcuts'
 import { useZoom } from '~/composables/useZoom'
+import { runHomeAct, type HomeAct } from '~/composables/useForgeNudges'
 
 const git = useGit()
 const store = git.store
@@ -215,6 +216,16 @@ async function fromHome(path: string) {
 }
 
 /**
+ * A home row that asks for something done: its project opens first, and the
+ * project's own flow does the rest where its result can be seen.
+ */
+async function fromHomeAct(act: HomeAct) {
+  if (!act.path) return
+  await openProject(act.path)
+  await runHomeAct(act)
+}
+
+/**
  * Opens a project and does the on-open housekeeping GitKraken does.
  *
  * `replace` is the tab it takes the place of, rather than getting its own.
@@ -236,19 +247,56 @@ async function openProject(path: string, replace?: string) {
   }
   await afterOpen()
   // Fetch straight away so the ahead/behind counts on screen are true rather
-  // than whatever they were when the app last ran.
-  if (settings.value?.auto_fetch_on_open) git.fetch()
+  // than whatever they were when the app last ran. Quietly, like the timer:
+  // nothing locks while it runs, and a remote that is down says so in the log.
+  if (settings.value?.auto_fetch_on_open) backgroundFetch()
   scheduleFetch()
+}
+
+/** When the fetch on the timer (or on opening) last went out. */
+let lastFetch = 0
+
+/** The fetch nobody pressed a button for. */
+function backgroundFetch() {
+  lastFetch = Date.now()
+  void git.fetchQuietly()
+}
+
+/**
+ * Whether a fetch is due: the setting's interval has passed, and the window is
+ * where somebody can see what it brings. A window in the background is not
+ * fetched for — it catches up the moment it is looked at again.
+ */
+function fetchDue() {
+  const minutes = settings.value?.auto_fetch_minutes ?? 0
+  return (
+    minutes > 0 &&
+    !!store.repo &&
+    !store.busy &&
+    document.visibilityState === 'visible' &&
+    Date.now() - lastFetch >= minutes * 60_000
+  )
 }
 
 function scheduleFetch() {
   if (fetchTimer) window.clearInterval(fetchTimer)
+  fetchTimer = undefined
+  // With no fetch on opening, the first one is an interval away, as before.
+  if (!lastFetch) lastFetch = Date.now()
   const minutes = settings.value?.auto_fetch_minutes ?? 0
   if (minutes > 0) {
+    // Checked every half minute rather than fired once per interval, so a
+    // fetch skipped while the window was hidden or busy happens soon after
+    // rather than a whole interval later.
     fetchTimer = window.setInterval(() => {
-      if (!store.busy) git.fetch()
-    }, minutes * 60_000)
+      if (fetchDue()) backgroundFetch()
+    }, Math.min(30_000, minutes * 60_000))
   }
+}
+
+/** Back from another window or desktop: a fetch that fell due meanwhile goes now. */
+function onVisible() {
+  if (fetchDue()) backgroundFetch()
 }
 
 // Switching profile swaps the tab strip, so follow it to whatever is open there.
@@ -337,6 +385,7 @@ onMounted(async () => {
   // platform without file notifications — and for the commonest case of all:
   // you left, changed something elsewhere, and came back.
   window.addEventListener('focus', onFocus)
+  document.addEventListener('visibilitychange', onVisible)
 })
 
 /** When the window was last read on being focused. */
@@ -362,6 +411,7 @@ onUnmounted(() => {
   unlistenCommand?.()
   updates.stopWatching()
   window.removeEventListener('focus', onFocus)
+  document.removeEventListener('visibilitychange', onVisible)
 })
 </script>
 
@@ -381,6 +431,7 @@ onUnmounted(() => {
       @open="fromHome"
       @clone="cloneOpen = true"
       @init="initOpen = true"
+      @act="fromHomeAct"
     />
 
     <template v-else-if="store.repo">
@@ -428,6 +479,7 @@ onUnmounted(() => {
 
     <ActivityLog />
     <Toasts />
+    <ForgeWatch />
 
     <ProjectSwitcher
       v-if="switching"

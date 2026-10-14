@@ -36,6 +36,11 @@ pub struct PushPreview {
     /// is the list to put in front of the user before they confirm.
     pub will_orphan: Vec<CommitSummary>,
     pub will_push: Vec<CommitSummary>,
+    /// Every commit a force push would drop has a copy in the branch being
+    /// pushed — it was rebased, squashed or amended here. Pulling now would
+    /// bring the old copies back next to the new ones, so forcing is the
+    /// answer to lead with.
+    pub rewritten: bool,
 }
 
 #[derive(Serialize, Debug)]
@@ -88,21 +93,20 @@ fn reconcile_flag(state: &AppState, rebase: Option<bool>) -> String {
 /// put back by whichever of abort, continue or commit finishes it. Nothing is
 /// left sitting in the stash for the user to remember.
 pub fn pull(state: &AppState, rebase: Option<bool>) -> Result<MergeOutcome, String> {
+    // Read once: see [`AppState::pinned`].
+    let pinned = state.pinned();
+    let state = &pinned;
     let path = state.path()?;
     let before = journal::head_oid(state);
     let branch = journal::current_branch(state);
     let flag = reconcile_flag(state, rebase);
 
-    let out = git_cmd::run(
-        &path,
-        &[
-            "-c",
-            "merge.conflictStyle=diff3",
-            "pull",
-            "--autostash",
-            &flag,
-        ],
-    )?;
+    // diff3 for the resolver's base pane, and rerere so a conflict resolved
+    // once is answered the same way the next time it comes up.
+    let flags = crate::rebase::conflict_flags(state);
+    let mut args: Vec<&str> = flags.iter().map(String::as_str).collect();
+    args.extend(["pull", "--autostash", &flag]);
+    let out = git_cmd::run(&path, &args)?;
     let moved = out.ok;
     let outcome = settled(state, out);
 
@@ -117,6 +121,9 @@ pub fn pull(state: &AppState, rebase: Option<bool>) -> Result<MergeOutcome, Stri
             Mode::Hard,
             true,
         );
+    } else {
+        // Stopped on conflicts: recorded by whatever finishes it.
+        journal::begin_pending(state, "pull", "Pull".to_string(), branch, before);
     }
     Ok(outcome)
 }
@@ -163,13 +170,16 @@ pub fn pull_branch(
     branch: &str,
     rebase: Option<bool>,
 ) -> Result<MergeOutcome, String> {
+    // Read once: see [`AppState::pinned`].
+    let pinned = state.pinned();
+    let state = &pinned;
     // The branch you are on is an ordinary pull.
     if journal::current_branch(state).as_deref() == Some(branch) {
         return pull(state, rebase);
     }
 
     let path = state.path()?;
-    let (remote, theirs) = {
+    let (remote, theirs, tracking) = {
         let repo = state.repo()?;
         let local = repo
             .find_branch(branch, BranchType::Local)
@@ -177,46 +187,100 @@ pub fn pull_branch(
         let upstream = local
             .upstream()
             .map_err(|_| format!("{branch} is not tracking anything to pull from"))?;
-        let full = upstream
+        let tracking = upstream
+            .get()
             .name()
-            .ok()
-            .flatten()
             .ok_or_else(|| format!("Could not read what {branch} tracks"))?
             .to_string();
-        // `origin/feature/x` is remote `origin`, branch `feature/x`.
-        let (remote, theirs) = full
-            .split_once('/')
-            .ok_or_else(|| format!("{full} does not name a remote branch"))?;
-        (remote.to_string(), theirs.to_string())
+        // Read from the config, so a remote with a slash in its name and a
+        // branch called something else over there both come out right.
+        let (remote, theirs) = crate::refs::configured_upstream(&repo, branch)
+            .ok_or_else(|| format!("Could not read what {branch} tracks"))?;
+        (remote, theirs, tracking)
+    };
+    let shown = tracking
+        .strip_prefix("refs/remotes/")
+        .unwrap_or(&tracking)
+        .to_string();
+
+    // A local upstream (`branch.x.remote = .`) has nothing to fetch.
+    if remote != "." {
+        let out = git_cmd::run(&path, &["fetch", &remote, "--", &theirs])?;
+        if !out.ok {
+            return Ok(MergeOutcome {
+                ok: false,
+                message: said(&out),
+                conflicts: Vec::new(),
+            });
+        }
+    }
+
+    // Measured after the fetch, against what the remote has now. A branch
+    // with nothing to take is left exactly where it is — the old way tried
+    // to move it backwards, was refused as "non-fast-forward", and went the
+    // long way round through a stash, a checkout and a pull to find that out.
+    let (ahead, behind) = {
+        let repo = state.repo()?;
+        let mine = repo
+            .find_branch(branch, BranchType::Local)
+            .ok()
+            .and_then(|b| b.get().target());
+        let theirs_oid = repo.find_reference(&tracking).ok().and_then(|r| r.target());
+        match (mine, theirs_oid) {
+            (Some(mine), Some(theirs_oid)) => {
+                repo.graph_ahead_behind(mine, theirs_oid).map_err(err)?
+            }
+            _ => return Err(format!("Could not read where {branch} or {shown} points")),
+        }
     };
 
-    let before = branch_oid(state, branch);
-
-    let refspec = format!("{theirs}:{branch}");
-    let out = git_cmd::run(&path, &["fetch", &remote, &refspec])?;
+    if behind == 0 {
+        return Ok(MergeOutcome {
+            ok: true,
+            message: match ahead {
+                0 => format!("{branch} was already up to date"),
+                n => format!(
+                    "{branch} is {n} {} ahead of {shown}, with nothing to pull",
+                    if n == 1 { "commit" } else { "commits" }
+                ),
+            },
+            conflicts: Vec::new(),
+        });
+    }
 
     // It has commits of its own, so the update has to be a real merge, and a
     // merge needs the branch in the working tree.
-    if !out.ok && out.stderr.contains("non-fast-forward") {
+    if ahead > 0 {
         return visit(
             state,
             branch,
             &format!("pulling {branch}"),
-            &format!("{branch} brought up to date with {remote}/{theirs}"),
+            &format!("{branch} brought up to date with {shown}"),
             |state| pull(state, rebase),
         );
     }
 
-    let message = if !out.ok {
-        said(&out)
-    } else if before == branch_oid(state, branch) {
-        format!("{branch} was already up to date")
-    } else {
-        format!("{branch} brought up to date with {remote}/{theirs}")
-    };
+    // Strictly behind: the ref moves and nothing else does. Git refuses the
+    // refspec unless it is a fast-forward, and refuses a branch checked out
+    // in another worktree, so neither can be got wrong here. Not written into
+    // the undo history, the same as before: undo steps the branch you are on,
+    // and this one is not.
+    let out = git_cmd::run(
+        &path,
+        &[
+            "fetch",
+            ".",
+            "--",
+            &format!("{tracking}:refs/heads/{branch}"),
+        ],
+    )?;
     Ok(MergeOutcome {
         ok: out.ok,
-        message,
+        message: if out.ok {
+            format!("{branch} brought up to date with {shown}")
+        } else {
+            said(&out)
+        },
         conflicts: Vec::new(),
     })
 }
@@ -434,7 +498,12 @@ pub fn trip(state: &AppState) -> Leg {
     let Ok(root) = state.path() else {
         return Leg::None;
     };
-    let Ok(git_dir) = git_dir(&root) else {
+    trip_at(&root)
+}
+
+/// [`trip`] in a work tree read once by the caller.
+pub fn trip_at(root: &std::path::Path) -> Leg {
+    let Ok(git_dir) = git_dir(root) else {
         return Leg::None;
     };
     let Some(trip) = read_trip(&git_dir) else {
@@ -449,7 +518,11 @@ pub fn trip(state: &AppState) -> Leg {
 
 /// The branch a paused [`visit`] goes back to once its merge or rebase is done.
 pub fn returns_to(state: &AppState) -> Option<String> {
-    match trip(state) {
+    returns_to_at(&state.path().ok()?)
+}
+
+fn returns_to_at(root: &std::path::Path) -> Option<String> {
+    match trip_at(root) {
         Leg::Underway(trip) => Some(trip.original),
         _ => None,
     }
@@ -469,13 +542,19 @@ pub fn returns_to(state: &AppState) -> Option<String> {
 /// would be the surprise. The stash is left for you to pick up, and you are
 /// told where it is.
 pub fn come_home(state: &AppState, leg: Leg) -> Option<String> {
-    let root = state.path().ok()?;
+    come_home_at(&state.path().ok()?, leg)
+}
+
+/// [`come_home`] in a work tree read once by the caller, before whatever ran
+/// in between: a commit with a slow hook outlasts a tab switch.
+pub fn come_home_at(root: &std::path::Path, leg: Leg) -> Option<String> {
+    let root = root.to_path_buf();
     let (trip, stale) = match leg {
         Leg::None => return None,
         Leg::Underway(trip) => (trip, false),
         Leg::Stale(trip) => (trip, true),
     };
-    let progress = in_progress(state).ok()?;
+    let progress = in_progress_at(&root).ok()?;
     if progress.merging
         || progress.rebasing
         || progress.cherry_picking
@@ -491,9 +570,9 @@ pub fn come_home(state: &AppState, leg: Leg) -> Option<String> {
     let stash_at = trip
         .stash
         .as_deref()
-        .and_then(|oid| journal::stash_index(state, oid));
+        .and_then(|oid| journal::stash_index_at(&root, oid));
     let left_in_stash = format!("Your open changes from {} are in the stash.", trip.original);
-    if stale || journal::current_branch(state).as_deref() != Some(trip.target.as_str()) {
+    if stale || journal::branch_at(&root).as_deref() != Some(trip.target.as_str()) {
         return stash_at.map(|_| left_in_stash);
     }
 
@@ -538,6 +617,14 @@ pub fn and_home(state: &AppState, leg: Leg, text: String) -> String {
     }
 }
 
+/// [`and_home`] in a work tree read once by the caller.
+pub fn and_home_at(root: &std::path::Path, leg: Leg, text: String) -> String {
+    match come_home_at(root, leg) {
+        Some(note) => format!("{}\n{note}", text.trim()),
+        None => text,
+    }
+}
+
 /// "merging a into b" as the start of a sentence.
 fn capitalised(text: &str) -> String {
     let mut chars = text.chars();
@@ -577,23 +664,29 @@ pub fn push_preview(
         .target()
         .ok_or_else(|| format!("Branch {branch_name} has no commit"))?;
 
-    let upstream = local.upstream().ok();
-    let upstream_name = upstream
-        .as_ref()
-        .and_then(|u| u.name().ok().flatten().map(|s| s.to_string()));
-    let upstream_oid = upstream.as_ref().and_then(|u| u.get().target());
-
     // The remote to push to: the upstream's remote, else the first configured
     // one, else the conventional name.
-    let remote = upstream_name
-        .as_ref()
-        .and_then(|n| n.split_once('/').map(|(r, _)| r.to_string()))
+    let remote = crate::refs::configured_upstream(&repo, &branch_name)
+        .map(|(remote, _)| remote)
+        .filter(|remote| remote != ".")
         .or_else(|| {
             repo.remotes()
                 .ok()
                 .and_then(|list| list.get(0).map(|s| s.to_string()))
         })
         .unwrap_or_else(|| "origin".to_string());
+
+    // Measured against where the push actually lands, which is not always the
+    // upstream: a branch that follows `origin/main` but is not `main` is
+    // pushed under its own name (see [`push_target`]), so `main` is neither
+    // what it would overwrite nor what a lease should be pinned to.
+    let (dest, _) = push_target(&repo, &remote, &branch_name);
+    let upstream_name = Some(format!("{remote}/{dest}"));
+    let upstream_oid = repo
+        .find_reference(&format!("refs/remotes/{remote}/{dest}"))
+        .ok()
+        .and_then(|r| r.target());
+    let upstream_name = upstream_name.filter(|_| upstream_oid.is_some());
 
     let (ahead, behind) = match upstream_oid {
         Some(up) => repo.graph_ahead_behind(local_oid, up).map_err(err)?,
@@ -609,6 +702,12 @@ pub fn push_preview(
         Some(up) if behind > 0 => range(state, &format!("{local_oid}"), &format!("{up}"), 50)?,
         _ => Vec::new(),
     };
+    let rewritten = match upstream_oid {
+        Some(up) if behind > 0 && ahead > 0 => {
+            crate::graph::carried(&repo, up, local_oid).is_some()
+        }
+        _ => false,
+    };
 
     Ok(PushPreview {
         branch: branch_name,
@@ -621,6 +720,7 @@ pub fn push_preview(
         force_needed: behind > 0,
         will_orphan,
         will_push,
+        rewritten,
     })
 }
 
@@ -644,30 +744,79 @@ pub fn push(
     set_upstream: bool,
     lease: Option<&str>,
 ) -> Result<CmdOutput, String> {
+    // Read once: see [`AppState::pinned`].
+    let pinned = state.pinned();
+    let state = &pinned;
     let path = state.path()?;
+    let (dest, retarget) = push_target(&state.repo()?, remote, branch);
+    let dest = format!("refs/heads/{dest}");
     let with_lease = match lease {
-        Some(expected) => format!("--force-with-lease=refs/heads/{branch}:{expected}"),
+        Some(expected) => format!("--force-with-lease={dest}:{expected}"),
         None => "--force-with-lease".to_string(),
     };
+    let refspec = format!("refs/heads/{branch}:{dest}");
     let mut args = vec!["push"];
     if force {
         args.push(&with_lease);
     }
-    if set_upstream {
+    // A branch that follows nothing yet — or something other than where it
+    // is going — is told to follow what it is pushed to, whether or not the
+    // caller remembered to ask: a push that leaves the branch without an
+    // upstream is a branch whose counts and Pull say nothing afterwards.
+    if set_upstream || retarget {
         args.push("--set-upstream");
     }
     args.push(remote);
-    args.push(branch);
+    args.push(&refspec);
     git_cmd::run(&path, &args)
+}
+
+/// Where a push of `branch` to `remote` lands, as a branch name on that
+/// remote, and whether the branch has to be told to follow it afterwards.
+///
+/// The same name as here, the way git's own `push.default=simple` does it.
+/// The one exception is a branch checked out from a review on a fork, which
+/// gitnoob names `alice-main` locally while it follows `main` on the remote
+/// it added for alice: pushing that one has to update the review, not start a
+/// new branch beside it, so it goes to the branch it follows.
+///
+/// Following the upstream's name everywhere would be wrong in a way that
+/// costs other people's work. A branch started from `origin/main` — which
+/// earlier versions of this app did without `--no-track`, as does
+/// `git checkout -b feature origin/main` in a terminal — follows `main`, and a
+/// push of it would land on `main`, with a force push replacing it. Such a
+/// branch goes to its own name instead and is set to follow that, which is
+/// what its first push would have done if it had been started cleanly.
+pub fn push_target(repo: &git2::Repository, remote: &str, branch: &str) -> (String, bool) {
+    match crate::refs::configured_upstream(repo, branch) {
+        Some((tracked, merge)) if tracked == remote && merge == branch => (merge, false),
+        Some((tracked, merge)) if tracked == remote && is_review_remote(repo, remote) => {
+            (merge, false)
+        }
+        _ => (branch.to_string(), true),
+    }
+}
+
+/// Whether gitnoob added this remote to check out a review from a fork.
+fn is_review_remote(repo: &git2::Repository, remote: &str) -> bool {
+    repo.config()
+        .and_then(|config| config.get_bool(&format!("remote.{remote}.{REVIEW_REMOTE}")))
+        .unwrap_or(false)
 }
 
 /// Merges a branch into the checked out one, carrying open work on git's own
 /// `--autostash` the way [`pull`] does.
 pub fn merge(state: &AppState, branch: &str, no_ff: bool) -> Result<MergeOutcome, String> {
+    // Read once: see [`AppState::pinned`].
+    let pinned = state.pinned();
+    let state = &pinned;
     let path = state.path()?;
     // diff3 keeps the merge base in the conflict markers, which the conflict
-    // resolver shows as its third pane.
-    let mut args = vec!["-c", "merge.conflictStyle=diff3", "merge", "--autostash"];
+    // resolver shows as its third pane; rerere answers a conflict that was
+    // resolved before the way it was resolved then.
+    let flags = crate::rebase::conflict_flags(state);
+    let mut args: Vec<&str> = flags.iter().map(String::as_str).collect();
+    args.extend(["merge", "--autostash"]);
     if no_ff {
         args.push("--no-ff");
     }
@@ -690,14 +839,22 @@ pub fn merge(state: &AppState, branch: &str, no_ff: bool) -> Result<MergeOutcome
             Mode::Hard,
             true,
         );
+    } else {
+        // Stopped on conflicts: recorded by whatever finishes it.
+        journal::begin_pending(state, "merge", format!("Merge {branch}"), on, before);
     }
     Ok(outcome)
 }
 
 pub fn abort_merge(state: &AppState) -> Result<String, String> {
+    // Read once: see [`AppState::pinned`].
+    let pinned = state.pinned();
+    let state = &pinned;
     let path = state.path()?;
     let leg = trip(state);
+    let waiting = journal::pending(state);
     let out = git_cmd::run_checked(&path, &["merge", "--abort"])?;
+    journal::finish_pending(state, waiting);
     Ok(and_home(state, leg, out))
 }
 
@@ -713,6 +870,9 @@ pub fn merge_into(
     target: &str,
     no_ff: bool,
 ) -> Result<MergeOutcome, String> {
+    // Read once: see [`AppState::pinned`].
+    let pinned = state.pinned();
+    let state = &pinned;
     if journal::current_branch(state).as_deref() == Some(target) {
         return merge(state, source, no_ff);
     }
@@ -770,6 +930,9 @@ fn fast_forward_ref(state: &AppState, source: &str, target: &str) -> Result<Merg
 /// Rebases a branch onto another without asking the user to stand on it first:
 /// a [`visit`] to the branch, with the rebase made there.
 pub fn rebase_branch(state: &AppState, branch: &str, onto: &str) -> Result<MergeOutcome, String> {
+    // Read once: see [`AppState::pinned`].
+    let pinned = state.pinned();
+    let state = &pinned;
     if journal::current_branch(state).as_deref() == Some(branch) {
         return rebase(state, onto);
     }
@@ -840,22 +1003,63 @@ fn err(e: git2::Error) -> String {
 /// dirty tree, and asking the user to tidy up by hand is the sort of thing this
 /// application exists to avoid.
 pub fn rebase(state: &AppState, onto: &str) -> Result<MergeOutcome, String> {
+    // Read once: see [`AppState::pinned`].
+    let pinned = state.pinned();
+    let state = &pinned;
     let path = state.path()?;
     let before = journal::head_oid(state);
     let branch = journal::current_branch(state);
 
-    let out = git_cmd::run(
-        &path,
-        &[
-            "-c",
-            "merge.conflictStyle=diff3",
-            "rebase",
-            "--autostash",
-            onto,
-        ],
-    )?;
+    // Branches stacked on this one ride along (`--update-refs`), so a stack
+    // of reviews is rebased in one go rather than left behind on the old
+    // base. Which ones is written down first: the rebase can stop, and the
+    // continue that finishes it is what gets to say which of them moved.
+    //
+    // Git's `--update-refs` cannot be told to leave a branch out, and it moves
+    // every one on the replayed commits: a backup made at the tip, a
+    // colleague's branch checked out to look at. When one of those is there,
+    // the stack is left where it is too rather than take them along.
+    let (mut carried, held) = crate::rebase::carried_and_held(state, Some(onto));
+    let update_refs = crate::rebase::update_refs_on(state) && held.is_empty();
+    let mut left = None;
+    if !update_refs && !carried.is_empty() {
+        let names: Vec<&str> = carried.iter().map(|(name, _)| name.as_str()).collect();
+        left = Some(format!(
+            "Left {} where {} — moving {} would have moved {} as well.",
+            names.join(", "),
+            if names.len() == 1 {
+                "it was"
+            } else {
+                "they were"
+            },
+            if names.len() == 1 { "it" } else { "them" },
+            held.join(", ")
+        ));
+        carried.clear();
+    }
+    let flags = crate::rebase::conflict_flags(state);
+    let mut args: Vec<&str> = flags.iter().map(String::as_str).collect();
+    args.extend(["rebase", "--autostash"]);
+    if update_refs {
+        args.push("--update-refs");
+    } else if !held.is_empty() {
+        // Off whatever `rebase.updateRefs` says, for the same reason. Only
+        // reached on a git that knows the flag: `held` is empty otherwise.
+        args.push("--no-update-refs");
+    }
+    args.push(onto);
+    let dir = git_dir(&path)?;
+    crate::rebase::remember_carried(&dir, &carried);
+
+    let out = git_cmd::run(&path, &args)?;
     let moved = out.ok;
-    let outcome = settled(state, out);
+    let mut outcome = settled(state, out);
+    if underway(&dir).is_none() {
+        outcome.message = crate::rebase::with_carried(state, &dir, outcome.message);
+    }
+    if let Some(left) = left {
+        outcome.message = format!("{}\n{left}", outcome.message.trim_end());
+    }
 
     if moved {
         journal::record(
@@ -868,23 +1072,56 @@ pub fn rebase(state: &AppState, onto: &str) -> Result<MergeOutcome, String> {
             Mode::Hard,
             true,
         );
+    } else {
+        // Stopped on conflicts: recorded by whatever finishes it.
+        journal::begin_pending(
+            state,
+            "rebase",
+            format!("Rebase onto {onto}"),
+            branch,
+            before,
+        );
     }
     Ok(outcome)
 }
 
 pub fn abort_rebase(state: &AppState) -> Result<String, String> {
+    // Read once: see [`AppState::pinned`].
+    let pinned = state.pinned();
+    let state = &pinned;
     let path = state.path()?;
     let leg = trip(state);
+    let waiting = journal::pending(state);
+    crate::rewrite::clear_for_abort(state);
     let out = git_cmd::run_checked(&path, &["rebase", "--abort"])?;
+    journal::finish_pending(state, waiting);
+    // Nothing was carried: git moves the stacked branches only at the end.
+    if let Ok(dir) = git_dir(&path) {
+        crate::rebase::remember_carried(&dir, &[]);
+        crate::rebase::clear_marks(&dir);
+    }
     Ok(and_home(state, leg, out))
 }
 
 /// Continues a rebase after its conflicts have been resolved and staged.
 pub fn continue_rebase(state: &AppState) -> Result<MergeOutcome, String> {
+    // Read once: see [`AppState::pinned`].
+    let pinned = state.pinned();
+    let state = &pinned;
     let path = state.path()?;
     let leg = trip(state);
-    let out = git_cmd::run(&path, &["-c", "core.editor=true", "rebase", "--continue"])?;
+    let waiting = journal::pending(state);
+    let flags = crate::rebase::conflict_flags(state);
+    let mut args: Vec<&str> = flags.iter().map(String::as_str).collect();
+    args.extend(["-c", "core.editor=true", "rebase", "--continue"]);
+    let out = git_cmd::run(&path, &args)?;
+    journal::finish_pending(state, waiting);
     let mut outcome = settled(state, out);
+    if let Ok(dir) = git_dir(&path) {
+        if underway(&dir).is_none() {
+            outcome.message = crate::rebase::with_carried(state, &dir, outcome.message);
+        }
+    }
     if outcome.ok {
         outcome.message = and_home(state, leg, outcome.message);
     }
@@ -918,6 +1155,17 @@ pub struct InProgress {
     /// The branch a merge or rebase started from another branch goes back to
     /// once it is finished or aborted.
     pub returns_to: Option<String>,
+    /// A cherry-pick or revert of several commits that is part-way through:
+    /// `"cherry-pick"` or `"revert"`, so the way on is named rightly. Set
+    /// while git's sequencer has a list, which outlives the conflict itself —
+    /// committing the stopped commit by hand leaves the rest still to apply.
+    pub sequencer: Option<String>,
+    /// How many commits that list still has to apply, the stopped one included.
+    pub sequence_left: usize,
+    /// Something that names the merge, rebase, pick or stash apply under way,
+    /// the same on every look for as long as it lasts. The resolver files the
+    /// choices it remembers under it, and drops them once it changes.
+    pub operation: Option<String>,
 }
 
 /// Where git keeps its own state for this working tree.
@@ -947,14 +1195,25 @@ pub fn git_dir(root: &std::path::Path) -> Result<std::path::PathBuf, String> {
 }
 
 pub fn in_progress(state: &AppState) -> Result<InProgress, String> {
-    let root = state.path()?;
+    in_progress_at(&state.path()?)
+}
+
+/// [`in_progress`] in a work tree read once by the caller.
+pub fn in_progress_at(root: &std::path::Path) -> Result<InProgress, String> {
+    let root = root.to_path_buf();
     let git_dir = git_dir(&root)?;
 
     let merging = git_dir.join("MERGE_HEAD").exists();
     let rebasing = git_dir.join("rebase-merge").exists() || git_dir.join("rebase-apply").exists();
-    let cherry_picking = git_dir.join("CHERRY_PICK_HEAD").exists();
-    let reverting = git_dir.join("REVERT_HEAD").exists();
+    let (sequencer, sequence_left) = match work::sequence(&git_dir) {
+        Some((kind, left)) => (Some(kind), left),
+        None => (None, 0),
+    };
+    let cherry_picking =
+        git_dir.join("CHERRY_PICK_HEAD").exists() || sequencer.as_deref() == Some("cherry-pick");
+    let reverting = git_dir.join("REVERT_HEAD").exists() || sequencer.as_deref() == Some("revert");
     let running = merging || rebasing || cherry_picking || reverting;
+    let applied_stash = (!running).then(|| work::applied_stash(&root)).flatten();
 
     Ok(InProgress {
         merging,
@@ -962,10 +1221,40 @@ pub fn in_progress(state: &AppState) -> Result<InProgress, String> {
         cherry_picking,
         reverting,
         restoring: !running && has_unmerged(&root) && work::auto_stash_on_top(&root),
-        applied_stash: (!running).then(|| work::applied_stash(&root)).flatten(),
+        operation: operation_of(&git_dir, applied_stash.as_deref()),
+        applied_stash,
         prepared: prepared_message(&git_dir),
-        returns_to: returns_to(state),
+        returns_to: returns_to_at(&root),
+        sequencer,
+        sequence_left,
     })
+}
+
+/// A name for what git is part-way through, stable for as long as it lasts.
+///
+/// Built from git's own files: the commit being merged, where a rebase
+/// started, where a run of picks started, the stash being applied. Two
+/// different operations practically never share one.
+fn operation_of(git_dir: &std::path::Path, applied_stash: Option<&str>) -> Option<String> {
+    if let Some(found) = underway(git_dir) {
+        return Some(found);
+    }
+    let read = |name: &str| {
+        std::fs::read_to_string(git_dir.join(name))
+            .ok()
+            .map(|text| text.trim().to_string())
+            .filter(|text| !text.is_empty())
+    };
+    if let Some(head) = read("sequencer/head") {
+        return Some(format!("sequence {head}"));
+    }
+    if let Some(oid) = read("CHERRY_PICK_HEAD") {
+        return Some(format!("cherry-pick {oid}"));
+    }
+    if let Some(oid) = read("REVERT_HEAD") {
+        return Some(format!("revert {oid}"));
+    }
+    applied_stash.map(|oid| format!("stash {oid}"))
 }
 
 /// The message git wrote for the merge or squash it is part-way through.
@@ -1001,7 +1290,12 @@ pub fn delete_remote_branch(
     branch: &str,
 ) -> Result<CmdOutput, String> {
     let path = state.path()?;
-    git_cmd::run(&path, &["push", remote, "--delete", branch])
+    // Spelled out, like the tag delete below: a tag with the branch's name
+    // would otherwise make `--delete <name>` ambiguous, or take the tag.
+    git_cmd::run(
+        &path,
+        &["push", remote, "--delete", &format!("refs/heads/{branch}")],
+    )
 }
 
 pub fn push_tag(state: &AppState, remote: &str, tag: &str) -> Result<CmdOutput, String> {
@@ -1022,6 +1316,11 @@ pub fn delete_remote_tag(state: &AppState, remote: &str, tag: &str) -> Result<Cm
 /// The one the current branch tracks, else the conventional `origin`, else
 /// whichever is configured first. A fork or a mirror added alongside it is
 /// never it, which is what keeps a delete from reaching somebody else's copy.
+///
+/// A remote gitnoob added to check out a review is never it either, even
+/// while a branch from that review is checked out and tracks it: the fetch on
+/// a timer would otherwise ask only the fork, and the trunk this repository
+/// is measured against would quietly stop moving.
 pub fn primary(state: &AppState) -> Option<String> {
     let repo = state.repo().ok()?;
     let tracked = repo
@@ -1033,18 +1332,23 @@ pub fn primary(state: &AppState) -> Option<String> {
             repo.branch_upstream_remote(&format!("refs/heads/{branch}"))
                 .ok()
         })
-        .and_then(|buf| buf.as_str().map(|s| s.to_string()));
+        .and_then(|buf| buf.as_str().map(|s| s.to_string()))
+        .filter(|remote| !is_review_remote(&repo, remote));
     if tracked.is_some() {
         return tracked;
     }
 
     let list = repo.remotes().ok()?;
     let names: Vec<String> = list.iter().flatten().map(|s| s.to_string()).collect();
-    names
+    let own: Vec<&String> = names
         .iter()
-        .find(|name| *name == "origin")
-        .or_else(|| names.first())
-        .cloned()
+        .filter(|name| !is_review_remote(&repo, name))
+        .collect();
+    own.iter()
+        .find(|name| name.as_str() == "origin")
+        .or_else(|| own.first())
+        .map(|name| name.to_string())
+        .or_else(|| names.first().cloned())
 }
 
 /// The remotes configured for this repository.
@@ -1146,6 +1450,12 @@ pub struct BranchRelation {
     pub ahead: usize,
     /// Commits on `target` that `source` does not have.
     pub behind: usize,
+    /// Whether merging `source` into `target` would go through on its own:
+    /// worked out in memory, before anything is dropped. `None` when it could
+    /// not be asked — a git older than 2.38, or nothing to merge.
+    pub clean: Option<bool>,
+    /// The files that merge would stop on, when it would.
+    pub conflicts: Vec<String>,
 }
 
 impl BranchRelation {
@@ -1172,5 +1482,303 @@ pub fn relation(state: &AppState, source: &str, target: &str) -> Result<BranchRe
     let (ahead, behind) = repo
         .graph_ahead_behind(source_oid, target_oid)
         .map_err(|e| e.message().to_string())?;
-    Ok(BranchRelation { ahead, behind })
+    drop(repo);
+    // Only worth asking when there is something to bring over and the two have
+    // both moved: a fast-forward cannot conflict.
+    let trial = if ahead > 0 && behind > 0 {
+        trial_merge(state, source_oid, target_oid)
+    } else {
+        None
+    };
+    Ok(BranchRelation {
+        ahead,
+        behind,
+        clean: match (&trial, ahead > 0 && behind == 0) {
+            (_, true) => Some(true),
+            (Some(conflicts), _) => Some(conflicts.is_empty()),
+            (None, _) => None,
+        },
+        conflicts: trial.unwrap_or_default(),
+    })
+}
+
+/// Merges two commits in memory and says which files would conflict, without
+/// touching the index, the working tree or any ref.
+///
+/// `git merge-tree --write-tree` (git 2.38 and later) does the whole merge in
+/// the object store: it writes the result as a tree and stops there. Exit 0 is
+/// clean, 1 is conflicted with the files listed. Anything else — an older git
+/// that does not know the flag, histories with nothing in common — is "do not
+/// know", and the menu says nothing rather than guess.
+fn trial_merge(state: &AppState, source: git2::Oid, target: git2::Oid) -> Option<Vec<String>> {
+    let path = state.path().ok()?;
+    let out = git_cmd::run(
+        &path,
+        &[
+            "merge-tree",
+            "--write-tree",
+            "--name-only",
+            "--no-messages",
+            "-z",
+            &target.to_string(),
+            &source.to_string(),
+        ],
+    )
+    .ok()?;
+    match out.code {
+        0 => Some(Vec::new()),
+        1 => Some(conflicted_names(&out.stdout)),
+        _ => None,
+    }
+}
+
+/// The file names `merge-tree -z --name-only` lists after the tree it wrote.
+fn conflicted_names(stdout: &str) -> Vec<String> {
+    let mut names: Vec<String> = stdout
+        .split('\0')
+        .map(|part| part.trim_matches('\n'))
+        .filter(|part| !part.is_empty())
+        // The first entry is the id of the tree the merge wrote.
+        .skip(1)
+        .map(String::from)
+        .collect();
+    names.dedup();
+    names
+}
+
+/// The local trunk moved up to where its remote has it, when that is safe.
+#[derive(Serialize, Debug)]
+pub struct TrunkMove {
+    pub branch: String,
+    pub upstream: String,
+    pub commits: usize,
+}
+
+/// After a fetch, brings the local trunk up to its upstream — but only by
+/// fast-forward, and only when nobody is standing on it.
+///
+/// A local `main` nobody has pulled in weeks is what every "is it merged?" and
+/// every "branch from main" was quietly measured against. Moving it is safe
+/// exactly when it has nothing of its own (a fast-forward cannot lose a
+/// commit) and no worktree has it checked out (moving a checked-out branch
+/// under its files would leave them looking like changes). Either test
+/// failing leaves it alone, and so does git: `fetch .` refuses a refspec that
+/// is not a fast-forward and a branch checked out anywhere.
+///
+/// Not written into the undo history. It is housekeeping the user did not ask
+/// for in the moment, and putting it on top of the stack would make ⌘Z undo
+/// it instead of whatever they did last.
+pub fn keep_trunk_current(state: &AppState) -> Result<Option<TrunkMove>, String> {
+    // Read once: see [`AppState::pinned`].
+    let pinned = state.pinned();
+    let state = &pinned;
+    if !state.config().global.keep_trunk_current {
+        return Ok(None);
+    }
+    let path = state.path()?;
+    let (branch, tracking, shown, commits) = {
+        let repo = state.repo()?;
+        let Some(trunk) = crate::refs::trunk_of(&repo) else {
+            return Ok(None);
+        };
+        let Ok(local) = repo.find_branch(&trunk, BranchType::Local) else {
+            return Ok(None);
+        };
+        let Ok(upstream) = local.upstream() else {
+            return Ok(None);
+        };
+        let (Some(mine), Some(theirs)) = (local.get().target(), upstream.get().target()) else {
+            return Ok(None);
+        };
+        let Some(tracking) = upstream.get().name().map(String::from) else {
+            return Ok(None);
+        };
+        let (ahead, behind) = repo.graph_ahead_behind(mine, theirs).map_err(err)?;
+        if ahead > 0 || behind == 0 {
+            return Ok(None);
+        }
+        let shown = tracking
+            .strip_prefix("refs/remotes/")
+            .unwrap_or(&tracking)
+            .to_string();
+        (trunk, tracking, shown, behind)
+    };
+    let checked_out = crate::worktree::list(state)?
+        .iter()
+        .any(|tree| tree.branch.as_deref() == Some(branch.as_str()));
+    // A trunk being rebased in some worktree is listed there as a detached
+    // HEAD, so the test above does not see it, and git refuses the move
+    // below. That is the right answer, but not a failure worth a line in the
+    // log on every fetch until the rebase ends.
+    if checked_out || being_rebased(&state.repo()?, &branch) {
+        return Ok(None);
+    }
+    let out = git_cmd::run(
+        &path,
+        &[
+            "fetch",
+            ".",
+            "--",
+            &format!("{tracking}:refs/heads/{branch}"),
+        ],
+    )?;
+    if !out.ok {
+        return Err(said(&out));
+    }
+    Ok(Some(TrunkMove {
+        branch,
+        upstream: shown,
+        commits,
+    }))
+}
+
+/// Whether a rebase of `branch` is under way in any worktree of the
+/// repository: git writes the branch it will come back to into
+/// `rebase-merge/head-name` (or `rebase-apply/head-name`) of that worktree's
+/// own git directory.
+fn being_rebased(repo: &git2::Repository, branch: &str) -> bool {
+    let common = repo.commondir().to_path_buf();
+    let mut dirs = vec![common.clone()];
+    if let Ok(trees) = std::fs::read_dir(common.join("worktrees")) {
+        dirs.extend(trees.flatten().map(|tree| tree.path()));
+    }
+    let wanted = format!("refs/heads/{branch}");
+    dirs.iter().any(|dir| {
+        ["rebase-merge", "rebase-apply"].iter().any(|sub| {
+            std::fs::read_to_string(dir.join(sub).join("head-name"))
+                .map(|name| name.trim() == wanted)
+                .unwrap_or(false)
+        })
+    })
+}
+
+/// Fetches the repository's own remote and nothing else.
+///
+/// For the fetch on a timer. `fetch --all` asks every remote, and one that is
+/// gone — a fork added to look at a review, deleted since — made every
+/// fetch fail, every ten minutes, with a notice about a remote the user had
+/// forgotten existed. The branches being worked on live on this one.
+pub fn fetch_primary(state: &AppState) -> Result<CmdOutput, String> {
+    let primary = primary(state);
+    fetch(state, primary.as_deref())
+}
+
+/// Brings a branch up to date with the trunk as the remote has it: fetches,
+/// then rebases onto it or merges it in.
+///
+/// `how` is `rebase`, `merge`, or `auto` (the setting's default): a branch
+/// nobody else has seen is rebased, because that keeps its history a straight
+/// line and costs nobody anything; one that is already on its remote gets a
+/// merge, because rebasing it would mean a force push over a branch somebody
+/// may have pulled. Both go the usual way — open work carried on autostash, a
+/// branch not checked out visited and come back from, conflicts left for the
+/// resolver with the way home written down.
+pub fn update_from_trunk(
+    state: &AppState,
+    branch: &str,
+    how: Option<&str>,
+) -> Result<MergeOutcome, String> {
+    // Read once: see [`AppState::pinned`].
+    let pinned = state.pinned();
+    let state = &pinned;
+    let target = crate::refs::trunk_target(state)
+        .ok_or_else(|| "There is no main branch here to update from".to_string())?;
+    let (trunk, remote) = {
+        let repo = state.repo()?;
+        let trunk = crate::refs::trunk_of(&repo);
+        let remote = crate::refs::remote_part(&repo, &target)
+            .filter(|_| repo.find_branch(&target, BranchType::Remote).is_ok());
+        (trunk, remote)
+    };
+    if trunk.as_deref() == Some(branch) || target == branch {
+        return Err(format!(
+            "{branch} is the main branch itself — pull it instead"
+        ));
+    }
+
+    let mut note = String::new();
+    if let Some((remote, theirs)) = &remote {
+        let path = state.path()?;
+        let out = git_cmd::run(&path, &["fetch", remote, "--", theirs])?;
+        if !out.ok {
+            note = format!(
+                "\nCould not fetch {remote}, so this used what was already here: {}",
+                out.stderr.trim()
+            );
+        }
+    }
+
+    let relation = relation(state, &target, branch)?;
+    if relation.ahead == 0 {
+        return Ok(MergeOutcome {
+            ok: true,
+            message: format!("{branch} already has everything on {target}{note}"),
+            conflicts: Vec::new(),
+        });
+    }
+
+    let configured = state.config().global.update_from_trunk;
+    let how = how.unwrap_or(configured.as_str());
+    let pushed = crate::refs::upstream_of(state, branch).is_some();
+    let rebase = match how {
+        "rebase" => true,
+        "merge" => false,
+        _ => !pushed,
+    };
+    let mut outcome = if rebase {
+        rebase_branch(state, branch, &target)?
+    } else {
+        merge_into(state, &target, branch, false)?
+    };
+    if outcome.ok {
+        outcome.message = if rebase {
+            format!("{branch} rebased onto {target}")
+        } else {
+            format!("{target} merged into {branch}")
+        };
+    }
+    outcome.message = format!("{}{note}", outcome.message);
+    Ok(outcome)
+}
+
+/// The config key that marks a remote as one gitnoob added to check out a
+/// review from a fork, so it can be offered for removal once it stops
+/// answering. Removing the remote removes the key with it.
+const REVIEW_REMOTE: &str = "gitnoob-review";
+
+/// Marks a remote as added for a review.
+pub fn mark_review_remote(state: &AppState, name: &str) -> Result<(), String> {
+    let path = state.path()?;
+    git_cmd::run_checked(
+        &path,
+        &["config", &format!("remote.{name}.{REVIEW_REMOTE}"), "true"],
+    )
+    .map(|_| ())
+}
+
+/// The remotes gitnoob added for reviews and that are still configured.
+pub fn review_remotes(state: &AppState) -> Vec<String> {
+    let Ok(repo) = state.repo() else {
+        return Vec::new();
+    };
+    let Ok(config) = repo.config().and_then(|mut c| c.snapshot()) else {
+        return Vec::new();
+    };
+    let suffix = format!(".{REVIEW_REMOTE}");
+    let mut found = Vec::new();
+    if let Ok(entries) = config.entries(Some(r"^remote\..*\.gitnoob-review$")) {
+        let mut entries = entries;
+        while let Some(Ok(entry)) = entries.next() {
+            if let Some(name) = entry
+                .name()
+                .and_then(|key| key.strip_prefix("remote."))
+                .and_then(|rest| rest.strip_suffix(&suffix))
+            {
+                found.push(name.to_string());
+            }
+        }
+    }
+    found.sort();
+    found.dedup();
+    found
 }
