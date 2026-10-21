@@ -1018,12 +1018,16 @@ pub async fn review_comments(state: &AppState, number: i64) -> Result<Vec<Review
         }
         ForgeKind::GitLab => {
             let project = urlencode(&slug);
-            let notes_url =
-                format!("{base}/projects/{project}/merge_requests/{number}/notes?sort=asc&order_by=created_at");
-            let notes = paged(&http, &call.token, move |page| {
-                format!("{notes_url}&per_page=100&page={page}")
+            // Discussions rather than notes: the notes list never says which
+            // thread a note is in, and without that id nothing can be settled
+            // and no reply finds its root.
+            let discussions_url =
+                format!("{base}/projects/{project}/merge_requests/{number}/discussions");
+            let discussions = paged(&http, &call.token, move |page| {
+                format!("{discussions_url}?per_page=100&page={page}")
             })
             .await?;
+            let notes = gitlab_discussion_notes(&discussions);
             let kept: Vec<ReviewComment> = notes.iter().filter_map(gitlab_note).collect();
             // The kept notes again, as raw JSON in the same order, for the
             // thread walk: system notices were dropped from both sides alike,
@@ -1946,6 +1950,48 @@ pub async fn resolve_thread(
             }
         }
         ForgeKind::None => return Err("No forge configured".to_string()),
+    }
+    Ok(())
+}
+
+/// Takes back one remark.
+///
+/// GitHub keeps line remarks and conversation comments in two tables, each
+/// with its own address; GitLab keeps every note in one.
+pub async fn delete_comment(
+    state: &AppState,
+    number: i64,
+    id: i64,
+    kind: &str,
+) -> Result<(), String> {
+    let call = prepare(state).await?;
+    let base = api_base(call.kind, &call.host);
+    let http = client()?;
+    let slug = call.slug.full();
+
+    let response = match call.kind {
+        ForgeKind::GitHub => {
+            let table = if kind == "diff" { "pulls" } else { "issues" };
+            http.delete(format!("{base}/repos/{slug}/{table}/comments/{id}"))
+                .bearer_auth(&call.token)
+                .header("Accept", "application/vnd.github+json")
+                .send()
+                .await
+        }
+        ForgeKind::GitLab => {
+            let project = urlencode(&slug);
+            http.delete(format!(
+                "{base}/projects/{project}/merge_requests/{number}/notes/{id}"
+            ))
+            .bearer_auth(&call.token)
+            .send()
+            .await
+        }
+        ForgeKind::None => return Err("No forge configured".to_string()),
+    }
+    .map_err(|e| e.to_string())?;
+    if !response.status().is_success() {
+        return Err(describe(response).await);
     }
     Ok(())
 }
@@ -2924,6 +2970,38 @@ mod tests {
             "https://github.acme.dev/api/graphql",
             "Enterprise answers GraphQL beside the REST base, not under it"
         );
+    }
+
+    #[test]
+    fn names_the_discussion_on_every_gitlab_note() {
+        // The discussions list is the only place GitLab says which thread a
+        // note is in; the notes under it do not repeat it.
+        let discussions = [
+            serde_json::json!({
+                "id": "d1", "individual_note": false,
+                "notes": [
+                    { "id": 100, "body": "root", "resolvable": true, "resolved": false,
+                      "position": { "new_path": "a.php", "old_path": "a.php", "new_line": 8 } },
+                    { "id": 102, "body": "reply", "resolvable": true, "resolved": false,
+                      "position": { "new_path": "a.php", "old_path": "a.php", "new_line": 8 } }
+                ]
+            }),
+            serde_json::json!({
+                "id": "d2", "individual_note": true,
+                "notes": [{ "id": 101, "body": "talk" }]
+            }),
+            serde_json::json!({ "id": "d3" }),
+        ];
+        let notes = gitlab_discussion_notes(&discussions);
+        assert_eq!(notes.len(), 3);
+
+        let mut comments: Vec<ReviewComment> = notes.iter().filter_map(gitlab_note).collect();
+        gitlab_thread_replies(&mut comments, &notes);
+        assert_eq!(comments[0].thread, "d1", "a line remark can be settled");
+        assert!(comments[0].resolvable);
+        assert_eq!(comments[1].reply_to, Some(100));
+        assert_eq!(comments[2].thread, "d2");
+        assert_eq!(comments[2].reply_to, None);
     }
 
     #[test]

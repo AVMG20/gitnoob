@@ -475,6 +475,29 @@ export function useReview() {
     }
   }
 
+  /**
+   * Takes back one remark of the user's own.
+   *
+   * Gone from the page at once, like a settled tick, and put back if the forge
+   * refuses. The conversation is read again after, since a thread whose root
+   * went may have a new one.
+   */
+  async function deleteComment(comment: RComment): Promise<boolean> {
+    const number = store.current?.number
+    if (!number) return false
+    const before = store.comments
+    store.comments = before.filter((one) => one.id !== comment.id)
+    try {
+      await invoke('forge_delete_comment', { number, id: comment.id, kind: comment.kind })
+      void refreshConversation()
+      return true
+    } catch (error) {
+      if (stillOpen(number)) store.comments = before
+      forge.store.error = String(error)
+      return false
+    }
+  }
+
   /** Hands the review to somebody, or asks somebody to look at it. */
   async function setPeople(assignees: Member[], reviewers: Member[]): Promise<boolean> {
     const number = store.current?.number
@@ -954,6 +977,7 @@ export function useReview() {
     updateReview,
     setDraft,
     resolveThread,
+    deleteComment,
     loadStatus,
     toggleViewed,
     refreshConversation

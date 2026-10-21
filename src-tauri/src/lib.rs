@@ -1443,6 +1443,17 @@ async fn forge_resolve_thread(
     forge::resolve_thread(&state, number, &thread, resolved).await
 }
 
+/// Takes back one remark under a review.
+#[tauri::command]
+async fn forge_delete_comment(
+    number: i64,
+    id: i64,
+    kind: String,
+    state: Aimed,
+) -> Result<(), String> {
+    forge::delete_comment(&state, number, id, &kind).await
+}
+
 /// Sets who owns the review and who is being asked to look at it.
 #[tauri::command]
 async fn forge_set_review_people(
@@ -2179,6 +2190,7 @@ pub fn run() {
             forge_set_review_state,
             forge_review_status,
             forge_resolve_thread,
+            forge_delete_comment,
             forge_set_review_people,
             forge_project_labels,
             forge_set_labels,

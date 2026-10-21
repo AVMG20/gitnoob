@@ -6,6 +6,7 @@ import ReviewPane from '~/components/ReviewPane.vue'
 import ReviewFilesPanel from '~/components/ReviewFilesPanel.vue'
 import { useReview, type RComment, type ReviewStatus } from '~/composables/useReview'
 import { useForge, type Review } from '~/composables/useForge'
+import { useContextMenu } from '~/composables/useContextMenu'
 
 /**
  * The review page, end to end against a fixture forge.
@@ -182,6 +183,9 @@ vi.mock('@tauri-apps/api/core', () => ({
         return null
       case 'forge_resolve_thread':
         resolved[String(args.thread)] = args.resolved as boolean
+        return null
+      case 'forge_delete_comment':
+        comments = comments.filter((one) => one.id !== args.id)
         return null
       case 'forge_submit_review':
         comments.push(
@@ -480,6 +484,33 @@ describe('ReviewPane', () => {
     // And it opens again on a click, because "why was that settled" is a
     // question people ask.
     await wrapper.find('[data-testid="thread-folded"]').trigger('click')
+    expect(wrapper.text()).toContain('Why two here?')
+  })
+
+  it('takes back a remark of your own, and only your own', async () => {
+    const wrapper = await open()
+    const menu = useContextMenu()
+    const offered = async (body: string) => {
+      const remark = wrapper
+        .findAll('.remark')
+        .find((one) => one.text().includes(body))!
+      await remark.find('[data-testid="remark-menu"]').trigger('click')
+      return menu.state.items.find((item) => item.label === 'Delete comment')
+    }
+
+    expect(await offered('Why two here?')).toBeUndefined()
+    const remove = await offered('is next.')
+    expect(remove?.danger).toBe(true)
+    menu.close()
+
+    await remove!.action!()
+    await flushPromises()
+    expect(vi.mocked(invoke)).toHaveBeenCalledWith('forge_delete_comment', {
+      number: 38,
+      id: 13,
+      kind: 'diff'
+    })
+    expect(wrapper.text()).not.toContain('is next.')
     expect(wrapper.text()).toContain('Why two here?')
   })
 

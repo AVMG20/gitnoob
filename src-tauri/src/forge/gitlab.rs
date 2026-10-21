@@ -139,6 +139,32 @@ pub(super) fn gitlab_note(item: &serde_json::Value) -> Option<ReviewComment> {
     })
 }
 
+/// Flattens GitLab discussions into their notes, in order, each one carrying
+/// the id of the discussion it was said in.
+///
+/// The notes under a discussion do not name it themselves, so the id is
+/// written onto each from the discussion around it.
+pub(super) fn gitlab_discussion_notes(discussions: &[serde_json::Value]) -> Vec<serde_json::Value> {
+    let mut out = Vec::new();
+    for discussion in discussions {
+        let id = discussion
+            .get("id")
+            .cloned()
+            .unwrap_or(serde_json::Value::Null);
+        let Some(notes) = discussion.get("notes").and_then(|v| v.as_array()) else {
+            continue;
+        };
+        for note in notes {
+            let mut note = note.clone();
+            if let Some(fields) = note.as_object_mut() {
+                fields.insert("discussion_id".to_string(), id.clone());
+            }
+            out.push(note);
+        }
+    }
+    out
+}
+
 pub(super) fn is_system_note(item: &serde_json::Value) -> bool {
     item.get("system")
         .and_then(|v| v.as_bool())

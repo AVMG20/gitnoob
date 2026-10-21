@@ -8,7 +8,8 @@ import {
   CornerDownRight,
   ExternalLink,
   MoreHorizontal,
-  Quote
+  Quote,
+  Trash2
 } from 'lucide-vue-next'
 import PersonFace from './PersonFace.vue'
 import CommentBox from './CommentBox.vue'
@@ -57,6 +58,11 @@ const answerable = computed(
     (forge.store.status?.kind === 'gitlab' && props.thread.replies.length > 0)
 )
 
+function mine(comment: RComment) {
+  const me = forge.store.me?.login
+  return !!me && me.toLowerCase() === comment.author.login.toLowerCase()
+}
+
 /** What can be done with one remark, in the menu GitHub keeps it in. */
 function remarkMenu(event: MouseEvent, comment: RComment) {
   const url = review.commentUrl(comment)
@@ -82,7 +88,19 @@ function remarkMenu(event: MouseEvent, comment: RComment) {
         label: `Open on ${forge.forgeName.value}`,
         icon: ExternalLink,
         action: () => void forge.open(url)
-      }
+      },
+      // Only what the user said is theirs to take back.
+      ...(mine(comment)
+        ? [
+            { separator: true, label: '' },
+            {
+              label: 'Delete comment',
+              icon: Trash2,
+              danger: true,
+              action: () => void review.deleteComment(comment)
+            }
+          ]
+        : [])
     ],
     `remark-${comment.id}`
   )
@@ -227,6 +245,7 @@ function fullWhen(iso: string) {
               <span class="grow" />
               <button
                 class="more"
+                data-testid="remark-menu"
                 title="More"
                 @click="remarkMenu($event, one)"
               >
