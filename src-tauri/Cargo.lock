@@ -1445,7 +1445,7 @@ dependencies = [
 
 [[package]]
 name = "gitnoob"
-version = "0.9.2"
+version = "0.9.3"
 dependencies = [
  "git2",
  "keyring",
