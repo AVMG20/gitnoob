@@ -596,6 +596,61 @@ fn a_file_deleted_after_being_staged_is_still_one_file_on_each_side() {
         .any(|e| e.path == "a.txt" && e.kind == "deleted" && e.from.is_none()));
 }
 
+/// The `+3 −1` beside a row, read off the side the row is on.
+fn counts(list: &[refs::StatusEntry], path: &str) -> (usize, usize) {
+    let entry = list
+        .iter()
+        .find(|e| e.path == path)
+        .unwrap_or_else(|| panic!("{path} is listed: {list:?}"));
+    (entry.additions, entry.deletions)
+}
+
+#[test]
+fn each_side_counts_its_own_lines() {
+    let sandbox = Sandbox::new("line-counts");
+    sandbox.commit("a.txt", "one\ntwo\nthree\n", "First");
+    sandbox.commit("gone.txt", "x\ny\n", "Second");
+    // Staged: one line changed. Unstaged on top of that: one more added.
+    sandbox.write("a.txt", "one\nTWO\nthree\n");
+    sandbox.git(&["add", "a.txt"]);
+    sandbox.write("a.txt", "one\nTWO\nthree\nfour\n");
+    std::fs::remove_file(sandbox.root.join("gone.txt")).unwrap();
+    sandbox.write("fresh.txt", "new\nfile\nhere\n");
+    std::fs::write(sandbox.root.join("blob.bin"), [0u8, 1, 2, 0, 255]).unwrap();
+
+    let status = refs::status_counted(&sandbox.state()).unwrap();
+    assert_eq!(counts(&status.staged, "a.txt"), (1, 1));
+    assert_eq!(counts(&status.unstaged, "a.txt"), (1, 0));
+    assert_eq!(counts(&status.unstaged, "gone.txt"), (0, 2));
+    // A file git has never seen is counted whole, not as empty.
+    assert_eq!(counts(&status.unstaged, "fresh.txt"), (3, 0));
+    // Nothing to count in a binary file, and it is still listed.
+    assert_eq!(counts(&status.unstaged, "blob.bin"), (0, 0));
+}
+
+#[test]
+fn a_moved_file_counts_what_changed_and_not_the_whole_file() {
+    let sandbox = moved_and_edited("moved-counts");
+    let status = refs::status_counted(&sandbox.state()).unwrap();
+    // `git mv` alone changes no lines; the edit after it is one line.
+    assert_eq!(counts(&status.staged, MOVED_TO), (0, 0));
+    assert_eq!(counts(&status.unstaged, MOVED_TO), (1, 0));
+
+    let sandbox = moved_outside_git("moved-outside-counts");
+    let status = refs::status_counted(&sandbox.state()).unwrap();
+    assert_eq!(counts(&status.unstaged, "b/f.txt"), (1, 1));
+}
+
+#[test]
+fn the_first_commit_counts_against_nothing() {
+    let sandbox = Sandbox::new("line-counts-unborn");
+    sandbox.write("a.txt", "one\ntwo\n");
+    sandbox.git(&["add", "a.txt"]);
+
+    let status = refs::status_counted(&sandbox.state()).unwrap();
+    assert_eq!(counts(&status.staged, "a.txt"), (2, 0));
+}
+
 #[test]
 fn discarding_an_ordinary_edit_is_untouched_by_any_of_this() {
     let sandbox = Sandbox::new("plain-discard");

@@ -134,6 +134,11 @@ function lastPart(text: string) {
   return cut < 0 ? text.length : Math.min(text.length - cut - 1, 24)
 }
 
+/** Whether a hovered row grows a button. */
+function hasAct(entry: FileEntry) {
+  return Boolean(props.action) || entry.kind === CONFLICTED
+}
+
 function mark(kind: string) {
   return kind === CONFLICTED ? CLASH : MARKS[change(kind)]
 }
@@ -214,8 +219,16 @@ function counted(tally: Tally) {
             :tail="lastPart(movedFrom(row.entry.from, row.path))"
           />
         </span>
-        <span v-if="row.entry?.additions" class="plus">+{{ row.entry.additions }}</span>
-        <span v-if="row.entry?.deletions" class="minus">−{{ row.entry.deletions }}</span>
+        <!-- Make way for the button on a hovered row, which says what can be
+             done with the file; the numbers are back once the pointer goes. -->
+        <template v-if="row.entry">
+          <span v-if="row.entry.additions" class="plus" :class="{ yields: hasAct(row.entry) }"
+            >+{{ row.entry.additions }}</span
+          >
+          <span v-if="row.entry.deletions" class="minus" :class="{ yields: hasAct(row.entry) }"
+            >−{{ row.entry.deletions }}</span
+          >
+        </template>
         <!-- What has been said about the file, so a list of the review's
              files says where the conversation is waiting. -->
         <span
@@ -237,7 +250,7 @@ function counted(tally: Tally) {
              conflicted file cannot be staged as it stands, so on that row the
              button offers the only thing that moves it along. -->
         <button
-          v-if="(props.action || row.entry?.kind === CONFLICTED) && row.entry"
+          v-if="row.entry && hasAct(row.entry)"
           class="act"
           :class="{ clash: row.entry.kind === CONFLICTED }"
           @click.stop="row.entry && emit('act', row.entry)"
@@ -377,6 +390,10 @@ function counted(tally: Tally) {
   display: block;
 }
 
+.row:hover .yields {
+  display: none;
+}
+
 .act:hover {
   border-color: var(--accent);
   color: var(--accent-soft);
@@ -408,6 +425,7 @@ function counted(tally: Tally) {
 
 .plus,
 .minus {
+  flex: none;
   font-size: 11px;
   font-weight: 550;
   font-variant-numeric: tabular-nums;

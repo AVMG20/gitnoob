@@ -18,7 +18,13 @@ import {
   TriangleAlert,
   Undo2
 } from 'lucide-vue-next'
-import { copyText, isRunning, useGit, type GuardFinding } from '~/composables/useGit'
+import {
+  copyText,
+  isRunning,
+  useGit,
+  type GuardFinding,
+  type StatusEntry
+} from '~/composables/useGit'
 import { useContextMenu } from '~/composables/useContextMenu'
 import { useDragDrop } from '~/composables/useDragDrop'
 import { useAi } from '~/composables/useAi'
@@ -106,6 +112,22 @@ const unstagedRows = computed(() => [
   ...conflicted.value.map((path) => ({ path, kind: CONFLICTED })),
   ...unstaged.value.filter((entry) => !conflicted.value.includes(entry.path))
 ])
+
+/**
+ * Every line a list adds and removes, for the heading over it, so how big a
+ * change is can be read before the commit rather than after it.
+ */
+function lineTotals(entries: StatusEntry[]) {
+  return entries.reduce(
+    (sum, entry) => ({
+      additions: sum.additions + (entry.additions ?? 0),
+      deletions: sum.deletions + (entry.deletions ?? 0)
+    }),
+    { additions: 0, deletions: 0 }
+  )
+}
+const unstagedLines = computed(() => lineTotals(unstaged.value))
+const stagedLines = computed(() => lineTotals(staged.value))
 
 const hasMessage = computed(() => subject.value.length > 0 && !blankMessage.value)
 
@@ -816,6 +838,10 @@ function fileMenu(event: MouseEvent, path: string, side: 'staged' | 'unstaged', 
       <div class="group-head">
         <span class="section-title">
           Unstaged <span class="num">{{ unstagedRows.length }}</span>
+          <span v-if="unstagedLines.additions || unstagedLines.deletions" class="lines">
+            <span v-if="unstagedLines.additions" class="plus">+{{ unstagedLines.additions }}</span>
+            <span v-if="unstagedLines.deletions" class="minus">−{{ unstagedLines.deletions }}</span>
+          </span>
           <button
             v-if="conflicted.length"
             class="clashes"
@@ -892,7 +918,13 @@ function fileMenu(event: MouseEvent, path: string, side: 'staged' | 'unstaged', 
       "
     >
       <div class="group-head">
-        <span class="section-title">Staged <span class="num">{{ staged.length }}</span></span>
+        <span class="section-title">
+          Staged <span class="num">{{ staged.length }}</span>
+          <span v-if="stagedLines.additions || stagedLines.deletions" class="lines">
+            <span v-if="stagedLines.additions" class="plus">+{{ stagedLines.additions }}</span>
+            <span v-if="stagedLines.deletions" class="minus">−{{ stagedLines.deletions }}</span>
+          </span>
+        </span>
         <button
           class="btn tiny"
           :disabled="store.busy || !staged.length"
@@ -1254,6 +1286,23 @@ function fileMenu(event: MouseEvent, path: string, side: 'staged' | 'unstaged', 
   font-weight: 600;
   line-height: 16px;
   font-variant-numeric: tabular-nums;
+}
+
+/* The lines a whole list adds and removes, in the colours the rows use. */
+.lines {
+  display: inline-flex;
+  gap: 5px;
+  font-size: 11px;
+  font-weight: 550;
+  font-variant-numeric: tabular-nums;
+}
+
+.lines .plus {
+  color: var(--success-soft);
+}
+
+.lines .minus {
+  color: var(--danger-soft);
 }
 
 /* Stage all, unstage all: small quiet buttons, there when wanted. */

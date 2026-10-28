@@ -93,6 +93,11 @@ pub struct StatusEntry {
     pub from: Option<String>,
     /// One of: added, modified, deleted, renamed, typechange, untracked.
     pub kind: String,
+    /// Lines added and removed on this entry's side. Zero for a binary file,
+    /// and for the plain listing that [`status`] gives the commands that only
+    /// need to know which files are where.
+    pub additions: usize,
+    pub deletions: usize,
 }
 
 #[derive(Serialize)]
@@ -380,7 +385,13 @@ pub fn status(state: &AppState) -> Result<WorkingStatus, String> {
         if let Some(kind) = staged_kind(s) {
             let (from, path) = staged_at.clone().unwrap_or((None, fallback.clone()));
             if !path.is_empty() {
-                out.staged.push(StatusEntry { path, from, kind });
+                out.staged.push(StatusEntry {
+                    path,
+                    from,
+                    kind,
+                    additions: 0,
+                    deletions: 0,
+                });
             }
         }
         if let Some(kind) = unstaged_kind(s) {
@@ -391,11 +402,96 @@ pub fn status(state: &AppState) -> Result<WorkingStatus, String> {
                 .or_else(|| staged_at.map(|(_, to)| (None, to)))
                 .unwrap_or((None, fallback));
             if !path.is_empty() {
-                out.unstaged.push(StatusEntry { path, from, kind });
+                out.unstaged.push(StatusEntry {
+                    path,
+                    from,
+                    kind,
+                    additions: 0,
+                    deletions: 0,
+                });
             }
         }
     }
     Ok(out)
+}
+
+/// The status as the file lists draw it: [`status`], with how many lines each
+/// entry adds and removes.
+///
+/// Kept apart from [`status`] because the line counts mean reading every
+/// changed file, and the commands that only ask which files are staged have no
+/// use for them.
+pub fn status_counted(state: &AppState) -> Result<WorkingStatus, String> {
+    let mut out = status(state)?;
+    let repo = state.repo()?;
+
+    let head_tree = match repo.head() {
+        Ok(head) => Some(head.peel_to_tree().map_err(err)?),
+        // No commits yet: everything staged is new against an empty tree.
+        Err(_) => None,
+    };
+    let staged = repo
+        .diff_tree_to_index(head_tree.as_ref(), None, Some(&mut count_options()))
+        .map_err(err)?;
+    fill_counts(staged, &mut out.staged, false);
+
+    let mut opts = count_options();
+    // Without the content flag an untracked file is in the diff with no lines
+    // at all, and a new file would read as an empty one.
+    opts.include_untracked(true)
+        .recurse_untracked_dirs(true)
+        .show_untracked_content(true);
+    let unstaged = repo
+        .diff_index_to_workdir(None, Some(&mut opts))
+        .map_err(err)?;
+    fill_counts(unstaged, &mut out.unstaged, true);
+
+    Ok(out)
+}
+
+/// Past this a file is counted as binary, which is to say not counted. Reading
+/// a 300MB log the user forgot to ignore on every save is what would make the
+/// panel slow, and nobody reads a number that large anyway.
+const COUNT_MAX_BYTES: i64 = 2 * 1024 * 1024;
+
+fn count_options() -> git2::DiffOptions {
+    let mut opts = git2::DiffOptions::new();
+    opts.context_lines(0).max_size(COUNT_MAX_BYTES);
+    opts
+}
+
+/// Puts each delta's line counts on the status entry for the same file.
+///
+/// Renames are paired the way the status pairs them, so a moved file counts the
+/// lines that changed rather than the whole file arriving under a new name.
+fn fill_counts(mut diff: git2::Diff<'_>, entries: &mut [StatusEntry], untracked: bool) {
+    let mut find = git2::DiffFindOptions::new();
+    find.renames(true)
+        .renames_from_rewrites(true)
+        .break_rewrites_for_renames_only(true)
+        .for_untracked(untracked);
+    let _ = diff.find_similar(Some(&mut find));
+
+    let mut counts: HashMap<String, (usize, usize)> = HashMap::new();
+    for index in 0..diff.deltas().len() {
+        // `None` is a binary file, or one past the size cap: nothing to count.
+        let Ok(Some(patch)) = git2::Patch::from_diff(&diff, index) else {
+            continue;
+        };
+        let delta = patch.delta();
+        let Some(path) = delta.new_file().path().or_else(|| delta.old_file().path()) else {
+            continue;
+        };
+        if let Ok((_, added, removed)) = patch.line_stats() {
+            counts.insert(path.to_string_lossy().into_owned(), (added, removed));
+        }
+    }
+    for entry in entries {
+        if let Some(&(added, removed)) = counts.get(&entry.path) {
+            entry.additions = added;
+            entry.deletions = removed;
+        }
+    }
 }
 
 /// One side of a status entry: where the file came from, and what it is called

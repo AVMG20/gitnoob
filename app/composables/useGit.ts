@@ -215,6 +215,9 @@ export interface StatusEntry {
   kind: string
   /** Where a moved file came from. Null for everything that stayed put. */
   from?: string | null
+  /** Lines added and removed on this side. Zero for a binary file. */
+  additions?: number
+  deletions?: number
 }
 export interface WorkingStatus {
   staged: StatusEntry[]

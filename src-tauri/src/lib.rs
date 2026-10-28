@@ -200,7 +200,7 @@ async fn ref_tree(state: Aimed) -> Result<refs::RefTree, String> {
 
 #[tauri::command]
 async fn working_status(state: Aimed) -> Result<refs::WorkingStatus, String> {
-    refs::status(&state)
+    refs::status_counted(&state)
 }
 
 // --- history ----------------------------------------------------------------
