@@ -1,4 +1,4 @@
-import { beforeAll, describe, expect, it } from 'vitest'
+import { beforeAll, describe, expect, it, vi } from 'vitest'
 import {
   highlightLine,
   highlightWhole,
@@ -192,5 +192,20 @@ describe('filenames that used to come out with no grammar at all', () => {
   it('reads a Dockerfile whose suffix names an environment, not a type', () => {
     expect(languageFor('Dockerfile.prod')).toBe('docker')
     expect(languageFor('docker/Dockerfile.dev')).toBe('docker')
+  })
+
+  it('reads a nushell script, and names it nushell rather than nu', () => {
+    expect(languageFor('config.nu')).toBe('nushell')
+    expect(languageFor('scripts/build.nu')).toBe('nushell')
+    expect(labelFor('env.nu')).toBe('nushell')
+  })
+
+  it('colours a nushell script once its grammar has loaded', async () => {
+    const source = 'def greet [name: string] {\n  $"hello ($name)"\n}'
+    const language = languageFor('greet.nu')
+    // Not preloaded, so the first call starts the load and paints plain.
+    expect(coloured(highlightWhole(source, language)[0]!)).toBe(0)
+    await vi.waitFor(() => expect(coloured(highlightWhole(source, language)[0]!)).toBeGreaterThan(0))
+    expect(text(highlightWhole(source, language).join('\n'))).toBe(source)
   })
 })
