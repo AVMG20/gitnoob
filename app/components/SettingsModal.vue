@@ -1350,7 +1350,8 @@ onMounted(async () => {
               <strong>Start the commit message with the branch's ticket</strong>
               <span class="faint block">
                 On a branch like <span class="mono">feature/ABC-123-login</span> an empty message
-                starts with <span class="mono">ABC-123: </span>. The AI always sees the branch name.
+                starts with <span class="mono">ABC-123: </span>. When off, the AI leaves the ticket out
+                too.
               </span>
             </span>
           </label>

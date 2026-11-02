@@ -504,10 +504,8 @@ pub async fn commit_message(
 
     let mut context = String::new();
     if let Some(branch) = crate::journal::current_branch(state) {
-        context.push_str(&format!(
-            "Branch: {branch}\nIf the branch name carries a ticket id such as ABC-123, the \
-             team expects it at the start of the summary as `ABC-123: `.\n\n"
-        ));
+        let ticket_prefix = state.config().global.commit.ticket_prefix;
+        context.push_str(&branch_context(&branch, ticket_prefix));
     }
     if let Some(draft) = draft.as_deref().map(str::trim).filter(|d| !d.is_empty()) {
         context.push_str(&format!(
@@ -524,6 +522,25 @@ pub async fn commit_message(
         "Staged diff"
     };
     describe_change(state, label, &files, &fitted, &recent, &context).await
+}
+
+/// What the model is told about the branch.
+///
+/// The ticket prefix follows the same switch as the commit box. With it off,
+/// the model is told to leave the branch name out, because left to itself it
+/// copies a ticket id from the branch into the summary anyway.
+fn branch_context(branch: &str, ticket_prefix: bool) -> String {
+    if ticket_prefix {
+        format!(
+            "Branch: {branch}\nIf the branch name carries a ticket id such as ABC-123, the \
+             team expects it at the start of the summary as `ABC-123: `.\n\n"
+        )
+    } else {
+        format!(
+            "Branch: {branch}\nDo not put the branch name or a ticket id from it in the \
+             message.\n\n"
+        )
+    }
 }
 
 /// Lockfiles: thousands of lines a commit message has nothing to say about.
@@ -1257,6 +1274,15 @@ lines entirely, put nothing between the markers.";
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_ticket_prefix_switch_decides_what_the_model_is_told() {
+        let on = branch_context("feature/ABC-123-login", true);
+        assert!(on.contains("`ABC-123: `"));
+        let off = branch_context("feature/ABC-123-login", false);
+        assert!(!off.contains("expects it at the start"));
+        assert!(off.contains("Do not put the branch name"));
+    }
 
     #[test]
     fn an_empty_box_means_the_default_rather_than_no_instructions() {
