@@ -3,12 +3,12 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>gitnoob — the fast, open-source git GUI</title>
-  <meta name="description" content="A blazing fast, easy to use git manager for macOS, Windows and Linux. Built on Rust and Vue, not Electron. Free and open source." />
+  <title>gitnoob — git for noobs. Fast, free and open source.</title>
+  <meta name="description" content="Git for noobs. Merge, rebase and undo by dragging and clicking, and see the git command behind every click. Blazing fast, free and open source, for macOS, Windows and Linux." />
   <meta name="theme-color" content="#080e15" />
   <link rel="icon" type="image/png" href="app-icon.png" />
   <meta property="og:title" content="gitnoob" />
-  <meta property="og:description" content="The fast, open-source git GUI. Rust, not Electron." />
+  <meta property="og:description" content="Git for noobs. Drag, drop, undo, and see the git command behind every click." />
   <meta property="og:image" content="https://gitnoob.avmg.nl/docs/screenshots/main-window.png" />
   <link rel="preload" href="docs/fonts/bricolage-grotesque.woff2" as="font" type="font/woff2" crossorigin />
   <link rel="preload" href="docs/fonts/inter.woff2" as="font" type="font/woff2" crossorigin />
@@ -182,6 +182,7 @@
     }
     .spot.l .tip { left: auto; right: -6px; transform: translate(0, 4px); }
     .spot.up .tip { top: auto; bottom: 30px; }
+    .spot:hover, .spot:focus { z-index: 3; }
     .spot:hover .tip, .spot:focus .tip { opacity: 1; transform: translate(-50%, 0); }
     .spot.l:hover .tip, .spot.l:focus .tip { transform: translate(0, 0); }
     .stage-hint { margin: 16px 0 0; font: 12.5px/1.5 var(--mono); color: var(--subtle); }
@@ -326,18 +327,23 @@
     .belt .chip { height: 34px; padding: 0 14px; border-radius: 8px; font-size: 13px; }
     @keyframes belt { to { transform: translateX(-50%); } }
 
-    /* How it runs git */
-    .pipes { margin-top: 44px; display: grid; gap: 14px; }
-    .pipe { --c: var(--blue); display: flex; flex-wrap: wrap; align-items: center; gap: 10px 12px; padding: 18px 20px; border-radius: 12px; border: 1px solid var(--line); background: var(--canvas); font: 13px/1 var(--mono); }
-    .pipe.w { --c: var(--orange); }
-    .pipe .what { width: 62px; font: 10.5px/1 var(--sans); letter-spacing: .09em; color: var(--c); }
-    .pipe .arrow { width: 34px; height: 2px; background: linear-gradient(90deg, color-mix(in oklab, var(--c) 30%, transparent), var(--c)); position: relative; flex: none; }
-    .pipe .arrow::after { content: ""; position: absolute; right: -1px; top: -3px; width: 8px; height: 8px; border: solid var(--c); border-width: 2px 2px 0 0; transform: rotate(45deg); }
-    .pipe .tail { color: var(--subtle); font: 13.5px/1.5 var(--sans); flex: 1 1 260px; }
-    .keys { display: flex; flex-wrap: wrap; gap: 10px 22px; margin-top: 40px; font-size: 13.5px; color: var(--muted); }
-    .keys span { display: inline-flex; align-items: center; gap: 5px; white-space: nowrap; }
-    kbd { display: inline-grid; place-items: center; min-width: 26px; height: 26px; padding: 0 7px; border-radius: 6px; font-size: 12px; color: var(--fg); background: var(--surface); border: 1px solid var(--line-2); border-bottom-width: 2px; }
-    .keys em { font-style: normal; margin-left: 4px; }
+    /* What you want, and the git it runs */
+    .say { display: grid; grid-template-columns: minmax(0, 5fr) minmax(0, 7fr); }
+    .say-list { display: grid; align-content: start; gap: 4px; padding: 16px 12px; border-right: 1px solid var(--line); }
+    .say-label { display: block; margin: 0 0 10px; padding: 0 10px; font: 10.5px/1 var(--sans); letter-spacing: .09em; color: var(--subtle); }
+    .want { display: flex; align-items: center; gap: 10px; width: 100%; padding: 11px 10px; border-radius: 8px; text-align: left; font-size: 15px; color: var(--muted); transition: background .15s, color .15s; }
+    .want::before { content: ""; flex: none; width: 8px; height: 8px; border-radius: 50%; box-shadow: inset 0 0 0 2px var(--line-2); transition: background .15s, box-shadow .15s; }
+    .want:hover { background: var(--surface); color: var(--bright); }
+    .want[aria-pressed="true"] { background: var(--raised); color: var(--bright); }
+    .want[aria-pressed="true"]::before { background: var(--green); box-shadow: 0 0 0 4px color-mix(in oklab, var(--green) 22%, transparent); }
+    .say-out { display: flex; flex-direction: column; min-height: 268px; padding: 16px 20px 20px; background: var(--canvas); }
+    .say-out .say-label { padding: 0; }
+    .say-cmd { margin: 8px 0 0; font: 15px/1.6 var(--mono); color: var(--bright); white-space: pre-wrap; overflow-wrap: anywhere; min-height: 4.8em; }
+    .say-cmd::before { content: "$ "; color: var(--green); }
+    .say-cmd::after { content: ""; display: inline-block; width: 8px; height: 1.05em; margin-left: 3px; vertical-align: -3px; background: var(--green); animation: caret 1.1s steps(1) infinite; }
+    @keyframes caret { 50% { opacity: 0; } }
+    .say-means { margin: auto 0 0; padding-top: 16px; border-top: 1px solid var(--line); font-size: 15px; line-height: 1.55; color: var(--muted); text-wrap: pretty; }
+    .say-note { margin: 18px 0 0; font-size: 14.5px; color: var(--subtle); }
 
     /* Download */
     .dl { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 16px; margin-top: 44px; }
@@ -389,6 +395,10 @@
       .hero .shot { overflow-x: auto; scrollbar-width: none; }
       .hero .shot img { width: 860px; max-width: none; }
       .dl { grid-template-columns: 1fr; }
+      .say { grid-template-columns: minmax(0, 1fr); }
+      .say-list { border-right: 0; border-bottom: 1px solid var(--line); }
+      .say-out { min-height: 230px; }
+      .say-cmd { min-height: 8em; }
       .g-head, .g-row { grid-template-columns: 64px minmax(0, 1fr) 64px; }
       .g-head span:nth-child(3), .g-row .who { display: none; }
       footer .links { margin-left: 0; }
@@ -452,8 +462,8 @@
         <a class="chip orange" data-version hidden href="https://github.com/AVMG20/gitnoob/releases/latest"></a>
         <span class="chip plain">GPL-3.0</span>
       </p>
-      <h1>Git, without <em>the wait.</em></h1>
-      <p class="lede">The blazing fast, easy to use git manager that has your back. Built on Rust, not Electron. Free and open source.</p>
+      <h1>Git for <em>noobs.</em></h1>
+      <p class="lede">Merge, rebase and undo by dragging and clicking, and see the git command behind every click. Blazing fast, free and open source.</p>
       <div class="cta">
         <a class="btn big" data-dl href="https://github.com/AVMG20/gitnoob/releases/latest">
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 3v12m0 0-5-5m5 5 5-5M4 21h16"/></svg>
@@ -471,13 +481,13 @@
         <div class="shot">
           <img src="docs/screenshots/main-window.png" alt="The gitnoob window: branches and remotes on the left, the commit graph in the middle, staged and unstaged changes on the right" width="1680" height="1040" fetchpriority="high" />
         </div>
-        <button class="spot" style="left:10.8%;top:17%;--c:var(--green)" aria-label="About the sidebar"><span class="tip">Branches, remotes, pull requests, tags and stashes, with one filter box over all of them.</span></button>
-        <button class="spot" style="left:27.6%;top:30.4%;--d:.5s" aria-label="About the graph"><span class="tip">A commit graph with real lanes. Drag a branch onto another to merge or rebase it.</span></button>
-        <button class="spot" style="left:86.2%;top:6%;--c:var(--blue);--d:1s" aria-label="About undo"><span class="tip">Undo and redo for most operations.</span></button>
-        <button class="spot l" style="left:96%;top:5.6%;--c:var(--purple);--d:1.4s" aria-label="About profiles"><span class="tip">Profiles switch your commit identity, forge token and SSH key together.</span></button>
-        <button class="spot l" style="left:85%;top:19.6%;--c:var(--green);--d:.8s" aria-label="About staging"><span class="tip">Stage by file, by hunk, or one line at a time.</span></button>
-        <button class="spot l up" style="left:98.6%;top:77.6%;--c:var(--purple);--d:1.8s" aria-label="About AI commit messages"><span class="tip">Optional AI commit messages through OpenRouter. Off unless you add a key.</span></button>
-        <button class="spot up" style="left:57%;top:98%;--c:var(--blue);--d:.3s" aria-label="About the command log"><span class="tip">Every action logs the git command it ran. You can type your own here too.</span></button>
+        <button class="spot" style="left:7.7%;top:20%;--c:var(--green)" aria-label="About the sidebar"><span class="tip">Branches, remotes, pull requests, tags and stashes, with one filter box over all of them.</span></button>
+        <button class="spot" style="left:25.9%;top:20.6%;--d:.5s" aria-label="About the graph"><span class="tip">A commit graph with real lanes. Drag a branch onto another to merge or rebase it.</span></button>
+        <button class="spot" style="left:84.6%;top:6.1%;--c:var(--blue);--d:1s" aria-label="About undo"><span class="tip">Undo and redo for most operations.</span></button>
+        <button class="spot l" style="left:98.7%;top:6.1%;--c:var(--purple);--d:1.4s" aria-label="About profiles"><span class="tip">Profiles switch your commit identity, forge token and SSH key together.</span></button>
+        <button class="spot l" style="left:88.7%;top:16.4%;--c:var(--green);--d:.8s" aria-label="About staging"><span class="tip">Stage by file, by hunk, or one line at a time.</span></button>
+        <button class="spot l up" style="left:93.5%;top:82%;--c:var(--purple);--d:1.8s" aria-label="About AI commit messages"><span class="tip">Optional AI commit messages through OpenRouter. Off unless you add a key.</span></button>
+        <button class="spot up" style="left:15%;top:98.8%;--c:var(--blue);--d:.3s" aria-label="About the command log"><span class="tip">Every action logs the git command it ran. You can type your own here too.</span></button>
         </div>
         <p class="stage-hint"><i></i>Hover the dots.</p>
       </div>
@@ -618,14 +628,20 @@
 
       <section class="commit">
         <span class="node" aria-hidden="true"></span>
-        <p class="refs rv"><span class="chip green">how-it-works</span></p>
-        <h2 class="rv">Your git. Your hooks. <em>Your&nbsp;keys.</em></h2>
-        <p class="sub rv">Nothing leaves your machine.</p>
-        <div class="pipes rv">
-          <div class="pipe"><span class="what">READS</span><span class="chip">gitnoob</span><i class="arrow"></i><span class="chip">libgit2</span><span class="tail">No shelling out. That is the speed.</span></div>
-          <div class="pipe w"><span class="what">WRITES</span><span class="chip orange">gitnoob</span><i class="arrow"></i><span class="chip orange">your git binary</span><i class="arrow"></i><span class="chip plain">hooks</span><span class="chip plain">signing</span><span class="chip plain">ssh-agent</span><span class="chip plain">credential helpers</span></div>
+        <p class="refs rv"><span class="chip green">learn-as-you-go</span> live demo</p>
+        <h2 class="rv">Learn git <em>by&nbsp;accident.</em></h2>
+        <p class="sub rv">Pick what you want. See the git it runs.</p>
+        <div class="win say rv" id="say">
+          <div class="say-list" role="group" aria-label="I want to">
+            <span class="say-label">I WANT TO…</span>
+          </div>
+          <div class="say-out">
+            <span class="say-label">GITNOOB RUNS</span>
+            <pre class="say-cmd" data-say-cmd aria-live="polite"></pre>
+            <p class="say-means" data-say-means></p>
+          </div>
         </div>
-        <div class="keys rv" data-keys aria-label="Keyboard shortcuts"></div>
+        <p class="say-note rv">It runs your own git, so your hooks, signing and SSH keys keep working.</p>
       </section>
     </div>
 
@@ -1140,18 +1156,33 @@
       }));
     })();
 
-    // ── Shortcuts, with the modifier this machine actually has
+    // ── Plain words in, the git command out. These are the arguments the app
+    //    really passes for each of these.
     (() => {
-      const mac = os === 'mac' || /iPhone|iPad/i.test(ua);
-      const mod = mac ? '⌘' : 'Ctrl';
-      const shift = mac ? '⇧' : 'Shift';
-      $$('[data-mod]').forEach((el) => { el.textContent = mac ? '⌘' : 'Ctrl+'; });
-      const keys = [['S+F', 'fetch'], ['S+L', 'pull'], ['S+P', 'push'], ['Enter', 'commit'], ['B', 'branch'], ['S+S', 'stash'], ['F', 'search'], ['P', 'switch repo'], ['Z', 'undo'], [',', 'settings']];
-      $('[data-keys]').innerHTML = keys.map(([combo, what]) => {
-        const caps = [mod, ...combo.split('+').map((key) => (key === 'S' && combo.length > 1 && combo.startsWith('S+') ? shift : key))];
-        if (combo.startsWith('S+')) caps[2] = combo.slice(2);
-        return `<span>${caps.map((key) => `<kbd>${key}</kbd>`).join('')}<em>${what}</em></span>`;
-      }).join('');
+      const wants = [
+        ['Get everyone\'s latest work', 'git fetch --prune --all', 'Downloads new commits from every remote and forgets branches that were deleted there. Your files stay as they are.'],
+        ['Park my half-finished work', 'git stash push --include-untracked', 'Puts your changes on a shelf, new files included, and leaves a clean tree. Pop it back when you are ready.'],
+        ['Unstage that one file', 'git restore --staged -- ":(literal)src/audio/mixer.ts"', 'Takes the file out of the next commit. Your edits stay on disk.'],
+        ['Undo that merge', 'git reset --keep 3f2a91c', 'Moves the branch back to where it was before, and keeps your uncommitted work.'],
+        ['Force push without wiping a teammate\'s work', 'git push --force-with-lease=refs/heads/fix/login:8c1d2e7 origin refs/heads/fix/login:refs/heads/fix/login', 'Overwrites the remote branch only if nobody pushed since you last looked. Otherwise it stops.'],
+      ];
+      const list = $('.say-list');
+      const cmd = $('[data-say-cmd]');
+      const means = $('[data-say-means]');
+      const buttons = wants.map(([label], index) => {
+        const button = document.createElement('button');
+        button.className = 'want';
+        button.textContent = label;
+        button.addEventListener('click', () => pick(index, true));
+        list.append(button);
+        return button;
+      });
+      const pick = (index, typed) => {
+        buttons.forEach((button, i) => button.setAttribute('aria-pressed', i === index));
+        if (typed) type(cmd, wants[index][1]); else cmd.textContent = wants[index][1];
+        means.textContent = wants[index][2];
+      };
+      pick(0, false);
     })();
 
     // ── Downloads. Every button points straight at the right file from the
