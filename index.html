@@ -3,283 +3,1186 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>gitnoob — a free, open-source git GUI</title>
-  <meta name="description" content="Open source and fully featured, for macOS, Windows and Linux. Built with Tauri, Rust and Vue." />
+  <title>gitnoob — the fast, open-source git GUI</title>
+  <meta name="description" content="A blazing fast, easy to use git manager for macOS, Windows and Linux. Built on Rust and Vue, not Electron. Free and open source." />
+  <meta name="theme-color" content="#080e15" />
   <link rel="icon" type="image/png" href="app-icon.png" />
   <meta property="og:title" content="gitnoob" />
-  <meta property="og:description" content="A free, open-source git GUI." />
-  <meta property="og:image" content="docs/screenshots/main-window.png" />
+  <meta property="og:description" content="The fast, open-source git GUI. Rust, not Electron." />
+  <meta property="og:image" content="https://gitnoob.avmg.nl/docs/screenshots/main-window.png" />
+  <link rel="preload" href="docs/fonts/bricolage-grotesque.woff2" as="font" type="font/woff2" crossorigin />
+  <link rel="preload" href="docs/fonts/inter.woff2" as="font" type="font/woff2" crossorigin />
   <style>
+    @font-face { font-family: "Bricolage Grotesque"; src: url("docs/fonts/bricolage-grotesque.woff2") format("woff2"); font-weight: 200 800; font-display: swap; }
+    @font-face { font-family: "Inter"; src: url("docs/fonts/inter.woff2") format("woff2"); font-weight: 100 900; font-display: swap; }
+    @font-face { font-family: "Commit Mono"; src: url("docs/fonts/commit-mono.woff2") format("woff2"); font-weight: 400; font-display: swap; }
+
+    /* The colours are the app's own Fjord theme, so the page and the screenshots agree. */
     :root {
-      --bg: #0b1016;
-      --line: #1f2a36;
-      --text: #e6edf3;
-      --muted: #8b98a7;
-      --accent: #3ba3db;
-      --accent-hover: #55b3e6;
-      --tilt: 1;
+      --page: #080e15;
+      --canvas: #0a131c;
+      --panel: #121b24;
+      --surface: #17212a;
+      --raised: #1e2932;
+      --hover: #26323d;
+      --line: #1f2a35;
+      --line-2: #323f4c;
+      --fg: #d5e1ec;
+      --bright: #f2f6fa;
+      --muted: #94a0aa;
+      --subtle: #79838e;
+      --blue: #42addf;
+      --orange: #eba33a;
+      --green: #4cc083;
+      --pink: #ee7181;
+      --purple: #ae85f0;
+      --add-bg: #1a2f30;
+      --add-line: #295345;
+      --del-bg: #2b222d;
+      --del-line: #582f3d;
+      --display: "Bricolage Grotesque", "Inter", ui-sans-serif, system-ui, sans-serif;
+      --sans: "Inter", ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+      --mono: "Commit Mono", ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+      --rail: 36px;   /* where the main lane runs, from the page's left edge */
+      --gutter: 84px; /* where the content starts */
+      color-scheme: dark;
     }
-    * { box-sizing: border-box; }
-    html { scroll-behavior: smooth; }
+    *, *::before, *::after { box-sizing: border-box; }
+    html { scroll-behavior: smooth; -webkit-text-size-adjust: 100%; overflow-x: clip; }
     body {
       margin: 0;
-      background: var(--bg);
-      color: var(--text);
-      font: 16px/1.5 Inter, ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+      background: var(--page);
+      color: var(--fg);
+      font: 16px/1.6 var(--sans);
       -webkit-font-smoothing: antialiased;
       overflow-x: hidden;
     }
     a { color: inherit; text-decoration: none; }
+    button { font: inherit; color: inherit; background: none; border: 0; padding: 0; cursor: pointer; }
+    img { display: block; max-width: 100%; height: auto; }
+    code, kbd, pre { font-family: var(--mono); }
+    :focus-visible { outline: 2px solid var(--blue); outline-offset: 3px; border-radius: 4px; }
+    ::selection { background: color-mix(in oklab, var(--blue) 40%, transparent); }
 
-    /* Navbar */
-    .nav {
-      position: fixed;
-      inset: 0 0 auto;
-      z-index: 10;
-      border-bottom: 1px solid transparent;
-      transition: background .2s, border-color .2s;
-    }
-    .nav.scrolled {
-      background: rgba(11, 16, 22, .75);
-      backdrop-filter: blur(14px) saturate(1.4);
-      -webkit-backdrop-filter: blur(14px) saturate(1.4);
-      border-bottom-color: var(--line);
-    }
-    .nav-inner {
-      max-width: 1200px;
-      margin: 0 auto;
-      padding: 12px 16px;
-      display: flex;
-      align-items: center;
-      gap: 24px;
-    }
-    .brand { display: flex; align-items: center; gap: 10px; font-weight: 700; font-size: 18px; letter-spacing: -0.01em; }
+    /* Nav */
+    .nav { position: fixed; inset: 0 0 auto; z-index: 50; border-bottom: 1px solid transparent; transition: background .2s, border-color .2s; }
+    .nav.scrolled { background: color-mix(in oklab, var(--page) 78%, transparent); backdrop-filter: blur(14px) saturate(1.4); -webkit-backdrop-filter: blur(14px) saturate(1.4); border-bottom-color: var(--line); }
+    .nav-inner { max-width: 1240px; margin: 0 auto; padding: 12px 24px; display: flex; align-items: center; gap: 28px; }
+    .brand { display: flex; align-items: center; gap: 10px; font: 700 20px/1 var(--display); letter-spacing: -0.02em; color: var(--bright); }
     .brand img { width: 30px; height: 30px; }
-    .nav-links { margin-left: auto; display: flex; align-items: center; gap: 22px; font-size: 15px; color: var(--muted); }
-    .nav-links a:not(.download):hover { color: var(--text); }
+    .nav-links { margin-left: auto; display: flex; align-items: center; gap: 26px; font-size: 14.5px; color: var(--muted); }
+    .nav-links a:not(.btn):hover { color: var(--bright); }
 
-    .download {
-      display: inline-flex;
-      align-items: center;
-      gap: 8px;
-      padding: 9px 16px;
-      border-radius: 8px;
-      background: var(--accent);
-      color: #fff;
-      font-weight: 600;
-      white-space: nowrap;
-      transition: background .15s, transform .15s;
+    .btn {
+      display: inline-flex; align-items: center; justify-content: center; gap: 9px;
+      padding: 9px 16px; border-radius: 9px; font-weight: 600; font-size: 14.5px; white-space: nowrap;
+      background: var(--blue); color: #051119;
+      transition: background .15s, transform .15s, box-shadow .15s, border-color .15s;
     }
-    .download:hover { background: var(--accent-hover); transform: translateY(-1px); }
-    .download svg { width: 18px; height: 18px; flex: none; }
-    .download.big { padding: 14px 28px; font-size: 17px; border-radius: 10px; box-shadow: 0 10px 30px rgba(59, 163, 219, .3); }
+    .btn:hover { background: #63bfea; transform: translateY(-1px); }
+    .btn svg { width: 17px; height: 17px; flex: none; }
+    .btn.big { padding: 15px 26px; font-size: 16.5px; border-radius: 12px; box-shadow: 0 10px 34px -8px color-mix(in oklab, var(--blue) 60%, transparent); }
+    .btn.ghost { background: transparent; color: var(--fg); box-shadow: inset 0 0 0 1px var(--line-2); }
+    .btn.ghost:hover { background: var(--surface); box-shadow: inset 0 0 0 1px var(--subtle); }
+    .btn.sm { padding: 6px 12px; font-size: 13px; border-radius: 7px; }
+    .btn:disabled { opacity: .4; cursor: default; transform: none; }
+
+    /* The page reads as a commit graph: one lane down the left, a node per
+       section, and two side branches that fork off and merge back. */
+    .page { position: relative; max-width: 1240px; margin: 0 auto; padding: 0 24px 0 var(--gutter); }
+    .rail { position: absolute; left: calc(var(--rail) - 1px); top: 170px; bottom: 60px; width: 2px; background: var(--line-2); border-radius: 2px; }
+    .rail::before { content: ""; position: absolute; inset: 0 0 auto; height: var(--y, 0px); background: var(--blue); border-radius: 2px; }
+    .rail::after { content: ""; position: absolute; left: -3px; top: calc(var(--y, 0px) - 4px); width: 8px; height: 8px; border-radius: 50%; background: var(--blue); box-shadow: 0 0 14px 3px color-mix(in oklab, var(--blue) 70%, transparent); }
+    .commit { position: relative; --lane: var(--blue); scroll-margin-top: 40px; }
+    .node {
+      position: absolute; z-index: 1; left: calc(var(--rail) - var(--gutter) - 8px); width: 16px; height: 16px; border-radius: 50%;
+      background: var(--page); border: 2px solid var(--line-2);
+      transition: background .3s, border-color .3s, box-shadow .3s;
+    }
+    .commit.seen > .node { background: var(--lane); border-color: var(--lane); box-shadow: 0 0 0 4px color-mix(in oklab, var(--lane) 22%, var(--page)); }
+    .branch { position: relative; }
+    .branch::before {
+      content: ""; position: absolute; left: calc(var(--rail) - var(--gutter)); top: 34px; bottom: 34px; width: 27px;
+      border: 2px solid var(--lane); border-left: 0; border-radius: 0 14px 14px 0; opacity: .75;
+    }
+    .branch > .joint { position: absolute; z-index: 1; left: calc(var(--rail) - var(--gutter) - 5px); width: 10px; height: 10px; border-radius: 50%; background: var(--lane); }
+    .branch > .joint.out { top: 30px; }
+    .branch > .joint.in { bottom: 30px; }
+    .branch .commit > .node { left: calc(var(--rail) - var(--gutter) + 26px - 8px); }
+    .b-orange { --lane: var(--orange); }
+    .b-green { --lane: var(--green); }
+    .branch .commit { --lane: inherit; }
+
+    section.commit { padding: 84px 0; }
+    section.commit > .node { top: 87px; }
+
+    /* Ref chips, drawn the way the app draws them */
+    .refs { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin: 0 0 22px; font: 12.5px/1 var(--mono); color: var(--subtle); }
+    .chip {
+      --c: var(--blue);
+      display: inline-flex; align-items: center; gap: 6px; height: 23px; padding: 0 8px; border-radius: 5px;
+      font: 12px/1 var(--mono); white-space: nowrap; color: var(--c);
+      border: 1px solid color-mix(in oklab, var(--c) 55%, transparent);
+      background: color-mix(in oklab, var(--c) 11%, transparent);
+    }
+    .chip svg { width: 12px; height: 12px; flex: none; }
+    .chip.orange { --c: var(--orange); } .chip.green { --c: var(--green); } .chip.purple { --c: var(--purple); } .chip.pink { --c: var(--pink); }
+    .chip.plain { --c: var(--muted); }
+
+    h1, h2, h3 { font-family: var(--display); color: var(--bright); margin: 0; text-wrap: balance; }
+    h2 { font-size: clamp(36px, 4.6vw, 56px); font-weight: 700; letter-spacing: -0.035em; line-height: 1.02; max-width: 20ch; }
+    h3 { font-size: clamp(25px, 2.8vw, 34px); font-weight: 700; letter-spacing: -0.03em; line-height: 1.08; }
+    .sub { margin: 18px 0 0; max-width: 54ch; color: var(--muted); font-size: 17.5px; text-wrap: pretty; }
+    .sub code, .note code { font-size: .88em; color: var(--fg); background: var(--surface); padding: 2px 6px; border-radius: 5px; }
 
     /* Hero */
-    .hero {
-      position: relative;
-      padding: 150px 16px 0;
-      text-align: center;
-      isolation: isolate;
-      overflow-x: clip;
-    }
-    /* The screenshot again, blurred into an ambient glow behind everything */
+    .hero { padding: 152px 0 40px; isolation: isolate; }
+    .hero > .node { top: 155px; }
     .hero::before {
-      content: "";
-      position: absolute;
-      inset: 0;
-      z-index: -1;
-      background: url("docs/screenshots/main-window.png") center 70% / cover no-repeat;
-      filter: blur(60px) saturate(1.8);
-      opacity: .45;
-      -webkit-mask-image: radial-gradient(ellipse 70% 55% at 50% 60%, #000 20%, transparent 75%);
-      mask-image: radial-gradient(ellipse 70% 55% at 50% 60%, #000 20%, transparent 75%);
+      content: ""; position: absolute; z-index: -2; inset: -80px -30vw auto -30vw; height: 900px; pointer-events: none;
+      background:
+        radial-gradient(520px 380px at 78% 26%, color-mix(in oklab, var(--blue) 20%, transparent), transparent 70%),
+        radial-gradient(420px 320px at 92% 48%, color-mix(in oklab, var(--green) 11%, transparent), transparent 70%);
     }
-    h1 {
-      margin: 0 auto;
-      max-width: 1040px;
-      font-size: clamp(34px, 5.6vw, 60px);
-      text-wrap: balance;
-      font-weight: 700;
-      letter-spacing: -0.035em;
-      line-height: 1.05;
-    }
-    h1 span { display: block; color: var(--accent); }
-    .tagline { margin: 20px auto 36px; max-width: 640px; font-size: 19px; color: var(--muted); }
-    .meta { margin-top: 14px; font-size: 14px; color: var(--muted); }
-    .meta a { border-bottom: 1px solid var(--line); }
-    .meta a:hover { color: var(--text); }
+    h1 { font-size: clamp(54px, 10.4vw, 136px); font-weight: 800; letter-spacing: -0.04em; line-height: .9; }
+    h1 em { font-style: normal; color: var(--blue); display: block; }
+    .lede { margin: 30px 0 34px; max-width: 36ch; font-size: clamp(17px, 1.5vw, 20px); color: var(--muted); text-wrap: pretty; }
+    .cta { display: flex; flex-wrap: wrap; gap: 12px; }
+    .meta { margin: 18px 0 0; font: 12.5px/1.6 var(--mono); color: var(--subtle); }
+    .meta a { color: var(--muted); border-bottom: 1px solid var(--line-2); }
+    .meta a:hover { color: var(--bright); }
 
-    .stage {
-      max-width: 1200px;
-      margin: 72px auto 0;
-      perspective: 1600px;
+    /* A graph that draws itself next to the headline */
+    .art { position: absolute; z-index: -1; right: -40px; top: 84px; width: 440px; height: auto; pointer-events: none; -webkit-mask-image: linear-gradient(#000 62%, transparent 96%); mask-image: linear-gradient(#000 62%, transparent 96%); }
+    .art path { fill: none; stroke-width: 3; stroke-linecap: round; stroke-dasharray: 1; stroke-dashoffset: 1; animation: draw 1.5s cubic-bezier(.6, 0, .2, 1) forwards; animation-delay: calc(var(--d, 0) * 1s + .15s); }
+    .art circle { stroke: var(--page); stroke-width: 4; transform-box: fill-box; transform-origin: center; transform: scale(0); animation: pop .45s cubic-bezier(.3, 1.6, .5, 1) forwards; animation-delay: calc(var(--d, 0) * 1s + .5s); }
+    @keyframes draw { to { stroke-dashoffset: 0; } }
+    @keyframes pop { to { transform: scale(1); } }
+
+    /* The screenshot, with a few things pointed out */
+    .stage { position: relative; margin-top: 72px; perspective: 1800px; }
+    .tilt { position: relative; transform-origin: 50% 0; transform: rotateX(calc(var(--tilt, 0) * 13deg)) scale(calc(1 - var(--tilt, 0) * .04)); will-change: transform; }
+    .stage::before {
+      content: ""; position: absolute; z-index: -1; inset: -6% -4% -4%; pointer-events: none; filter: blur(70px); opacity: .5;
+      background:
+        radial-gradient(40% 55% at 22% 40%, var(--blue), transparent 70%),
+        radial-gradient(34% 50% at 55% 70%, color-mix(in oklab, var(--orange) 55%, transparent), transparent 70%),
+        radial-gradient(36% 55% at 84% 35%, color-mix(in oklab, var(--green) 70%, transparent), transparent 70%);
     }
-    .stage img {
-      display: block;
-      width: 100%;
-      height: auto;
-      border-radius: 12px;
-      border: 1px solid #2a3847;
-      box-shadow: 0 40px 120px rgba(0, 0, 0, .6), 0 0 0 1px rgba(255, 255, 255, .03);
-      transform-origin: 50% 0;
-      transform: rotateX(calc(var(--tilt) * 14deg)) scale(calc(1 - var(--tilt) * .04));
-      will-change: transform;
+    .shot { border-radius: 12px; overflow: hidden; border: 1px solid var(--line-2); box-shadow: 0 40px 110px -20px rgba(0, 0, 0, .75), 0 0 0 1px rgba(255, 255, 255, .03); background: var(--panel); }
+    .shot img { width: 100%; }
+    .spot { position: absolute; z-index: 2; width: 26px; height: 26px; margin: -13px 0 0 -13px; border-radius: 50%; display: grid; place-items: center; }
+    .spot::before { content: ""; width: 10px; height: 10px; border-radius: 50%; background: var(--c, var(--orange)); box-shadow: 0 0 0 3px color-mix(in oklab, var(--c, var(--orange)) 35%, transparent); }
+    .spot::after { content: ""; position: absolute; inset: 3px; border-radius: 50%; border: 1.5px solid var(--c, var(--orange)); animation: ping 2.6s ease-out infinite; animation-delay: var(--d, 0s); }
+    @keyframes ping { 0% { transform: scale(.5); opacity: .9; } 70%, 100% { transform: scale(1.7); opacity: 0; } }
+    .tip {
+      position: absolute; top: 30px; left: 50%; width: 236px; transform: translate(-50%, 4px); padding: 10px 12px; border-radius: 9px;
+      background: var(--raised); border: 1px solid var(--line-2); box-shadow: 0 14px 40px rgba(0, 0, 0, .55);
+      font: 13.5px/1.45 var(--sans); color: var(--fg); text-align: left; opacity: 0; pointer-events: none; transition: opacity .15s, transform .15s;
     }
+    .spot.l .tip { left: auto; right: -6px; transform: translate(0, 4px); }
+    .spot.up .tip { top: auto; bottom: 30px; }
+    .spot:hover .tip, .spot:focus .tip { opacity: 1; transform: translate(-50%, 0); }
+    .spot.l:hover .tip, .spot.l:focus .tip { transform: translate(0, 0); }
+    .stage-hint { margin: 16px 0 0; font: 12.5px/1.5 var(--mono); color: var(--subtle); }
+    .stage-hint i { display: inline-block; width: 8px; height: 8px; margin-right: 8px; border-radius: 50%; background: var(--orange); box-shadow: 0 0 0 3px color-mix(in oklab, var(--orange) 30%, transparent); }
+
+    /* Speed, in numbers I can stand behind */
+    h2 em { font-style: normal; color: var(--lane, var(--blue)); }
+    .nums { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 14px; margin-top: 44px; }
+    .num { --c: var(--blue); position: relative; overflow: hidden; padding: 26px 24px 24px; border-radius: 16px; border: 1px solid var(--line); background: linear-gradient(160deg, color-mix(in oklab, var(--c) 13%, var(--canvas)), var(--canvas) 62%); }
+    .num::before { content: ""; position: absolute; inset: 0 0 auto; height: 2px; background: linear-gradient(90deg, var(--c), transparent 80%); }
+    .num b { display: flex; align-items: baseline; gap: 6px; font: 800 clamp(48px, 6vw, 84px)/.95 var(--display); letter-spacing: -0.05em; color: var(--c); font-variant-numeric: tabular-nums; }
+    .num b small { font-size: .42em; font-weight: 700; letter-spacing: -0.02em; }
+    .num > span { display: block; margin-top: 14px; font-size: 14.5px; color: var(--muted); }
+    .origin { margin: 44px 0 0; font: 500 clamp(20px, 2.3vw, 28px)/1.25 var(--display); letter-spacing: -0.02em; color: var(--subtle); }
+    .origin b { font-weight: 600; color: var(--bright); }
+
+    /* A window to put the live demos in */
+    .win { position: relative; margin-top: 40px; border-radius: 12px; border: 1px solid var(--line-2); background: var(--panel); box-shadow: 0 30px 80px -24px rgba(0, 0, 0, .7); overflow: hidden; }
+    .win-bar { display: flex; align-items: center; gap: 12px; min-height: 46px; padding: 8px 14px; border-bottom: 1px solid var(--line); font-size: 13.5px; }
+    .win-bar .where { font-weight: 600; color: var(--bright); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+    .win-bar .where span { font: 12.5px var(--mono); color: var(--blue); margin-left: 6px; font-weight: 400; }
+    .win-bar .tools { margin-left: auto; display: flex; gap: 6px; }
+    .tool { display: inline-flex; align-items: center; gap: 6px; height: 30px; padding: 0 10px; border-radius: 7px; color: var(--muted); font-size: 13px; transition: background .15s, color .15s, opacity .15s; }
+    .tool svg { width: 15px; height: 15px; }
+    .tool:hover:not(:disabled) { background: var(--raised); color: var(--bright); }
+    .tool:disabled { opacity: .35; cursor: default; }
+    .tool.nudge { color: var(--bright); background: var(--raised); box-shadow: 0 0 0 1px var(--blue); }
+    .win-foot { display: flex; align-items: center; gap: 10px; min-height: 36px; padding: 6px 14px; border-top: 1px solid var(--line); background: var(--canvas); font: 12.5px/1.4 var(--mono); color: var(--subtle); overflow: hidden; }
+    .win-foot .cmd { color: var(--blue); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+    .win-foot .cmd.idle { color: var(--subtle); }
+    .win-foot .said { margin-left: auto; white-space: nowrap; }
+
+    /* The graph you can drag around in */
+    .g-head, .g-row { display: grid; grid-template-columns: 76px minmax(0, 1fr) 130px 76px; align-items: center; }
+    .g-head { height: 28px; padding: 0 14px; font: 10.5px/1 var(--sans); letter-spacing: .09em; text-transform: uppercase; color: var(--subtle); border-bottom: 1px solid var(--line); }
+    .g-body { position: relative; margin: 6px 0; transition: height .35s cubic-bezier(.3, .8, .3, 1); }
+    .g-body > svg { position: absolute; left: 14px; top: 0; width: 76px; height: 100%; overflow: visible; transition: opacity .16s; }
+    .g-body > svg path { fill: none; stroke-width: 2; }
+    .g-row { position: absolute; inset: 0 0 auto; height: 38px; padding: 0 14px; font-size: 13.5px; transition: transform .38s cubic-bezier(.3, .8, .3, 1), opacity .3s, background .15s; }
+    .g-row:hover { background: color-mix(in oklab, var(--raised) 60%, transparent); }
+    .g-row.enter, .g-row.leave { opacity: 0; }
+    .g-row.target { background: color-mix(in oklab, var(--blue) 8%, transparent); box-shadow: inset 0 0 0 1px color-mix(in oklab, var(--blue) 45%, transparent); }
+    .g-row.over { background: color-mix(in oklab, var(--blue) 20%, transparent); box-shadow: inset 0 0 0 1.5px var(--blue); }
+    .g-row .g { position: relative; height: 100%; }
+    .dot {
+      position: absolute; top: 50%; width: 20px; height: 20px; margin: -10px 0 0 -10px; border-radius: 50%;
+      display: grid; place-items: center; font: 700 8px/1 var(--sans); font-style: normal; color: #06121a;
+      background: var(--c); box-shadow: 0 0 0 2px var(--panel), 0 0 0 3.5px color-mix(in oklab, var(--c) 50%, transparent);
+      transition: left .38s cubic-bezier(.3, .8, .3, 1), background .3s;
+    }
+    .g-row .m { display: flex; align-items: center; gap: 8px; min-width: 0; }
+    .g-row .t { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; color: var(--fg); }
+    .g-row .who { color: var(--muted); font-size: 13px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+    .g-row .h { justify-self: end; font-size: 12px; color: var(--subtle); transition: color .6s; }
+    .g-row .h.new { color: var(--green); transition: none; }
+    .chip[data-drag] { cursor: grab; touch-action: none; user-select: none; -webkit-user-select: none; }
+    .chip[data-drag]:hover { background: color-mix(in oklab, var(--c) 22%, transparent); }
+    .chip[data-drag].hint { animation: wiggle 2.8s ease-in-out infinite; }
+    .chip.lifted { opacity: .35; }
+    .chip.ghost { position: fixed; z-index: 100; pointer-events: none; cursor: grabbing; background: color-mix(in oklab, var(--c) 30%, var(--panel)); box-shadow: 0 10px 30px rgba(0, 0, 0, .6); transform: rotate(-3deg) scale(1.06); }
+    @keyframes wiggle { 0%, 72%, 100% { transform: none; } 78% { transform: translateY(-3px) rotate(-2deg); } 86% { transform: translateY(1px) rotate(1.5deg); } 93% { transform: translateY(-1px); } }
+    .menu { position: absolute; z-index: 5; left: 96px; min-width: 264px; padding: 5px; border-radius: 10px; background: var(--raised); border: 1px solid var(--line-2); box-shadow: 0 18px 50px rgba(0, 0, 0, .6); }
+    .menu button { display: flex; align-items: center; gap: 10px; width: 100%; padding: 8px 10px; border-radius: 6px; font-size: 13.5px; text-align: left; }
+    .menu button:hover, .menu button:focus-visible { background: var(--hover); color: var(--bright); outline: 0; }
+    .menu svg { width: 15px; height: 15px; color: var(--muted); flex: none; }
+    .try-row { display: flex; flex-wrap: wrap; align-items: center; gap: 10px 14px; margin-top: 18px; font-size: 14.5px; color: var(--muted); }
+    .try-row .or { color: var(--subtle); }
+
+    /* Two smaller demos, side by side */
+    .pair { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 56px 40px; }
+    .pair .sub { font-size: 16.5px; margin-top: 14px; }
+    .pair .win { margin-top: 30px; }
+
+    .diff { padding: 6px 0; font: 12.5px/1.5 var(--mono); overflow-x: auto; }
+    .hunk { padding: 3px 14px; color: var(--subtle); background: var(--surface); white-space: nowrap; }
+    .ln { display: grid; grid-template-columns: 30px 16px 1fr; align-items: center; width: 100%; min-height: 23px; padding: 0 14px 0 8px; text-align: left; white-space: pre; border-left: 2px solid transparent; }
+    .ln code { color: var(--fg); }
+    .ln .sg { font-weight: 400; color: var(--subtle); }
+    .ln .k { font-weight: 400; color: #f0896a; }
+    .ln .n { font-weight: 400; color: var(--orange); }
+    .ln.add { background: var(--add-bg); } .ln.add .sg { color: var(--green); }
+    .ln.del { background: var(--del-bg); } .ln.del .sg { color: var(--pink); }
+    button.ln:hover { filter: brightness(1.25); }
+    .box { justify-self: center; width: 14px; height: 14px; border-radius: 4px; border: 1.5px solid var(--subtle); display: grid; place-items: center; transition: background .12s, border-color .12s; }
+    .box::after { content: ""; width: 7px; height: 4px; margin-top: -2px; border: solid #06121a; border-width: 0 0 2px 2px; transform: rotate(-45deg) scale(0); transition: transform .12s; }
+    .ln[aria-pressed="true"] { border-left-color: var(--blue); background: color-mix(in oklab, var(--blue) 17%, var(--panel)); }
+    .ln[aria-pressed="true"] .box { background: var(--blue); border-color: var(--blue); }
+    .ln[aria-pressed="true"] .box::after { transform: rotate(-45deg) scale(1); }
+    .ln.gone { animation: gone .3s forwards; }
+    @keyframes gone { to { opacity: 0; min-height: 0; height: 0; } }
+    .stats { font: 12px var(--mono); margin-left: 4px; }
+    .stats .a { color: var(--green); } .stats .d { color: var(--pink); margin-left: 6px; }
+
+    /* Conflicts */
+    .sides { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); font: 12.5px/1.5 var(--mono); }
+    .side { --c: var(--blue); min-width: 0; }
+    .side.theirs { --c: var(--purple); border-left: 1px solid var(--line); }
+    .side-name { display: flex; gap: 8px; align-items: baseline; padding: 7px 12px; font: 10.5px/1 var(--sans); letter-spacing: .09em; color: var(--c); border-bottom: 1px solid var(--line); white-space: nowrap; overflow: hidden; }
+    .side-name span { font: 11.5px var(--mono); letter-spacing: 0; color: var(--subtle); overflow: hidden; text-overflow: ellipsis; }
+    .ctx { padding: 2px 12px 2px 36px; color: var(--subtle); white-space: pre; overflow: hidden; text-overflow: ellipsis; }
+    .pick { display: flex; align-items: center; gap: 9px; padding: 2px 12px; white-space: pre; cursor: pointer; overflow: hidden; border-left: 2px solid transparent; color: var(--subtle); transition: background .12s, color .12s; }
+    .pick:hover { color: var(--fg); }
+    .pick input { flex: none; width: 14px; height: 14px; margin: 0; accent-color: var(--c); cursor: pointer; }
+    .pick.all { font-family: var(--sans); font-size: 12.5px; padding-block: 5px; color: var(--fg); background: color-mix(in oklab, var(--c) 16%, transparent); border-left-color: var(--c); }
+    .pick:has(input:checked):not(.all) { color: var(--bright); background: color-mix(in oklab, var(--c) 12%, transparent); border-left-color: var(--c); }
+    .result-name { display: flex; align-items: center; gap: 8px; padding: 7px 12px; font: 10.5px/1 var(--sans); letter-spacing: .09em; color: var(--green); border-block: 1px solid var(--line); }
+    .result-name span { font: 11.5px var(--mono); letter-spacing: 0; color: var(--subtle); }
+    .result { padding: 6px 0; min-height: 132px; font: 12.5px/1.5 var(--mono); }
+    .result div { padding: 2px 12px 2px 36px; white-space: pre; overflow: hidden; text-overflow: ellipsis; border-left: 2px solid transparent; }
+    .result .c { color: var(--subtle); }
+    .result .o { color: var(--bright); border-left-color: var(--blue); background: color-mix(in oklab, var(--blue) 12%, transparent); }
+    .result .t { color: var(--bright); border-left-color: var(--purple); background: color-mix(in oklab, var(--purple) 12%, transparent); }
+    .result .undecided { margin: 2px 12px 2px 36px; padding: 10px 12px; border-radius: 6px; color: var(--orange); font-family: var(--sans); white-space: normal; background: repeating-linear-gradient(-45deg, transparent 0 6px, color-mix(in oklab, var(--orange) 9%, transparent) 6px 12px); }
+    .state { display: inline-flex; align-items: center; gap: 7px; color: var(--orange); }
+    .state::before { content: ""; width: 7px; height: 7px; border-radius: 50%; background: currentColor; }
+    .state.ok { color: var(--green); }
 
     /* Screenshots */
-    .shots {
-      max-width: 1120px;
-      margin: 0 auto;
-      padding: 140px 16px 120px;
-      display: grid;
-      gap: 120px;
-    }
-    figure { margin: 0; }
-    figure img {
-      display: block;
-      width: 100%;
-      height: auto;
-      border-radius: 12px;
-      border: 1px solid var(--line);
-      box-shadow: 0 30px 80px rgba(0, 0, 0, .5);
-    }
-    figcaption { margin-bottom: 28px; text-align: center; }
-    figcaption h2 { margin: 0 0 6px; font-size: clamp(24px, 3.4vw, 34px); letter-spacing: -0.02em; line-height: 1.2; }
-    figcaption p { margin: 0; color: var(--muted); font-size: 17px; }
+    .tabs { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 36px; }
+    .tab { height: 36px; padding: 0 14px; border-radius: 8px; font-size: 14.5px; font-weight: 500; color: var(--muted); box-shadow: inset 0 0 0 1px var(--line); transition: background .15s, color .15s, box-shadow .15s; }
+    .tab:hover { color: var(--bright); box-shadow: inset 0 0 0 1px var(--line-2); }
+    .tab[aria-selected="true"] { background: var(--raised); color: var(--bright); box-shadow: inset 0 0 0 1px var(--line-2); }
+    .cap { margin: 14px 0 22px; min-height: 1.6em; color: var(--muted); font-size: 15.5px; }
+    .frame { position: relative; aspect-ratio: 1568 / 731; }
+    .frame img { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: cover; object-position: top left; opacity: 0; transition: opacity .3s; }
+    .frame img.on { opacity: 1; }
 
-    .outro { text-align: center; padding: 0 16px 120px; }
-    .outro h2 { margin: 0 0 28px; font-size: clamp(28px, 4.5vw, 44px); letter-spacing: -0.03em; }
+    /* The rest */
+    .rest { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); margin-top: 48px; border-top: 1px solid var(--line); }
+    .rest li { list-style: none; padding: 26px 28px 28px 0; border-bottom: 1px solid var(--line); }
+    .rest li:not(:nth-child(3n + 1)) { padding-left: 28px; border-left: 1px solid var(--line); }
+    .rest { padding: 0; }
+    .rest .k { display: block; margin-bottom: 12px; font: 12px/1 var(--mono); color: var(--c, var(--blue)); }
+    .rest h4 { margin: 0 0 4px; font: 600 17px/1.3 var(--sans); letter-spacing: -0.01em; color: var(--bright); }
+    .rest p { margin: 0; font-size: 14.5px; line-height: 1.55; color: var(--muted); }
 
-    footer {
-      border-top: 1px solid var(--line);
-      padding: 28px 16px;
-      text-align: center;
-      font-size: 14px;
-      color: var(--muted);
+    .marquee { margin-top: 36px; display: grid; gap: 10px; overflow: hidden; -webkit-mask-image: linear-gradient(90deg, transparent, #000 9%, #000 91%, transparent); mask-image: linear-gradient(90deg, transparent, #000 9%, #000 91%, transparent); }
+    .belt { display: flex; width: max-content; animation: belt 46s linear infinite; }
+    .belt.back { animation-direction: reverse; animation-duration: 54s; }
+    .marquee:hover .belt { animation-play-state: paused; }
+    .belt > div { display: flex; gap: 10px; padding-right: 10px; }
+    .belt .chip { height: 34px; padding: 0 14px; border-radius: 8px; font-size: 13px; }
+    @keyframes belt { to { transform: translateX(-50%); } }
+
+    /* How it runs git */
+    .pipes { margin-top: 44px; display: grid; gap: 14px; }
+    .pipe { --c: var(--blue); display: flex; flex-wrap: wrap; align-items: center; gap: 10px 12px; padding: 18px 20px; border-radius: 12px; border: 1px solid var(--line); background: var(--canvas); font: 13px/1 var(--mono); }
+    .pipe.w { --c: var(--orange); }
+    .pipe .what { width: 62px; font: 10.5px/1 var(--sans); letter-spacing: .09em; color: var(--c); }
+    .pipe .arrow { width: 34px; height: 2px; background: linear-gradient(90deg, color-mix(in oklab, var(--c) 30%, transparent), var(--c)); position: relative; flex: none; }
+    .pipe .arrow::after { content: ""; position: absolute; right: -1px; top: -3px; width: 8px; height: 8px; border: solid var(--c); border-width: 2px 2px 0 0; transform: rotate(45deg); }
+    .pipe .tail { color: var(--subtle); font: 13.5px/1.5 var(--sans); flex: 1 1 260px; }
+    .keys { display: flex; flex-wrap: wrap; gap: 10px 22px; margin-top: 40px; font-size: 13.5px; color: var(--muted); }
+    .keys span { display: inline-flex; align-items: center; gap: 5px; white-space: nowrap; }
+    kbd { display: inline-grid; place-items: center; min-width: 26px; height: 26px; padding: 0 7px; border-radius: 6px; font-size: 12px; color: var(--fg); background: var(--surface); border: 1px solid var(--line-2); border-bottom-width: 2px; }
+    .keys em { font-style: normal; margin-left: 4px; }
+
+    /* Download */
+    .dl { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 16px; margin-top: 44px; }
+    .os { position: relative; display: flex; flex-direction: column; gap: 6px; padding: 24px; border-radius: 14px; border: 1px solid var(--line); background: var(--canvas); transition: border-color .2s, background .2s; }
+    .os:hover { border-color: var(--line-2); }
+    .os.you { border-color: color-mix(in oklab, var(--blue) 60%, transparent); background: linear-gradient(color-mix(in oklab, var(--blue) 9%, var(--canvas)), var(--canvas)); }
+    .os .yours { position: absolute; top: 22px; right: 22px; display: none; }
+    .os.you .yours { display: inline-flex; }
+    .os h3 { font-size: 26px; }
+    .os p { margin: 0 0 16px; font-size: 14.5px; color: var(--muted); }
+    .os .btn { align-self: flex-start; }
+    .os.you .btn { background: var(--blue); color: #051119; box-shadow: none; }
+    .os.you .btn:hover { background: #63bfea; }
+    .os .alts { margin-top: 12px; font: 12.5px/1.6 var(--mono); color: var(--subtle); min-height: 1.6em; }
+    .os .alts a { color: var(--muted); border-bottom: 1px solid var(--line-2); margin-right: 12px; }
+    .os .alts a:hover { color: var(--bright); }
+    .note { margin: 26px 0 0; max-width: 70ch; font-size: 14.5px; color: var(--subtle); }
+
+    footer.commit { padding: 44px 0 60px; display: flex; flex-wrap: wrap; align-items: center; gap: 12px 24px; font-size: 14px; color: var(--subtle); border-top: 1px solid var(--line); }
+    footer.commit > .node { top: 48px; }
+    footer .links { margin-left: auto; display: flex; gap: 22px; color: var(--muted); }
+    footer .links a:hover { color: var(--bright); }
+
+    /* Things rise into place as they scroll in. Only when the script is running. */
+    .js .rv { opacity: 0; transform: translateY(20px); transition: opacity .7s cubic-bezier(.2, .7, .2, 1), transform .7s cubic-bezier(.2, .7, .2, 1); transition-delay: var(--rd, 0s); }
+    .js .rv.in { opacity: 1; transform: none; }
+
+    @media (max-width: 1080px) {
+      .art { opacity: .5; right: -120px; }
+      .pair { grid-template-columns: minmax(0, 1fr); }
+      .rest { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+      .nums { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+      .rest li:not(:nth-child(3n + 1)) { padding-left: 0; border-left: 0; }
+      .rest li:nth-child(even) { padding-left: 28px; border-left: 1px solid var(--line); }
     }
-    footer a { margin: 0 10px; }
-    footer a:hover { color: var(--text); }
-
-    @media (max-width: 640px) {
-      .nav-links a:not(.download) { display: none; }
-      .download .os { display: none; }
-      .hero { padding-top: 120px; }
-      .tagline { font-size: 17px; }
+    @media (max-width: 860px) {
+      :root { --gutter: 20px; }
+      .page { padding-right: 20px; }
+      .rail, .node, .joint, .branch::before { display: none; }
+      .nav-inner { padding-inline: 20px; }
+      .nav-links a:not(.btn) { display: none; }
+      .hero { padding-top: 116px; }
+      .art { top: 30px; right: -250px; opacity: .22; }
+      section.commit { padding: 68px 0; }
       .stage { margin-top: 48px; }
-      .shots { padding-top: 96px; gap: 88px; }
+      .spot, .stage-hint i { display: none; }
+      .stage-hint { font-size: 0; }
+      .stage-hint::after { content: "Swipe the screenshot to look around."; font-size: 12.5px; }
+      .hero .shot { overflow-x: auto; scrollbar-width: none; }
+      .hero .shot img { width: 860px; max-width: none; }
+      .dl { grid-template-columns: 1fr; }
+      .g-head, .g-row { grid-template-columns: 64px minmax(0, 1fr) 64px; }
+      .g-head span:nth-child(3), .g-row .who { display: none; }
+      footer .links { margin-left: 0; }
+    }
+    @media (max-width: 560px) {
+      .rest { grid-template-columns: 1fr; }
+      .rest li:nth-child(n) { padding: 22px 0; border-left: 0; }
+      .sides { grid-template-columns: 1fr; }
+      .side.theirs { border-left: 0; border-top: 1px solid var(--line); }
+      .tool span { display: none; }
+      .btn.big { width: 100%; }
+      .frame { aspect-ratio: 4 / 3; }
     }
     @media (prefers-reduced-motion: reduce) {
-      :root { --tilt: 0 !important; }
       html { scroll-behavior: auto; }
+      *, *::before, *::after { animation-duration: .01s !important; animation-delay: 0s !important; animation-iteration-count: 1 !important; transition-duration: .01s !important; }
+      .js .rv { opacity: 1; transform: none; }
+      .belt { animation: none; flex-wrap: wrap; width: auto; }
+      .belt > div + div { display: none; }
+      .belt > div { flex-wrap: wrap; }
     }
   </style>
 </head>
 <body>
   <nav class="nav" id="nav">
     <div class="nav-inner">
-      <a class="brand" href="#"><img src="app-icon.png" alt="" />gitnoob</a>
+      <a class="brand" href="#top"><img src="app-icon.png" alt="" width="30" height="30" />gitnoob</a>
       <div class="nav-links">
-        <a href="#features">Features</a>
+        <a href="#try">Try it</a>
+        <a href="#look">Screenshots</a>
+        <a href="#rest">Features</a>
         <a href="https://github.com/AVMG20/gitnoob">GitHub</a>
-        <a class="download" href="https://github.com/AVMG20/gitnoob/releases/latest">
-          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 3v12m0 0-5-5m5 5 5-5M4 21h16"/></svg>
-          <span>Download</span>
+        <a class="btn" data-dl href="https://github.com/AVMG20/gitnoob/releases/latest">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 3v12m0 0-5-5m5 5 5-5M4 21h16"/></svg>
+          Download
         </a>
       </div>
     </div>
   </nav>
 
-  <header class="hero">
-    <h1>The git GUI I wanted to pay for. <span>So I built it.</span></h1>
-    <p class="tagline">Open source and fully featured, for macOS, Windows and Linux.</p>
-    <a class="download big" href="https://github.com/AVMG20/gitnoob/releases/latest">
-      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 3v12m0 0-5-5m5 5 5-5M4 21h16"/></svg>
-      <span>Download<span class="os"></span></span>
-    </a>
-    <div class="meta"><span class="version"></span><a href="https://github.com/AVMG20/gitnoob/releases/latest">All platforms</a></div>
+  <div class="page" id="top">
+    <div class="rail" aria-hidden="true"></div>
 
-    <div class="stage">
-      <img src="docs/screenshots/main-window.png" alt="The gitnoob window: branches on the left, the commit graph in the middle, staged and unstaged changes on the right" width="1680" height="1040" />
+    <header class="commit hero seen">
+      <span class="node" aria-hidden="true"></span>
+      <svg class="art" viewBox="0 0 440 600" aria-hidden="true">
+        <path pathLength="1" d="M230 0V600" stroke="#42addf" style="--d:0" />
+        <path pathLength="1" d="M230 440H296Q310 440 310 426V174Q310 160 296 160H230" stroke="#eba33a" style="--d:.25" />
+        <path pathLength="1" d="M310 340H376Q390 340 390 326V0" stroke="#4cc083" style="--d:.5" />
+        <path pathLength="1" d="M230 540H164Q150 540 150 526V294Q150 280 164 280H230" stroke="#ae85f0" style="--d:.4" />
+        <path pathLength="1" d="M150 460H84Q70 460 70 446V96" stroke="#ee7181" style="--d:.65" />
+        <g fill="#42addf"><circle cx="230" cy="70" r="10" style="--d:.1" /><circle cx="230" cy="160" r="10" style="--d:.2" /><circle cx="230" cy="280" r="10" style="--d:.3" /><circle cx="230" cy="440" r="10" style="--d:.4" /><circle cx="230" cy="540" r="10" style="--d:.5" /></g>
+        <g fill="#eba33a"><circle cx="310" cy="250" r="10" style="--d:.5" /><circle cx="310" cy="340" r="10" style="--d:.6" /></g>
+        <g fill="#4cc083"><circle cx="390" cy="110" r="10" style="--d:.9" /><circle cx="390" cy="230" r="10" style="--d:.8" /></g>
+        <g fill="#ae85f0"><circle cx="150" cy="370" r="10" style="--d:.7" /><circle cx="150" cy="460" r="10" style="--d:.6" /></g>
+        <g fill="#ee7181"><circle cx="70" cy="96" r="10" style="--d:1.1" /><circle cx="70" cy="210" r="10" style="--d:1" /><circle cx="70" cy="350" r="10" style="--d:.9" /></g>
+      </svg>
+
+      <p class="refs">
+        <span class="chip"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m5 12 5 5 9-10"/></svg>main</span>
+        <a class="chip orange" data-version hidden href="https://github.com/AVMG20/gitnoob/releases/latest"></a>
+        <span class="chip plain">GPL-3.0</span>
+      </p>
+      <h1>Git, without <em>the wait.</em></h1>
+      <p class="lede">The blazing fast, easy to use git manager that has your back. Built on Rust, not Electron. Free and open source.</p>
+      <div class="cta">
+        <a class="btn big" data-dl href="https://github.com/AVMG20/gitnoob/releases/latest">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 3v12m0 0-5-5m5 5 5-5M4 21h16"/></svg>
+          <span>Download<span data-os></span></span>
+        </a>
+        <a class="btn big ghost" href="https://github.com/AVMG20/gitnoob">
+          <svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M12 .5a11.5 11.5 0 0 0-3.64 22.41c.58.1.79-.25.79-.56v-2c-3.2.7-3.88-1.36-3.88-1.36-.52-1.33-1.28-1.69-1.28-1.69-1.05-.71.08-.7.08-.7 1.16.08 1.77 1.19 1.77 1.19 1.03 1.77 2.7 1.26 3.36.96.1-.75.4-1.26.73-1.55-2.55-.29-5.24-1.28-5.24-5.69 0-1.26.45-2.29 1.19-3.09-.12-.29-.52-1.46.11-3.05 0 0 .97-.31 3.18 1.18a11 11 0 0 1 5.78 0c2.2-1.49 3.17-1.18 3.17-1.18.63 1.59.23 2.76.11 3.05.74.8 1.19 1.83 1.19 3.09 0 4.42-2.69 5.39-5.26 5.68.41.36.78 1.06.78 2.14v3.17c0 .31.21.67.8.56A11.5 11.5 0 0 0 12 .5Z"/></svg>
+          Read the source
+        </a>
+      </div>
+      <p class="meta">macOS · Windows · Linux · <a href="https://github.com/AVMG20/gitnoob/releases/latest">all downloads</a></p>
+
+      <div class="stage rv">
+        <div class="tilt">
+        <div class="shot">
+          <img src="docs/screenshots/main-window.png" alt="The gitnoob window: branches and remotes on the left, the commit graph in the middle, staged and unstaged changes on the right" width="1680" height="1040" fetchpriority="high" />
+        </div>
+        <button class="spot" style="left:10.8%;top:17%;--c:var(--green)" aria-label="About the sidebar"><span class="tip">Branches, remotes, pull requests, tags and stashes, with one filter box over all of them.</span></button>
+        <button class="spot" style="left:27.6%;top:30.4%;--d:.5s" aria-label="About the graph"><span class="tip">A commit graph with real lanes. Drag a branch onto another to merge or rebase it.</span></button>
+        <button class="spot" style="left:86.2%;top:6%;--c:var(--blue);--d:1s" aria-label="About undo"><span class="tip">Undo and redo for most operations.</span></button>
+        <button class="spot l" style="left:96%;top:5.6%;--c:var(--purple);--d:1.4s" aria-label="About profiles"><span class="tip">Profiles switch your commit identity, forge token and SSH key together.</span></button>
+        <button class="spot l" style="left:85%;top:19.6%;--c:var(--green);--d:.8s" aria-label="About staging"><span class="tip">Stage by file, by hunk, or one line at a time.</span></button>
+        <button class="spot l up" style="left:98.6%;top:77.6%;--c:var(--purple);--d:1.8s" aria-label="About AI commit messages"><span class="tip">Optional AI commit messages through OpenRouter. Off unless you add a key.</span></button>
+        <button class="spot up" style="left:57%;top:98%;--c:var(--blue);--d:.3s" aria-label="About the command log"><span class="tip">Every action logs the git command it ran. You can type your own here too.</span></button>
+        </div>
+        <p class="stage-hint"><i></i>Hover the dots.</p>
+      </div>
+    </header>
+
+    <section class="commit speed" id="speed">
+      <span class="node" aria-hidden="true"></span>
+      <p class="refs rv"><span class="chip">perf</span></p>
+      <h2 class="rv">Rust inside. <em>No Electron.</em></h2>
+      <div class="nums rv">
+        <div class="num"><b><span data-size="_x64-setup\.exe$">7</span><small>MB</small></b><span>The whole Windows installer</span></div>
+        <div class="num" style="--c:var(--orange)"><b>0</b><span>Electron, anywhere</span></div>
+        <div class="num" style="--c:var(--green)"><b>Rust</b><span>Core, on libgit2</span></div>
+        <div class="num" style="--c:var(--purple)"><b><small>$</small>0</b><span>No seats, no subscription</span></div>
+      </div>
+      <p class="origin rv">I paid for a git GUI for five years. <b>Then I built a faster one.</b></p>
+    </section>
+
+    <div class="branch b-orange">
+      <i class="joint out" aria-hidden="true"></i><i class="joint in" aria-hidden="true"></i>
+
+      <section class="commit" id="try">
+        <span class="node" aria-hidden="true"></span>
+        <p class="refs rv"><span class="chip orange">feature/drag-and-drop</span> live demo</p>
+        <h2 class="rv">Drag. Drop. <em>Merged.</em></h2>
+        <p class="sub rv">Every action shows the git command it ran. Undo takes it back.</p>
+
+        <div class="win rv" id="graph">
+          <div class="win-bar">
+            <span class="where">xeno-engine <span>main</span></span>
+            <div class="tools">
+              <button class="tool" data-undo disabled><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M9 14 4 9l5-5"/><path d="M4 9h10.5a5.5 5.5 0 0 1 0 11H11"/></svg><span>Undo</span></button>
+              <button class="tool" data-redo disabled><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m15 14 5-5-5-5"/><path d="M20 9H9.5a5.5 5.5 0 0 0 0 11H13"/></svg><span>Redo</span></button>
+            </div>
+          </div>
+          <div class="g-head"><span>Graph</span><span>Commit message</span><span>Author</span><span style="justify-self:end">Hash</span></div>
+          <div class="g-body"><svg aria-hidden="true"></svg></div>
+          <div class="win-foot"><span class="cmd idle" data-cmd>Nothing run yet.</span><span class="said" data-said></span></div>
+        </div>
+        <div class="try-row rv">
+          <span data-hint>Drag <span class="chip orange">feature/sprites</span> onto <span class="chip">main</span></span>
+          <span class="or">or skip the dragging:</span>
+          <button class="btn sm ghost" data-do="merge">Merge</button>
+          <button class="btn sm ghost" data-do="rebase">Rebase</button>
+        </div>
+      </section>
+
+      <section class="commit">
+        <span class="node" aria-hidden="true"></span>
+        <div class="pair">
+          <div>
+            <p class="refs rv"><span class="chip orange">feature/line-staging</span></p>
+            <h3 class="rv">Stage the line, not the file.</h3>
+            <p class="sub rv">Click the lines you want. Commit.</p>
+            <div class="win rv" id="stage">
+              <div class="win-bar">
+                <span class="where" style="font:12.5px var(--mono);font-weight:400">src/audio/mixer.ts</span>
+                <span class="stats"><span class="a">+7</span><span class="d">−1</span></span>
+                <div class="tools"><button class="tool" data-all>Stage all</button></div>
+              </div>
+              <div class="diff" data-lines></div>
+              <div class="win-foot"><span data-count>0 of 8 lines staged</span><span class="said"><button class="btn sm" data-commit disabled>Commit</button></span></div>
+            </div>
+          </div>
+          <div>
+            <p class="refs rv"><span class="chip purple">fix/merge-conflicts</span></p>
+            <h3 class="rv">Conflicts are checkboxes.</h3>
+            <p class="sub rv">Tick ours, theirs, or a bit of both.</p>
+            <div class="win rv" id="conflict">
+              <div class="win-bar">
+                <span class="where" style="font:12.5px var(--mono);font-weight:400">game/damage.ts</span>
+                <div class="tools"><span class="state" data-state>1 conflict left</span></div>
+              </div>
+              <div class="sides">
+                <div class="side ours">
+                  <div class="side-name">OURS <span>HEAD</span></div>
+                  <div class="ctx">const base = weapon.power</div>
+                  <label class="pick all"><input type="checkbox" data-all="o" />Take ours</label>
+                  <label class="pick"><input type="checkbox" data-o />const damage = base * 1.0</label>
+                  <label class="pick"><input type="checkbox" data-o />const crit = 2.0</label>
+                </div>
+                <div class="side theirs">
+                  <div class="side-name">THEIRS <span>feature/damage-buff</span></div>
+                  <div class="ctx">const base = weapon.power</div>
+                  <label class="pick all"><input type="checkbox" data-all="t" />Take theirs</label>
+                  <label class="pick"><input type="checkbox" data-t />const damage = base * 1.35</label>
+                  <label class="pick"><input type="checkbox" data-t />const crit = 2.5</label>
+                  <label class="pick"><input type="checkbox" data-t />const bleed = 0.2</label>
+                </div>
+              </div>
+              <div class="result-name">RESULT <span>what gets written</span></div>
+              <div class="result" data-result aria-live="polite"></div>
+            </div>
+          </div>
+        </div>
+      </section>
     </div>
-  </header>
 
-  <main class="shots" id="features">
-    <figure>
-      <figcaption>
-        <h2>Stage by file, hunk or line.</h2>
-        <p>Pick exactly what goes into the commit.</p>
-      </figcaption>
-      <img src="docs/screenshots/diff.png" alt="A diff open next to the staged and unstaged file lists" loading="lazy" width="1680" height="1040" />
-    </figure>
-    <figure>
-      <figcaption>
-        <h2>Conflicts, with checkboxes.</h2>
-        <p>Tick ours, theirs or both. No hand-editing markers.</p>
-      </figcaption>
-      <img src="docs/screenshots/conflicts.png" alt="Conflict resolution with checkboxes for ours and theirs" loading="lazy" width="1568" height="731" />
-    </figure>
-    <figure>
-      <figcaption>
-        <h2>Pull requests, in the app.</h2>
-        <p>Review, comment and merge on GitHub and GitLab.</p>
-      </figcaption>
-      <img src="docs/screenshots/review.png" alt="A pull request open for review inside the app" loading="lazy" width="1568" height="731" />
-    </figure>
-  </main>
+    <section class="commit" id="look">
+      <span class="node" aria-hidden="true"></span>
+      <p class="refs rv"><span class="chip">screenshots</span></p>
+      <h2 class="rv">The real thing.</h2>
+      <div class="tabs rv" role="tablist" aria-label="Screenshots">
+        <button class="tab" role="tab" aria-selected="true" data-cap="Stage a file, a hunk, or a single line.">Diff</button>
+        <button class="tab" role="tab" aria-selected="false" data-cap="Ours and theirs side by side, the result underneath.">Conflicts</button>
+        <button class="tab" role="tab" aria-selected="false" data-cap="GitHub and GitLab, with reviewers, checks and a merge button.">Pull request</button>
+        <button class="tab" role="tab" aria-selected="false" data-cap="Review file by file, threads on the lines they belong to.">Review files</button>
+      </div>
+      <p class="cap rv" data-cap-out>Stage a file, a hunk, or a single line.</p>
+      <div class="shot frame rv">
+        <img class="on" src="docs/screenshots/diff.png" alt="A diff open next to the staged and unstaged file lists" loading="lazy" width="1680" height="1040" />
+        <img src="docs/screenshots/conflicts.png" alt="Conflict resolution with checkboxes for ours and theirs" loading="lazy" width="1568" height="731" />
+        <img src="docs/screenshots/review.png" alt="A pull request open for review inside the app" loading="lazy" width="1568" height="731" />
+        <img src="docs/screenshots/review-files.png" alt="The files of a pull request, with a comment thread on a changed line" loading="lazy" width="1568" height="731" />
+      </div>
+    </section>
 
-  <section class="outro">
-    <h2>Free, and GPL so it stays that way.</h2>
-    <a class="download big" href="https://github.com/AVMG20/gitnoob/releases/latest">
-      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 3v12m0 0-5-5m5 5 5-5M4 21h16"/></svg>
-      <span>Download<span class="os"></span></span>
-    </a>
-  </section>
+    <div class="branch b-green">
+      <i class="joint out" aria-hidden="true"></i><i class="joint in" aria-hidden="true"></i>
 
-  <footer>
-    <a href="https://github.com/AVMG20/gitnoob">GitHub</a>
-    <a href="https://github.com/AVMG20/gitnoob/releases">Releases</a>
-    <a href="https://github.com/AVMG20/gitnoob/blob/main/LICENSE">GPL-3.0</a>
-  </footer>
+      <section class="commit" id="rest">
+        <span class="node" aria-hidden="true"></span>
+        <p class="refs rv"><span class="chip green">has-your-back</span></p>
+        <h2 class="rv">Easy to use. <em>Hard to break.</em></h2>
+        <ul class="rest rv">
+          <li><span class="k">rebase -i</span><h4>Interactive rebase</h4><p>Drag rows. Preview. Run.</p></li>
+          <li style="--c:var(--orange)"><span class="k">undo / redo</span><h4>A way back</h4><p>For most operations.</p></li>
+          <li style="--c:var(--green)"><span class="k">pr · mr</span><h4>Review in the app</h4><p>GitHub and GitLab, checks and merge included.</p></li>
+          <li style="--c:var(--purple)"><span class="k">--force-with-lease</span><h4>Careful force push</h4><p>Shows what it would drop first.</p></li>
+          <li style="--c:var(--pink)"><span class="k">profiles</span><h4>Work and personal</h4><p>Identity, token and SSH key, switched together.</p></li>
+          <li><span class="k">$ git …</span><h4>Nothing hidden</h4><p>Every action logs the command it ran.</p></li>
+        </ul>
+        <div class="marquee rv" aria-label="More features: Interactive rebase, Squash, Cherry-pick, Undo / redo, Stash, Tags, Worktrees, Submodules, LFS, GitHub pull requests, GitLab merge requests, Profiles, SSH keys, Commit signing, Hooks, Command log, Repo tabs, 21 themes, AI commit messages, Self-updating, --force-with-lease">
+          <div class="belt" aria-hidden="true"><div><span class="chip">Interactive rebase</span><span class="chip orange">Squash</span><span class="chip green">Cherry-pick</span><span class="chip purple">Undo / redo</span><span class="chip pink">Stash</span><span class="chip">Tags</span><span class="chip orange">Worktrees</span><span class="chip green">Submodules</span><span class="chip purple">LFS</span><span class="chip pink">GitHub pull requests</span><span class="chip">GitLab merge requests</span></div><div><span class="chip">Interactive rebase</span><span class="chip orange">Squash</span><span class="chip green">Cherry-pick</span><span class="chip purple">Undo / redo</span><span class="chip pink">Stash</span><span class="chip">Tags</span><span class="chip orange">Worktrees</span><span class="chip green">Submodules</span><span class="chip purple">LFS</span><span class="chip pink">GitHub pull requests</span><span class="chip">GitLab merge requests</span></div></div>
+          <div class="belt back" aria-hidden="true"><div><span class="chip green">Profiles</span><span class="chip purple">SSH keys</span><span class="chip pink">Commit signing</span><span class="chip">Hooks</span><span class="chip orange">Command log</span><span class="chip green">Repo tabs</span><span class="chip purple">21 themes</span><span class="chip pink">AI commit messages</span><span class="chip">Self-updating</span><span class="chip orange">--force-with-lease</span></div><div><span class="chip green">Profiles</span><span class="chip purple">SSH keys</span><span class="chip pink">Commit signing</span><span class="chip">Hooks</span><span class="chip orange">Command log</span><span class="chip green">Repo tabs</span><span class="chip purple">21 themes</span><span class="chip pink">AI commit messages</span><span class="chip">Self-updating</span><span class="chip orange">--force-with-lease</span></div></div>
+        </div>
+      </section>
+
+      <section class="commit">
+        <span class="node" aria-hidden="true"></span>
+        <p class="refs rv"><span class="chip green">how-it-works</span></p>
+        <h2 class="rv">Your git. Your hooks. <em>Your&nbsp;keys.</em></h2>
+        <p class="sub rv">Nothing leaves your machine.</p>
+        <div class="pipes rv">
+          <div class="pipe"><span class="what">READS</span><span class="chip">gitnoob</span><i class="arrow"></i><span class="chip">libgit2</span><span class="tail">No shelling out. That is the speed.</span></div>
+          <div class="pipe w"><span class="what">WRITES</span><span class="chip orange">gitnoob</span><i class="arrow"></i><span class="chip orange">your git binary</span><i class="arrow"></i><span class="chip plain">hooks</span><span class="chip plain">signing</span><span class="chip plain">ssh-agent</span><span class="chip plain">credential helpers</span></div>
+        </div>
+        <div class="keys rv" data-keys aria-label="Keyboard shortcuts"></div>
+      </section>
+    </div>
+
+    <section class="commit" id="download">
+      <span class="node" aria-hidden="true"></span>
+      <p class="refs rv"><a class="chip orange" data-version hidden href="https://github.com/AVMG20/gitnoob/releases/latest"></a><span class="chip">download</span></p>
+      <h2 class="rv">Free. <em>GPL. Forever.</em></h2>
+      <div class="dl rv">
+        <div class="os" data-os-card="mac">
+          <span class="chip yours">your system</span>
+          <h3>macOS</h3>
+          <p>Intel and Apple Silicon<span data-size="_universal\.dmg$" data-unit></span></p>
+          <a class="btn ghost" data-asset="_universal\.dmg$" href="https://github.com/AVMG20/gitnoob/releases/latest">Download .dmg</a>
+          <div class="alts"></div>
+        </div>
+        <div class="os" data-os-card="windows">
+          <span class="chip yours">your system</span>
+          <h3>Windows</h3>
+          <p>64-bit installer<span data-size="_x64-setup\.exe$" data-unit></span></p>
+          <a class="btn ghost" data-asset="_x64-setup\.exe$" href="https://github.com/AVMG20/gitnoob/releases/latest">Download .exe</a>
+          <div class="alts"><a data-asset="_x64_en-US\.msi$" href="https://github.com/AVMG20/gitnoob/releases/latest">.msi</a></div>
+        </div>
+        <div class="os" data-os-card="linux">
+          <span class="chip yours">your system</span>
+          <h3>Linux</h3>
+          <p>x86-64, any distribution</p>
+          <a class="btn ghost" data-asset="_amd64\.AppImage$" href="https://github.com/AVMG20/gitnoob/releases/latest">Download .AppImage</a>
+          <div class="alts"><a data-asset="_amd64\.deb$" href="https://github.com/AVMG20/gitnoob/releases/latest">.deb</a><a data-asset="\.x86_64\.rpm$" href="https://github.com/AVMG20/gitnoob/releases/latest">.rpm</a></div>
+        </div>
+      </div>
+      <p class="note rv">Needs <code>git</code> on your PATH. Updates itself after that.</p>
+    </section>
+
+    <footer class="commit">
+      <span class="node" aria-hidden="true"></span>
+      <span class="chip plain">first commit</span>
+      <span>Built with Tauri, Rust and Vue.</span>
+      <div class="links">
+        <a href="https://github.com/AVMG20/gitnoob">GitHub</a>
+        <a href="https://github.com/AVMG20/gitnoob/releases">Releases</a>
+        <a href="https://github.com/AVMG20/gitnoob/issues">Issues</a>
+        <a href="https://github.com/AVMG20/gitnoob/blob/main/LICENSE">GPL-3.0</a>
+      </div>
+    </footer>
+  </div>
 
   <script>
-    // Solid navbar once the page moves, and the hero screenshot tilts flat as it scrolls into view.
-    const nav = document.getElementById('nav');
-    const root = document.documentElement;
-    const onScroll = () => {
-      nav.classList.toggle('scrolled', scrollY > 8);
-      root.style.setProperty('--tilt', Math.max(0, 1 - scrollY / (innerHeight * 0.5)).toFixed(3));
+  (() => {
+    const $ = (sel, root = document) => root.querySelector(sel);
+    const $$ = (sel, root = document) => [...root.querySelectorAll(sel)];
+    const calm = matchMedia('(prefers-reduced-motion: reduce)').matches;
+    document.documentElement.classList.add('js');
+
+    const ua = navigator.userAgent;
+    const os = /Windows/i.test(ua) ? 'windows'
+      : /Mac OS X|Macintosh/i.test(ua) && !/iPhone|iPad/i.test(ua) ? 'mac'
+      : /Linux|X11/i.test(ua) && !/Android/i.test(ua) ? 'linux'
+      : null;
+
+    // ── The lane down the left: it fills as the page scrolls, and a section's
+    //    node lights up once the fill has reached it.
+    const nav = $('#nav');
+    const rail = $('.rail');
+    const tilt = $('.tilt');
+    const nodes = $$('.commit > .node');
+    let railTop = 0;
+    let railHeight = 0;
+    const measure = () => {
+      const page = $('.page').getBoundingClientRect();
+      const first = nodes[0].getBoundingClientRect();
+      const last = nodes[nodes.length - 1].getBoundingClientRect();
+      railTop = first.top - page.top + 8;
+      railHeight = last.top - first.top;
+      rail.style.top = railTop + 'px';
+      rail.style.bottom = 'auto';
+      rail.style.height = railHeight + 'px';
     };
+    let ticking = false;
+    const paint = () => {
+      ticking = false;
+      nav.classList.toggle('scrolled', scrollY > 8);
+      if (!calm) tilt.style.setProperty('--tilt', Math.max(0, Math.min(1, (tilt.getBoundingClientRect().top - innerHeight * 0.3) / (innerHeight * 0.55))).toFixed(3));
+      if (!rail.offsetParent) return;
+      // At the very bottom the last nodes can never reach the middle, so the fill runs out to them.
+      const reach = innerHeight + scrollY >= document.documentElement.scrollHeight - 4 ? innerHeight : innerHeight * 0.5;
+      const y = Math.max(0, Math.min(railHeight, reach - rail.getBoundingClientRect().top));
+      rail.style.setProperty('--y', y + 'px');
+      for (const node of nodes) node.parentElement.classList.toggle('seen', node.getBoundingClientRect().top < reach);
+    };
+    const onScroll = () => { if (!ticking) { ticking = true; requestAnimationFrame(paint); } };
     addEventListener('scroll', onScroll, { passive: true });
-    onScroll();
+    addEventListener('resize', () => { measure(); onScroll(); });
+    addEventListener('load', () => { measure(); paint(); });
+    measure();
+    paint();
 
-    // Point every download button straight at the right file from the latest release.
-    // If anything fails they stay links to the releases page.
-    (async () => {
-      const ua = navigator.userAgent;
-      const os = /Windows/i.test(ua) ? 'windows'
-        : /Mac OS X|Macintosh/i.test(ua) && !/iPhone|iPad/i.test(ua) ? 'mac'
-        : /Linux|X11/i.test(ua) && !/Android/i.test(ua) ? 'linux'
-        : null;
-      const wanted = {
-        windows: { match: /_x64-setup\.exe$/, label: ' for Windows' },
-        mac: { match: /_universal\.dmg$/, label: ' for macOS' },
-        linux: { match: /_amd64\.AppImage$/, label: ' for Linux' },
-      }[os];
+    const seen = new IntersectionObserver((entries) => {
+      for (const entry of entries) if (entry.isIntersecting) { entry.target.classList.add('in'); seen.unobserve(entry.target); }
+    }, { rootMargin: '0px 0px -8% 0px' });
+    $$('.rv').forEach((el) => seen.observe(el));
 
-      try {
-        const res = await fetch('https://api.github.com/repos/AVMG20/gitnoob/releases/latest', {
-          headers: { Accept: 'application/vnd.github+json' },
+    // Types a command into a status bar the way the app logs one.
+    const type = (el, text) => {
+      clearInterval(el.timer);
+      el.classList.remove('idle');
+      if (calm) { el.textContent = text; return; }
+      let i = 0;
+      el.textContent = '';
+      el.timer = setInterval(() => {
+        el.textContent = text.slice(0, ++i);
+        if (i >= text.length) clearInterval(el.timer);
+      }, 14);
+    };
+
+    // ── The graph. Three histories of the same small repo: as it starts, after
+    //    merging feature/sprites into main, and after rebasing main onto it.
+    //    Rows are keyed so a commit that moves is the same element sliding.
+    (() => {
+      const win = $('#graph');
+      const body = $('.g-body', win);
+      const svg = $('svg', body);
+      const cmd = $('[data-cmd]', win);
+      const said = $('[data-said]', win);
+      const undoBtn = $('[data-undo]', win);
+      const redoBtn = $('[data-redo]', win);
+      const hint = $('[data-hint]');
+      const doBtns = $$('[data-do]');
+      const ROW = 38;
+      const LANES = ['var(--blue)', 'var(--orange)'];
+      const X = (lane) => 20 + lane * 26;
+      const Y = (row) => row * ROW + ROW / 2;
+
+      const people = { AV: 'Arno Visker', SO: 'Sam Okafor', NP: 'Nadia Petrova' };
+      const text = {
+        mg: ["Merge branch 'feature/sprites'", 'AV'],
+        m3: ['Write down the controls', 'AV'],
+        f2: ['Draw a sprite from a sheet', 'SO'],
+        m2: ['Tilemap, and looking a tile up by position', 'NP'],
+        f1: ['A sprite is a position and a frame', 'SO'],
+        m1: ['Fit the canvas to its element, retina included', 'SO'],
+        m0: ['First commit: renderer, mixer and a boot function', 'NP'],
+      };
+      // key, lane, hash, parents, refs
+      const histories = {
+        base: [
+          ['m3', 0, '8c41d07', ['m2'], ['main']],
+          ['f2', 1, 'e92b6a3', ['f1'], ['feature/sprites']],
+          ['m2', 0, '5d0f1be', ['m1'], []],
+          ['f1', 1, '27a94c8', ['m1'], []],
+          ['m1', 0, 'b3e6f52', ['m0'], ['v0.1.0']],
+          ['m0', 0, '91c7a0d', [], []],
+        ],
+        merged: [
+          ['mg', 0, 'f4a80c2', ['m3', 'f2'], ['main']],
+          ['m3', 0, '8c41d07', ['m2'], []],
+          ['f2', 1, 'e92b6a3', ['f1'], ['feature/sprites']],
+          ['m2', 0, '5d0f1be', ['m1'], []],
+          ['f1', 1, '27a94c8', ['m1'], []],
+          ['m1', 0, 'b3e6f52', ['m0'], ['v0.1.0']],
+          ['m0', 0, '91c7a0d', [], []],
+        ],
+        // A rebase writes new commits, so the two that moved get new hashes.
+        rebased: [
+          ['m3', 0, 'a07e3d9', ['m2'], ['main']],
+          ['m2', 0, '6b1c94f', ['f2'], []],
+          ['f2', 0, 'e92b6a3', ['f1'], ['feature/sprites']],
+          ['f1', 0, '27a94c8', ['m1'], []],
+          ['m1', 0, 'b3e6f52', ['m0'], ['v0.1.0']],
+          ['m0', 0, '91c7a0d', [], []],
+        ],
+      };
+      const actions = {
+        merge: { to: 'merged', run: 'git merge --autostash feature/sprites', said: 'Merged feature/sprites into main' },
+        rebase: { to: 'rebased', run: 'git rebase --autostash feature/sprites', said: 'Rebased main onto feature/sprites' },
+      };
+
+      const rows = new Map();
+      let now = 'base';
+      const past = [];
+      const future = [];
+
+      const chip = (ref) => {
+        if (ref === 'main') return '<span class="chip"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"><path d="m5 12 5 5 9-10"/></svg>main</span>';
+        if (ref.startsWith('v')) return `<span class="chip plain">${ref}</span>`;
+        return `<span class="chip orange" data-drag tabindex="0" role="button" aria-label="Drag ${ref} onto main">${ref}</span>`;
+      };
+
+      const edge = (from, to) => {
+        const [x1, y1, x2, y2, r] = [X(from.lane), Y(from.row), X(to.lane), Y(to.row), 10];
+        if (x1 === x2) return `M${x1} ${y1}V${y2}`;
+        // A branch runs down its own lane and turns into its parent; a merge
+        // leaves its node sideways and then runs down the lane it took in.
+        return from.lane > to.lane
+          ? `M${x1} ${y1}V${y2 - r}Q${x1} ${y2} ${x1 - r} ${y2}H${x2}`
+          : `M${x1} ${y1}H${x2 - r}Q${x2} ${y1} ${x2} ${y1 + r}V${y2}`;
+      };
+
+      const lines = (history) => {
+        const at = new Map(history.map(([key, lane], row) => [key, { lane, row }]));
+        return history.flatMap(([key, , , parents]) => parents.map((parent) => {
+          const from = at.get(key);
+          const to = at.get(parent);
+          return `<path d="${edge(from, to)}" stroke="${LANES[Math.max(from.lane, to.lane)]}"/>`;
+        })).join('');
+      };
+
+      const draw = (instant) => {
+        const history = histories[now];
+        body.style.height = history.length * ROW + 'px';
+        const kept = new Set();
+        history.forEach(([key, lane, hash, , refs], row) => {
+          let el = rows.get(key);
+          if (!el) {
+            const [message, who] = text[key];
+            el = document.createElement('div');
+            el.className = 'g-row';
+            el.innerHTML = `<span class="g"><i class="dot">${who}</i></span><span class="m"><span class="t"></span></span><span class="who">${people[who]}</span><code class="h"></code>`;
+            $('.t', el).textContent = message;
+            if (!instant) {
+              el.classList.add('enter');
+              requestAnimationFrame(() => requestAnimationFrame(() => el.classList.remove('enter')));
+            }
+            body.append(el);
+            rows.set(key, el);
+          }
+          kept.add(key);
+          el.dataset.key = key;
+          el.style.transform = `translateY(${row * ROW}px)`;
+          const dot = $('.dot', el);
+          dot.style.left = X(lane) + 'px';
+          dot.style.setProperty('--c', LANES[lane]);
+          const h = $('.h', el);
+          if (h.textContent && h.textContent !== hash) {
+            h.classList.add('new');
+            setTimeout(() => h.classList.remove('new'), 900);
+          }
+          h.textContent = hash;
+          const wanted = refs.join(' ');
+          if (el.dataset.refs !== wanted) {
+            el.dataset.refs = wanted;
+            $$('.chip', el).forEach((old) => old.remove());
+            $('.m', el).insertAdjacentHTML('afterbegin', refs.map(chip).join(''));
+          }
         });
+        for (const [key, el] of rows) {
+          if (kept.has(key)) continue;
+          rows.delete(key);
+          el.classList.add('leave');
+          setTimeout(() => el.remove(), 320);
+        }
+        if (instant || calm) {
+          svg.innerHTML = lines(history);
+        } else {
+          svg.style.opacity = 0;
+          setTimeout(() => { svg.innerHTML = lines(history); svg.style.opacity = 1; }, 300);
+        }
+
+        const fresh = now === 'base';
+        undoBtn.disabled = !past.length;
+        redoBtn.disabled = !future.length;
+        undoBtn.classList.toggle('nudge', !fresh && !!past.length);
+        doBtns.forEach((button) => { button.disabled = !fresh; });
+        $$('[data-drag]', body).forEach((el) => el.classList.toggle('hint', fresh));
+        hint.innerHTML = fresh
+          ? 'Drag <span class="chip orange">feature/sprites</span> onto <span class="chip">main</span>'
+          : 'Now take it back with <b style="color:var(--bright)">Undo</b>, and try the other one.';
+      };
+
+      const head = (name) => histories[name][0][2];
+      const act = (name) => {
+        if (now !== 'base') return;
+        const action = actions[name];
+        past.push({ from: now, name });
+        future.length = 0;
+        now = action.to;
+        type(cmd, '$ ' + action.run);
+        said.textContent = action.said;
+        draw();
+      };
+      // Undo is a reset back to where the branch stood, keeping open work.
+      const undo = () => {
+        const step = past.pop();
+        if (!step) return;
+        future.push(step);
+        now = step.from;
+        type(cmd, `$ git reset --keep ${head(now)}`);
+        said.textContent = 'Undid: ' + actions[step.name].said.toLowerCase();
+        draw();
+      };
+      const redo = () => {
+        const step = future.pop();
+        if (!step) return;
+        past.push(step);
+        now = actions[step.name].to;
+        type(cmd, `$ git reset --keep ${head(now)}`);
+        said.textContent = 'Redid: ' + actions[step.name].said.toLowerCase();
+        draw();
+      };
+      undoBtn.addEventListener('click', undo);
+      redoBtn.addEventListener('click', redo);
+      doBtns.forEach((button) => button.addEventListener('click', () => act(button.dataset.do)));
+
+      // The menu a drop opens, worded as the app words it.
+      let menu = null;
+      const closeMenu = () => { menu?.remove(); menu = null; };
+      const openMenu = () => {
+        closeMenu();
+        menu = document.createElement('div');
+        menu.className = 'menu';
+        menu.style.top = ROW - 2 + 'px';
+        menu.innerHTML = `
+          <button data-pick="merge"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="18" cy="18" r="3"/><circle cx="6" cy="6" r="3"/><path d="M6 21V9a9 9 0 0 0 9 9"/></svg>Merge feature/sprites into main</button>
+          <button data-pick="rebase"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="6" cy="18" r="3"/><circle cx="6" cy="6" r="3"/><circle cx="18" cy="6" r="3"/><path d="M6 9v6M18 9a9 9 0 0 1-9 9"/></svg>Rebase main onto feature/sprites</button>`;
+        body.append(menu);
+        menu.addEventListener('click', (event) => {
+          const pick = event.target.closest('[data-pick]');
+          if (!pick) return;
+          closeMenu();
+          act(pick.dataset.pick);
+        });
+        $('button', menu).focus({ preventScroll: true });
+      };
+      document.addEventListener('pointerdown', (event) => { if (menu && !menu.contains(event.target)) closeMenu(); });
+      document.addEventListener('keydown', (event) => { if (event.key === 'Escape') closeMenu(); });
+
+      // Dragging the branch chip. Pointer events, so a finger works as well.
+      let drag = null;
+      const targetRow = () => rows.get(histories[now][0][0]);
+      body.addEventListener('pointerdown', (event) => {
+        const source = event.target.closest('[data-drag]');
+        if (!source || now !== 'base' || event.button > 0) return;
+        event.preventDefault();
+        closeMenu();
+        const box = source.getBoundingClientRect();
+        const ghost = source.cloneNode(true);
+        ghost.classList.remove('hint');
+        ghost.classList.add('ghost');
+        document.body.append(ghost);
+        drag = { source, ghost, dx: event.clientX - box.left, dy: event.clientY - box.top, over: false };
+        source.classList.add('lifted');
+        source.setPointerCapture(event.pointerId);
+        targetRow().classList.add('target');
+        move(event);
+      });
+      const move = (event) => {
+        if (!drag) return;
+        drag.ghost.style.left = event.clientX - drag.dx + 'px';
+        drag.ghost.style.top = event.clientY - drag.dy + 'px';
+        const box = targetRow().getBoundingClientRect();
+        drag.over = event.clientY >= box.top - 6 && event.clientY <= box.bottom + 6 && event.clientX >= box.left && event.clientX <= box.right;
+        targetRow().classList.toggle('over', drag.over);
+      };
+      const drop = () => {
+        if (!drag) return;
+        const { source, ghost, over } = drag;
+        drag = null;
+        ghost.remove();
+        source.classList.remove('lifted');
+        targetRow().classList.remove('target', 'over');
+        if (over) openMenu();
+      };
+      body.addEventListener('pointermove', move);
+      body.addEventListener('pointerup', drop);
+      body.addEventListener('pointercancel', () => { if (drag) { drag.over = false; drop(); } });
+      // From the keyboard the chip opens the same menu a drop would.
+      body.addEventListener('keydown', (event) => {
+        if (event.target.matches('[data-drag]') && (event.key === 'Enter' || event.key === ' ')) { event.preventDefault(); openMenu(); }
+      });
+
+      // ⌘Z and ⌘⇧Z work while the demo is on screen.
+      let onScreen = false;
+      new IntersectionObserver(([entry]) => { onScreen = entry.isIntersecting; }, { threshold: 0.4 }).observe(win);
+      addEventListener('keydown', (event) => {
+        if (!onScreen || !(event.metaKey || event.ctrlKey) || event.key.toLowerCase() !== 'z') return;
+        event.preventDefault();
+        (event.shiftKey ? redo : undo)();
+      });
+
+      draw(true);
+    })();
+
+    // ── Staging by line. Staged lines leave with the commit; the rest stay.
+    (() => {
+      const win = $('#stage');
+      const out = $('[data-lines]', win);
+      const count = $('[data-count]', win);
+      const commit = $('[data-commit]', win);
+      const all = $('[data-all]', win);
+      const source = [
+        [' ', '  private volume = 0.6'],
+        ['+', '  private muted = false'],
+        [' ', '  private readonly channels = new Map()'],
+        [' ', ''],
+        ['+', '  mute(on = true) {'],
+        ['+', '    this.muted = on'],
+        ['+', '  }'],
+        ['+', ''],
+        [' ', '  levelFor(name: string) {'],
+        ['+', '    if (this.muted) return 0'],
+        ['-', '    return this.volume * this.channels.get(name)'],
+        ['+', '    return this.volume * (this.channels.get(name) ?? 1)'],
+        [' ', '  }'],
+      ];
+      let lines = [];
+      const escape = (s) => s.replace(/[&<>]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;' })[c]);
+      const colour = (s) => escape(s)
+        .replace(/\b(private|readonly|return|if|new)\b/g, '<b class="k">$1</b>')
+        .replace(/\b(this|true|false|\d+(?:\.\d+)?)\b/g, '<b class="n">$1</b>');
+
+      const changed = () => lines.filter((line) => line.sign !== ' ');
+      const status = () => {
+        const open = changed();
+        const staged = open.filter((line) => line.staged).length;
+        commit.disabled = !staged;
+        commit.textContent = staged ? `Commit ${staged} line${staged > 1 ? 's' : ''}` : 'Commit';
+        all.hidden = !open.length;
+        all.textContent = open.length && staged === open.length ? 'Unstage all' : 'Stage all';
+        if (!open.length) {
+          count.innerHTML = 'Nothing left to commit. <a href="#" data-again style="color:var(--blue)">Start over</a>';
+          commit.hidden = true;
+        } else {
+          count.textContent = `${staged} of ${open.length} lines staged`;
+          commit.hidden = false;
+        }
+      };
+      const render = () => {
+        out.innerHTML = '<div class="hunk">@@ -14,6 +14,12 @@ export class Mixer {</div>';
+        lines.forEach((line, index) => {
+          const plain = line.sign === ' ';
+          const el = document.createElement(plain ? 'div' : 'button');
+          el.className = 'ln ' + (plain ? '' : line.sign === '+' ? 'add' : 'del');
+          el.innerHTML = `${plain ? '<i></i>' : '<i class="box"></i>'}<b class="sg">${line.sign === '-' ? '−' : line.sign}</b><code>${colour(line.code) || ' '}</code>`;
+          if (!plain) {
+            el.setAttribute('aria-pressed', line.staged);
+            el.dataset.index = index;
+          }
+          out.append(el);
+        });
+        status();
+      };
+      const reset = () => { lines = source.map(([sign, code]) => ({ sign, code, staged: false })); render(); };
+
+      out.addEventListener('click', (event) => {
+        const el = event.target.closest('button.ln');
+        if (!el) return;
+        const line = lines[el.dataset.index];
+        line.staged = !line.staged;
+        el.setAttribute('aria-pressed', line.staged);
+        status();
+      });
+      all.addEventListener('click', () => {
+        const open = changed();
+        const on = !open.every((line) => line.staged);
+        open.forEach((line) => { line.staged = on; });
+        render();
+      });
+      commit.addEventListener('click', () => {
+        // What was staged is history now: additions become plain lines,
+        // deletions disappear.
+        $$('button.ln[aria-pressed="true"]', out).forEach((el) => { if (el.classList.contains('del')) el.classList.add('gone'); });
+        setTimeout(() => {
+          lines = lines.filter((line) => !(line.staged && line.sign === '-'));
+          lines.forEach((line) => { if (line.staged) { line.sign = ' '; line.staged = false; } });
+          render();
+        }, calm ? 0 : 260);
+      });
+      count.addEventListener('click', (event) => { if (event.target.matches('[data-again]')) { event.preventDefault(); reset(); } });
+      reset();
+    })();
+
+    // ── Conflicts. The result is ours' ticked lines, then theirs'.
+    (() => {
+      const win = $('#conflict');
+      const out = $('[data-result]', win);
+      const state = $('[data-state]', win);
+      const sides = { o: $$('[data-o]', win), t: $$('[data-t]', win) };
+      const heads = { o: $('[data-all="o"]', win), t: $('[data-all="t"]', win) };
+      const line = (kind, text) => { const el = document.createElement('div'); el.className = kind; el.textContent = text; return el; };
+      const render = () => {
+        const picked = ['o', 't'].flatMap((side) => sides[side].filter((box) => box.checked).map((box) => line(side, box.parentElement.textContent)));
+        for (const side of ['o', 't']) {
+          const on = sides[side].filter((box) => box.checked).length;
+          heads[side].checked = on === sides[side].length;
+          heads[side].indeterminate = on > 0 && on < sides[side].length;
+        }
+        out.replaceChildren(
+          line('c', 'const base = weapon.power'),
+          ...(picked.length ? picked : [line('undecided', 'Undecided. Tick the lines you want to keep.')]),
+          line('c', 'return hit(target, damage, crit)'),
+        );
+        state.textContent = picked.length ? 'Resolved' : '1 conflict left';
+        state.classList.toggle('ok', picked.length > 0);
+      };
+      win.addEventListener('change', (event) => {
+        const side = event.target.dataset.all;
+        if (side) sides[side].forEach((box) => { box.checked = event.target.checked; });
+        render();
+      });
+      render();
+    })();
+
+    // ── Screenshot tabs
+    (() => {
+      const tabs = $$('.tab');
+      const shots = $$('.frame img');
+      const cap = $('[data-cap-out]');
+      tabs.forEach((tab, index) => tab.addEventListener('click', () => {
+        tabs.forEach((other, i) => other.setAttribute('aria-selected', i === index));
+        shots.forEach((shot, i) => shot.classList.toggle('on', i === index));
+        shots[index].loading = 'eager';
+        cap.textContent = tab.dataset.cap;
+      }));
+    })();
+
+    // ── Shortcuts, with the modifier this machine actually has
+    (() => {
+      const mac = os === 'mac' || /iPhone|iPad/i.test(ua);
+      const mod = mac ? '⌘' : 'Ctrl';
+      const shift = mac ? '⇧' : 'Shift';
+      $$('[data-mod]').forEach((el) => { el.textContent = mac ? '⌘' : 'Ctrl+'; });
+      const keys = [['S+F', 'fetch'], ['S+L', 'pull'], ['S+P', 'push'], ['Enter', 'commit'], ['B', 'branch'], ['S+S', 'stash'], ['F', 'search'], ['P', 'switch repo'], ['Z', 'undo'], [',', 'settings']];
+      $('[data-keys]').innerHTML = keys.map(([combo, what]) => {
+        const caps = [mod, ...combo.split('+').map((key) => (key === 'S' && combo.length > 1 && combo.startsWith('S+') ? shift : key))];
+        if (combo.startsWith('S+')) caps[2] = combo.slice(2);
+        return `<span>${caps.map((key) => `<kbd>${key}</kbd>`).join('')}<em>${what}</em></span>`;
+      }).join('');
+    })();
+
+    // ── Downloads. Every button points straight at the right file from the
+    //    latest release. If anything fails they stay links to the releases page.
+    (async () => {
+      const label = { windows: ' for Windows', mac: ' for macOS', linux: ' for Linux' }[os];
+      const main = { windows: /_x64-setup\.exe$/, mac: /_universal\.dmg$/, linux: /_amd64\.AppImage$/ }[os];
+      if (os) $(`[data-os-card="${os}"]`)?.classList.add('you');
+      try {
+        const res = await fetch('https://api.github.com/repos/AVMG20/gitnoob/releases/latest', { headers: { Accept: 'application/vnd.github+json' } });
         if (!res.ok) return;
         const release = await res.json();
-        document.querySelectorAll('.version').forEach((el) => { el.textContent = release.tag_name + ' · '; });
-        if (!wanted) return;
-        const asset = release.assets.find((a) => wanted.match.test(a.name));
-        if (!asset) return;
-        document.querySelectorAll('a.download').forEach((a) => { a.href = asset.browser_download_url; });
-        document.querySelectorAll('.download .os').forEach((el) => { el.textContent = wanted.label; });
+        $$('[data-version]').forEach((el) => { el.textContent = release.tag_name; el.hidden = false; });
+        const find = (pattern) => release.assets.find((asset) => pattern.test(asset.name));
+        $$('[data-asset]').forEach((a) => {
+          const asset = find(new RegExp(a.dataset.asset));
+          if (!asset) return;
+          a.href = asset.browser_download_url;
+          if (a.classList.contains('btn')) a.title = `${asset.name}, ${Math.round(asset.size / 1048576)} MB`;
+        });
+        $$('[data-size]').forEach((el) => {
+          const asset = find(new RegExp(el.dataset.size));
+          if (asset) el.textContent = ('unit' in el.dataset ? ' · ' : '') + Math.round(asset.size / 1048576) + ('unit' in el.dataset ? ' MB' : '');
+        });
+        const mine = main && find(main);
+        if (!mine) return;
+        $$('[data-dl]').forEach((a) => { a.href = mine.browser_download_url; });
+        $$('[data-os]').forEach((el) => { el.textContent = label; });
       } catch {}
     })();
+  })();
   </script>
 </body>
 </html>
