@@ -5,7 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>gitnoob — git for noobs. Fast, free and open source.</title>
   <meta name="description" content="Git for noobs. Merge, rebase and undo by dragging and clicking, and see the git command behind every click. Blazing fast, free and open source, for macOS, Windows and Linux." />
-  <meta name="theme-color" content="#080e15" />
+  <meta name="theme-color" content="#0e1012" />
   <link rel="icon" type="image/png" href="app-icon.png" />
   <meta property="og:title" content="gitnoob" />
   <meta property="og:description" content="Git for noobs. Drag, drop, undo, and see the git command behind every click." />
@@ -17,29 +17,29 @@
     @font-face { font-family: "Inter"; src: url("docs/fonts/inter.woff2") format("woff2"); font-weight: 100 900; font-display: swap; }
     @font-face { font-family: "Commit Mono"; src: url("docs/fonts/commit-mono.woff2") format("woff2"); font-weight: 400; font-display: swap; }
 
-    /* The colours are the app's own Fjord theme, so the page and the screenshots agree. */
+    /* The colours are the app's own Graphite theme, the one it shows when the system is dark, so the page and the screenshots agree. */
     :root {
-      --page: #080e15;
-      --canvas: #0a131c;
-      --panel: #121b24;
-      --surface: #17212a;
-      --raised: #1e2932;
-      --hover: #26323d;
-      --line: #1f2a35;
-      --line-2: #323f4c;
-      --fg: #d5e1ec;
-      --bright: #f2f6fa;
-      --muted: #94a0aa;
-      --subtle: #79838e;
-      --blue: #42addf;
-      --orange: #eba33a;
-      --green: #4cc083;
-      --pink: #ee7181;
-      --purple: #ae85f0;
-      --add-bg: #1a2f30;
-      --add-line: #295345;
-      --del-bg: #2b222d;
-      --del-line: #582f3d;
+      --page: #0e1012;
+      --canvas: #141618;
+      --panel: #1c1e21;
+      --surface: #212326;
+      --raised: #282a2d;
+      --hover: #313337;
+      --line: #292b2e;
+      --line-2: #3c3e42;
+      --fg: #e1e4eb;
+      --bright: #f5f6f9;
+      --muted: #9ea2a8;
+      --subtle: #81858b;
+      --blue: #6d9ffe;
+      --orange: #f2af48;
+      --green: #5ac576;
+      --pink: #ef7685;
+      --purple: #b08af0;
+      --add-bg: #24342c;
+      --add-line: #31573e;
+      --del-bg: #372629;
+      --del-line: #633236;
       --display: "Bricolage Grotesque", "Inter", ui-sans-serif, system-ui, sans-serif;
       --sans: "Inter", ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
       --mono: "Commit Mono", ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
@@ -76,10 +76,10 @@
     .btn {
       display: inline-flex; align-items: center; justify-content: center; gap: 9px;
       padding: 9px 16px; border-radius: 9px; font-weight: 600; font-size: 14.5px; white-space: nowrap;
-      background: var(--blue); color: #051119;
+      background: var(--blue); color: #050d1e;
       transition: background .15s, transform .15s, box-shadow .15s, border-color .15s;
     }
-    .btn:hover { background: #63bfea; transform: translateY(-1px); }
+    .btn:hover { background: #8fb5ff; transform: translateY(-1px); }
     .btn svg { width: 17px; height: 17px; flex: none; }
     .btn.big { padding: 15px 26px; font-size: 16.5px; border-radius: 12px; box-shadow: 0 10px 34px -8px color-mix(in oklab, var(--blue) 60%, transparent); }
     .btn.ghost { background: transparent; color: var(--fg); box-shadow: inset 0 0 0 1px var(--line-2); }
@@ -229,7 +229,7 @@
     .g-row .g { position: relative; height: 100%; }
     .dot {
       position: absolute; top: 50%; width: 20px; height: 20px; margin: -10px 0 0 -10px; border-radius: 50%;
-      display: grid; place-items: center; font: 700 8px/1 var(--sans); font-style: normal; color: #06121a;
+      display: grid; place-items: center; font: 700 8px/1 var(--sans); font-style: normal; color: #050d1e;
       background: var(--c); box-shadow: 0 0 0 2px var(--panel), 0 0 0 3.5px color-mix(in oklab, var(--c) 50%, transparent);
       transition: left .38s cubic-bezier(.3, .8, .3, 1), background .3s;
     }
@@ -267,7 +267,7 @@
     .ln.del { background: var(--del-bg); } .ln.del .sg { color: var(--pink); }
     button.ln:hover { filter: brightness(1.25); }
     .box { justify-self: center; width: 14px; height: 14px; border-radius: 4px; border: 1.5px solid var(--subtle); display: grid; place-items: center; transition: background .12s, border-color .12s; }
-    .box::after { content: ""; width: 7px; height: 4px; margin-top: -2px; border: solid #06121a; border-width: 0 0 2px 2px; transform: rotate(-45deg) scale(0); transition: transform .12s; }
+    .box::after { content: ""; width: 7px; height: 4px; margin-top: -2px; border: solid #050d1e; border-width: 0 0 2px 2px; transform: rotate(-45deg) scale(0); transition: transform .12s; }
     .ln[aria-pressed="true"] { border-left-color: var(--blue); background: color-mix(in oklab, var(--blue) 17%, var(--panel)); }
     .ln[aria-pressed="true"] .box { background: var(--blue); border-color: var(--blue); }
     .ln[aria-pressed="true"] .box::after { transform: rotate(-45deg) scale(1); }
@@ -355,8 +355,8 @@
     .os h3 { font-size: 26px; }
     .os p { margin: 0 0 16px; font-size: 14.5px; color: var(--muted); }
     .os .btn { align-self: flex-start; }
-    .os.you .btn { background: var(--blue); color: #051119; box-shadow: none; }
-    .os.you .btn:hover { background: #63bfea; }
+    .os.you .btn { background: var(--blue); color: #050d1e; box-shadow: none; }
+    .os.you .btn:hover { background: #8fb5ff; }
     .os .alts { margin-top: 12px; font: 12.5px/1.6 var(--mono); color: var(--subtle); min-height: 1.6em; }
     .os .alts a { color: var(--muted); border-bottom: 1px solid var(--line-2); margin-right: 12px; }
     .os .alts a:hover { color: var(--bright); }
@@ -445,16 +445,16 @@
     <header class="commit hero seen">
       <span class="node" aria-hidden="true"></span>
       <svg class="art" viewBox="0 0 440 600" aria-hidden="true">
-        <path pathLength="1" d="M230 0V600" stroke="#42addf" style="--d:0" />
-        <path pathLength="1" d="M230 440H296Q310 440 310 426V174Q310 160 296 160H230" stroke="#eba33a" style="--d:.25" />
-        <path pathLength="1" d="M310 340H376Q390 340 390 326V0" stroke="#4cc083" style="--d:.5" />
-        <path pathLength="1" d="M230 540H164Q150 540 150 526V294Q150 280 164 280H230" stroke="#ae85f0" style="--d:.4" />
-        <path pathLength="1" d="M150 460H84Q70 460 70 446V96" stroke="#ee7181" style="--d:.65" />
-        <g fill="#42addf"><circle cx="230" cy="70" r="10" style="--d:.1" /><circle cx="230" cy="160" r="10" style="--d:.2" /><circle cx="230" cy="280" r="10" style="--d:.3" /><circle cx="230" cy="440" r="10" style="--d:.4" /><circle cx="230" cy="540" r="10" style="--d:.5" /></g>
-        <g fill="#eba33a"><circle cx="310" cy="250" r="10" style="--d:.5" /><circle cx="310" cy="340" r="10" style="--d:.6" /></g>
-        <g fill="#4cc083"><circle cx="390" cy="110" r="10" style="--d:.9" /><circle cx="390" cy="230" r="10" style="--d:.8" /></g>
-        <g fill="#ae85f0"><circle cx="150" cy="370" r="10" style="--d:.7" /><circle cx="150" cy="460" r="10" style="--d:.6" /></g>
-        <g fill="#ee7181"><circle cx="70" cy="96" r="10" style="--d:1.1" /><circle cx="70" cy="210" r="10" style="--d:1" /><circle cx="70" cy="350" r="10" style="--d:.9" /></g>
+        <path pathLength="1" d="M230 0V600" stroke="#6d9ffe" style="--d:0" />
+        <path pathLength="1" d="M230 440H296Q310 440 310 426V174Q310 160 296 160H230" stroke="#f2af48" style="--d:.25" />
+        <path pathLength="1" d="M310 340H376Q390 340 390 326V0" stroke="#5ac576" style="--d:.5" />
+        <path pathLength="1" d="M230 540H164Q150 540 150 526V294Q150 280 164 280H230" stroke="#b08af0" style="--d:.4" />
+        <path pathLength="1" d="M150 460H84Q70 460 70 446V96" stroke="#ef7685" style="--d:.65" />
+        <g fill="#6d9ffe"><circle cx="230" cy="70" r="10" style="--d:.1" /><circle cx="230" cy="160" r="10" style="--d:.2" /><circle cx="230" cy="280" r="10" style="--d:.3" /><circle cx="230" cy="440" r="10" style="--d:.4" /><circle cx="230" cy="540" r="10" style="--d:.5" /></g>
+        <g fill="#f2af48"><circle cx="310" cy="250" r="10" style="--d:.5" /><circle cx="310" cy="340" r="10" style="--d:.6" /></g>
+        <g fill="#5ac576"><circle cx="390" cy="110" r="10" style="--d:.9" /><circle cx="390" cy="230" r="10" style="--d:.8" /></g>
+        <g fill="#b08af0"><circle cx="150" cy="370" r="10" style="--d:.7" /><circle cx="150" cy="460" r="10" style="--d:.6" /></g>
+        <g fill="#ef7685"><circle cx="70" cy="96" r="10" style="--d:1.1" /><circle cx="70" cy="210" r="10" style="--d:1" /><circle cx="70" cy="350" r="10" style="--d:.9" /></g>
       </svg>
 
       <p class="refs">
