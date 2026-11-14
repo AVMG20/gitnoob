@@ -150,7 +150,7 @@ describe("the bar over an open file", () => {
       conflicted: [],
     } as never;
     const wrapper = await show();
-    expect(wrapper.find(".badge.new").text()).toBe("new");
+    expect(wrapper.find(".badge.new").exists()).toBe(false);
     expect(labels(wrapper)).toEqual(
       expect.arrayContaining(["Add file", "Delete file"]),
     );

@@ -53,7 +53,7 @@ describe("the bar over an open file", () => {
   it("calls an untracked file new, with Add and Delete, and a diff of all of it", () => {
     const state = headerState(file(), { unstaged: { kind: "untracked" } }, {});
     expect(state.kind).toBe("untracked");
-    expect(state.badges.map((one) => one.text)).toEqual(["new"]);
+    expect(state.badges).toEqual([]);
     expect(state.actions).toEqual(["add", "delete"]);
     expect(state.modes).toBe(true);
   });

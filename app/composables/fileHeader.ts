@@ -9,7 +9,7 @@
  *   Stage or Discard, no Diff to switch to. It gets the browsing tools.
  * - A changed file gets Stage and Unstage as they really stand: all staged is
  *   Unstage only, partly staged is both.
- * - A new file is "new", with Add and Delete.
+ * - A new file gets Add and Delete; the tab and tree already mark it as new.
  * - An ignored file is "ignored", and git has nothing to do with it.
  * - A file the editor will not write to says "read-only" and why.
  * - A commit's copy says which commit, and offers the file as it is now.
@@ -102,7 +102,7 @@ export function headerState(file: HeaderFile, status: HeaderStatus, tab: HeaderT
   if (unstaged?.kind === 'untracked' && !staged) {
     return {
       kind: 'untracked',
-      badges: [{ text: 'new', tone: 'new', title: 'Git is not tracking this file yet' }, ...readonlyBadge],
+      badges: [...readonlyBadge],
       counts: true,
       modes: true,
       actions: ['add', 'delete'],
