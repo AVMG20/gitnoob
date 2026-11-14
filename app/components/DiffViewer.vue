@@ -62,6 +62,16 @@ import {
 } from '~/composables/useFileEdit'
 import FileEditor, { type EditorFacts } from '~/components/FileEditor.vue'
 import { indentLabel, indentOverrides } from '~/composables/indentation'
+import ImageView from '~/components/ImageView.vue'
+import ImageDiff from '~/components/ImageDiff.vue'
+import {
+  bytesLabel,
+  formatOf,
+  isImagePath,
+  isSvgPath,
+  type ImageInfo,
+  type ImageSide
+} from '~/composables/useImage'
 import FileIcon from '~/components/FileIcon.vue'
 import MidTruncate from '~/components/MidTruncate.vue'
 
@@ -158,8 +168,50 @@ const editing = computed(
     !!target.value &&
     !target.value.commit &&
     !gone.value &&
-    !missing.value
+    !missing.value &&
+    !showImage.value
 )
+
+// --- images
+//
+// An image is drawn, not read as text: `ImageView` in File mode, `ImageDiff`
+// (before and after) in Diff mode. An SVG has a Source switch that puts its
+// text in the editor like any other file.
+
+const isImage = computed(() => !!target.value && isImagePath(target.value.path))
+const isSvg = computed(() => !!target.value && isSvgPath(target.value.path))
+/** An SVG shown as its text, for this tab, this session. */
+const svgSource = ref(false)
+const showImage = computed(() => isImage.value && !(isSvg.value && svgSource.value))
+/** What the image on screen is: its size in pixels and bytes, its type. */
+const imageInfo = ref<ImageInfo | null>(null)
+/** The pointer text, when the image on disk is an LFS pointer. */
+const imageLfs = ref<string | null>(null)
+/** Goes up on every reload, so the before/after is read again after a write. */
+const imageVersion = ref(0)
+
+// The text is only read for an SVG shown as its source.
+watch(svgSource, () => void load(false))
+
+/** Which copy File mode shows: the commit's, or the work tree's (the last
+    copy git has, for one deleted from disk). */
+const imageSide = computed<ImageSide>(() => {
+  const current = target.value
+  if (current?.commit) return { source: 'commit', commit: current.commit }
+  if (gone.value) return { source: (current?.side ?? 'unstaged') === 'staged' ? 'head' : 'index' }
+  return { source: 'work' }
+})
+
+/** The two sides Diff mode compares, matching the side of the index on show. */
+const imageSides = computed<{ before: ImageSide; after: ImageSide }>(() => {
+  const current = target.value
+  if (current?.commit) {
+    return { before: { source: 'parent', commit: current.commit }, after: { source: 'commit', commit: current.commit } }
+  }
+  return (current?.side ?? 'unstaged') === 'staged'
+    ? { before: { source: 'head' }, after: { source: 'index' } }
+    : { before: { source: 'index' }, after: { source: 'work' } }
+})
 
 /**
  * A chip for the save states that need doing something about. Saving, saved
@@ -248,6 +300,9 @@ watch(
   () => {
     facts.value = null
     ignored.value = false
+    svgSource.value = false
+    imageInfo.value = null
+    imageLfs.value = null
     void loadSubject()
   }
 )
@@ -422,6 +477,7 @@ async function load(settle = true) {
   // view now.
   if (target.value !== current) return
   diff.value = fresh
+  imageVersion.value++
   void loadIgnored(current)
   await loadText()
   await loadHead(current)
@@ -493,6 +549,12 @@ async function loadText() {
   const current = target.value
   if (!current) return
   textError.value = null
+  if (showImage.value) {
+    // Drawn from its bytes by the image views; there is no text to read.
+    text.value = null
+    missing.value = false
+    return
+  }
   try {
     text.value = await git.fileText(current.path, current.commit, current.side ?? 'unstaged')
     if (target.value === current) missing.value = false
@@ -517,7 +579,7 @@ async function isMissing(path: string) {
 
 /** The bars' diff, for a working-tree file shown in the editor. */
 async function loadHead(current: NonNullable<typeof target.value>) {
-  if (current.commit || diffMode.mode !== 'file') {
+  if (current.commit || diffMode.mode !== 'file' || showImage.value) {
     headDiff.value = null
     return
   }
@@ -624,12 +686,13 @@ const HISTORY_SHOWN = 30
  * problem LFS causes a viewer, so when the text is a pointer the panel says
  * what the file is instead of showing what it is not.
  */
-const pointer = computed(() => readPointer(text.value))
+const pointer = computed(() => readPointer(text.value) ?? readPointer(imageLfs.value))
 
 async function fetchFromLfs() {
   const current = target.value
   if (!current) return
   await git.lfsPull(current.path)
+  imageLfs.value = null
   await load(false)
 }
 
@@ -1215,7 +1278,7 @@ onUnmounted(() => window.removeEventListener('keydown', onKey))
         head.commit.short
       }}</span>
       <span v-else-if="head?.kind === 'modified'" class="pill">{{ target.side }}</span>
-      <span v-if="head?.counts" class="stats">
+      <span v-if="head?.counts && !isImage" class="stats">
         <span class="plus">+{{ stats.additions }}</span>
         <span class="minus">−{{ stats.deletions }}</span>
       </span>
@@ -1227,7 +1290,22 @@ onUnmounted(() => window.removeEventListener('keydown', onKey))
 
       <!-- How the file is written, in the editor: where the caret is (click to
            go to a line), its line endings, its encoding, its language. -->
-      <span v-if="editing && facts" class="facts">
+      <span v-if="showImage && diffMode.mode === 'file' && imageInfo" class="facts" data-fact="image">
+        <span class="fact" title="Width × height in pixels">{{ imageInfo.width }} × {{ imageInfo.height }}</span>
+        <span class="fact">{{ bytesLabel(imageInfo.size) }}</span>
+        <span class="fact">{{ formatOf(imageInfo.mime) }}</span>
+      </span>
+      <button
+        v-if="isSvg"
+        class="btn tool svg-source"
+        :class="{ on: svgSource }"
+        data-act="svg-source"
+        :title="svgSource ? 'Show the image' : 'Show the SVG as text, to edit it'"
+        @click="svgSource = !svgSource"
+      >
+        {{ svgSource ? 'Image' : 'Source' }}
+      </button>
+            <span v-if="editing && facts" class="facts">
         <button class="fact" title="Go to line (⌘G)" @click="openLine">
           Ln {{ caret.line }}, Col {{ caret.col }}
         </button>
@@ -1371,7 +1449,7 @@ onUnmounted(() => window.removeEventListener('keydown', onKey))
     </header>
 
     <div class="pane">
-      <div ref="body" class="body" :class="{ editing }">
+      <div ref="body" class="body" :class="{ editing: editing || showImage }">
         <!-- What is on disk is the pointer, not the file. Nothing below can
              say anything useful about it, so this stands in their place. -->
         <div v-if="pointer" class="lfs">
@@ -1411,6 +1489,23 @@ onUnmounted(() => window.removeEventListener('keydown', onKey))
             <button class="btn" @click="close">Close the tab</button>
           </span>
         </div>
+
+        <ImageDiff
+          v-else-if="showImage && target && diffMode.mode === 'diff'"
+          :key="`diff:${currentId}`"
+          :path="target.path"
+          :before="imageSides.before"
+          :after="imageSides.after"
+          :version="imageVersion"
+        />
+        <ImageView
+          v-else-if="showImage && target"
+          :key="`image:${currentId}`"
+          :path="target.path"
+          :side="imageSide"
+          @info="(value: ImageInfo | null) => (imageInfo = value)"
+          @lfs="(value: string) => (imageLfs = value)"
+        />
 
         <FileEditor
           v-else-if="editing && target"

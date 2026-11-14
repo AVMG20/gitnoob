@@ -14,6 +14,7 @@ pub mod graph;
 pub mod guard;
 pub mod home;
 pub mod identity;
+pub mod image;
 pub mod journal;
 pub mod lfs;
 pub mod mouse;
@@ -289,6 +290,17 @@ async fn find_symbols(
     state: Aimed,
 ) -> Result<Vec<symbols::FoundSymbol>, String> {
     symbols::find_symbols(&state, &query, limit.unwrap_or(60))
+}
+
+/// An image's bytes and sniffed type, from the work tree or a blob.
+#[tauri::command]
+async fn image_read(
+    path: String,
+    source: image::Source,
+    commit: Option<String>,
+    state: Aimed,
+) -> Result<image::ImageRead, String> {
+    image::image_read(&state, &path, source, commit.as_deref())
 }
 
 /// What `.editorconfig` says about indenting this file, if anything.
@@ -2241,6 +2253,7 @@ pub fn run() {
             list_dir,
             path_ignored,
             indent_config,
+            image_read,
             find_symbols,
             open_default,
             find_files,

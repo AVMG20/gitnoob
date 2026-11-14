@@ -10,7 +10,7 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 
 use gitnoob_lib::state::AppState;
 use gitnoob_lib::{
-    conflict, create, diff, edit, editorconfig, files, graph, journal, rebase, refs, remote,
+    conflict, create, diff, edit, editorconfig, files, graph, image, journal, rebase, refs, remote,
     search, symbols, work, worktree,
 };
 
@@ -7496,6 +7496,110 @@ fn the_finder_matches_the_capitals_of_a_name() {
     assert!(!files::find_files_at(&sandbox.root, "mecc", 10, 2, &[])
         .unwrap()
         .is_empty());
+}
+
+const PNG_ONE: &[u8] = b"\x89PNG\r\n\x1a\nfirst";
+const PNG_TWO: &[u8] = b"\x89PNG\r\n\x1a\nsecond";
+
+fn decoded(read: &image::ImageRead) -> Vec<u8> {
+    use base64::Engine;
+    base64::engine::general_purpose::STANDARD
+        .decode(read.data.as_ref().expect("bytes"))
+        .unwrap()
+}
+
+#[test]
+fn images_are_read_from_the_work_tree_the_index_head_and_a_commit() {
+    let sandbox = Sandbox::new("image-sides");
+    let root = sandbox.root.clone();
+    std::fs::create_dir_all(root.join("img")).unwrap();
+    std::fs::write(root.join("img/logo.png"), PNG_ONE).unwrap();
+    sandbox.git(&["add", "--all"]);
+    sandbox.git(&["commit", "-q", "-m", "first"]);
+    let first = sandbox.git(&["rev-parse", "HEAD"]).trim().to_string();
+    std::fs::write(root.join("img/logo.png"), PNG_TWO).unwrap();
+    sandbox.git(&["add", "--all"]);
+    sandbox.git(&["commit", "-q", "-m", "second"]);
+    let second = sandbox.git(&["rev-parse", "HEAD"]).trim().to_string();
+    // Staged: an SVG; on disk: something else again.
+    std::fs::write(
+        root.join("img/logo.png"),
+        b"<svg xmlns=\"http://www.w3.org/2000/svg\"/>",
+    )
+    .unwrap();
+    sandbox.git(&["add", "img/logo.png"]);
+    std::fs::write(root.join("img/logo.png"), b"not an image at all").unwrap();
+
+    let read = |source, commit: Option<&str>| {
+        image::image_read_at(&root, "img/logo.png", source, commit).unwrap()
+    };
+    let work = read(image::Source::Work, None);
+    // The extension says PNG; the bytes do not, and the bytes win.
+    assert_eq!((work.mime.as_deref(), work.data.is_none()), (None, true));
+    assert_eq!(
+        read(image::Source::Index, None).mime.as_deref(),
+        Some("image/svg+xml")
+    );
+    let head = read(image::Source::Head, None);
+    assert_eq!(head.mime.as_deref(), Some("image/png"));
+    assert_eq!(decoded(&head), PNG_TWO);
+    assert_eq!(head.size, PNG_TWO.len() as u64);
+    assert_eq!(decoded(&read(image::Source::Commit, Some(&first))), PNG_ONE);
+    assert_eq!(
+        decoded(&read(image::Source::Parent, Some(&second))),
+        PNG_ONE
+    );
+    // The first commit has no parent: nothing was there before it.
+    assert!(read(image::Source::Parent, Some(&first)).missing);
+    // A new file has no HEAD side; a deleted one no work-tree side.
+    assert!(
+        image::image_read_at(&root, "img/new.png", image::Source::Head, None)
+            .unwrap()
+            .missing
+    );
+    assert!(
+        image::image_read_at(&root, "img/new.png", image::Source::Work, None)
+            .unwrap()
+            .missing
+    );
+}
+
+#[test]
+fn images_over_the_cap_and_lfs_pointers_are_said_to_be_so() {
+    let sandbox = Sandbox::new("image-cap");
+    let root = sandbox.root.clone();
+    let big = std::fs::File::create(root.join("huge.png")).unwrap();
+    big.set_len(image::MAX_IMAGE + 1).unwrap();
+    drop(big);
+    let huge = image::image_read_at(&root, "huge.png", image::Source::Work, None).unwrap();
+    assert!(huge.too_large);
+    assert_eq!(huge.size, image::MAX_IMAGE + 1);
+    assert!(huge.data.is_none());
+
+    std::fs::write(
+        root.join("photo.jpg"),
+        "version https://git-lfs.github.com/spec/v1\noid sha256:abc\nsize 123\n",
+    )
+    .unwrap();
+    let pointer = image::image_read_at(&root, "photo.jpg", image::Source::Work, None).unwrap();
+    assert!(pointer.lfs.as_deref().unwrap().contains("size 123"));
+    assert!(pointer.data.is_none() && pointer.mime.is_none());
+}
+
+#[test]
+fn image_paths_outside_the_work_tree_or_inside_git_are_refused() {
+    let sandbox = Sandbox::new("image-guard");
+    let root = sandbox.root.clone();
+    for path in ["../outside.png", "/etc/hosts", ".git/config"] {
+        assert!(
+            image::image_read_at(&root, path, image::Source::Work, None).is_err(),
+            "{path}"
+        );
+        assert!(
+            image::image_read_at(&root, path, image::Source::Head, None).is_err(),
+            "{path}"
+        );
+    }
 }
 
 #[test]

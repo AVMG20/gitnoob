@@ -1,5 +1,7 @@
 <script setup lang="ts">
-import { onBeforeUnmount, onMounted, ref, watch } from 'vue'
+import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
+import ImageView from '~/components/ImageView.vue'
+import { isImagePath } from '~/composables/useImage'
 import { Compartment, EditorState } from '@codemirror/state'
 import { EditorView } from '@codemirror/view'
 import type { FileDiff } from '~/composables/useGit'
@@ -62,9 +64,13 @@ function marks() {
   view.dispatch({ effects: setHits.of({ hits: props.hits ?? [], now: props.line }) })
 }
 
+/** An image is shown as one, small and fitted, not read as text. */
+const image = computed(() => !!props.path && isImagePath(props.path))
+
 async function show() {
   const path = props.path
   const mine = ++seq
+  if (path && isImagePath(path)) return
   if (!path) {
     empty.value = true
     return
@@ -146,8 +152,9 @@ watch(version, () => view?.dispatch({ effects: colours.reconfigure(syntaxColours
 <template>
   <div class="preview">
     <p v-if="!props.path" class="none faint">Nothing to preview.</p>
+    <ImageView v-else-if="image" :key="props.path!" :path="props.path!" :side="{ source: 'work' }" compact />
     <p v-else-if="empty" class="none faint">Nothing to show for this file.</p>
-    <div ref="host" class="host" :class="{ hidden: !props.path }" />
+    <div ref="host" class="host" :class="{ hidden: !props.path || image }" />
   </div>
 </template>
 

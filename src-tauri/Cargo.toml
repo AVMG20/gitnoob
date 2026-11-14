@@ -44,6 +44,7 @@ grep-regex = "0.1"
 grep-matcher = "0.1"
 # The file mask in the search window (`*.php`).
 globset = "0.4"
+base64 = "0.22"
 # Code navigation and unused code (symbols.rs). The grammars are plain C
 # compiled by cc, so they need nothing installed on any platform; they all
 # go through tree-sitter-language, which is what keeps their versions apart
