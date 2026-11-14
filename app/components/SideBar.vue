@@ -56,6 +56,7 @@ import { useConfig } from '~/composables/useConfig'
 import { tidyKey, trunkLocalName } from '~/composables/useSync'
 import { useToasts } from '~/composables/useToasts'
 import { keyLabel } from '~/composables/useShortcuts'
+import { treeSession } from '~/composables/useFileTree'
 
 /** A worktree row opens its folder as a project tab, which is the shell's job. */
 const emit = defineEmits<{
@@ -70,6 +71,8 @@ const drag = useDragDrop()
 const forge = useForge()
 const reviewPage = useReview()
 const config = useConfig()
+/** Branches or files, the filter and the open folders: kept per project. */
+const lists = computed(() => treeSession())
 
 const SECTIONS_KEY = 'gitnoob:sidebar-sections'
 
@@ -1762,6 +1765,32 @@ async function removeSubmodule(one: Submodule) {
 
 <template>
   <aside class="side">
+    <!-- Two lists, one place: the branches, or the files. Each project
+         remembers which one it was left on. -->
+    <div class="lists" role="tablist">
+      <button
+        class="list-tab"
+        role="tab"
+        :class="{ on: lists.mode === 'branches' }"
+        :aria-selected="lists.mode === 'branches'"
+        @click="lists.mode = 'branches'"
+      >
+        Branches
+      </button>
+      <button
+        class="list-tab"
+        role="tab"
+        :class="{ on: lists.mode === 'files' }"
+        :aria-selected="lists.mode === 'files'"
+        @click="lists.mode = 'files'"
+      >
+        Files
+      </button>
+    </div>
+
+    <FileTree v-if="lists.mode === 'files'" class="files" />
+
+    <template v-else>
     <div class="filter">
       <Search :size="13" class="faint" />
       <!-- Esc empties the box rather than leaving a filter applied over a list
@@ -2244,6 +2273,8 @@ async function removeSubmodule(one: Submodule) {
       "
     />
 
+    </template>
+
     <DeleteBranchDialog v-if="deleting" :name="deleting" @close="deleting = null" />
     <BranchDialog
       v-if="startingFrom"
@@ -2309,7 +2340,41 @@ async function removeSubmodule(one: Submodule) {
   /* Stated, so a long branch name scrolls inside the sidebar rather than
      widening it past the window. */
   grid-template-columns: minmax(0, 1fr);
-  grid-template-rows: auto minmax(0, 1fr);
+  grid-template-rows: auto auto minmax(0, 1fr);
+}
+
+/* The file tree brings its own filter, so it takes both rows below the switch. */
+.side > .files {
+  grid-row: 2 / span 2;
+}
+
+/* Branches | Files: a segmented switch across the top of the sidebar. */
+.lists {
+  display: flex;
+  gap: 2px;
+  margin: 8px 8px 0;
+  padding: 2px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  background: var(--bg);
+}
+
+.list-tab {
+  flex: 1;
+  height: 22px;
+  font-size: 12px;
+  color: var(--text-dim);
+  border-radius: var(--radius-sm);
+}
+
+.list-tab:hover {
+  color: var(--text);
+}
+
+.list-tab.on {
+  background: var(--bg-active);
+  color: var(--text);
+  font-weight: 600;
 }
 
 /* A field on the page tone, bordered like every other field, with the icon

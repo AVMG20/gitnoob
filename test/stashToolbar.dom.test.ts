@@ -96,7 +96,8 @@ describe('the toolbar while a stash is picked', () => {
     show()
     // The buttons are gone; the shortcuts they duplicate are not.
     window.dispatchEvent(
-      new KeyboardEvent('keydown', { key: 'f', ctrlKey: true, shiftKey: true, bubbles: true })
+      // Fetch is ⌘⌥F since 0.10; ⌘⇧F searches inside files.
+      new KeyboardEvent('keydown', { key: 'f', code: 'KeyF', ctrlKey: true, altKey: true, bubbles: true })
     )
     await flushPromises()
     expect(calls.some((c) => c.cmd === 'fetch_all' || c.cmd.startsWith('fetch'))).toBe(true)

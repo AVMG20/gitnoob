@@ -13,6 +13,10 @@ import { useTheme } from '~/composables/useTheme'
 import { useUpdates } from '~/composables/useUpdates'
 import { useShortcuts } from '~/composables/useShortcuts'
 import { useZoom } from '~/composables/useZoom'
+import { useNavButtons } from '~/composables/useNavButtons'
+import { openSearch, search } from '~/composables/useSearch'
+import { usagesPopup } from '~/composables/useSymbols'
+import { unwatchQuit, watchQuit } from '~/composables/useQuit'
 import { runHomeAct, type HomeAct } from '~/composables/useForgeNudges'
 
 const git = useGit()
@@ -27,6 +31,8 @@ const updates = useUpdates()
 // paint, so neither the theme nor the size is seen changing.
 useTheme()
 const zoom = useZoom()
+// The mouse's back and forward buttons, wherever the pointer is.
+useNavButtons()
 
 /** The repository switcher, which is reachable with no repository open. */
 const switching = ref(false)
@@ -37,7 +43,12 @@ useShortcuts({
   'zoom.reset': zoom.reset,
   'project.switch': () => {
     switching.value = !switching.value
-  }
+  },
+  // The search window is about the repository on screen.
+  'search.text': () => store.repo && openSearch('text'),
+  'search.files': () => store.repo && openSearch('files'),
+  'files.recent': () => store.repo && openSearch('files', true),
+  'search.symbols': () => store.repo && openSearch('symbols')
 })
 
 const ready = ref(false)
@@ -154,13 +165,13 @@ const rebase = useRebase()
  */
 const columns = computed(() => {
   const panel = `minmax(0, ${layout.panel}px)`
-  // The viewer and a review page take the whole middle; the rebase plan and a
-  // stash keep the sidebar, because the sidebar is where the next branch or
-  // the next stash is picked from.
+  // A review page takes the whole middle. Everything else keeps the sidebar:
+  // an open file sits between the branch list (or the file tree) and the
+  // working tree, the way the graph does.
   // The handles are the hairlines between the panes, one pixel wide; each
   // reaches a few pixels either side of itself for the pointer.
   const gap = '1px'
-  if (store.viewer || reviewOpen.value) return `minmax(0, 1fr) ${gap} ${panel}`
+  if (reviewOpen.value) return `minmax(0, 1fr) ${gap} ${panel}`
   return `minmax(0, ${layout.sidebar}px) ${gap} minmax(0, 1fr) ${gap} ${panel}`
 })
 
@@ -341,6 +352,10 @@ watch(
 )
 
 onMounted(async () => {
+  // First, so a quit pressed while a repository is still opening is heard:
+  // edits are saved, or asked about, before the window goes (useQuit.ts).
+  await watchQuit()
+
   // A failure here must not take the whole window down with it; without the
   // config the welcome pane is still usable.
   try {
@@ -409,6 +424,7 @@ onUnmounted(() => {
   if (fetchTimer) window.clearInterval(fetchTimer)
   unlisten?.()
   unlistenCommand?.()
+  unwatchQuit()
   updates.stopWatching()
   window.removeEventListener('focus', onFocus)
   document.removeEventListener('visibilitychange', onVisible)
@@ -443,22 +459,23 @@ onUnmounted(() => {
       <TitleBar v-show="!review.store.current" @leave="leaveSubmodule" />
       <BusyBar />
       <div class="body" :style="{ gridTemplateColumns: columns }">
-        <!-- Opening a file takes over the graph area, as GitKraken does; so
-             does opening a review, which is read here rather than in the
+        <!-- A review takes over the middle, read here rather than in the
              forge's browser tab. -->
-        <template v-if="store.viewer">
-          <DiffViewer />
-        </template>
-        <template v-else-if="review.store.current">
+        <template v-if="review.store.current">
           <ReviewPane />
         </template>
         <template v-else>
           <SideBar @open="openProject" @enter="enterSubmodule" />
           <ResizeHandle side="sidebar" />
-          <!-- The rebase plan stands where the commit list would, with the
+          <!-- The middle: the tabs over either the graph or an open file. The
+               rebase plan stands where the commit list would, with the
                branches still in reach beside it. -->
-          <RebasePane v-if="rebase.store.open" />
-          <GraphList v-else />
+          <div class="middle">
+            <FileTabs />
+            <DiffViewer v-if="store.viewer" />
+            <RebasePane v-else-if="rebase.store.open" />
+            <GraphList v-else />
+          </div>
         </template>
         <ResizeHandle side="panel" />
         <!-- While a review is being read, the panel holds its files: the
@@ -491,6 +508,8 @@ onUnmounted(() => {
     <CloneDialog v-if="cloneOpen" @close="cloneOpen = false" @done="made" />
     <InitDialog v-if="initOpen" @close="initOpen = false" @done="made" />
     <ConflictOverlay v-if="store.resolving !== null" />
+    <SearchModal v-if="search.open && store.repo" />
+    <UsagesPopup v-if="usagesPopup.open && store.repo" />
     <ContextMenu />
   </div>
 </template>
@@ -536,5 +555,18 @@ onUnmounted(() => {
 
 .body > :deep(section) {
   background: var(--bg);
+}
+
+/* The tabs, then whatever the tab on screen shows, taking the rest. */
+.middle {
+  display: flex;
+  flex-direction: column;
+  background: var(--bg);
+}
+
+.middle > :deep(section) {
+  flex: 1;
+  min-width: 0;
+  min-height: 0;
 }
 </style>

@@ -1,0 +1,1029 @@
+<script setup lang="ts">
+import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
+import { CaseSensitive, ChevronRight, Funnel, GitCompare, Regex, Search, WholeWord } from 'lucide-vue-next'
+import { copyText, useGit } from '~/composables/useGit'
+import CodePreview from '~/components/CodePreview.vue'
+import FileIcon from '~/components/FileIcon.vue'
+import ResizeHandle from '~/components/ResizeHandle.vue'
+import { change } from '~/composables/useFileView'
+import { usePanes } from '~/composables/usePanes'
+import { keyLabel, keysFor, matchesShortcut } from '~/composables/useShortcuts'
+import { openTab } from '~/composables/useTabs'
+import { colourLines, runsOf, snippetTick } from '~/composables/snippetColours'
+import {
+  closeSearch,
+  findNames,
+  findSymbols,
+  openSearch,
+  queryOf,
+  runTextSearch,
+  search,
+  SEARCH_MODES,
+  setQueryOf,
+  splitLine,
+  type FoundName,
+  type FoundSymbol,
+  type SearchMode
+} from '~/composables/useSearch'
+
+/**
+ * The search window: inside files, file names or symbols, over the app.
+ *
+ * Shaped like a command palette: one row to type in, with the mode and the
+ * options beside the box, and the rest of the height for the results and the
+ * preview. No title and no ✕; Esc and a click outside close it. ↑ and ↓
+ * move, ↵ opens and closes, ⌘↵ opens and stays, Tab changes mode, ⌥C ⌥W ⌥R
+ * flip the options, ← and → fold a file's hits, ⌘C copies path:line. Focus
+ * goes back to wherever it was.
+ */
+
+const git = useGit()
+const store = git.store
+const { layout } = usePanes()
+const box = ref<HTMLInputElement | null>(null)
+const list = ref<HTMLElement | null>(null)
+/** The pane the preview is in, to tell a selection made there from one in a box. */
+const preview = ref<HTMLElement | null>(null)
+const cursor = ref(0)
+const names = ref<FoundName[]>([])
+const symbols = ref<FoundSymbol[]>([])
+/** Files whose hits are folded away under their heading. */
+const folded = ref(new Set<string>())
+let before: Element | null = null
+let timer: ReturnType<typeof setTimeout> | undefined
+
+const isMac = typeof navigator !== 'undefined' && navigator.userAgent.includes('Mac')
+
+const MODE_LABELS: Record<SearchMode, string> = { text: 'In files', files: 'Names', symbols: 'Symbols' }
+const MODE_KEYS: Record<SearchMode, string> = {
+  text: 'search.text',
+  files: 'search.files',
+  symbols: 'search.symbols'
+}
+const PLACEHOLDERS: Record<SearchMode, string> = {
+  text: 'Search inside files',
+  files: 'File name or folder/name, :42 for a line',
+  symbols: 'Class, function or method; capitals match capitals'
+}
+
+/** Every row the arrows step through, in order. */
+interface Item {
+  /** A line that matched; a folded file's heading; a file; a definition. */
+  kind: 'hit' | 'file' | 'name' | 'symbol'
+  path: string
+  line: number | null
+  text?: string
+  ranges?: [number, number][]
+  group?: FoundName['group']
+  indices?: number[]
+  name?: string
+  symbolKind?: string
+  /** For a hit: which of its file's hits it is. */
+  hitAt?: number
+}
+
+const items = computed<Item[]>(() => {
+  if (search.mode === 'text') {
+    return search.found.flatMap((file): Item[] =>
+      folded.value.has(file.path)
+        ? [{ kind: 'file', path: file.path, line: file.hits[0]?.line ?? null }]
+        : file.hits.map((hit, hitAt) => ({
+            kind: 'hit',
+            hitAt,
+            path: file.path,
+            line: hit.line,
+            text: hit.text,
+            ranges: hit.ranges
+          }))
+    )
+  }
+  if (search.mode === 'symbols') {
+    return symbols.value.map((one) => ({
+      kind: 'symbol',
+      path: one.path,
+      line: one.line,
+      name: one.name,
+      symbolKind: one.kind,
+      indices: one.indices
+    }))
+  }
+  const line = splitLine(search.files.query).line
+  return names.value.map((one) => ({
+    kind: 'name',
+    path: one.path,
+    line,
+    group: one.group,
+    indices: one.indices
+  }))
+})
+
+const current = computed(() => items.value[cursor.value] ?? null)
+
+const LETTERS = { added: 'A', modified: 'M', deleted: 'D', renamed: 'R' } as const
+
+/**
+ * Every changed file's status letter and colour, by path: read once per
+ * status rather than searched for by every row of two thousand.
+ */
+const statuses = computed(() => {
+  const out = new Map<string, { letter: string; kind: string }>()
+  const status = store.status
+  if (!status) return out
+  for (const entry of [...status.staged, ...status.unstaged]) {
+    const kind = change(entry.kind)
+    out.set(entry.path, { letter: LETTERS[kind], kind })
+  }
+  for (const path of status.conflicted) out.set(path, { letter: '!', kind: 'clash' })
+  return out
+})
+
+/** A file's status letter and colour, as the right panel and the tree give it. */
+function status(path: string) {
+  return statuses.value.get(path) ?? null
+}
+
+const base = (path: string) => path.slice(path.lastIndexOf('/') + 1)
+const folder = (path: string) => (path.includes('/') ? path.slice(0, path.lastIndexOf('/')) : '')
+
+/**
+ * The hit lines of each file, coloured in its language: each file's lines are
+ * parsed once, together, and cached. Plain until the language has loaded.
+ */
+const colours = computed(() => {
+  void snippetTick.value
+  const out = new Map<string, ReturnType<typeof colourLines>>()
+  if (search.mode !== 'text') return out
+  for (const file of search.found) {
+    out.set(file.path, colourLines(file.path, file.hits.map((hit) => hit.text)))
+  }
+  return out
+})
+
+/** A hit line in runs of one colour, its matches marked over the colours. */
+function hitRuns(item: Item) {
+  const tokens = colours.value.get(item.path)?.[item.hitAt ?? -1] ?? null
+  return runsOf(item.text ?? '', tokens, item.ranges)
+}
+
+/** `text` with the characters at `indices` (counted from `offset`) picked out. */
+function picked(text: string, indices: number[] = [], offset = 0) {
+  const hits = new Set(indices.map((at) => at - offset))
+  const out: { text: string; hit: boolean }[] = []
+  for (const [at, char] of [...text].entries()) {
+    const on = hits.has(at)
+    const last = out[out.length - 1]
+    if (last && last.hit === on) last.text += char
+    else out.push({ text: char, hit: on })
+  }
+  return out
+}
+
+const nameCut = (path: string) => path.lastIndexOf('/') + 1
+
+/** Index into `items` of the first row of each file or group, for the headings. */
+const firstOf = computed(() => {
+  const out = new Map<number, string>()
+  let previous = ''
+  items.value.forEach((item, at) => {
+    const key = search.mode === 'text' ? item.path : search.mode === 'files' ? (item.group ?? '') : ''
+    if (key && key !== previous) out.set(at, key)
+    previous = key
+  })
+  return out
+})
+
+const GROUPS: Record<string, string> = { recent: 'Recent', changed: 'Changed', files: 'Files' }
+
+const hitCounts = computed(() => new Map(search.found.map((one) => [one.path, one.hits.length])))
+
+function hitsIn(path: string) {
+  return hitCounts.value.get(path) ?? 0
+}
+
+/** "N matches in M files", over the list. */
+const summary = computed(() => {
+  if (search.mode === 'symbols') {
+    const count = symbols.value.length
+    return search.symbols.query.trim() ? `${count} ${count === 1 ? 'symbol' : 'symbols'}` : ''
+  }
+  if (search.mode === 'files') return ''
+  const done = search.done
+  if (done?.error) return done.error
+  if (!search.text.query) return ''
+  const matches = search.found.reduce((sum, file) => sum + file.hits.length, 0)
+  const files = search.found.length
+  const where = search.text.changedOnly ? 'changed files' : 'files'
+  let text = `${matches.toLocaleString()} ${matches === 1 ? 'match' : 'matches'} in ${files} ${files === 1 ? 'file' : where}`
+  if (search.running) text += ' · searching…'
+  if (done?.more) text += ` · ${done.more.toLocaleString()} more not shown`
+  if (done && search.text.changedOnly) text += ' · only changed files'
+  return text
+})
+
+/** Every match in the file under the cursor, for the preview to mark. */
+const previewHits = computed(() => {
+  if (search.mode !== 'text' || !current.value) return []
+  const file = search.found.find((one) => one.path === current.value!.path)
+  return (file?.hits ?? []).map((hit) => ({ line: hit.line, ranges: hit.ranges }))
+})
+
+/** The folders of the file under the cursor, for the line over the preview. */
+const crumbs = computed(() => (current.value ? current.value.path.split('/') : []))
+
+// --- running the search as the box changes
+
+function schedule() {
+  clearTimeout(timer)
+  if (search.mode === 'text') {
+    timer = setTimeout(() => {
+      cursor.value = 0
+      folded.value = new Set()
+      void runTextSearch()
+    }, 120)
+  } else if (search.mode === 'symbols') {
+    timer = setTimeout(async () => {
+      const query = search.symbols.query
+      const found = await findSymbols(query)
+      if (found === null || query !== search.symbols.query) return
+      symbols.value = found
+      cursor.value = 0
+    }, 60)
+  } else {
+    timer = setTimeout(async () => {
+      const query = search.files.query
+      const found = await findNames(splitLine(query).query)
+      if (found === null || query !== search.files.query) return
+      names.value = found
+      cursor.value = 0
+    }, 60)
+  }
+}
+
+watch(
+  () => [
+    search.mode,
+    search.text.query,
+    search.text.case,
+    search.text.word,
+    search.text.regex,
+    search.text.changedOnly,
+    search.text.glob,
+    search.files.query,
+    search.symbols.query
+  ],
+  schedule
+)
+
+// The cursor stays on a real row while results arrive.
+watch(
+  () => items.value.length,
+  (count) => {
+    if (cursor.value >= count) cursor.value = Math.max(0, count - 1)
+  }
+)
+
+// --- opening
+
+function open(item: Item | null, stay: boolean) {
+  if (!item) return
+  // A file that was looked for: the sidebar comes to the Files tree with it.
+  openTab(
+    { path: item.path, mode: 'file', side: 'unstaged' },
+    { line: item.line ?? undefined, reveal: 'switch' }
+  )
+  if (!stay) closeSearch()
+}
+
+/** A line clicked in the preview: that file, at that line. */
+function openAt(line: number) {
+  if (current.value) open({ ...current.value, line }, false)
+}
+
+async function move(by: number) {
+  const count = items.value.length
+  if (!count) return
+  cursor.value = Math.min(count - 1, Math.max(0, cursor.value + by))
+  await nextTick()
+  list.value?.querySelector('.on')?.scrollIntoView?.({ block: 'nearest' })
+}
+
+/** Folds a file's hits under its heading, or opens them again. */
+async function fold(path: string, shut: boolean) {
+  const next = new Set(folded.value)
+  if (shut) next.add(path)
+  else next.delete(path)
+  folded.value = next
+  // The cursor stays with the file: on its heading, or on its first hit.
+  const at = items.value.findIndex((one) => one.path === path)
+  if (at >= 0) cursor.value = at
+  await nextTick()
+  list.value?.querySelector('.on')?.scrollIntoView?.({ block: 'nearest' })
+}
+
+function nextMode(by: number) {
+  const at = SEARCH_MODES.indexOf(search.mode)
+  openSearch(SEARCH_MODES[(at + by + SEARCH_MODES.length) % SEARCH_MODES.length]!)
+}
+
+/** ⌥C, ⌥W, ⌥R, by the key's place: on a Mac ⌥ makes them type ç, ∑ and ®. */
+const OPTION_KEYS: Record<string, 'case' | 'word' | 'regex'> = {
+  KeyC: 'case',
+  KeyW: 'word',
+  KeyR: 'regex'
+}
+
+function onKey(event: KeyboardEvent) {
+  const mod = isMac ? event.metaKey : event.ctrlKey
+  const inBox = event.target === box.value
+  const field = event.target as HTMLInputElement | null
+  if (matchesShortcut(event, 'search.text')) {
+    event.preventDefault()
+    openSearch('text')
+  } else if (matchesShortcut(event, 'files.recent')) {
+    // The same as with the window shut: the names, empty, on the recent files.
+    event.preventDefault()
+    openSearch('files', true)
+  } else if (matchesShortcut(event, 'search.files')) {
+    event.preventDefault()
+    openSearch('files')
+  } else if (matchesShortcut(event, 'search.symbols')) {
+    event.preventDefault()
+    openSearch('symbols')
+  } else if (event.key === 'Tab' && inBox && !mod && !event.altKey) {
+    event.preventDefault()
+    nextMode(event.shiftKey ? -1 : 1)
+  } else if (event.altKey && !event.metaKey && !event.ctrlKey && OPTION_KEYS[event.code]) {
+    event.preventDefault()
+    if (search.mode !== 'text') return
+    const option = OPTION_KEYS[event.code]!
+    search.text[option] = !search.text[option]
+  } else if (mod && !event.altKey && !event.shiftKey && event.code === 'KeyC' && current.value) {
+    // A selection in the box is copied as usual; otherwise the result is.
+    if (field?.tagName === 'INPUT' && field.selectionStart !== field.selectionEnd) return
+    // So is text selected in the preview.
+    const picked = window.getSelection?.()
+    if (picked && !picked.isCollapsed && picked.toString() && preview.value?.contains(picked.anchorNode)) return
+    event.preventDefault()
+    const item = current.value
+    copyText(item.line ? `${item.path}:${item.line}` : item.path, 'Location')
+  } else if (event.key === 'ArrowDown') {
+    event.preventDefault()
+    void move(1)
+  } else if (event.key === 'ArrowUp') {
+    event.preventDefault()
+    void move(-1)
+  } else if ((event.key === 'ArrowRight' || event.key === 'ArrowLeft') && field?.tagName === 'INPUT' && !inBox) {
+    // The file mask is a field of its own: the arrows move its caret.
+    return
+  } else if (event.key === 'ArrowRight' && search.mode === 'text' && current.value?.kind === 'file') {
+    // In the box → moves the caret, except from the very end of it.
+    const end = field?.value.length ?? 0
+    if (inBox && ((field?.selectionStart ?? end) < end || (field?.selectionEnd ?? end) < end)) return
+    event.preventDefault()
+    void fold(current.value.path, false)
+  } else if (event.key === 'ArrowLeft' && search.mode === 'text' && current.value?.kind === 'hit') {
+    // In the box ← moves the caret, except from the very start of it.
+    if (inBox && (field?.selectionStart ?? 0) + (field?.selectionEnd ?? 0) > 0) return
+    event.preventDefault()
+    void fold(current.value.path, true)
+  } else if (event.key === 'Enter') {
+    // ↵ on an option or a mode button presses that button.
+    if ((event.target as HTMLElement | null)?.tagName === 'BUTTON') return
+    event.preventDefault()
+    open(current.value, mod)
+  }
+}
+
+watch(
+  () => search.mode,
+  async () => {
+    await nextTick()
+    box.value?.focus()
+    box.value?.select()
+  }
+)
+
+onMounted(async () => {
+  before = document.activeElement
+  schedule()
+  await nextTick()
+  box.value?.focus()
+  box.value?.select()
+})
+
+onBeforeUnmount(() => {
+  clearTimeout(timer)
+  if (before instanceof HTMLElement && before.isConnected) before.focus()
+})
+
+const query = computed({
+  get: () => queryOf(search.mode),
+  set: (value: string) => setQueryOf(search.mode, value)
+})
+
+const alt = isMac ? '⌥' : 'Alt+'
+const hint = computed(
+  () =>
+    `↵ open · ${keyLabel('mod+enter')} open, keep searching · Tab mode · ${keyLabel('mod+c')} copy path:line · Esc close`
+)
+</script>
+
+<template>
+  <AppModal title="Search" :width="1180" palette @close="closeSearch">
+    <div class="search" @keydown="onKey">
+      <!-- One row: the box, the options for text, and the mode. -->
+      <div class="top">
+        <div class="field">
+          <Search :size="14" class="faint" />
+          <input
+            ref="box"
+            v-model="query"
+            type="text"
+            :aria-label="PLACEHOLDERS[search.mode]"
+            spellcheck="false"
+            :placeholder="PLACEHOLDERS[search.mode]"
+            :title="hint"
+          />
+          <template v-if="search.mode === 'text'">
+            <button
+              class="opt"
+              data-option="case"
+              :class="{ on: search.text.case }"
+              :aria-pressed="search.text.case"
+              :title="`Match case (${alt}C)`"
+              @click="search.text.case = !search.text.case"
+            >
+              <CaseSensitive :size="15" />
+            </button>
+            <button
+              class="opt"
+              data-option="word"
+              :class="{ on: search.text.word }"
+              :aria-pressed="search.text.word"
+              :title="`Whole words (${alt}W)`"
+              @click="search.text.word = !search.text.word"
+            >
+              <WholeWord :size="15" />
+            </button>
+            <button
+              class="opt"
+              data-option="regex"
+              :class="{ on: search.text.regex }"
+              :aria-pressed="search.text.regex"
+              :title="`Regular expression (${alt}R)`"
+              @click="search.text.regex = !search.text.regex"
+            >
+              <Regex :size="15" />
+            </button>
+            <button
+              class="opt"
+              data-option="changed"
+              :class="{ on: search.text.changedOnly }"
+              :aria-pressed="search.text.changedOnly"
+              title="Changed files only"
+              @click="search.text.changedOnly = !search.text.changedOnly"
+            >
+              <GitCompare :size="14" />
+            </button>
+            <span class="mask-field" title="File mask, e.g. *.php or src/**/*.ts">
+              <Funnel :size="12" class="faint" />
+              <input
+                v-model="search.text.glob"
+                class="mask"
+                type="text"
+                aria-label="File mask"
+                spellcheck="false"
+                placeholder="*.php"
+              />
+            </span>
+          </template>
+        </div>
+        <div class="modes" role="tablist">
+          <button
+            v-for="mode in SEARCH_MODES"
+            :key="mode"
+            class="mode"
+            role="tab"
+            :data-mode="mode"
+            :class="{ on: search.mode === mode }"
+            :aria-selected="search.mode === mode"
+            :title="`${MODE_LABELS[mode]} (${keyLabel(keysFor(MODE_KEYS[mode]))}, or Tab)`"
+            @click="openSearch(mode)"
+          >
+            {{ MODE_LABELS[mode] }}
+          </button>
+        </div>
+      </div>
+
+      <!-- The list never takes the preview's last 280px, however wide it was
+           dragged in a wider window. -->
+      <div
+        class="panes"
+        :style="{
+          gridTemplateColumns: `minmax(220px, min(${layout.search}px, calc(100% - 280px))) 1px minmax(0, 1fr)`
+        }"
+      >
+        <div class="left">
+          <div v-if="summary" class="summary" :class="{ bad: search.done?.error }">{{ summary }}</div>
+          <div ref="list" class="list" role="listbox">
+            <template v-for="(item, at) in items" :key="`${item.kind}:${item.path}:${item.line}:${at}`">
+              <!-- A file's heading: its hits fold under it with ← and open with →. -->
+              <div
+                v-if="search.mode === 'text' && (item.kind === 'file' || firstOf.has(at))"
+                class="group"
+                :class="{ on: item.kind === 'file' && at === cursor, folded: item.kind === 'file' }"
+                :data-path="item.path"
+                @mousemove="item.kind === 'file' && (cursor = at)"
+                @click="fold(item.path, item.kind !== 'file')"
+              >
+                <ChevronRight :size="12" class="chev" :class="{ down: item.kind !== 'file' }" />
+                <span v-if="status(item.path)" class="letter" :class="status(item.path)!.kind">{{
+                  status(item.path)!.letter
+                }}</span>
+                <FileIcon :path="item.path" :size="13" />
+                <span class="file" :class="status(item.path)?.kind">{{ base(item.path) }}</span>
+                <span class="dir">{{ folder(item.path) }}</span>
+                <span class="count">{{ hitsIn(item.path) }}</span>
+              </div>
+              <div v-else-if="firstOf.has(at) && item.group" class="group plain">
+                {{ GROUPS[item.group] }}
+              </div>
+              <div
+                v-if="item.kind !== 'file'"
+                class="item"
+                role="option"
+                :class="{ on: at === cursor, hit: item.kind === 'hit' }"
+                :aria-selected="at === cursor"
+                @mousemove="cursor = at"
+                @click="open(item, false)"
+              >
+                <template v-if="item.kind === 'hit'">
+                  <span class="num">{{ item.line }}</span>
+                  <span class="code">
+                    <template v-for="(run, index) in hitRuns(item)" :key="index">
+                      <mark v-if="run.hit"
+                        ><span v-for="(part, p) in run.parts" :key="p" :style="part.style ?? undefined">{{
+                          part.text
+                        }}</span></mark
+                      >
+                      <template v-else
+                        ><span v-for="(part, p) in run.parts" :key="p" :style="part.style ?? undefined">{{
+                          part.text
+                        }}</span></template
+                      >
+                    </template>
+                  </span>
+                </template>
+                <template v-else-if="item.kind === 'symbol'">
+                  <span class="kind" :class="item.symbolKind">{{ item.symbolKind }}</span>
+                  <span class="file symbol">
+                    <template v-for="(piece, index) in picked(item.name ?? '', item.indices)" :key="index">
+                      <b v-if="piece.hit">{{ piece.text }}</b>
+                      <template v-else>{{ piece.text }}</template>
+                    </template>
+                  </span>
+                  <FileIcon :path="item.path" :size="12" />
+                  <span class="dir">{{ base(item.path) }}:{{ item.line }} · {{ folder(item.path) }}</span>
+                </template>
+                <template v-else>
+                  <span v-if="status(item.path)" class="letter" :class="status(item.path)!.kind">{{
+                    status(item.path)!.letter
+                  }}</span>
+                  <FileIcon :path="item.path" :size="13" />
+                  <span class="file" :class="status(item.path)?.kind">
+                    <template
+                      v-for="(piece, index) in picked(base(item.path), item.indices, nameCut(item.path))"
+                      :key="index"
+                    >
+                      <b v-if="piece.hit">{{ piece.text }}</b>
+                      <template v-else>{{ piece.text }}</template>
+                    </template>
+                  </span>
+                  <span class="dir">
+                    <template v-for="(piece, index) in picked(folder(item.path), item.indices)" :key="index">
+                      <b v-if="piece.hit">{{ piece.text }}</b>
+                      <template v-else>{{ piece.text }}</template>
+                    </template>
+                  </span>
+                </template>
+              </div>
+            </template>
+            <p
+              v-if="!items.length && query && !(search.mode === 'text' && search.running)"
+              class="none faint"
+            >
+              {{ search.done?.error ? '' : 'Nothing found.' }}
+            </p>
+            <p v-else-if="!items.length && !query && search.mode === 'symbols'" class="none faint">
+              Type a class, function or method name. Capitals match capitals: MECC finds
+              MakeExactConnectionCommand.
+            </p>
+          </div>
+        </div>
+        <ResizeHandle side="search" />
+        <div ref="preview" class="side">
+          <!-- Where the file is and which line, small, over the preview. -->
+          <div v-if="current" class="where" :title="current.path">
+            <FileIcon :path="current.path" :size="12" />
+            <!-- The folders give way first: the name is what says which file. -->
+            <span class="crumbs">
+              <span v-if="crumbs.length > 1" class="dirs">
+                <template v-for="(part, index) in crumbs.slice(0, -1)" :key="index">
+                  <span v-if="index" class="sep">›</span>
+                  <span>{{ part }}</span>
+                </template>
+              </span>
+              <span v-if="crumbs.length > 1" class="sep">›</span>
+              <span class="last">{{ crumbs[crumbs.length - 1] }}</span>
+            </span>
+            <span v-if="current.line" class="at">:{{ current.line }}</span>
+          </div>
+          <CodePreview
+            :path="current?.path ?? null"
+            :line="current?.line ?? null"
+            :hits="previewHits"
+            @open="openAt"
+          />
+        </div>
+      </div>
+
+      <p class="keys faint">{{ hint }}</p>
+    </div>
+  </AppModal>
+</template>
+
+<style scoped>
+.search {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  flex: 1;
+  min-height: 0;
+}
+
+.top {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.field {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  height: 34px;
+  padding: 0 6px 0 10px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  background: var(--bg);
+}
+
+.field:focus-within {
+  border-color: var(--ring);
+  box-shadow: var(--focus);
+}
+
+/* The inputs inside the frame are bare: the global field style (border,
+   background, corners, the focus halo) would draw a second box inside it.
+   The frame shows focus for both, with :focus-within. */
+.field input,
+.field input:focus {
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  box-shadow: none;
+  outline: none;
+  padding: 0;
+}
+
+.field > input {
+  flex: 1;
+  min-width: 0;
+  font-size: 14px;
+}
+
+.opt {
+  flex: none;
+  display: grid;
+  place-items: center;
+  width: 24px;
+  height: 24px;
+  color: var(--text-faint);
+  border-radius: var(--radius-sm);
+}
+
+.opt:hover {
+  color: var(--text);
+}
+
+.opt.on {
+  background: var(--primary-bg);
+  color: var(--accent-soft);
+}
+
+.mask-field {
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: 3px;
+  height: 24px;
+  margin-left: 2px;
+  padding: 0 6px;
+  border-left: 1px solid var(--line-soft);
+}
+
+.mask {
+  width: 90px;
+  font-size: 12px;
+  font-family: var(--mono);
+}
+
+/* The mode, as a small segmented switch beside the box. */
+.modes {
+  flex: none;
+  display: flex;
+  height: 28px;
+  padding: 2px;
+  gap: 2px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  background: var(--canvas);
+}
+
+.mode {
+  padding: 0 10px;
+  font-size: 12px;
+  color: var(--text-dim);
+  border-radius: var(--radius-sm);
+}
+
+.mode.on {
+  background: var(--bg-active);
+  color: var(--text);
+  font-weight: 600;
+}
+
+.panes {
+  flex: 1;
+  min-height: 0;
+  display: grid;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  overflow: hidden;
+}
+
+.left {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  min-height: 0;
+}
+
+.list {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+}
+
+.side {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  min-height: 0;
+  overflow: hidden;
+}
+
+.summary {
+  padding: 4px 8px;
+  font-size: 11.5px;
+  color: var(--text-dim);
+  border-bottom: 1px solid var(--line-soft);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.summary.bad {
+  color: var(--danger);
+}
+
+.where {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  padding: 4px 8px;
+  font-size: 11.5px;
+  color: var(--text-faint);
+  border-bottom: 1px solid var(--line-soft);
+  white-space: nowrap;
+  min-width: 0;
+}
+
+.crumbs {
+  display: flex;
+  min-width: 0;
+  overflow: hidden;
+}
+
+.crumbs .dirs {
+  flex: 0 100 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.crumbs > .sep {
+  flex: none;
+}
+
+.crumbs .sep {
+  padding: 0 4px;
+  opacity: 0.6;
+}
+
+.crumbs .last {
+  flex: 0 1 auto;
+  min-width: 3em;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--text);
+  font-weight: 600;
+}
+
+.at {
+  flex: none;
+  font-family: var(--mono);
+}
+
+.group {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  padding: 4px 8px 2px;
+  font-size: 12.5px;
+  font-weight: 600;
+  white-space: nowrap;
+  overflow: hidden;
+  cursor: default;
+}
+
+.group.on {
+  background: var(--bg-active);
+}
+
+.group.plain {
+  font-size: 11px;
+  text-transform: uppercase;
+  color: var(--text-faint);
+}
+
+.chev {
+  flex: none;
+  color: var(--text-faint);
+  transition: transform 0.1s;
+}
+
+.chev.down {
+  transform: rotate(90deg);
+}
+
+.count {
+  flex: none;
+  margin-left: auto;
+  padding: 0 6px;
+  font-size: 10.5px;
+  font-weight: 600;
+  border-radius: var(--radius-pill);
+  color: var(--text-dim);
+  background: var(--bg-raised);
+}
+
+.item {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 2px 8px;
+  font-size: 12.5px;
+  white-space: nowrap;
+  overflow: hidden;
+  cursor: default;
+}
+
+.item.hit {
+  padding-left: 26px;
+}
+
+.item.on {
+  background: var(--bg-active);
+}
+
+.num {
+  flex: none;
+  min-width: 28px;
+  text-align: right;
+  font-family: var(--mono);
+  font-size: 11.5px;
+  color: var(--text-faint);
+}
+
+.code {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  font-family: var(--mono);
+  font-size: 12px;
+}
+
+.code mark {
+  background: var(--warning-bg);
+  color: inherit;
+  border-radius: 2px;
+}
+
+.file {
+  flex: none;
+  max-width: 70%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.file b,
+.dir b {
+  color: var(--accent-soft);
+}
+
+.file.symbol {
+  font-family: var(--mono);
+  font-size: 12px;
+}
+
+.kind {
+  flex: none;
+  min-width: 52px;
+  font-size: 10.5px;
+  color: var(--text-faint);
+}
+
+.kind.class,
+.kind.interface,
+.kind.type {
+  color: var(--purple);
+}
+
+.kind.function,
+.kind.method {
+  color: var(--info);
+}
+
+.dir {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  font-size: 11.5px;
+  font-weight: 400;
+  color: var(--text-faint);
+}
+
+.letter {
+  flex: none;
+  font-family: var(--mono);
+  font-size: 11px;
+  font-weight: 700;
+  color: var(--amber);
+}
+
+.letter.added,
+.file.added {
+  color: var(--green-soft);
+}
+
+.letter.deleted,
+.file.deleted {
+  color: var(--red);
+}
+
+.letter.renamed,
+.file.renamed {
+  color: var(--purple);
+}
+
+.file.modified {
+  color: var(--amber);
+}
+
+.none {
+  padding: 10px;
+  font-size: 12px;
+}
+
+.keys {
+  margin: 0;
+  font-size: 11px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+</style>

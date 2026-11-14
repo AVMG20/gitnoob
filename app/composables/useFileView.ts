@@ -1,4 +1,4 @@
-import { reactive, watch } from 'vue'
+import { reactive, ref, watch } from 'vue'
 
 const KEY = 'gitnoob.fileview'
 
@@ -48,6 +48,12 @@ export type Tally = Record<Change, number>
 
 /** A file git could not merge, which is not one of the four changes. */
 export const CONFLICTED = 'conflicted'
+
+/**
+ * Untracked files waiting on "Delete this file?", from the right panel's menu
+ * or the bar over the open file. The right panel draws the question.
+ */
+export const deletingFiles = ref<string[] | null>(null)
 
 /**
  * Which of the four a git status letter belongs to.

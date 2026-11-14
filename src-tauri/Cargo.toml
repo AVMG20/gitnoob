@@ -33,6 +33,28 @@ reqwest = { version = "0.12", default-features = false, features = [
   "gzip",
 ] }
 sha2 = { version = "0.10", default-features = false }
+# Walking the work tree for the Files tree and the file finder, the way git
+# sees it: .gitignore, .git/info/exclude and the global excludes respected.
+ignore = "0.4"
+# Fuzzy matching on paths for the Files filter and the file finder.
+nucleo-matcher = "0.3"
+# Searching inside files, the way ripgrep does, over the same walk.
+grep-searcher = "0.1"
+grep-regex = "0.1"
+grep-matcher = "0.1"
+# The file mask in the search window (`*.php`).
+globset = "0.4"
+# Code navigation and unused code (symbols.rs). The grammars are plain C
+# compiled by cc, so they need nothing installed on any platform; they all
+# go through tree-sitter-language, which is what keeps their versions apart
+# from the core's.
+tree-sitter = "0.25"
+tree-sitter-php = "0.25"
+tree-sitter-javascript = "0.25"
+tree-sitter-typescript = "0.23"
+tree-sitter-rust = "0.24"
+tree-sitter-python = "0.25"
+tree-sitter-go = "0.25"
 
 # Updating in place. The bundle the pipeline built is signed with the key whose
 # public half is in tauri.conf.json, and the plugin refuses anything that does
@@ -49,6 +71,12 @@ tauri-plugin-notification = "2.6"
 # differs per platform, so each one picks its own keyring feature.
 [target.'cfg(target_os = "macos")'.dependencies]
 keyring = { version = "3", features = ["apple-native"] }
+# The mouse's side buttons, which WKWebView does not pass to the page: an
+# NSEvent monitor catches them instead (mouse.rs). Tauri already links these.
+objc2-app-kit = { version = "0.3", default-features = false, features = ["std", "NSEvent", "NSResponder", "block2"] }
+block2 = "0.6"
+# Answering the Dock's Quit, logout and shutdown (quit.rs).
+objc2 = "0.6"
 
 [target.'cfg(target_os = "windows")'.dependencies]
 keyring = { version = "3", features = ["windows-native"] }

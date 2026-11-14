@@ -1,9 +1,10 @@
 // @vitest-environment happy-dom
-import { mount } from '@vue/test-utils'
+import { flushPromises, mount } from '@vue/test-utils'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { invoke } from '@tauri-apps/api/core'
 import ProjectTabs from '~/components/ProjectTabs.vue'
 import { useConfig } from '~/composables/useConfig'
+import { openTab, resetTabs, switchTabs, useTabs } from '~/composables/useTabs'
 
 vi.mock('@tauri-apps/api/core', () => ({ invoke: vi.fn() }))
 vi.mock('@tauri-apps/plugin-dialog', () => ({ open: vi.fn() }))
@@ -78,5 +79,41 @@ describe('the tab strip', () => {
     const wrapper = show()
     await wrapper.find('.icon').trigger('click')
     expect(wrapper.emitted('home')).toHaveLength(1)
+  })
+})
+
+/**
+ * ⌘W closes what is on screen: the file tab when a file is open, the project
+ * tab when the graph is.
+ */
+describe('closing with the keyboard', () => {
+  const isMac = navigator.userAgent.includes('Mac')
+  const pressW = () =>
+    window.dispatchEvent(
+      new KeyboardEvent('keydown', { key: 'w', metaKey: isMac, ctrlKey: !isMac, bubbles: true })
+    )
+
+  it('closes the file tab on screen and leaves the project open', async () => {
+    resetTabs()
+    switchTabs('/repos/gitui')
+    openTab({ path: 'a.php' })
+    const wrapper = show()
+    await flushPromises()
+    pressW()
+    await flushPromises()
+    expect(useTabs().state.tabs).toEqual([])
+    expect(asked.mock.calls.some(([cmd]) => cmd === 'project_close')).toBe(false)
+    wrapper.unmount()
+  })
+
+  it('closes the project when the graph is on screen', async () => {
+    resetTabs()
+    switchTabs('/repos/gitui')
+    const wrapper = show()
+    await flushPromises()
+    pressW()
+    await flushPromises()
+    expect(asked.mock.calls.some(([cmd]) => cmd === 'project_close')).toBe(true)
+    wrapper.unmount()
   })
 })

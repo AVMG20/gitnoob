@@ -1,5 +1,5 @@
 import { aimAt, aimedAt, invoke } from './useInvoke'
-import { markRaw, reactive, ref } from 'vue'
+import { markRaw, reactive, ref, watch } from 'vue'
 import { useConfig } from './useConfig'
 import { useForge } from './useForge'
 import { stepFile, useFileView, walkOrder } from './useFileView'
@@ -10,6 +10,8 @@ import { useToasts } from './useToasts'
 import { commitCount, failedRemotes, protectedPushWarning, trunkLocalName } from './useSync'
 import { afterPush } from './useForgeNudges'
 import { moveDraft } from './useCommitDraft'
+import { activeTab, closeTab, openTab, retarget, showGraph, switchTabs, useTabs, type Viewer } from './useTabs'
+import { saveStateOf } from './useFileEdit'
 
 /**
  * What the platform calls its file manager. The backend already opens the right
@@ -774,8 +776,6 @@ const fields = reactive({
   /** A commit the graph should scroll into view. Carries a sequence number so
       asking for the same commit twice still moves the graph. */
   revealing: null as { oid: string; seq: number } | null,
-  /** When set, a file is open full width in place of the graph. */
-  viewer: null as { path: string; side?: 'staged' | 'unstaged'; commit?: string } | null,
   /** Number of calls in flight; a counter rather than a flag so overlapping
       operations cannot switch it off early. */
   pending: 0,
@@ -811,13 +811,60 @@ Object.defineProperty(fields, 'busy', {
 })
 
 /**
+ * A working-tree file brought forward brings the working tree back into the
+ * panel beside it, so the file is there to stage, highlighted, rather than
+ * a commit read some time before.
+ */
+watch(
+  () => activeTab()?.id ?? null,
+  () => {
+    const tab = activeTab()
+    if (tab && !tab.commit && store.selected !== WIP) {
+      store.selected = WIP
+      store.detail = null
+    }
+  }
+)
+
+/**
  * The store as the rest of the app sees it.
  *
  * `busy` is attached above rather than declared in the object, which left it
  * invisible to TypeScript — so every `store.busy` in a template was an error
  * nobody saw. The cast says what the getter already does.
  */
-const store = fields as typeof fields & { readonly busy: boolean }
+const store = fields as typeof fields & { readonly busy: boolean; viewer: Viewer | null }
+
+/**
+ * The file in the middle of the window, worked out from the tab on screen.
+ *
+ * It used to be a field of its own that everything set; it is the active file
+ * tab now, in the same shape, so everything that reads it reads it as before.
+ * Setting it still works for the places that walk from one file to the next:
+ * a file retargets the tab on screen (or opens one from the graph), and null
+ * closes that tab.
+ */
+Object.defineProperty(fields, 'viewer', {
+  get: () => useTabs().viewer.value,
+  set: (value: Viewer | null) => {
+    const tab = activeTab()
+    if (!value) {
+      // A tab holding edits that could not be saved is not closed from under
+      // them by a stage or a discard: closing that one always asks first.
+      if (tab && !stuckEdits(tab.id)) closeTab(tab.id)
+      return
+    }
+    if (tab) retarget(value)
+    else openTab(value)
+  },
+  enumerable: true
+})
+
+/** Whether a tab holds edits in conflict with the disk, or that failed to save. */
+function stuckEdits(tab: string) {
+  const state = saveStateOf(aimedAt(), tab)
+  return state === 'conflict' || state === 'failed'
+}
 
 /**
  * Keeps a backend payload out of Vue's reach.
@@ -1012,7 +1059,7 @@ function forget() {
   store.pushGone = null
   store.resolving = null
   store.revealing = null
-  store.viewer = null
+  switchTabs(null)
   store.inside = []
   store.query = ''
   store.solo = []
@@ -1062,7 +1109,8 @@ export function useGit() {
     store.tidy = []
     store.pushConfirm = null
     store.pushGone = null
-    store.viewer = null
+    // Each project keeps its own file tabs for the session.
+    switchTabs(info.path)
     store.resolving = null
     store.query = ''
     store.solo = solos.get(info.path) ?? []
@@ -1347,6 +1395,9 @@ export function useGit() {
     if (found === 'missing') return false
     revealSeq += 1
     store.revealing = { oid, seq: revealSeq }
+    // A commit is shown in the graph, so the graph is what comes forward. The
+    // file tabs stay where they are.
+    showGraph()
     await select(oid)
     return true
   }
@@ -1357,7 +1408,9 @@ export function useGit() {
    */
   async function selectStash(index: number) {
     const oid = await guard('Read stash', () => invoke<string>('stash_oid', { index }))
-    if (oid) await select(oid)
+    if (!oid) return
+    showGraph()
+    await select(oid)
   }
 
   /** One commit's files and message, for a pane that owns its own reading. */
@@ -1516,13 +1569,36 @@ export function useGit() {
     // is not stepping through a review, so the file on screen simply follows
     // itself across rather than jumping somewhere new.
     const next = taken && paths.length === 1 ? nextToRead(open.path) : null
+    const shown = activeTab()?.id
     const said = await runStatus<string>('Stage', 'stage', { paths })
-    // A refusal leaves the file where it was, so the viewer stays on it.
-    if (said !== null && taken) {
-      store.viewer =
-        paths.length === 1 ? (next ? { path: next, side: 'unstaged' } : null) : sideOf(open.path)
+    // A refusal leaves the file where it was, so the viewer stays on it. So
+    // does a tab switched to while git ran: it is not the file this was about.
+    if (said !== null && taken && activeTab()?.id === shown) {
+      // Reading the whole file is not stepping through a review: the tab stays
+      // on the file and only notes which side its changes are on now.
+      if (reading()) follow(open.path)
+      else {
+        store.viewer =
+          paths.length === 1 ? (next ? { path: next, side: 'unstaged' } : null) : sideOf(open.path)
+      }
     }
     return said
+  }
+
+  /** Whether the tab on screen shows the whole file rather than its diff. */
+  function reading() {
+    return activeTab()?.mode === 'file'
+  }
+
+  /**
+   * Follows the file on screen to the side its changes are on. A diff with
+   * nothing left on either side has no page and closes; the whole file still
+   * has one, so in File mode the tab stays.
+   */
+  function follow(path: string) {
+    const now = sideOf(path)
+    if (now) store.viewer = now
+    else if (!reading()) store.viewer = null
   }
 
   /**
@@ -1534,12 +1610,13 @@ export function useGit() {
    */
   async function stageEverything(expectStaged?: boolean) {
     const open = openWorkingFile('unstaged')
+    const shown = activeTab()?.id
     const said = await runStatus<string>(
       'Stage all',
       'stage_all',
       expectStaged === undefined ? {} : { expectStaged }
     )
-    if (said !== null && open) store.viewer = sideOf(open.path)
+    if (said !== null && open && activeTab()?.id === shown) follow(open.path)
     return said
   }
 
@@ -1597,10 +1674,11 @@ export function useGit() {
   async function unstageFiles(paths: string[]) {
     const open = openWorkingFile('staged')
     const taken = !!open && paths.includes(open.path)
+    const shown = activeTab()?.id
     const said = await runStatus<string>('Unstage', 'unstage', { paths })
     // Only where there is really something left: a staged change the work tree
     // already matches leaves nothing on either side.
-    if (said !== null && taken) store.viewer = sideOf(open.path)
+    if (said !== null && taken && activeTab()?.id === shown) follow(open.path)
     return said
   }
 
@@ -1613,8 +1691,13 @@ export function useGit() {
   async function throwAway(label: string, command: string, paths: string[]) {
     const open = store.viewer
     const reading = !!open && !open.commit && paths.includes(open.path)
+    // In File mode the file is still there to read after its changes go.
+    const readingWhole = activeTab()?.mode === 'file'
+    const shown = activeTab()?.id
     const said = await run<string>(label, command, { paths })
-    if (said !== null && reading) store.viewer = null
+    // Only the tab this was about: the status watcher may have closed it by
+    // now, or another tab been switched to, and neither is this one's to shut.
+    if (said !== null && reading && !readingWhole && activeTab()?.id === shown) store.viewer = null
     return said
   }
 

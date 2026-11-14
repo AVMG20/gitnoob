@@ -599,7 +599,7 @@ useShortcuts({
 })
 
 function onKey(event: KeyboardEvent) {
-  if (event.key === 'Escape' && searchOpen.value) {
+  if (event.key === 'Escape' && searchOpen.value && !covered()) {
     closeSearch()
     return
   }

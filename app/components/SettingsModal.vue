@@ -2,6 +2,7 @@
 import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
 import {
   Check,
+  Code,
   Download,
   ExternalLink,
   Github,
@@ -42,7 +43,9 @@ import {
   SHORTCUT_GROUPS,
   clashFor,
   eventChord,
+  reservedChord,
   isRebindable,
+  alsoFor,
   keyLabel,
   keysFor,
   type Shortcut
@@ -146,7 +149,9 @@ async function lookForUpdate() {
 const shortcutGroups = computed(() =>
   SHORTCUT_GROUPS.map((group) => ({
     group,
-    rows: SHORTCUTS.filter((one) => one.group === group)
+    // A shortcut without a key (one whose key went to something else) is
+    // listed as "no key", ready to be given one.
+    rows: SHORTCUTS.filter((one) => one.group === group && (keysFor(one.id) || isRebindable(one)))
   })).filter((one) => one.rows.length)
 )
 
@@ -158,10 +163,13 @@ const shortcutGroups = computed(() =>
 // place is refused with its name, rather than one of the two going quiet.
 const capturing = ref<string | null>(null)
 const captureNote = ref<string | null>(null)
+/** The row a refused reset is explained on. */
+const noted = ref<string | null>(null)
 
 function startCapture(id: string) {
   capturing.value = capturing.value === id ? null : id
   captureNote.value = null
+  noted.value = null
 }
 
 function stopCapture() {
@@ -184,8 +192,12 @@ async function onCaptureKey(event: KeyboardEvent, row: Shortcut) {
   }
   if (['Meta', 'Control', 'Shift', 'Alt'].includes(event.key)) return
   const chord = eventChord(event)
-  if (!/^(mod|alt)\+/.test(chord)) {
+  if (!/^(mod|alt|ctrl)\+/.test(chord)) {
     captureNote.value = `Hold ${keyLabel('mod')} or ${keyLabel('alt')} with the key.`
+    return
+  }
+  if (reservedChord(chord)) {
+    captureNote.value = `${keyLabel(chord)} belongs to the system and would never reach the app.`
     return
   }
   const clash = clashFor(row, chord)
@@ -202,6 +214,16 @@ async function onCaptureKey(event: KeyboardEvent, row: Shortcut) {
 }
 
 async function resetKey(id: string) {
+  // The key it shipped with may have been given to something else since.
+  const row = SHORTCUTS.find((one) => one.id === id)
+  const clash = row && clashFor(row, row.keys)
+  if (row && clash) {
+    captureNote.value = `${keyLabel(row.keys)} now does “${clash.label}”. Move that one first.`
+    noted.value = id
+    return
+  }
+  captureNote.value = null
+  noted.value = null
   const next = { ...movedKeys.value }
   delete next[id]
   await saveKeys(next)
@@ -463,6 +485,13 @@ onMounted(async () => {
           @click="config.store.settingsSection = 'behaviour'"
         >
           <Settings2 :size="15" /> Behaviour
+        </button>
+        <button
+          class="nav-item"
+          :class="{ on: section === 'editor' }"
+          @click="config.store.settingsSection = 'editor'"
+        >
+          <Code :size="15" /> Editor
         </button>
         <button
           class="nav-item"
@@ -976,20 +1005,23 @@ onMounted(async () => {
         <section v-else-if="section === 'shortcuts'">
           <h2>Shortcuts</h2>
           <p class="dim intro">
-            Every shortcut and where it works. None of them work while a dialog is open or while
-            you're typing in a text field.
+            Every shortcut and where it works. None of them work while a dialog is open. While
+            you're typing, only the ones that say so do: in a file you are editing, the keys for
+            tabs, files, search and moving around still answer.
           </p>
 
           <div v-for="one in shortcutGroups" :key="one.group" class="keys-group">
             <h3>{{ one.group }}</h3>
             <div v-for="row in one.rows" :key="row.id" class="keys-row">
-              <kbd class="keys" :class="{ moved: movedKeys[row.id] }">{{
-                keyLabel(keysFor(row.id))
+              <kbd class="keys" :class="{ moved: movedKeys[row.id], none: !keysFor(row.id) }">{{
+                keysFor(row.id)
+                  ? keyLabel(keysFor(row.id)) + (alsoFor(row.id) ? ` · ${keyLabel(alsoFor(row.id))}` : '')
+                  : 'no key'
               }}</kbd>
               <span class="keys-what">
                 {{ row.label }}
                 <span v-if="row.note" class="faint small block">{{ row.note }}</span>
-                <span v-if="capturing === row.id && captureNote" class="small block capture-note">
+                <span v-if="(capturing === row.id || noted === row.id) && captureNote" class="small block capture-note">
                   {{ captureNote }}
                 </span>
               </span>
@@ -1009,7 +1041,7 @@ onMounted(async () => {
                   <button
                     v-if="movedKeys[row.id]"
                     class="btn tiny ghost"
-                    :title="`Back to ${keyLabel(row.keys)}`"
+                    :title="`Back to ${row.keys ? keyLabel(row.keys) : 'no key'}`"
                     @click="resetKey(row.id)"
                   >
                     Reset
@@ -1118,6 +1150,56 @@ onMounted(async () => {
             On Linux this works for the AppImage. If you installed the .deb or .rpm, update through
             your package manager.
           </p>
+        </section>
+
+        <!-- Editor -->
+        <section v-else-if="section === 'editor'" data-section="editor">
+          <h2>Editor</h2>
+          <p class="dim intro">
+            How File mode indents. A file's <span class="mono">.editorconfig</span> wins, then
+            what the file itself does; these are for when neither says. The bar over a file shows
+            what it uses, and a click there changes it for that file.
+          </p>
+
+          <label class="field">
+            <span class="label">Indentation</span>
+            <select
+              data-setting="indent-style"
+              :value="config.settings.value?.indent_style ?? 'detect'"
+              @change="patchGlobal({ indent_style: ($event.target as HTMLSelectElement).value })"
+            >
+              <option value="detect">Detect from file</option>
+              <option value="spaces">Spaces</option>
+              <option value="tabs">Tabs</option>
+            </select>
+          </label>
+          <p class="hint faint no-top">
+            Detect falls back to what the language usually uses: 4 for PHP, Python, Rust, Java and
+            C#, 2 for JavaScript, TypeScript, Vue, JSON, YAML, CSS and HTML, tabs for Go and
+            Makefiles.
+          </p>
+
+          <label class="field">
+            <span class="label">Indent size</span>
+            <select
+              data-setting="indent-size"
+              :value="config.settings.value?.indent_size ?? 4"
+              @change="patchGlobal({ indent_size: Number(($event.target as HTMLSelectElement).value) })"
+            >
+              <option v-for="size in [2, 4, 8]" :key="size" :value="size">{{ size }} spaces</option>
+            </select>
+          </label>
+
+          <label class="field">
+            <span class="label">Tab width</span>
+            <select
+              data-setting="tab-width"
+              :value="config.settings.value?.tab_width ?? 4"
+              @change="patchGlobal({ tab_width: Number(($event.target as HTMLSelectElement).value) })"
+            >
+              <option v-for="size in [2, 4, 8]" :key="size" :value="size">{{ size }} columns</option>
+            </select>
+          </label>
         </section>
 
         <!-- Behaviour -->
@@ -1336,6 +1418,38 @@ onMounted(async () => {
               <span class="faint block">
                 Looked up by email on GitHub and Gravatar (and GitLab for GitLab projects), then
                 cached. When off, initials are shown and nothing is sent.
+              </span>
+            </span>
+          </label>
+
+          <label class="check">
+            <input
+              type="checkbox"
+              data-setting="file-icons"
+              :checked="config.settings.value?.file_icons !== false"
+              @change="patchGlobal({ file_icons: ($event.target as HTMLInputElement).checked })"
+            />
+            <span>
+              <strong>File icons</strong>
+              <span class="faint block">
+                A small icon for the type of each file (PHP, TypeScript, a folder…) wherever files
+                are listed. The colour of a name still shows its status.
+              </span>
+            </span>
+          </label>
+
+          <label class="check">
+            <input
+              type="checkbox"
+              data-setting="usage-counts"
+              :checked="config.settings.value?.usage_counts !== false"
+              @change="patchGlobal({ usage_counts: ($event.target as HTMLInputElement).checked })"
+            />
+            <span>
+              <strong>Show usage counts above definitions</strong>
+              <span class="faint block">
+                "3 usages" over each function, method and class in a file you edit. Counted by
+                name across the repository. Click one to list them.
               </span>
             </span>
           </label>

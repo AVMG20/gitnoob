@@ -6,10 +6,11 @@ const limits = {
   sidebar: [180, 460],
   panel: [280, 720],
   result: [40, 1200],
-  console: [96, 640]
+  console: [96, 640],
+  search: [220, 1400]
 } as const
 
-const DEFAULTS = { sidebar: 252, panel: 400, result: 260, console: 220 }
+const DEFAULTS = { sidebar: 252, panel: 400, result: 260, console: 220, search: 440 }
 
 export type Edge = keyof typeof DEFAULTS
 
@@ -25,6 +26,8 @@ const layout = reactive({
   result: 260,
   /** How tall the console is when it is open. */
   console: 220,
+  /** How wide the search window keeps its list, beside the preview. */
+  search: 440,
   /** Which edge is being dragged, if any. */
   dragging: null as Edge | null
 })
@@ -35,12 +38,13 @@ try {
   if (typeof saved.panel === 'number') layout.panel = saved.panel
   if (typeof saved.result === 'number') layout.result = saved.result
   if (typeof saved.console === 'number') layout.console = saved.console
+  if (typeof saved.search === 'number') layout.search = saved.search
 } catch {
   // A missing or unreadable preference just means the defaults.
 }
 
 watch(
-  () => [layout.sidebar, layout.panel, layout.result, layout.console],
+  () => [layout.sidebar, layout.panel, layout.result, layout.console, layout.search],
   () => {
     try {
       localStorage.setItem(
@@ -49,7 +53,8 @@ watch(
           sidebar: layout.sidebar,
           panel: layout.panel,
           result: layout.result,
-          console: layout.console
+          console: layout.console,
+          search: layout.search
         })
       )
     } catch {
@@ -74,7 +79,8 @@ export function usePanes() {
 
     const move = (moved: PointerEvent) => {
       const at = down ? moved.clientY : moved.clientX
-      const delta = side === 'sidebar' ? at - from : from - at
+      // The sidebar and the search list grow as the pointer goes right.
+      const delta = side === 'sidebar' || side === 'search' ? at - from : from - at
       layout[side] = clamp(startSize + delta, limits[side])
     }
     const stop = () => {

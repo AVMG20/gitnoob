@@ -1,11 +1,15 @@
 // @vitest-environment happy-dom
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { check } from '@tauri-apps/plugin-updater'
+import { relaunch } from '@tauri-apps/plugin-process'
 import { useUpdates } from '~/composables/useUpdates'
+import { resetEdits, setSaveState } from '~/composables/useFileEdit'
 
 vi.mock('@tauri-apps/api/app', () => ({ getVersion: vi.fn(async () => '0.4.9') }))
 vi.mock('@tauri-apps/plugin-process', () => ({ relaunch: vi.fn() }))
 vi.mock('@tauri-apps/plugin-updater', () => ({ check: vi.fn() }))
+vi.mock('@tauri-apps/plugin-dialog', () => ({ ask: vi.fn(async () => false) }))
+vi.mock('@tauri-apps/api/core', () => ({ invoke: vi.fn(async () => null) }))
 
 const asked = vi.mocked(check)
 const updates = useUpdates()
@@ -77,5 +81,27 @@ describe('looking for a newer release', () => {
     updates.stopWatching()
     await vi.advanceTimersByTimeAsync(8 * 60 * 60_000)
     expect(asked).toHaveBeenCalledTimes(3)
+  })
+})
+
+describe('installing', () => {
+  it('asks again before the restart about edits made while it downloaded', async () => {
+    resetEdits()
+    vi.mocked(relaunch).mockClear()
+    asked.mockResolvedValue({
+      version: '0.5.0',
+      body: null,
+      date: undefined,
+      downloadAndInstall: async () => {
+        // Typed into a file whose save is then refused, mid-download.
+        setSaveState(null, 'work:a.php', 'conflict')
+      }
+    } as never)
+    await updates.checkForUpdate(true)
+    vi.useRealTimers()
+    await updates.install()
+    expect(updates.store.stage).toBe('ready')
+    expect(relaunch).not.toHaveBeenCalled()
+    resetEdits()
   })
 })

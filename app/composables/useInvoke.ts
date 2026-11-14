@@ -29,3 +29,12 @@ export function invoke<T>(command: string, args?: Record<string, unknown>): Prom
   // list — is addressed to nothing, and the backend leaves the path alone.
   return send<T>(command, target === null ? args : { ...(args ?? {}), __repo: target })
 }
+
+/**
+ * A call addressed to one repository whatever is in front: for work that
+ * belongs to a project and may finish after another one was switched to,
+ * such as saving the edits of a file whose tab was left.
+ */
+export function invokeAt<T>(repo: string | null, command: string, args?: Record<string, unknown>): Promise<T> {
+  return send<T>(command, repo === null ? args : { ...(args ?? {}), __repo: repo })
+}

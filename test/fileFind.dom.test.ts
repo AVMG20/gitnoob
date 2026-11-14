@@ -6,8 +6,10 @@ import DiffViewer from '~/components/DiffViewer.vue'
 import FileView from '~/components/FileView.vue'
 import DiffView from '~/components/DiffView.vue'
 import ChangeRuler from '~/components/ChangeRuler.vue'
+import FileEditor from '~/components/FileEditor.vue'
 import { useGit, type WorkingStatus } from '~/composables/useGit'
 import { diffMode } from '~/composables/useDiffMode'
+import { resetTabs } from '~/composables/useTabs'
 
 vi.mock('@tauri-apps/api/core', () => ({ invoke: vi.fn() }))
 
@@ -46,7 +48,7 @@ async function show(mode: 'file' | 'diff') {
   diffMode.blame = false
   wrapper = mount(DiffViewer, {
     attachTo: document.body,
-    global: { components: { FileView, DiffView, ChangeRuler } }
+    global: { components: { FileView, DiffView, ChangeRuler, FileEditor } }
   })
   await flushPromises()
   return wrapper
@@ -72,6 +74,9 @@ beforeEach(() => {
     return null
   })
   git.store.status = status
+  // Each test opens the file fresh, rather than coming back to the tab the
+  // last one left scrolled somewhere.
+  resetTabs()
   git.store.viewer = { path: 'app/Retrier.php', side: 'unstaged' }
 })
 
@@ -104,7 +109,8 @@ describe('finding text in an open file', () => {
     await press('ArrowDown', {}, input)
     expect(count(w)).toBe('2 of 3')
     // The second match is the first one on the third line.
-    const lines = w.findAll('.line').filter((one) => !one.classes('gauge'))
+    // File mode is the editor now; its lines are CodeMirror's.
+    const lines = w.findAll('.cm-line')
     expect(lines[2]!.find('mark.find-hit.now').exists()).toBe(true)
 
     await press('Enter', {}, input)

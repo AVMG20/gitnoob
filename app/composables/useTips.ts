@@ -1,4 +1,4 @@
-import { SHORTCUTS } from './useShortcuts'
+import { keysFor } from './useShortcuts'
 
 /**
  * One thing worth knowing about the app.
@@ -18,9 +18,13 @@ export interface Tip {
   keys?: string
 }
 
-/** The chord a shortcut is bound to, so a tip and settings cannot disagree. */
+/**
+ * The chord a shortcut is bound to right now, so a tip and settings cannot
+ * disagree. Read when the tip is shown rather than when the list is built: a
+ * key moved in settings is the one the tip names.
+ */
 function chord(id: string): string | undefined {
-  return SHORTCUTS.find((one) => one.id === id)?.keys
+  return keysFor(id) || undefined
 }
 
 /**
@@ -33,37 +37,51 @@ export const TIPS: Tip[] = [
   {
     id: 'switch',
     text: 'Type part of a name to jump to any repository you have opened, tab or not.',
-    keys: chord('project.switch')
+    get keys() {
+      return chord('project.switch')
+    }
   },
   {
     id: 'undo',
     text: 'Undo works on git itself: the merge, the reset, the branch you just deleted.',
-    keys: chord('history.undo')
+    get keys() {
+      return chord('history.undo')
+    }
   },
   {
     id: 'whole-file',
     text: 'Reading a diff and want the rest of the file? Tab shows the whole file with the changes still marked.',
-    keys: chord('diff.mode')
+    get keys() {
+      return chord('diff.mode')
+    }
   },
   {
     id: 'search',
     text: 'Search the commit list by message, author or hash — and step through the matches.',
-    keys: chord('graph.search')
+    get keys() {
+      return chord('graph.search')
+    }
   },
   {
     id: 'pull',
     text: 'Pull puts your uncommitted work aside first and hands it back afterwards.',
-    keys: chord('repo.pull')
+    get keys() {
+      return chord('repo.pull')
+    }
   },
   {
     id: 'stash',
     text: 'Stash everything, staged work included, without touching the command line.',
-    keys: chord('stash.push')
+    get keys() {
+      return chord('stash.push')
+    }
   },
   {
     id: 'branch',
     text: 'Start a branch from wherever you are standing.',
-    keys: chord('branch.create')
+    get keys() {
+      return chord('branch.create')
+    }
   },
   // A gesture belongs in the sentence and nowhere else: the chip is for a chord
   // you press, and "Shift-click … Shift+click" said the same thing twice in a
@@ -79,17 +97,23 @@ export const TIPS: Tip[] = [
   {
     id: 'nth',
     text: 'Project tabs answer to their number, left to right.',
-    keys: chord('project.nth')
+    get keys() {
+      return chord('project.nth')
+    }
   },
   {
     id: 'fetch',
     text: 'Fetch every remote at once — or let the app do it on a timer, in settings.',
-    keys: chord('repo.fetch')
+    get keys() {
+      return chord('repo.fetch')
+    }
   },
   {
     id: 'zoom',
     text: 'The whole window scales, and it opens at the size and zoom you left it.',
-    keys: chord('zoom.in')
+    get keys() {
+      return chord('zoom.in')
+    }
   },
   {
     id: 'reorder',

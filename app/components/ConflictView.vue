@@ -19,6 +19,7 @@ import {
   type ConflictFile,
   type Resolution
 } from '~/composables/useGit'
+import FileIcon from '~/components/FileIcon.vue'
 import { useAi } from '~/composables/useAi'
 import { highlightWhole, languageFor } from '~/composables/useHighlight'
 import { windowOf, type Mark } from '~/composables/useCode'
@@ -1023,6 +1024,7 @@ onUnmounted(() => window.removeEventListener('keydown', onKey))
           @click="load(name)"
         >
           <span class="dot" />
+          <FileIcon :path="name" :size="13" />
           <span class="rail-text">
             <span class="truncate">{{ name.split('/').pop() }}</span>
             <span class="faint truncate small">{{ name }}</span>
@@ -1039,6 +1041,7 @@ onUnmounted(() => window.removeEventListener('keydown', onKey))
             :title="name"
             data-test="resolved-file"
           >
+            <FileIcon :path="name" :size="13" />
             <span class="rail-text">
               <span class="truncate">{{ name.split('/').pop() }}</span>
               <span class="faint truncate small">{{ name }}</span>

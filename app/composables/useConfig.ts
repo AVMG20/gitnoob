@@ -69,6 +69,14 @@ export interface GlobalSettings {
   diverged_checkout: 'ask' | 'rebase' | 'merge' | 'leave'
   show_avatars: boolean
   check_updates: boolean
+  /** "3 usages" over each definition in the editor. */
+  usage_counts?: boolean
+  /** A type icon before each file name, everywhere files are listed. */
+  file_icons?: boolean
+  /** How the editor indents when neither .editorconfig nor the file says. */
+  indent_style?: 'detect' | 'spaces' | 'tabs'
+  indent_size?: number
+  tab_width?: number
   /** Check the signature on every commit the graph draws. */
   verify_signatures: boolean
   /** Clicking a worktree turns this tab into it rather than opening a new one. */
@@ -134,6 +142,7 @@ export type SettingsSection =
   | 'appearance'
   | 'shortcuts'
   | 'behaviour'
+  | 'editor'
   | 'updates'
 
 const store = reactive({

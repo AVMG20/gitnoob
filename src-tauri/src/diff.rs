@@ -1,4 +1,5 @@
 use std::cell::{Cell, RefCell};
+use std::collections::HashSet;
 use std::path::Path;
 
 use git2::{Commit, Delta, Diff, DiffOptions, Oid, Repository, Tree};
@@ -182,6 +183,75 @@ pub fn working_file_diff(state: &AppState, path: &str, side: Side) -> Result<Fil
     }
 
     collect_hunks(&diff, path)
+}
+
+/// A working-tree file against the last commit, staged and unstaged together:
+/// what the editor's change bars mark. Untracked files read as added whole.
+pub fn head_file_diff(state: &AppState, path: &str) -> Result<FileDiff, String> {
+    let repo = state.repo()?;
+    let mut opts = base_options();
+    opts.pathspec(path)
+        .include_untracked(true)
+        .recurse_untracked_dirs(true)
+        .show_untracked_content(true);
+    let head_tree = head_tree(&repo)?;
+    let diff = repo
+        .diff_tree_to_workdir_with_index(head_tree.as_ref(), Some(&mut opts))
+        .map_err(err)?;
+    collect_hunks(&diff, path)
+}
+
+/// The lines of a working-tree file that are new on this branch: added since
+/// it left the main branch, committed or not. On the main branch itself, the
+/// lines added since the remote's copy of it, or since the last commit.
+///
+/// "Main" is what `origin/HEAD` points at, else `main` or `master`, local or
+/// on origin. With none of those, only uncommitted lines count.
+pub fn branch_added_lines(state: &AppState, path: &str) -> Result<HashSet<u32>, String> {
+    let repo = state.repo()?;
+    let head = match repo.head().and_then(|head| head.peel_to_commit()) {
+        Ok(head) => head,
+        Err(_) => return Ok(HashSet::new()),
+    };
+    let trunk = [
+        "refs/remotes/origin/HEAD",
+        "refs/remotes/origin/main",
+        "refs/remotes/origin/master",
+        "refs/heads/main",
+        "refs/heads/master",
+    ]
+    .iter()
+    .find_map(|name| {
+        repo.find_reference(name)
+            .and_then(|found| found.resolve())
+            .and_then(|found| found.peel_to_commit())
+            .ok()
+    });
+    let base = match trunk {
+        Some(trunk) => repo
+            .merge_base(head.id(), trunk.id())
+            .and_then(|oid| repo.find_commit(oid))
+            .unwrap_or(head),
+        None => head,
+    };
+    let tree = base.tree().map_err(err)?;
+    let mut opts = base_options();
+    opts.pathspec(path)
+        .include_untracked(true)
+        .recurse_untracked_dirs(true)
+        .show_untracked_content(true)
+        .context_lines(0);
+    let diff = repo
+        .diff_tree_to_workdir_with_index(Some(&tree), Some(&mut opts))
+        .map_err(err)?;
+    let found = collect_hunks(&diff, path)?;
+    Ok(found
+        .hunks
+        .iter()
+        .flat_map(|hunk| hunk.lines.iter())
+        .filter(|line| line.origin == '+')
+        .filter_map(|line| line.new_lineno)
+        .collect())
 }
 
 /// The name a file had before it was moved, on the side being looked at.

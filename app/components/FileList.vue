@@ -21,6 +21,12 @@ import {
   type FileEntry,
   type Tally
 } from '~/composables/useFileView'
+import FileIcon from '~/components/FileIcon.vue'
+import { useConfig } from '~/composables/useConfig'
+
+const config = useConfig()
+/** With icons off, folders keep the plain folder they always had. */
+const iconsOn = computed(() => config.settings.value?.file_icons !== false)
 
 const props = defineProps<{
   files: FileEntry[]
@@ -41,6 +47,8 @@ const props = defineProps<{
 }>()
 const emit = defineEmits<{
   select: [string]
+  /** A double click: open it and keep it open. */
+  keep: [string]
   menu: [MouseEvent, FileEntry]
   /** Right-click on a folder row, with the folder's path. */
   dirmenu: [MouseEvent, string]
@@ -162,7 +170,8 @@ function counted(tally: Tally) {
         @contextmenu="emit('dirmenu', $event, row.path)"
       >
         <component :is="row.collapsed ? ChevronRight : ChevronDown" :size="12" class="chev" />
-        <Folder :size="12" class="folder" :class="{ clash: row.conflicts }" />
+        <FileIcon v-if="iconsOn" :path="row.path" folder :open="!row.collapsed" :size="13" />
+        <Folder v-else :size="12" class="folder" :class="{ clash: row.conflicts }" />
         <span class="name truncate" :class="{ clash: row.conflicts }">{{ row.name }}</span>
         <!-- Said on the folder as well as on the files, so a folded one still
              shows there is something below it to deal with. -->
@@ -193,6 +202,7 @@ function counted(tally: Tally) {
         :title="row.entry?.from ? `${row.entry.from} → ${row.path}` : row.path"
         :draggable="props.draggable"
         @click="emit('select', row.path)"
+        @dblclick="emit('keep', row.path)"
         @contextmenu="row.entry && emit('menu', $event, row.entry)"
         @dragstart="row.entry && emit('dragstart', $event, row.entry)"
         @dragend="emit('dragend')"
@@ -206,6 +216,7 @@ function counted(tally: Tally) {
         >
           <title>{{ mark(row.entry?.kind ?? '').label }}</title>
         </component>
+        <FileIcon :path="row.path" :size="13" />
         <span class="name truncate" :class="{ clash: row.entry?.kind === CONFLICTED }">
           {{ row.name }}
         </span>

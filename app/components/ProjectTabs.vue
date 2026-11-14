@@ -8,6 +8,8 @@ import { useConfig } from '~/composables/useConfig'
 import { useGit } from '~/composables/useGit'
 import { useContextMenu } from '~/composables/useContextMenu'
 import { useShortcuts } from '~/composables/useShortcuts'
+import { useTabs } from '~/composables/useTabs'
+import { closeTabsSafely } from '~/composables/useFileEdit'
 
 const emit = defineEmits<{ open: [string]; clone: []; init: []; home: [] }>()
 
@@ -96,9 +98,17 @@ function step(by: number) {
   if (next) emit('open', next)
 }
 
+const tabs = useTabs()
+
 useShortcuts({
   'project.open': () => void pick(),
   'project.close': () => {
+    // A file on screen is what ⌘W is about; on the graph it is the project.
+    const file = tabs.activeTab()
+    if (file && !props.home) {
+      void closeTabsSafely([file.id], () => tabs.closeTab(file.id))
+      return
+    }
     const path = config.activeProject.value
     if (path) void close(path)
   },

@@ -7,7 +7,14 @@ import { X } from 'lucide-vue-next'
  * work, where one stray click outside the box would throw it all away.
  * Escape and the ✕ still close them; both are deliberate.
  */
-const props = defineProps<{ title: string; width?: number; keep?: boolean }>()
+const props = defineProps<{
+  title: string
+  width?: number
+  keep?: boolean
+  /** A command palette: no title row, near the top, most of the height. Esc
+      and the scrim close it. The title is still its accessible name. */
+  palette?: boolean
+}>()
 const emit = defineEmits<{ close: [] }>()
 
 function onKey(event: KeyboardEvent) {
@@ -36,9 +43,14 @@ function onScrim() {
 </script>
 
 <template>
-  <div class="scrim" @pointerdown="onDown" @click.self="onScrim">
-    <div class="modal" :style="{ width: `${props.width ?? 460}px` }">
-      <div class="head">
+  <div class="scrim" :class="{ palette: props.palette }" @pointerdown="onDown" @click.self="onScrim">
+    <div
+      class="modal"
+      role="dialog"
+      :aria-label="props.title"
+      :style="{ width: `${props.width ?? 460}px` }"
+    >
+      <div v-if="!props.palette" class="head">
         <h2>{{ props.title }}</h2>
         <button class="btn" title="Close" @click="emit('close')"><X :size="16" /></button>
       </div>
@@ -114,6 +126,26 @@ function onScrim() {
   padding: 10px 14px;
   background: var(--canvas);
   border-top: 1px solid var(--line-soft);
+}
+
+/* A palette sits near the top, like a command palette, and takes most of the
+   height for what it lists. */
+.scrim.palette {
+  place-items: start center;
+  padding-top: 4vh;
+}
+
+.palette .modal {
+  height: 88vh;
+}
+
+.palette .content {
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  min-height: 0;
+  padding: 10px;
+  overflow: hidden;
 }
 
 @keyframes scrim-in {

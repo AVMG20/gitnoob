@@ -15,6 +15,7 @@ export type ShortcutGroup =
   | 'Branches and commits'
   | 'The commit list'
   | 'Changes and diffs'
+  | 'Files and editing'
   | 'Projects and windows'
 
 export interface Shortcut {
@@ -29,14 +30,27 @@ export interface Shortcut {
   group: ShortcutGroup
   /** When it will not fire, where that is worth saying. */
   note?: string
+  /**
+   * A second chord that does the same, on this platform only and not moved by
+   * settings: Alt+← for back on Windows and Linux, where every browser has it.
+   */
+  also?: string
+  /**
+   * Fires with the caret in the code editor too. Every other chord stands
+   * down while something takes text, so ⌘Z there is the editor's own undo and
+   * never git's.
+   */
+  editor?: boolean
 }
+
+const isMac = typeof navigator !== 'undefined' && navigator.userAgent.includes('Mac')
 
 const ANYWHERE = 'Anywhere in the window'
 const WORKING = 'While the working tree is shown'
 
 export const SHORTCUTS: Shortcut[] = [
   // Repository
-  { id: 'repo.fetch', keys: 'mod+shift+f', label: 'Fetch every remote', where: ANYWHERE, group: 'Repository' },
+  { id: 'repo.fetch', keys: 'mod+alt+f', label: 'Fetch every remote', where: ANYWHERE, group: 'Repository', note: 'Was ⌘⇧F before 0.10, which searches inside files now.' },
   { id: 'repo.pull', keys: 'mod+shift+l', label: 'Pull, stashing open work first', where: ANYWHERE, group: 'Repository' },
   { id: 'repo.push', keys: 'mod+shift+p', label: 'Push the current branch', where: ANYWHERE, group: 'Repository', note: 'Asks first when the push would drop commits.' },
   { id: 'repo.refresh', keys: 'mod+r', label: 'Re-read the repository', where: ANYWHERE, group: 'Repository' },
@@ -64,10 +78,11 @@ export const SHORTCUTS: Shortcut[] = [
   // Changes and diffs
   { id: 'diff.mode', keys: 'Tab', label: 'Show the whole file, or only the lines that changed', where: 'An open file', group: 'Changes and diffs', note: 'Blame is a column of the file view, on the line numbers’ right-click menu.' },
   { id: 'viewer.move', keys: 'ArrowUp/ArrowDown', label: 'Move to the file before or after this one', where: 'An open file', group: 'Changes and diffs', note: 'Walks the panel beside it, in the order it lists them.' },
-  { id: 'viewer.search', keys: 'mod+f', label: 'Find text in the file', where: 'An open file', group: 'Changes and diffs', note: 'Searches whichever view is on screen. ↑, ↓ and ↵ in the box step through the matches.' },
-  { id: 'viewer.next', keys: 'mod+g', label: 'Next match in the file', where: 'An open file', group: 'Changes and diffs' },
-  { id: 'viewer.previous', keys: 'mod+shift+g', label: 'Previous match in the file', where: 'An open file', group: 'Changes and diffs' },
-  { id: 'viewer.close', keys: 'Escape', label: 'Close the find box, then the file', where: 'An open file', group: 'Changes and diffs' },
+  { id: 'viewer.search', keys: 'mod+f', label: 'Find text in the file', where: 'An open file', group: 'Changes and diffs', note: 'Searches whichever view is on screen. ↑, ↓ and ↵ in the box step through the matches.', editor: true },
+  // No key of their own since 0.10: ↵ and ⇧↵ in the find box step, and ⌘G is
+  // going to line numbers. Kept so a key somebody moved them onto still works.
+  { id: 'viewer.next', keys: '', label: 'Next match in the file', where: 'An open file', group: 'Changes and diffs', note: 'Was ⌘G before 0.10, which goes to a line now. ↵ and ⇧↵ in the find box step through the matches.' },
+  { id: 'viewer.previous', keys: '', label: 'Previous match in the file', where: 'An open file', group: 'Changes and diffs' },
   { id: 'conflict.move', keys: 'ArrowUp/ArrowDown', label: 'Move to the conflict before or after this one', where: 'The conflict resolver', group: 'Changes and diffs' },
   { id: 'conflict.undecided', keys: 'Tab', label: 'Jump to the next conflict nobody has decided yet', where: 'The conflict resolver', group: 'Changes and diffs' },
   { id: 'filter.clear', keys: 'Escape', label: 'Clear the branch filter', where: 'The filter box in the sidebar', group: 'Changes and diffs' },
@@ -75,7 +90,7 @@ export const SHORTCUTS: Shortcut[] = [
   // Projects and windows
   { id: 'project.open', keys: 'mod+o', label: 'Open a repository', where: ANYWHERE, group: 'Projects and windows' },
   { id: 'project.switch', keys: 'mod+p', label: 'Go to a repository', where: ANYWHERE, group: 'Projects and windows', note: 'Searches the open tabs and everything opened before them.' },
-  { id: 'project.close', keys: 'mod+w', label: 'Close the current project tab', where: ANYWHERE, group: 'Projects and windows' },
+  { id: 'project.close', keys: 'mod+w', label: 'Close the file tab, or the project on the graph', where: ANYWHERE, group: 'Projects and windows', note: 'With a file open it closes that file. On the graph it closes the project tab.', editor: true },
   { id: 'project.next', keys: 'mod+alt+ArrowRight', label: 'Next project tab', where: ANYWHERE, group: 'Projects and windows' },
   { id: 'project.previous', keys: 'mod+alt+ArrowLeft', label: 'Previous project tab', where: ANYWHERE, group: 'Projects and windows' },
   { id: 'project.nth', keys: 'mod+1…9', label: 'Jump to a project tab by position', where: ANYWHERE, group: 'Projects and windows' },
@@ -97,8 +112,25 @@ export const SHORTCUTS: Shortcut[] = [
   { id: 'work.stageall', keys: 'mod+shift+a', label: 'Stage every change', where: WORKING, group: 'Changes and diffs' },
   { id: 'work.unstageall', keys: 'mod+shift+u', label: 'Unstage everything', where: WORKING, group: 'Changes and diffs' },
   { id: 'work.discard', keys: 'mod+backspace', label: 'Discard the open file’s unstaged changes', where: 'An open working-tree file', group: 'Changes and diffs', note: 'Always asks first.' },
-  { id: 'work.next', keys: 'mod+]', label: 'Open the next changed file', where: WORKING, group: 'Changes and diffs' },
-  { id: 'work.previous', keys: 'mod+[', label: 'Open the previous changed file', where: WORKING, group: 'Changes and diffs' }
+  { id: 'work.next', keys: 'mod+alt+ArrowDown', label: 'Open the next changed file', where: WORKING, group: 'Changes and diffs', note: 'Was ⌘] before 0.10, which is back and forward now.', editor: true },
+  { id: 'work.previous', keys: 'mod+alt+ArrowUp', label: 'Open the previous changed file', where: WORKING, group: 'Changes and diffs', editor: true },
+
+  // Files and editing
+  { id: 'search.text', keys: 'mod+shift+f', label: 'Search inside files', where: ANYWHERE, group: 'Files and editing', note: 'Starts from the text selected in the editor. Press it again in the window to switch.', editor: true },
+  { id: 'search.files', keys: 'mod+shift+n', label: 'Find a file by name', where: ANYWHERE, group: 'Files and editing', note: 'Fuzzy, on the whole path. Add :42 to open at line 42.', editor: true },
+  { id: 'search.symbols', keys: 'mod+alt+o', label: 'Find a class, function or method', where: ANYWHERE, group: 'Files and editing', note: 'Fuzzy on the name; capitals match capitals, so MECC finds MakeExactConnectionCommand. Opens at the definition.', editor: true },
+  { id: 'files.recent', keys: 'mod+e', label: 'Recent files', where: ANYWHERE, group: 'Files and editing', editor: true },
+  { id: 'file.line', keys: 'mod+g', label: 'Go to line', where: 'An open file', group: 'Files and editing', editor: true },
+  { id: 'file.nextChange', keys: 'alt+ArrowDown', label: 'Next change in this file', where: 'An open file', group: 'Files and editing', editor: true },
+  { id: 'file.previousChange', keys: 'alt+ArrowUp', label: 'Previous change in this file', where: 'An open file', group: 'Files and editing', editor: true },
+  { id: 'file.jump', keys: 'mod+j', label: 'Go to definition, or list the usages', where: 'An open file', group: 'Files and editing', note: 'Same as ⌘-click on a name. On a call it goes to the definition; on a definition it lists who uses it.', editor: true },
+  { id: 'file.save', keys: 'mod+s', label: 'Save now', where: 'The editor', group: 'Files and editing', note: 'Files save on their own as you type. Outside the editor the same key stages.' },
+  { id: 'nav.back', keys: 'mod+[', label: 'Go back to where you were', where: ANYWHERE, group: 'Files and editing', note: 'The mouse’s back button does the same. A tab closed since is opened again.', also: isMac ? undefined : 'alt+ArrowLeft', editor: true },
+  { id: 'nav.forward', keys: 'mod+]', label: 'Go forward again', where: ANYWHERE, group: 'Files and editing', note: 'And the mouse’s forward button.', also: isMac ? undefined : 'alt+ArrowRight', editor: true },
+  { id: 'tab.next', keys: 'ctrl+Tab', label: 'Next tab', where: ANYWHERE, group: 'Files and editing', note: 'The graph counts as the first tab.', editor: true },
+  { id: 'tab.previous', keys: 'ctrl+shift+Tab', label: 'Previous tab', where: ANYWHERE, group: 'Files and editing', editor: true },
+  { id: 'file.mode', keys: 'mod+d', label: 'Switch an open file between Diff and File', where: 'An open file', group: 'Files and editing', note: 'Tab does the same, except while typing.', editor: true },
+  { id: 'graph.show', keys: 'Escape', label: 'Back to the graph', where: 'An open file', group: 'Files and editing', note: 'The file stays open in its tab. Closes the find box first when it is open.' }
 ]
 
 /**
@@ -129,8 +161,15 @@ export function keysFor(id: string): string {
 export function isRebindable(shortcut: Shortcut): boolean {
   const keys = shortcut.keys
   if (shortcut.id === 'project.nth') return false
+  // No key by default, and free to be given one.
+  if (keys === '') return true
   if (keys.includes('/') || keys.includes('…') || keys.includes('click')) return false
-  return /^(mod|alt)\+/.test(keys)
+  return /^(mod|alt|ctrl)\+/.test(keys)
+}
+
+/** The platform-only second chord a shortcut answers to, if it has one. */
+export function alsoFor(id: string): string {
+  return SHORTCUTS.find((one) => one.id === id)?.also ?? ''
 }
 
 /** The chord an event stands for, in the spelling the list uses. */
@@ -138,9 +177,23 @@ export function eventChord(event: KeyboardEvent): string {
   return chordOf(event)
 }
 
+/**
+ * A chord as it is compared. Off macOS, Ctrl is the platform's `mod`, so the
+ * list can say `ctrl+Tab` and mean the same key everywhere.
+ */
+function normal(chord: string) {
+  const lower = chord.toLowerCase()
+  return isMac ? lower : lower.replace(/^ctrl\+/, 'mod+')
+}
+
 /** Whether two chords are the same keypress, whatever the case of their key names. */
 function same(a: string, b: string) {
-  return !!a && a.toLowerCase() === b.toLowerCase()
+  return !!a && !!b && normal(a) === normal(b)
+}
+
+/** Whether a chord is one a shortcut is bound to, under either of its keys. */
+function boundTo(chord: string, id: string) {
+  return same(chord, keysFor(id)) || same(chord, alsoFor(id))
 }
 
 /**
@@ -150,7 +203,7 @@ function same(a: string, b: string) {
  * ⌘↵ in the commit box — so that moving the key in settings moves it there too.
  */
 export function matchesShortcut(event: KeyboardEvent, id: string): boolean {
-  return same(chordOf(event), keysFor(id))
+  return boundTo(chordOf(event), id)
 }
 
 /**
@@ -177,8 +230,16 @@ export function clashFor(row: Shortcut, chord: string): Shortcut | undefined {
     if (nth && nth.id !== row.id) return nth
   }
   return SHORTCUTS.find(
-    (one) => one.id !== row.id && same(keysFor(one.id), chord) && together(one.where, row.where)
+    (one) => one.id !== row.id && boundTo(chord, one.id) && together(one.where, row.where)
   )
+}
+
+/**
+ * Chords the system's menu answers before the page ever sees them: quit, hide
+ * and minimise on a Mac. A shortcut moved onto one would simply never fire.
+ */
+export function reservedChord(chord: string, mac = isMac): boolean {
+  return mac && /^mod\+(q|h|m)$/i.test(chord)
 }
 
 export const SHORTCUT_GROUPS: ShortcutGroup[] = [
@@ -186,14 +247,14 @@ export const SHORTCUT_GROUPS: ShortcutGroup[] = [
   'Branches and commits',
   'The commit list',
   'Changes and diffs',
+  'Files and editing',
   'Projects and windows'
 ]
-
-const isMac = typeof navigator !== 'undefined' && navigator.userAgent.includes('Mac')
 
 /** What each part of a chord is drawn as, so the page reads like the keyboard. */
 const GLYPHS: Record<string, string> = {
   mod: isMac ? '⌘' : 'Ctrl',
+  ctrl: isMac ? '⌃' : 'Ctrl',
   shift: isMac ? '⇧' : 'Shift',
   alt: isMac ? '⌥' : 'Alt',
   enter: '↵',
@@ -224,17 +285,31 @@ export function keyLabel(keys: string): string {
  * The chord an event stands for, in the same spelling the list uses.
  *
  * `mod` is the platform's own: ⌘ on macOS, Ctrl elsewhere. Accepting either
- * would take Ctrl-F away from the caret on a Mac, where it moves it forward.
+ * would take Ctrl-F away from the caret on a Mac, where it moves it forward —
+ * so on a Mac, Control is spelled `ctrl` and matches only a chord that says so.
+ *
+ * Option on a Mac types a different character: ⌥F is `ƒ`, ⌥E is a dead key.
+ * Read off `event.key` alone, no ⌘⌥-letter chord could ever match. When Alt is
+ * held and the key is not a plain letter or digit, the physical key it sits on
+ * (`KeyF`, `Digit3`) says which one was meant. Elsewhere Alt leaves the letter
+ * alone, and the letter is what the layout calls it, so that one is kept.
  */
-function chordOf(event: KeyboardEvent): string {
+export function chordOf(event: KeyboardEvent, mac = isMac): string {
   const parts: string[] = []
-  const mod = isMac ? event.metaKey : event.ctrlKey
-  const other = isMac ? event.ctrlKey : event.metaKey
-  if (other) return ''
+  const mod = mac ? event.metaKey : event.ctrlKey
+  if (!mac && event.metaKey) return ''
+  // AltGr is reported as Ctrl+Alt on Windows. A character it types is not a
+  // chord: `@` on a German keyboard is not Ctrl+Alt+Q, `ą` is not Ctrl+Alt+A.
+  if (!mac && event.key.length === 1 && !/^[a-z0-9 ]$/i.test(event.key) && event.getModifierState?.('AltGraph')) {
+    return ''
+  }
+  if (mac && event.ctrlKey) parts.push('ctrl')
   if (mod) parts.push('mod')
   if (event.altKey) parts.push('alt')
   if (event.shiftKey) parts.push('shift')
-  const key = event.key.length === 1 ? event.key.toLowerCase() : event.key
+  let key = event.key.length === 1 ? event.key.toLowerCase() : event.key
+  const code = /^(?:Key([A-Z])|Digit([0-9]))$/.exec(event.code ?? '')
+  if (event.altKey && code && !/^[a-z0-9]$/.test(key)) key = (code[1] ?? code[2]!).toLowerCase()
   parts.push(key === ' ' ? 'space' : key)
   return parts.join('+')
 }
@@ -265,12 +340,18 @@ type Handler = (index: number) => unknown
 const handlers: { id: string; handler: Handler }[] = []
 let listening = false
 
-function handlerFor(chord: string): Handler | null {
+function handlerFor(chord: string): { id: string; handler: Handler } | null {
   for (let at = handlers.length - 1; at >= 0; at--) {
     const bound = handlers[at]!
-    if (same(chord, keysFor(bound.id))) return bound.handler
+    if (boundTo(chord, bound.id)) return bound
   }
   return null
+}
+
+/** True while the caret is in the code editor rather than an ordinary field. */
+export function inEditor(event: Event): boolean {
+  const target = event.target as HTMLElement | null
+  return !!target?.closest?.('.cm-editor')
 }
 
 function onKey(event: KeyboardEvent) {
@@ -287,13 +368,18 @@ function onKey(event: KeyboardEvent) {
     return
   }
 
-  const handler = handlerFor(chord)
-  if (!handler) return
+  const bound = handlerFor(chord)
+  if (!bound) return
   // Every registered chord carries a modifier, so a plain letter typed into the
   // commit box never reaches here — but ⌘Z in a text box is that box's undo.
-  if (typing(event) || covered()) return
+  // The editor lets the navigation keys through; it has handled its own by now.
+  if (event.defaultPrevented || covered()) return
+  if (typing(event)) {
+    const allowed = inEditor(event) && SHORTCUTS.find((one) => one.id === bound.id)?.editor
+    if (!allowed) return
+  }
   event.preventDefault()
-  void handler(0)
+  void bound.handler(0)
 }
 
 /**

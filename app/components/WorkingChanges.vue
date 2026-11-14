@@ -28,11 +28,12 @@ import {
 import { useContextMenu } from '~/composables/useContextMenu'
 import { useDragDrop } from '~/composables/useDragDrop'
 import { useAi } from '~/composables/useAi'
-import { CONFLICTED, useFileView } from '~/composables/useFileView'
+import { CONFLICTED, deletingFiles, useFileView } from '~/composables/useFileView'
 import { COMMIT_FLOW_DEFAULTS, useConfig } from '~/composables/useConfig'
 import { useCommitDraft } from '~/composables/useCommitDraft'
 import { composeMessage, onTrunk, onlyPrefix, ticketPrefix } from '~/composables/useCommitFlow'
 import { keyLabel, keysFor, matchesShortcut, useShortcuts } from '~/composables/useShortcuts'
+import { openTab, showGraph } from '~/composables/useTabs'
 
 const git = useGit()
 const store = git.store
@@ -250,8 +251,14 @@ function show(path: string, side: 'staged' | 'unstaged') {
     store.resolving = path
     return
   }
-  store.viewer =
-    store.viewer?.path === path && store.viewer?.side === side ? null : { path, side }
+  // A single click previews it, so reading down the list reuses one tab.
+  openTab({ path, side, mode: 'diff' }, { preview: true })
+}
+
+/** A double click keeps the tab. */
+function keep(path: string, side: 'staged' | 'unstaged') {
+  if (side === 'unstaged' && conflicted.value.includes(path)) return
+  openTab({ path, side, mode: 'diff' })
 }
 
 // --- committing
@@ -404,7 +411,7 @@ async function finish(push: boolean, noVerify: boolean) {
   // commit that was being written is now in the history, which is what
   // there is to look at; what is left over is a fresh read, started from
   // the list rather than from whatever page the last one ended on.
-  store.viewer = null
+  showGraph()
   if (push) await pushAfter(rewrote, at, branch)
   return true
 }
@@ -595,7 +602,7 @@ function stepFile(by: number) {
   const at = open ? order.findIndex((one) => one.path === open.path && one.side === open.side) : -1
   const next = at < 0 ? (by > 0 ? 0 : order.length - 1) : at + by
   const target = order[next]
-  if (target) store.viewer = target
+  if (target) openTab({ ...target, mode: 'diff' }, { preview: true })
 }
 
 useShortcuts({
@@ -605,8 +612,16 @@ useShortcuts({
   'work.toggle': () => {
     const open = openFile.value
     if (!open || store.busy) return
-    if (open.side === 'staged') void git.unstage([open.path])
-    else if (!conflicted.value.includes(open.path)) void git.stage([open.path])
+    // A file with nothing to stage or unstage is being read, not reviewed:
+    // the key does nothing rather than stage something by surprise.
+    if (open.side === 'staged') {
+      if (staged.value.some((one) => one.path === open.path)) void git.unstage([open.path])
+    } else if (
+      !conflicted.value.includes(open.path) &&
+      unstaged.value.some((one) => one.path === open.path)
+    ) {
+      void git.stage([open.path])
+    }
   },
   'work.stageall': () => {
     if (store.busy || !unstaged.value.length) return
@@ -635,7 +650,7 @@ const pushTitle = computed(
  * the only thing "discard" could mean, and there is nothing to undo it with, so
  * it is the one thing here worth a question first.
  */
-const deleting = ref<string[] | null>(null)
+const deleting = deletingFiles
 
 /**
  * The conflicted files a menu has offered to throw away, while it is being
@@ -891,6 +906,7 @@ function fileMenu(event: MouseEvent, path: string, side: 'staged' | 'unstaged', 
         draggable
         action="Stage file"
         @select="(path) => show(path, 'unstaged')"
+        @keep="(path) => keep(path, 'unstaged')"
         @act="
           (entry) =>
             entry.kind === CONFLICTED ? (store.resolving = entry.path) : git.stage([entry.path])
@@ -940,6 +956,7 @@ function fileMenu(event: MouseEvent, path: string, side: 'staged' | 'unstaged', 
         draggable
         action="Unstage file"
         @select="(path) => show(path, 'staged')"
+        @keep="(path) => keep(path, 'staged')"
         @act="(entry) => git.unstage([entry.path])"
         @menu="(event, entry) => fileMenu(event, entry.path, 'staged', entry.kind)"
         @dirmenu="(event, dir) => dirMenu(event, dir, 'staged')"

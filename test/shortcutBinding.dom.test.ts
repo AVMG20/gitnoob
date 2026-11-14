@@ -91,6 +91,9 @@ describe('the keys that ship', () => {
     expect(ids).not.toContain('graph.move')
     expect(ids).not.toContain('project.nth')
     expect(ids).not.toContain('graph.extend')
+    // No key by default since 0.10, and still free to be given one.
+    expect(ids).toContain('viewer.next')
+    expect(ids).toContain('viewer.previous')
   })
 
   it('gives no two shortcuts the same keys in the same place', () => {
@@ -100,11 +103,12 @@ describe('the keys that ship', () => {
       for (const other of chords) {
         if (one === other) continue
         const clash =
+          !!one.keys &&
           one.keys.toLowerCase() === other.keys.toLowerCase() &&
           (one.where === other.where || one.where === anywhere || other.where === anywhere)
         // ⌘F, ⌘G and ⇧⌘G are the commit list's and an open file's in turn,
         // and the two are never on screen together.
-        const knownPair = [one.id, other.id].every((id) => /^(graph|viewer)\./.test(id))
+        const knownPair = [one.id, other.id].every((id) => /^(graph|viewer|file)\./.test(id))
         expect(clash && !knownPair, `${one.id} and ${other.id}`).toBe(false)
       }
     }

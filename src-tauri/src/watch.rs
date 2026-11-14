@@ -11,6 +11,7 @@
 //! only the status changed, which is cheap. Telling them apart is what keeps a
 //! file save from re-walking the whole history.
 
+use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 use std::sync::mpsc::{channel, RecvTimeoutError};
 use std::sync::{Arc, Mutex};
@@ -92,6 +93,8 @@ pub fn start(app: AppHandle, root: PathBuf) -> Option<Watch> {
 
     std::thread::spawn(move || {
         let mut pending = Changed::default();
+        // The work-tree files written in this burst, for the code index.
+        let mut touched: HashSet<PathBuf> = HashSet::new();
         loop {
             // Block until something happens, then keep draining until the burst
             // goes quiet. Reporting mid-burst would show a half-finished
@@ -100,11 +103,11 @@ pub fn start(app: AppHandle, root: PathBuf) -> Option<Watch> {
                 Ok(event) => event,
                 Err(_) => return,
             };
-            note(&mut pending, first, &places);
+            note(&mut pending, &mut touched, first, &places);
 
             loop {
                 match rx.recv_timeout(QUIET) {
-                    Ok(event) => note(&mut pending, event, &places),
+                    Ok(event) => note(&mut pending, &mut touched, event, &places),
                     Err(RecvTimeoutError::Timeout) => break,
                     Err(RecvTimeoutError::Disconnected) => return,
                 }
@@ -112,6 +115,13 @@ pub fn start(app: AppHandle, root: PathBuf) -> Option<Watch> {
 
             if pending != Changed::default() {
                 let _ = app.emit(EVENT, pending.clone());
+            }
+            // After the window has heard, and on a thread of its own: reading
+            // the files again must not hold up the next report.
+            if !touched.is_empty() {
+                let root = places.root.clone();
+                let paths = std::mem::take(&mut touched);
+                std::thread::spawn(move || crate::symbols::touched(&root, &paths));
             }
             pending = Changed::default();
         }
@@ -172,15 +182,65 @@ fn inside(path: &Path, dir: &Path) -> bool {
 }
 
 /// Folds one filesystem event into what will be reported.
-fn note(pending: &mut Changed, event: notify::Result<notify::Event>, places: &Places) {
+fn note(
+    pending: &mut Changed,
+    touched: &mut HashSet<PathBuf>,
+    event: notify::Result<notify::Event>,
+    places: &Places,
+) {
     let Ok(event) = event else { return };
+    // The editor's own save goes through a temp file renamed over the real
+    // one: the temp file is nobody's business, and the rename only replaced
+    // a file that was already there.
+    let own_save = event.paths.iter().any(|path| editor_temp(path));
     for path in &event.paths {
+        if editor_temp(path) {
+            continue;
+        }
         match classify(path, places) {
             Some(true) => pending.git_dir = true,
-            Some(false) => pending.work_tree = true,
+            Some(false) => {
+                pending.work_tree = true;
+                touched.insert(path.clone());
+                if !own_save
+                    && changes_listing(&event.kind, path)
+                    && !replaced_in_place(&event.kind, path, &places.root)
+                {
+                    crate::files::forget(&places.root);
+                }
+            }
             None => {}
         }
     }
+}
+
+/// A temp file `edit.rs` writes before renaming it over the file it saves.
+fn editor_temp(path: &Path) -> bool {
+    path.file_name()
+        .and_then(|name| name.to_str())
+        .is_some_and(|name| {
+            name.starts_with('.') && name.contains(".gitnoob-") && name.ends_with(".tmp")
+        })
+}
+
+/// A rename that landed on a file the listing already has: an atomic save,
+/// which leaves the same files there were.
+fn replaced_in_place(kind: &notify::EventKind, path: &Path, root: &Path) -> bool {
+    use notify::event::{EventKind, ModifyKind};
+    matches!(kind, EventKind::Modify(ModifyKind::Name(_)))
+        && path.is_file()
+        && crate::files::lists(root, path)
+}
+
+/// Whether a work-tree event changes which files there are, or which of them
+/// git ignores: the file finder's list of paths is out of date after one.
+/// Saving an existing file does neither.
+fn changes_listing(kind: &notify::EventKind, path: &Path) -> bool {
+    use notify::event::{EventKind, ModifyKind};
+    matches!(
+        kind,
+        EventKind::Create(_) | EventKind::Remove(_) | EventKind::Modify(ModifyKind::Name(_))
+    ) || path.file_name().is_some_and(|name| name == ".gitignore")
 }
 
 /// `Some(true)` for a write that moved refs or HEAD, `Some(false)` for one
@@ -380,10 +440,22 @@ mod tests {
     #[test]
     fn a_burst_folds_into_one_report() {
         let mut pending = Changed::default();
+        let mut touched = HashSet::new();
         for path in [".git/refs/heads/main", "app/a.rs", "app/b.rs"] {
             let event = notify::Event::new(notify::EventKind::Any).add_path(at(path));
-            note(&mut pending, Ok(event), &plain());
+            note(&mut pending, &mut touched, Ok(event), &plain());
         }
+        // Only the work-tree files go to the code index.
+        assert_eq!(touched, HashSet::from([at("app/a.rs"), at("app/b.rs")]));
+
+        // The editor's temp file is not a file anybody has.
+        let mut touched = HashSet::new();
+        let mut quiet = Changed::default();
+        let event =
+            notify::Event::new(notify::EventKind::Any).add_path(at("app/.a.rs.gitnoob-1-0.tmp"));
+        note(&mut quiet, &mut touched, Ok(event), &plain());
+        assert_eq!(quiet, Changed::default());
+        assert!(touched.is_empty());
         assert_eq!(
             pending,
             Changed {

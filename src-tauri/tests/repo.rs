@@ -9,7 +9,10 @@ use std::process::Command;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
 use gitnoob_lib::state::AppState;
-use gitnoob_lib::{conflict, create, diff, graph, journal, rebase, refs, remote, work, worktree};
+use gitnoob_lib::{
+    conflict, create, diff, edit, editorconfig, files, graph, journal, rebase, refs, remote,
+    search, symbols, work, worktree,
+};
 
 static COUNTER: AtomicUsize = AtomicUsize::new(0);
 
@@ -7327,4 +7330,1578 @@ fn a_pick_mixing_merges_and_ordinary_commits_is_refused() {
 
     assert!(error.contains("separately"), "{error}");
     assert_eq!(sandbox.git(&["log", "-1", "--format=%s"]).trim(), "Base");
+}
+
+// --- the Files tree and the file finder ------------------------------------
+
+/// A work tree with something of everything the tree has to tell apart:
+/// ignored folders and files, a nested `.gitignore`, `.git/info/exclude`, a
+/// dotfile, and a name with square brackets in it.
+fn files_sandbox(tag: &str) -> Sandbox {
+    let sandbox = Sandbox::new(tag);
+    for dir in ["app/Billing", "vendor/acme/lib", "logs", "docs/drafts"] {
+        std::fs::create_dir_all(sandbox.root.join(dir)).unwrap();
+    }
+    sandbox.write(".gitignore", "vendor/\n*.log\n");
+    sandbox.write("docs/.gitignore", "drafts/\n");
+    sandbox.write(".env.example", "KEY=\n");
+    sandbox.write("app/Billing/InvoiceService.php", "<?php\n");
+    sandbox.write("app/Billing/a[b].php", "<?php\n");
+    sandbox.write("app/Billing/ab.php", "<?php\n");
+    sandbox.write("vendor/acme/lib/Thing.php", "<?php\n");
+    sandbox.write("logs/today.log", "x\n");
+    sandbox.write("logs/keep.txt", "x\n");
+    sandbox.write("docs/drafts/plan.md", "x\n");
+    sandbox.write("docs/readme.md", "x\n");
+    sandbox.write("local.secret", "x\n");
+    std::fs::write(sandbox.root.join(".git/info/exclude"), "*.secret\n").unwrap();
+    sandbox.git(&["add", "--all"]);
+    sandbox.git(&["commit", "-q", "-m", "files"]);
+    sandbox
+}
+
+fn listed<'a>(entries: &'a [files::Entry], name: &str) -> &'a files::Entry {
+    entries
+        .iter()
+        .find(|one| one.name == name)
+        .unwrap_or_else(|| panic!("{name} is not listed"))
+}
+
+#[test]
+fn the_tree_lists_one_folder_with_ignored_entries_flagged_not_hidden() {
+    let sandbox = files_sandbox("tree-root");
+    let state = sandbox.state();
+    let root = files::list_dir(&state, "").unwrap();
+
+    // Folders first, then files, and never `.git`.
+    assert!(root.iter().all(|one| one.name != ".git"));
+    let first_file = root.iter().position(|one| !one.dir).unwrap();
+    assert!(root[..first_file].iter().all(|one| one.dir));
+    assert!(root[first_file..].iter().all(|one| !one.dir));
+
+    assert!(!listed(&root, "app").ignored);
+    assert!(listed(&root, "vendor").ignored, ".gitignore says vendor/");
+    assert!(listed(&root, ".gitignore").path == ".gitignore");
+    assert!(
+        !listed(&root, ".env.example").ignored,
+        "a dotfile is a file"
+    );
+    assert!(
+        listed(&root, "local.secret").ignored,
+        ".git/info/exclude says *.secret"
+    );
+
+    let logs = files::list_dir(&state, "logs").unwrap();
+    assert!(listed(&logs, "today.log").ignored);
+    assert!(!listed(&logs, "keep.txt").ignored);
+    assert_eq!(listed(&logs, "keep.txt").path, "logs/keep.txt");
+
+    // A .gitignore further down counts too.
+    let docs = files::list_dir(&state, "docs").unwrap();
+    assert!(listed(&docs, "drafts").ignored);
+    assert!(!listed(&docs, "readme.md").ignored);
+}
+
+/// A Laravel-ish tree with plenty of near misses for the finder.
+fn finder_sandbox(tag: &str) -> Sandbox {
+    let sandbox = Sandbox::new(tag);
+    let files = [
+        "app/Console/Commands/Exact/MakeExactConnectionCommand.php",
+        "app/Console/Commands/Exact/SyncExactCommand.php",
+        "app/Console/Commands/MakeEverythingClean.php",
+        "app/Exactly/Some/Makefile.php",
+        "app/Exact/Other/Deep/Make.php",
+        "app/Console/Kernel.php",
+        "app/Services/Exact/ExactClient.php",
+        "app/Services/Exact/MakeRequest.php",
+        "app/Http/Controllers/ExactConnectionController.php",
+        "app/Models/MediaEntryCategory.php",
+        "app/Models/MyExtraCleverCachingThing.php",
+        "resources/views/exact/make.blade.php",
+        "tests/Feature/Exact/MakeExactConnectionCommandTest.php",
+        "database/migrations/2024_01_01_make_exact_connections_table.php",
+        "docs/examples/make-exact.md",
+    ];
+    let put = |path: &str| {
+        let full = sandbox.root.join(path);
+        std::fs::create_dir_all(full.parent().unwrap()).unwrap();
+        std::fs::write(full, "<?php\n").unwrap();
+    };
+    for file in files {
+        put(file);
+    }
+    // Enough strays that a weak match is not first by luck.
+    for at in 0..200 {
+        put(&format!("app/Generated/Mixed{at}/ExtraMakeCase{at}.php"));
+    }
+    sandbox.git(&["add", "--all"]);
+    sandbox.git(&["commit", "-q", "-m", "files"]);
+    sandbox
+}
+
+#[test]
+fn the_finder_matches_across_folders_typed_with_a_slash() {
+    let sandbox = finder_sandbox("finder-segments");
+    let found = files::find_files_at(&sandbox.root, "exact/make", 10, 1, &[]).unwrap();
+    let paths: Vec<&str> = found.iter().map(|one| one.path.as_str()).collect();
+    // A folder starting Exact and, right inside it, a name starting Make.
+    let top = &paths[..4];
+    for wanted in [
+        "app/Console/Commands/Exact/MakeExactConnectionCommand.php",
+        "app/Services/Exact/MakeRequest.php",
+        "resources/views/exact/make.blade.php",
+        "tests/Feature/Exact/MakeExactConnectionCommandTest.php",
+    ] {
+        assert!(top.contains(&wanted), "{wanted} in {paths:#?}");
+    }
+    // The letters in order across folders that do not sit together come after.
+    let loose = paths
+        .iter()
+        .position(|one| *one == "app/Exactly/Some/Makefile.php");
+    assert!(loose.is_none_or(|at| at >= 4), "{paths:#?}");
+    let deep = paths
+        .iter()
+        .position(|one| *one == "app/Exact/Other/Deep/Make.php");
+    assert!(deep.is_none_or(|at| at >= 4), "{paths:#?}");
+}
+
+#[test]
+fn the_finder_matches_the_capitals_of_a_name() {
+    let sandbox = finder_sandbox("finder-initials");
+    let found = files::find_files_at(&sandbox.root, "MECC", 10, 1, &[]).unwrap();
+    let paths: Vec<&str> = found.iter().map(|one| one.path.as_str()).collect();
+    assert_eq!(
+        paths[0], "app/Console/Commands/Exact/MakeExactConnectionCommand.php",
+        "{paths:#?}"
+    );
+    // The highlighted characters are the capitals themselves.
+    let name_at = paths[0].rfind('/').unwrap() + 1;
+    let picked: String = found[0]
+        .indices
+        .iter()
+        .map(|&at| paths[0].as_bytes()[at as usize] as char)
+        .collect();
+    assert_eq!(picked, "MECC", "indices from {name_at}");
+    // The same capitals with more after them come next, before any scatter
+    // of the four letters (MediaEntryCategory has only three capitals).
+    assert!(
+        paths[1..3].contains(&"tests/Feature/Exact/MakeExactConnectionCommandTest.php"),
+        "{paths:#?}"
+    );
+    assert!(
+        paths[1..3].contains(&"app/Models/MyExtraCleverCachingThing.php"),
+        "{paths:#?}"
+    );
+    // Lower case initials are a fuzzy query like any other, not refused.
+    assert!(!files::find_files_at(&sandbox.root, "mecc", 10, 2, &[])
+        .unwrap()
+        .is_empty());
+}
+
+#[test]
+fn editorconfig_decides_indentation_nearest_and_last_section_winning() {
+    let sandbox = Sandbox::new("editorconfig");
+    let put = |path: &str, text: &str| {
+        let full = sandbox.root.join(path);
+        std::fs::create_dir_all(full.parent().unwrap()).unwrap();
+        std::fs::write(full, text).unwrap();
+    };
+    put(
+        ".editorconfig",
+        "root = true\n[*]\nindent_style = space\nindent_size = 4\n\n[*.{ts,vue}]\nindent_size = 2\n\n[Makefile]\nindent_style = tab\n\n[/legacy/**]\nindent_style = tab\ntab_width = 8\n",
+    );
+    put("web/.editorconfig", "[*.ts]\nindent_size = 3\n");
+    // Above the root flag: never read.
+    put("app/Http/Kernel.php", "<?php\n");
+    put("web/main.ts", "x\n");
+    put("src/App.vue", "x\n");
+    put("Makefile", "all:\n");
+    put("legacy/old/thing.c", "x\n");
+    sandbox.git(&["add", "--all"]);
+    sandbox.git(&["commit", "-q", "-m", "files"]);
+    let state = sandbox.state();
+    let of = |path: &str| editorconfig::indent_for(&state, path).unwrap();
+
+    let php = of("app/Http/Kernel.php");
+    assert_eq!(
+        (php.style.as_deref(), php.size, php.tab_width),
+        (Some("space"), Some(4), Some(4))
+    );
+    // A later section beats an earlier one; a nearer file beats a farther one.
+    assert_eq!(of("src/App.vue").size, Some(2));
+    assert_eq!(of("web/main.ts").size, Some(3));
+    let make = of("Makefile");
+    assert_eq!(make.style.as_deref(), Some("tab"));
+    let legacy = of("legacy/old/thing.c");
+    assert_eq!(
+        (legacy.style.as_deref(), legacy.tab_width),
+        (Some("tab"), Some(8))
+    );
+    // A file not there yet is still answered; one outside the tree is refused.
+    assert_eq!(of("app/New.php").size, Some(4));
+    assert!(editorconfig::indent_for(&state, "../outside.php").is_err());
+}
+
+#[test]
+fn no_editorconfig_says_nothing() {
+    let sandbox = files_sandbox("editorconfig-none");
+    let state = sandbox.state();
+    assert_eq!(
+        editorconfig::indent_for(&state, "app/Billing/InvoiceService.php").unwrap(),
+        editorconfig::Indent::default()
+    );
+}
+
+#[test]
+fn the_file_bar_asks_whether_one_path_is_ignored_and_opens_only_real_files() {
+    let sandbox = files_sandbox("tree-one-path");
+    let state = sandbox.state();
+    assert!(files::path_ignored(&state, "logs/today.log").unwrap());
+    assert!(files::path_ignored(&state, "vendor/acme/lib/Thing.php").unwrap());
+    assert!(!files::path_ignored(&state, "logs/keep.txt").unwrap());
+    assert!(!files::path_ignored(&state, ".env.example").unwrap());
+    assert!(files::path_ignored(&state, "../elsewhere.txt").is_err());
+
+    // The default app is only ever handed a file that is there, in the tree.
+    let root = state.path().unwrap();
+    assert!(files::openable(&root, "logs/keep.txt").is_ok());
+    assert!(
+        files::openable(&root, "logs").is_err(),
+        "a folder is not opened"
+    );
+    assert!(files::openable(&root, "logs/nothing-here.txt").is_err());
+    assert!(files::openable(&root, "../../etc/hosts").is_err());
+}
+
+/// A file committed before a rule that matches it is still git's: `git
+/// status` reports it, so the tree must not fade it, the bar must not call
+/// it ignored, and the finder and the search must be able to find it.
+#[test]
+fn a_tracked_file_a_later_rule_matches_is_not_ignored() {
+    let sandbox = files_sandbox("tree-tracked-ignored");
+    std::fs::create_dir_all(sandbox.root.join("config")).unwrap();
+    sandbox.write("config/local.php", "<?php\n");
+    sandbox.git(&["add", "--", ":(literal)config/local.php"]);
+    sandbox.git(&["commit", "-q", "-m", "config"]);
+    sandbox.write(".gitignore", "vendor/\n*.log\nconfig/\n");
+    sandbox.write("config/untracked.php", "<?php\n");
+    files::forget(&sandbox.root);
+    let state = sandbox.state();
+
+    let top = files::list_dir(&state, "").unwrap();
+    assert!(
+        !listed(&top, "config").ignored,
+        "a folder with a tracked file in it"
+    );
+    let config = files::list_dir(&state, "config").unwrap();
+    assert!(!listed(&config, "local.php").ignored);
+    assert!(listed(&config, "untracked.php").ignored);
+
+    assert!(!files::path_ignored(&state, "config/local.php").unwrap());
+    assert!(files::path_ignored(&state, "config/untracked.php").unwrap());
+
+    let all = files::all_files(&sandbox.root).unwrap();
+    assert!(all.iter().any(|path| path == "config/local.php"));
+    assert!(!all.iter().any(|path| path == "config/untracked.php"));
+}
+
+/// A link to a folder is a folder in the tree, so it is not a file in the
+/// finder's list either.
+#[cfg(unix)]
+#[test]
+fn a_link_to_a_folder_is_not_listed_as_a_file() {
+    let sandbox = files_sandbox("tree-dir-link");
+    std::os::unix::fs::symlink(sandbox.root.join("app"), sandbox.root.join("app-link")).unwrap();
+    std::os::unix::fs::symlink(
+        sandbox.root.join("docs/readme.md"),
+        sandbox.root.join("readme-link.md"),
+    )
+    .unwrap();
+    files::forget(&sandbox.root);
+    let all = files::all_files(&sandbox.root).unwrap();
+    assert!(!all.iter().any(|path| path == "app-link"));
+    assert!(all.iter().any(|path| path == "readme-link.md"));
+}
+
+#[test]
+fn everything_inside_an_ignored_folder_is_ignored_when_it_is_opened() {
+    let sandbox = files_sandbox("tree-vendor");
+    let state = sandbox.state();
+    let vendor = files::list_dir(&state, "vendor").unwrap();
+    assert!(listed(&vendor, "acme").ignored);
+    let deep = files::list_dir(&state, "vendor/acme/lib").unwrap();
+    assert_eq!(deep.len(), 1);
+    assert!(deep[0].ignored);
+    assert_eq!(deep[0].path, "vendor/acme/lib/Thing.php");
+}
+
+#[test]
+fn a_name_with_square_brackets_is_listed_and_found_as_itself() {
+    let sandbox = files_sandbox("tree-brackets");
+    let state = sandbox.state();
+    let billing = files::list_dir(&state, "app/Billing").unwrap();
+    assert_eq!(listed(&billing, "a[b].php").path, "app/Billing/a[b].php");
+    assert!(!listed(&billing, "a[b].php").ignored);
+    // The folder can be listed through a path with brackets in it as well.
+    std::fs::create_dir_all(sandbox.root.join("app/[id]")).unwrap();
+    sandbox.write("app/[id]/page.vue", "x\n");
+    let dynamic = files::list_dir(&state, "app/[id]").unwrap();
+    assert_eq!(dynamic[0].path, "app/[id]/page.vue");
+
+    files::forget(&sandbox.root);
+    let found = files::find_files(&state, "a[b]", 10, 1, &[]).unwrap();
+    assert_eq!(
+        found.first().map(|one| one.path.as_str()),
+        Some("app/Billing/a[b].php")
+    );
+}
+
+#[test]
+fn the_finder_matches_fuzzily_and_leaves_out_what_git_ignores() {
+    let sandbox = files_sandbox("finder");
+    let state = sandbox.state();
+    let found = files::find_files(&state, "invsvc", 10, 1, &[]).unwrap();
+    assert_eq!(found[0].path, "app/Billing/InvoiceService.php");
+    assert!(!found[0].indices.is_empty());
+
+    let everything: Vec<String> = files::all_files(&sandbox.root).unwrap().to_vec();
+    assert!(everything.contains(&".env.example".to_string()));
+    assert!(everything.contains(&"docs/readme.md".to_string()));
+    for gone in [
+        "vendor/acme/lib/Thing.php",
+        "logs/today.log",
+        "docs/drafts/plan.md",
+        "local.secret",
+    ] {
+        assert!(!everything.contains(&gone.to_string()), "{gone} is ignored");
+    }
+    assert!(everything.iter().all(|path| !path.starts_with(".git/")));
+
+    // An empty query finds nothing rather than everything.
+    assert!(files::find_files(&state, "  ", 10, 2, &[])
+        .unwrap()
+        .is_empty());
+}
+
+#[test]
+fn the_finder_sees_a_new_file_once_the_list_is_forgotten() {
+    let sandbox = files_sandbox("finder-new");
+    let state = sandbox.state();
+    assert!(files::find_files(&state, "TaxRates", 10, 1, &[])
+        .unwrap()
+        .is_empty());
+    sandbox.write("app/Billing/TaxRates.php", "<?php\n");
+    // What the watcher does when a file appears.
+    files::forget(&sandbox.root);
+    let found = files::find_files(&state, "TaxRates", 10, 2, &[]).unwrap();
+    assert_eq!(found[0].path, "app/Billing/TaxRates.php");
+}
+
+#[test]
+fn an_older_finder_request_gives_way_to_a_newer_one() {
+    let sandbox = files_sandbox("finder-race");
+    files::find_files_at(&sandbox.root, "inv", 10, u64::MAX - 1, &[]).unwrap();
+    assert!(files::find_files_at(&sandbox.root, "inv", 10, 3, &[]).is_err());
+}
+
+#[test]
+fn paths_outside_the_work_tree_or_inside_git_are_refused() {
+    let sandbox = files_sandbox("tree-escape");
+    let state = sandbox.state();
+    for path in [
+        "..",
+        "../..",
+        "app/../..",
+        ".git",
+        ".git/refs",
+        "app/../.git",
+    ] {
+        assert!(files::list_dir(&state, path).is_err(), "{path} was listed");
+    }
+    let absolute = std::env::temp_dir().to_string_lossy().into_owned();
+    assert!(files::list_dir(&state, &absolute).is_err());
+
+    // The same check for a file that does not exist yet, as a save would ask.
+    assert!(files::resolve(&sandbox.root, "../outside.txt", false).is_err());
+    assert!(files::resolve(&sandbox.root, ".git/config", false).is_err());
+    assert!(files::resolve(&sandbox.root, ".git/new-file", false).is_err());
+    assert!(files::resolve(&sandbox.root, "app/new.php", false).is_ok());
+    assert!(files::resolve(&sandbox.root, "app/Billing/a[b].php", true).is_ok());
+}
+
+#[cfg(unix)]
+#[test]
+fn a_symlink_out_of_the_work_tree_is_listed_but_cannot_be_opened() {
+    let sandbox = files_sandbox("tree-link");
+    let outside = scratch("tree-link-outside");
+    std::fs::write(outside.join("secret.txt"), "x\n").unwrap();
+    std::os::unix::fs::symlink(&outside, sandbox.root.join("escape")).unwrap();
+    std::os::unix::fs::symlink(sandbox.root.join("app"), sandbox.root.join("inside")).unwrap();
+    let state = sandbox.state();
+
+    let root = files::list_dir(&state, "").unwrap();
+    assert!(listed(&root, "escape").link);
+    assert!(files::list_dir(&state, "escape").is_err());
+    assert!(files::resolve(&sandbox.root, "escape/secret.txt", true).is_err());
+    assert!(files::resolve(&sandbox.root, "escape/new.txt", false).is_err());
+
+    // A link that stays inside is a folder like any other.
+    let inside = files::list_dir(&state, "inside").unwrap();
+    assert_eq!(listed(&inside, "Billing").path, "inside/Billing");
+    let _ = std::fs::remove_dir_all(outside);
+}
+
+/// A Windows checkout writes `.gitignore` with CRLF endings, and the patterns
+/// in it still have to mean what they say.
+#[test]
+fn a_gitignore_checked_out_with_crlf_endings_still_ignores() {
+    let sandbox = Sandbox::new("tree-crlf");
+    std::fs::create_dir_all(sandbox.root.join("vendor")).unwrap();
+    sandbox.write("vendor/x.php", "x\r\n");
+    sandbox.write("debug.log", "x\r\n");
+    sandbox.write("keep.php", "x\r\n");
+    sandbox.write(".gitignore", "vendor/\r\n*.log\r\n");
+    let state = sandbox.state();
+
+    let root = files::list_dir(&state, "").unwrap();
+    assert!(listed(&root, "vendor").ignored);
+    assert!(listed(&root, "debug.log").ignored);
+    assert!(!listed(&root, "keep.php").ignored);
+    let everything = files::all_files(&sandbox.root).unwrap();
+    assert!(everything.contains(&"keep.php".to_string()));
+    assert!(!everything.contains(&"debug.log".to_string()));
+}
+
+// --- searching inside files ---------------------------------------------------
+
+/// Runs a search to the end and hands back every file's hits and the summary.
+fn search_all(
+    sandbox: &Sandbox,
+    query: &str,
+    options: search::SearchOptions,
+    changed: Option<std::collections::HashSet<String>>,
+) -> (Vec<search::FileHits>, search::SearchDone) {
+    static REQUEST: AtomicUsize = AtomicUsize::new(1);
+    let request = REQUEST.fetch_add(1, Ordering::SeqCst) as u64;
+    let mut files = Vec::new();
+    let done = search::search(&sandbox.root, query, &options, request, changed, |event| {
+        if let search::Event::Hits(hits) = event {
+            files.push(hits);
+        }
+    });
+    (files, done)
+}
+
+fn search_sandbox(tag: &str) -> Sandbox {
+    let sandbox = Sandbox::new(tag);
+    std::fs::create_dir_all(sandbox.root.join("app")).unwrap();
+    std::fs::create_dir_all(sandbox.root.join("vendor")).unwrap();
+    sandbox.write(".gitignore", "vendor/\n");
+    sandbox.write(
+        "app/Invoice.php",
+        "<?php\n$net = $sub->times($rate);\n$total = $net->plus($tax);\n// times up\n",
+    );
+    sandbox.write("app/Tax.php", "<?php\nreturn $value->times(1.21);\n");
+    sandbox.write("app/notes.md", "Timestamps and times.\n");
+    sandbox.write("vendor/lib.php", "->times(\n");
+    sandbox.git(&["add", "--all"]);
+    sandbox.git(&["commit", "-q", "-m", "search"]);
+    sandbox
+}
+
+#[test]
+fn searching_plain_text_finds_every_line_and_skips_ignored_files() {
+    let sandbox = search_sandbox("search-plain");
+    let (found, done) = search_all(&sandbox, "->times(", Default::default(), None);
+    let paths: Vec<&str> = found.iter().map(|one| one.path.as_str()).collect();
+    assert_eq!(paths, ["app/Invoice.php", "app/Tax.php"]);
+    assert_eq!(done.matches, 2);
+    assert_eq!(done.files, 2);
+    assert!(!done.cancelled);
+    let hit = &found[0].hits[0];
+    assert_eq!(hit.line, 2);
+    assert_eq!(hit.text, "$net = $sub->times($rate);");
+    // `(` is plain text here, not a group.
+    assert_eq!(hit.ranges, vec![(11, 19)]);
+}
+
+#[test]
+fn searching_by_regular_expression() {
+    let sandbox = search_sandbox("search-regex");
+    let options = search::SearchOptions {
+        regex: true,
+        ..Default::default()
+    };
+    let (found, _) = search_all(&sandbox, r"\$(net|total) =", options, None);
+    let lines: Vec<u64> = found
+        .iter()
+        .flat_map(|one| one.hits.iter().map(|hit| hit.line))
+        .collect();
+    assert_eq!(lines, [2, 3]);
+
+    let broken = search::SearchOptions {
+        regex: true,
+        ..Default::default()
+    };
+    let (_, done) = search_all(&sandbox, "times(", broken, None);
+    assert!(
+        done.error.is_some(),
+        "an unclosed group is said, not searched"
+    );
+}
+
+#[test]
+fn searching_whole_words_and_matching_case() {
+    let sandbox = search_sandbox("search-word");
+    let word = search::SearchOptions {
+        word: true,
+        ..Default::default()
+    };
+    let (found, _) = search_all(&sandbox, "times", word, None);
+    let notes = found.iter().find(|one| one.path == "app/notes.md").unwrap();
+    // "Timestamps" is not the word; "times" is.
+    assert_eq!(notes.hits[0].ranges, vec![(15, 20)]);
+
+    let case = search::SearchOptions {
+        case: true,
+        ..Default::default()
+    };
+    let (found, _) = search_all(&sandbox, "TIMES", case, None);
+    assert!(found.is_empty(), "{found:?}");
+    let (found, _) = search_all(&sandbox, "TIMES", Default::default(), None);
+    assert!(!found.is_empty());
+}
+
+#[test]
+fn search_line_numbers_are_right_in_a_crlf_checkout() {
+    let sandbox = Sandbox::new("search-crlf");
+    sandbox.write("a.txt", "one\r\ntwo\r\nthree needle\r\nfour\r\n");
+    let (found, _) = search_all(&sandbox, "needle", Default::default(), None);
+    assert_eq!(found[0].hits[0].line, 3);
+    // No carriage return left on the end of the line.
+    assert_eq!(found[0].hits[0].text, "three needle");
+}
+
+#[test]
+fn searching_only_changed_files_matches_the_working_tree_panel() {
+    let sandbox = search_sandbox("search-changed");
+    sandbox.write("app/Tax.php", "<?php\nreturn $value->times(1.09);\n");
+    sandbox.write("app/New.php", "<?php\n$x->times(2);\n");
+    let state = sandbox.state();
+    let changed = search::changed_paths(&state).unwrap();
+    let options = search::SearchOptions {
+        changed_only: true,
+        ..Default::default()
+    };
+    files::forget(&sandbox.root);
+    let (found, _) = search_all(&sandbox, "->times(", options, Some(changed));
+    let paths: Vec<&str> = found.iter().map(|one| one.path.as_str()).collect();
+    assert_eq!(paths, ["app/New.php", "app/Tax.php"]);
+}
+
+#[test]
+fn a_file_mask_limits_the_search_and_brackets_are_plain() {
+    let sandbox = search_sandbox("search-mask");
+    sandbox.write("app/a[b].php", "times\n");
+    files::forget(&sandbox.root);
+    let options = search::SearchOptions {
+        glob: "*.md".into(),
+        ..Default::default()
+    };
+    let (found, _) = search_all(&sandbox, "times", options, None);
+    let paths: Vec<&str> = found.iter().map(|one| one.path.as_str()).collect();
+    assert_eq!(paths, ["app/notes.md"]);
+
+    let (found, _) = search_all(&sandbox, "times", Default::default(), None);
+    assert!(found.iter().any(|one| one.path == "app/a[b].php"));
+}
+
+#[test]
+fn a_newer_search_stops_an_older_one() {
+    let sandbox = search_sandbox("search-cancel");
+    search::claim(&sandbox.root, u64::MAX - 1);
+    let mut sent = 0;
+    let done = search::search(
+        &sandbox.root,
+        "times",
+        &Default::default(),
+        5,
+        None,
+        |event| {
+            if matches!(event, search::Event::Hits(_)) {
+                sent += 1;
+            }
+        },
+    );
+    assert!(done.cancelled);
+    assert_eq!(sent, 0);
+}
+
+#[test]
+fn a_search_stops_sending_at_the_cap_and_counts_the_rest() {
+    let sandbox = Sandbox::new("search-cap");
+    let body = "hit\n".repeat(search::MAX_HITS + 50);
+    sandbox.write("big.txt", &body);
+    let (found, done) = search_all(&sandbox, "hit", Default::default(), None);
+    assert_eq!(found[0].hits.len(), search::MAX_HITS);
+    assert_eq!(done.matches, search::MAX_HITS);
+    assert_eq!(done.more, 50);
+}
+
+#[test]
+fn the_finder_keeps_recent_and_changed_paths_however_they_score() {
+    let sandbox = files_sandbox("finder-also");
+    let also = vec![".env.example".to_string()];
+    // "e" matches nearly everything; a limit of 1 would drop the dotfile.
+    let found = files::find_files_at(&sandbox.root, "e", 1, 1, &also).unwrap();
+    assert!(found.iter().any(|one| one.path == ".env.example"));
+}
+
+// --- the editor's reads and saves -------------------------------------------------
+
+#[test]
+fn a_save_keeps_crlf_a_bom_and_the_missing_final_newline() {
+    let sandbox = Sandbox::new("edit-shape");
+    let original = b"\xEF\xBB\xBFone\r\ntwo\r\nthree".to_vec();
+    std::fs::write(sandbox.root.join("a.txt"), &original).unwrap();
+    let read = edit::read_file_at(&sandbox.root, "a.txt").unwrap();
+    assert_eq!(read.text, "one\ntwo\nthree");
+    assert_eq!(read.eol, "crlf");
+    assert!(read.bom);
+    assert!(read.readonly.is_none());
+
+    // Saving what was read writes the same bytes back.
+    let same =
+        edit::write_file_at(&sandbox.root, "a.txt", &read.text, Some(&read.hash), None).unwrap();
+    assert_eq!(std::fs::read(sandbox.root.join("a.txt")).unwrap(), original);
+    assert_eq!(same, read.hash);
+
+    // An edit changes its own line and nothing else.
+    let next =
+        edit::write_file_at(&sandbox.root, "a.txt", "one\nTWO\nthree", Some(&same), None).unwrap();
+    assert_eq!(
+        std::fs::read(sandbox.root.join("a.txt")).unwrap(),
+        b"\xEF\xBB\xBFone\r\nTWO\r\nthree".to_vec()
+    );
+    assert_eq!(
+        edit::read_file_at(&sandbox.root, "a.txt").unwrap().hash,
+        next
+    );
+}
+
+#[test]
+fn a_save_keeps_lf_and_the_final_newline() {
+    let sandbox = Sandbox::new("edit-lf");
+    sandbox.write("b.php", "<?php\necho 1;\n");
+    let read = edit::read_file_at(&sandbox.root, "b.php").unwrap();
+    assert_eq!(read.eol, "lf");
+    assert!(!read.bom);
+    edit::write_file_at(
+        &sandbox.root,
+        "b.php",
+        "<?php\necho 2;\n",
+        Some(&read.hash),
+        None,
+    )
+    .unwrap();
+    assert_eq!(
+        std::fs::read(sandbox.root.join("b.php")).unwrap(),
+        b"<?php\necho 2;\n".to_vec()
+    );
+}
+
+#[test]
+fn a_save_is_refused_when_the_file_changed_on_disk() {
+    let sandbox = Sandbox::new("edit-stale");
+    sandbox.write("c.txt", "mine\n");
+    let read = edit::read_file_at(&sandbox.root, "c.txt").unwrap();
+    // An agent writes the file while it is open.
+    sandbox.write("c.txt", "theirs\n");
+    let refused = edit::write_file_at(&sandbox.root, "c.txt", "edited\n", Some(&read.hash), None);
+    assert!(refused.unwrap_err().starts_with(edit::CONFLICT));
+    assert_eq!(
+        std::fs::read_to_string(sandbox.root.join("c.txt")).unwrap(),
+        "theirs\n"
+    );
+
+    // Deleted meanwhile is a conflict too, not a quiet re-creation.
+    std::fs::remove_file(sandbox.root.join("c.txt")).unwrap();
+    let refused = edit::write_file_at(&sandbox.root, "c.txt", "edited\n", Some(&read.hash), None);
+    assert!(refused.unwrap_err().starts_with(edit::CONFLICT));
+    assert!(!sandbox.root.join("c.txt").exists());
+}
+
+#[test]
+fn a_save_outside_the_work_tree_or_inside_git_is_refused() {
+    let sandbox = Sandbox::new("edit-escape");
+    let outside = scratch("edit-escape-outside");
+    for path in [
+        "../x.txt",
+        ".git/config",
+        ".git/hooks/pre-commit",
+        "app/../../x.txt",
+    ] {
+        assert!(
+            edit::write_file_at(&sandbox.root, path, "x", None, None).is_err(),
+            "{path} was written"
+        );
+        assert!(
+            edit::read_file_at(&sandbox.root, path).is_err(),
+            "{path} was read"
+        );
+    }
+    let absolute = outside.join("y.txt").to_string_lossy().into_owned();
+    assert!(edit::write_file_at(&sandbox.root, &absolute, "x", None, None).is_err());
+    assert!(!outside.join("y.txt").exists());
+    let _ = std::fs::remove_dir_all(outside);
+}
+
+#[cfg(unix)]
+#[test]
+fn a_save_through_a_symlink_out_of_the_work_tree_is_refused() {
+    let sandbox = Sandbox::new("edit-link");
+    let outside = scratch("edit-link-outside");
+    std::fs::write(outside.join("t.txt"), "x\n").unwrap();
+    std::os::unix::fs::symlink(outside.join("t.txt"), sandbox.root.join("t.txt")).unwrap();
+    std::os::unix::fs::symlink(&outside, sandbox.root.join("dir")).unwrap();
+    assert!(edit::read_file_at(&sandbox.root, "t.txt").is_err());
+    assert!(edit::write_file_at(&sandbox.root, "dir/new.txt", "x", None, None).is_err());
+    assert_eq!(
+        std::fs::read_to_string(outside.join("t.txt")).unwrap(),
+        "x\n"
+    );
+    let _ = std::fs::remove_dir_all(outside);
+}
+
+#[test]
+fn binary_and_missing_files_are_said_rather_than_opened() {
+    let sandbox = Sandbox::new("edit-kinds");
+    std::fs::write(sandbox.root.join("logo.png"), b"\x89PNG\r\n\x1a\n\0\0\0").unwrap();
+    let read = edit::read_file_at(&sandbox.root, "logo.png").unwrap();
+    assert_eq!(read.readonly.as_deref(), Some("binary"));
+    assert!(edit::write_file_at(&sandbox.root, "logo.png", "x", Some(&read.hash), None).is_err());
+
+    std::fs::write(sandbox.root.join("latin.txt"), b"caf\xE9\n").unwrap();
+    let read = edit::read_file_at(&sandbox.root, "latin.txt").unwrap();
+    assert_eq!(read.readonly.as_deref(), Some("encoding"));
+
+    sandbox.write(
+        "art.psd",
+        "version https://git-lfs.github.com/spec/v1\noid sha256:abc\nsize 12\n",
+    );
+    assert_eq!(
+        edit::read_file_at(&sandbox.root, "art.psd")
+            .unwrap()
+            .readonly
+            .as_deref(),
+        Some("lfs")
+    );
+
+    let gone = edit::read_file_at(&sandbox.root, "nothing.txt").unwrap();
+    assert!(gone.missing);
+
+    // A new file is written plainly, and the save after it names its hash.
+    let hash = edit::write_file_at(&sandbox.root, "new.txt", "hello\n", None, None).unwrap();
+    assert_eq!(
+        std::fs::read_to_string(sandbox.root.join("new.txt")).unwrap(),
+        "hello\n"
+    );
+    assert!(edit::write_file_at(&sandbox.root, "new.txt", "again\n", None, None).is_err());
+    edit::write_file_at(&sandbox.root, "new.txt", "again\n", Some(&hash), None).unwrap();
+}
+
+#[test]
+fn a_file_named_with_square_brackets_saves_as_itself() {
+    let sandbox = Sandbox::new("edit-brackets");
+    sandbox.write("a[b].php", "<?php\n");
+    sandbox.write("ab.php", "<?php\n");
+    let read = edit::read_file_at(&sandbox.root, "a[b].php").unwrap();
+    edit::write_file_at(
+        &sandbox.root,
+        "a[b].php",
+        "<?php // x\n",
+        Some(&read.hash),
+        None,
+    )
+    .unwrap();
+    assert_eq!(
+        std::fs::read_to_string(sandbox.root.join("a[b].php")).unwrap(),
+        "<?php // x\n"
+    );
+    assert_eq!(
+        std::fs::read_to_string(sandbox.root.join("ab.php")).unwrap(),
+        "<?php\n"
+    );
+}
+
+#[test]
+fn the_editor_bars_count_staged_and_unstaged_changes_against_the_last_commit() {
+    let sandbox = Sandbox::new("head-file-diff");
+    sandbox.commit("a[b].txt", "one\ntwo\nthree\n", "First");
+    sandbox.commit("ab.txt", "other\n", "Second");
+    // One change staged, one not: the bars mark both.
+    sandbox.write("a[b].txt", "ONE\ntwo\nthree\n");
+    sandbox.git(&["add", "--", ":(literal)a[b].txt"]);
+    sandbox.write("a[b].txt", "ONE\ntwo\nthree\nfour\n");
+    sandbox.write("ab.txt", "changed\n");
+    let state = sandbox.state();
+    let found = diff::head_file_diff(&state, "a[b].txt").unwrap();
+    let added: Vec<u32> = found
+        .hunks
+        .iter()
+        .flat_map(|hunk| hunk.lines.iter())
+        .filter(|line| line.origin == '+')
+        .filter_map(|line| line.new_lineno)
+        .collect();
+    assert_eq!(added, vec![1, 4]);
+    assert!(found
+        .hunks
+        .iter()
+        .flat_map(|hunk| hunk.lines.iter())
+        .all(|line| !line.content.contains("changed")));
+
+    // A file git has never seen is all new.
+    sandbox.write("new.txt", "a\nb\n");
+    let fresh = diff::head_file_diff(&state, "new.txt").unwrap();
+    let lines: Vec<char> = fresh
+        .hunks
+        .iter()
+        .flat_map(|hunk| hunk.lines.iter())
+        .map(|line| line.origin)
+        .collect();
+    assert_eq!(lines, vec!['+', '+']);
+}
+
+// --- code navigation and unused code ------------------------------------------
+
+/// Writes a file, making the folders it is in.
+fn put(sandbox: &Sandbox, path: &str, content: &str) {
+    let full = sandbox.root.join(path);
+    std::fs::create_dir_all(full.parent().unwrap()).unwrap();
+    std::fs::write(full, content).unwrap();
+}
+
+const INVOICE_SERVICE: &str = r#"<?php
+
+namespace App\Billing;
+
+final class InvoiceService
+{
+    public function __construct(private TaxRates $rates) {}
+
+    public function total(Invoice $invoice): Money
+    {
+        $net = $this->subtotal($invoice);
+        $unusedTax = 21;
+        return $net;
+    }
+
+    private function subtotal(Invoice $invoice): Money
+    {
+        return Money::sum($invoice->lines);
+    }
+
+    private function legacyRound(float $value): float
+    {
+        $precision = 2;
+        return round($value, 2);
+    }
+
+    public function export(): array
+    {
+        return [];
+    }
+
+    private function namedInARoute(): void
+    {
+    }
+
+    private function viaCompact(): array
+    {
+        $kept = 1;
+        return compact('kept');
+    }
+
+    public function __toString(): string
+    {
+        return '';
+    }
+}
+"#;
+
+/// A small Laravel-shaped project: a service, the controller and the command
+/// that call it, a model with the framework's hooks, and a test.
+fn php_project(tag: &str) -> Sandbox {
+    let sandbox = Sandbox::new(tag);
+    put(&sandbox, "app/Billing/InvoiceService.php", INVOICE_SERVICE);
+    put(
+        &sandbox,
+        "app/Http/Controllers/InvoiceController.php",
+        r#"<?php
+namespace App\Http\Controllers;
+
+class InvoiceController extends Controller
+{
+    public function show(InvoiceService $billing, Invoice $invoice)
+    {
+        return $billing->total($invoice);
+    }
+
+    public function index()
+    {
+        return [];
+    }
+}
+"#,
+    );
+    put(
+        &sandbox,
+        "app/Console/Commands/SendInvoices.php",
+        r#"<?php
+namespace App\Console\Commands;
+
+class SendInvoices extends Command
+{
+    public function handle(InvoiceService $svc): void
+    {
+        $svc->total($this->invoice);
+    }
+}
+"#,
+    );
+    put(
+        &sandbox,
+        "app/Models/Invoice.php",
+        r#"<?php
+namespace App\Models;
+
+class Invoice extends Model
+{
+    protected function casts(): array
+    {
+        return [];
+    }
+
+    public function getTotalAttribute(): int
+    {
+        return 0;
+    }
+
+    public function scopePaid($query)
+    {
+        return $query;
+    }
+}
+"#,
+    );
+    put(
+        &sandbox,
+        "routes/web.php",
+        "<?php\nRoute::get('/x', [InvoiceService::class, 'namedInARoute']);\n",
+    );
+    put(
+        &sandbox,
+        "tests/Unit/InvoiceServiceTest.php",
+        r#"<?php
+class InvoiceServiceTest extends TestCase
+{
+    public function test_total(): void
+    {
+        $this->assertEquals(1, (new InvoiceService())->total($invoice));
+    }
+
+    private function unusedHelper(): void
+    {
+    }
+}
+"#,
+    );
+    sandbox.git(&["add", "--all"]);
+    sandbox.git(&["commit", "-q", "-m", "Billing"]);
+    sandbox
+}
+
+fn marked(marks: &[symbols::Mark]) -> Vec<(String, &'static str)> {
+    marks.iter().map(|m| (m.name.clone(), m.level)).collect()
+}
+
+#[test]
+fn the_symbol_finder_finds_definitions_by_fuzzy_name_and_by_capitals() {
+    let sandbox = php_project("symbols-find");
+    let state = sandbox.state();
+    let found = symbols::find_symbols(&state, "invsvc", 20).unwrap();
+    assert_eq!(found[0].name, "InvoiceService", "{found:#?}");
+    assert_eq!(found[0].kind, "class");
+    assert_eq!(found[0].path, "app/Billing/InvoiceService.php");
+    // Only definitions: the class mentioned in routes/web.php is not one.
+    assert!(found.iter().all(|one| one.path != "routes/web.php"));
+
+    // Capitals: InvoiceServiceTest is IST.
+    let found = symbols::find_symbols(&state, "IST", 20).unwrap();
+    assert_eq!(found[0].name, "InvoiceServiceTest", "{found:#?}");
+    assert_eq!(found[0].indices, vec![0, 7, 14]);
+
+    // A method, with the line it is defined on.
+    let found = symbols::find_symbols(&state, "subtotal", 20).unwrap();
+    assert_eq!(found[0].name, "subtotal");
+    assert_eq!(found[0].kind, "method");
+    assert_eq!(found[0].line, 16);
+    assert!(symbols::find_symbols(&state, "  ", 20).unwrap().is_empty());
+}
+
+#[test]
+fn php_definitions_and_usages_follow_the_names() {
+    let sandbox = php_project("symbols-php-nav");
+    let state = sandbox.state();
+    let path = "app/Billing/InvoiceService.php";
+
+    // `$this->subtotal(` is a reference to the private method.
+    let offset = INVOICE_SERVICE.find("subtotal($invoice)").unwrap() as u32 + 2;
+    let at = symbols::symbol_at(&state, path, offset, None)
+        .unwrap()
+        .unwrap();
+    assert_eq!(at.name, "subtotal");
+    assert!(!at.definition);
+    assert_eq!(at.shape, symbols::Shape::Member);
+    let found = symbols::definitions(&state, "subtotal", Some(path), Some(at.shape)).unwrap();
+    assert_eq!(found.len(), 1);
+    assert_eq!((found[0].path.as_str(), found[0].line), (path, 16));
+    assert_eq!(found[0].kind, "method");
+    assert!(found[0].text.contains("private function subtotal"));
+
+    // `total` at its definition: three usages, the test's among them.
+    let offset = INVOICE_SERVICE.find("total(Invoice").unwrap() as u32;
+    let at = symbols::symbol_at(&state, path, offset, None)
+        .unwrap()
+        .unwrap();
+    assert!(at.definition);
+    assert_eq!(at.kind, "method");
+    let used = symbols::usages(&state, "total", Some(path), Some("method")).unwrap();
+    let mut paths: Vec<&str> = used.iter().map(|u| u.path.as_str()).collect();
+    paths.sort();
+    assert_eq!(
+        paths,
+        vec![
+            "app/Console/Commands/SendInvoices.php",
+            "app/Http/Controllers/InvoiceController.php",
+            "tests/Unit/InvoiceServiceTest.php",
+        ]
+    );
+
+    let lenses = symbols::usage_counts(&state, path, None).unwrap();
+    let total = lenses.iter().find(|lens| lens.name == "total").unwrap();
+    assert_eq!((total.line, total.count), (9, 3));
+    assert!(lenses.iter().all(|lens| lens.name != "legacyRound"));
+}
+
+#[test]
+fn php_unused_code_is_marked_carefully() {
+    let sandbox = php_project("symbols-php-unused");
+    let state = sandbox.state();
+    let marks = symbols::unused_in(&state, "app/Billing/InvoiceService.php", None, None).unwrap();
+    assert_eq!(
+        marked(&marks),
+        vec![
+            ("$unusedTax".to_string(), "dim"),
+            ("legacyRound".to_string(), "dim"),
+            ("$precision".to_string(), "dim"),
+            ("export".to_string(), "hint"),
+            ("viaCompact".to_string(), "dim"),
+        ]
+    );
+    // `$kept` is only read through compact(), which names it in a string.
+    assert!(marks.iter().all(|mark| mark.name != "$kept"));
+    // Committed on main: not new.
+    assert!(marks.iter().all(|mark| !mark.new));
+    let legacy = marks.iter().find(|m| m.name == "legacyRound").unwrap();
+    assert!(legacy.block_to > legacy.to, "the whole method is dimmed");
+
+    // Entry points: controller actions, handle(), the model's hooks, tests.
+    for path in [
+        "app/Http/Controllers/InvoiceController.php",
+        "app/Console/Commands/SendInvoices.php",
+        "app/Models/Invoice.php",
+        "tests/Unit/InvoiceServiceTest.php",
+        "routes/web.php",
+    ] {
+        assert_eq!(
+            symbols::unused_in(&state, path, None, None).unwrap(),
+            vec![],
+            "{path}"
+        );
+    }
+}
+
+#[test]
+fn unused_code_new_on_this_branch_is_flagged_new() {
+    let sandbox = php_project("symbols-php-new");
+    sandbox.git(&["checkout", "-q", "-b", "feature"]);
+    let edited = INVOICE_SERVICE.replace(
+        "    public function __toString(): string",
+        "    private function leftBehind(): int\n    {\n        return 1;\n    }\n\n    public function __toString(): string",
+    );
+    put(&sandbox, "app/Billing/InvoiceService.php", &edited);
+    sandbox.git(&["commit", "-q", "-am", "More"]);
+    let state = sandbox.state();
+    let marks = symbols::unused_in(&state, "app/Billing/InvoiceService.php", None, None).unwrap();
+    let left = marks.iter().find(|m| m.name == "leftBehind").unwrap();
+    assert!(left.new);
+    assert_eq!(left.level, "dim");
+    let old = marks.iter().find(|m| m.name == "legacyRound").unwrap();
+    assert!(!old.new);
+
+    // The editor's text counts over the disk's: typing a call makes it used.
+    let typed = edited.replace("return $net;", "return $this->leftBehind() + $net;");
+    let marks =
+        symbols::unused_in(&state, "app/Billing/InvoiceService.php", Some(&typed), None).unwrap();
+    assert!(marks.iter().all(|m| m.name != "leftBehind"));
+}
+
+#[test]
+fn typescript_and_vue_definitions_usages_and_unused() {
+    let sandbox = Sandbox::new("symbols-ts");
+    let util = r#"export function formatTotal(n: number) {
+  return round(n)
+}
+
+function round(n: number) {
+  const unusedFactor = 2
+  return Math.round(n)
+}
+
+function deadCode() {}
+
+export function exportedDead() {}
+
+class Store {
+  private stale() {}
+  public fresh() {}
+}
+
+class Widget extends Base {
+  toDOM() {}
+}
+
+export const handlers = { mounted() {}, click() {} }
+"#;
+    put(&sandbox, "src/util.ts", util);
+    let vue = r#"<template>
+  <button @click="clicked">{{ label }}</button>
+</template>
+
+<script setup lang="ts">
+import { onMounted } from 'vue'
+import { formatTotal } from './util'
+
+const props = defineProps<{ id: number }>()
+const label = formatTotal(2)
+function clicked() {}
+function neverUsed() {}
+onMounted(() => {})
+</script>
+"#;
+    put(&sandbox, "src/App.vue", vue);
+    put(
+        &sandbox,
+        "src/util.test.ts",
+        "import { round } from './util'\nfunction helper() {}\n",
+    );
+    sandbox.git(&["add", "--all"]);
+    sandbox.git(&["commit", "-q", "-m", "Script"]);
+    let state = sandbox.state();
+
+    // From the .vue file to the definition in the .ts one.
+    let offset = vue.find("formatTotal(2)").unwrap() as u32 + 1;
+    let at = symbols::symbol_at(&state, "src/App.vue", offset, None)
+        .unwrap()
+        .unwrap();
+    assert_eq!((at.name.as_str(), at.definition), ("formatTotal", false));
+    let found =
+        symbols::definitions(&state, "formatTotal", Some("src/App.vue"), Some(at.shape)).unwrap();
+    assert_eq!(found.len(), 1);
+    assert_eq!((found[0].path.as_str(), found[0].line), ("src/util.ts", 1));
+    let used =
+        symbols::usages(&state, "formatTotal", Some("src/util.ts"), Some("function")).unwrap();
+    assert_eq!(used.len(), 1);
+    assert_eq!((used[0].path.as_str(), used[0].line), ("src/App.vue", 10));
+
+    let marks = symbols::unused_in(&state, "src/util.ts", None, None).unwrap();
+    assert_eq!(
+        marked(&marks),
+        vec![
+            ("unusedFactor".to_string(), "dim"),
+            ("deadCode".to_string(), "dim"),
+            ("exportedDead".to_string(), "hint"),
+            ("stale".to_string(), "dim"),
+            ("fresh".to_string(), "hint"),
+        ]
+    );
+    // The template uses `clicked`; nothing uses `neverUsed`. Lifecycle hooks
+    // and defineProps are calls, not definitions, and are never marked.
+    let marks = symbols::unused_in(&state, "src/App.vue", None, None).unwrap();
+    assert_eq!(marked(&marks), vec![("neverUsed".to_string(), "dim")]);
+    assert!(symbols::unused_in(&state, "src/util.test.ts", None, None)
+        .unwrap()
+        .is_empty());
+}
+
+#[test]
+fn rust_definitions_usages_and_unused_with_its_entry_points() {
+    let sandbox = Sandbox::new("symbols-rust");
+    let lib = r#"pub fn used_api() -> u32 {
+    helper()
+}
+
+fn helper() -> u32 {
+    let unused_local = 3;
+    let _quiet = 4;
+    let shown = 5;
+    format!("{shown}").len() as u32
+}
+
+fn dead() {}
+
+pub fn public_dead() {}
+
+#[tauri::command]
+fn command_thing() {}
+
+#[test]
+fn a_test() {}
+
+struct S;
+
+impl Default for S {
+    fn default() -> Self {
+        S
+    }
+}
+
+impl S {
+    fn private_method(&self) {}
+    fn called(&self) {}
+    pub fn run(&self) {
+        self.called();
+        Self::assoc();
+    }
+    fn assoc() {}
+}
+
+#[cfg(test)]
+mod tests {
+    fn helper_in_tests() {}
+}
+"#;
+    put(&sandbox, "src/lib.rs", lib);
+    put(&sandbox, "src/main.rs", "fn main() {\n    used_api();\n}\n");
+    put(
+        &sandbox,
+        "src/serde.rs",
+        "#[serde(default = \"by_attribute\")]\nstruct T;\n",
+    );
+    put(&sandbox, "src/more.rs", "fn by_attribute() -> u32 { 1 }\n");
+    sandbox.git(&["add", "--all"]);
+    sandbox.git(&["commit", "-q", "-m", "Rust"]);
+    let state = sandbox.state();
+
+    let offset = lib.find("self.called()").unwrap() as u32 + 6;
+    let at = symbols::symbol_at(&state, "src/lib.rs", offset, None)
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        (at.name.as_str(), at.shape),
+        ("called", symbols::Shape::Member)
+    );
+    let found = symbols::definitions(&state, "called", Some("src/lib.rs"), Some(at.shape)).unwrap();
+    assert_eq!((found[0].line, found[0].kind), (32, "method"));
+    let used = symbols::usages(&state, "assoc", Some("src/lib.rs"), Some("method")).unwrap();
+    assert_eq!(used.len(), 1);
+    let used = symbols::usages(&state, "used_api", Some("src/lib.rs"), Some("function")).unwrap();
+    assert_eq!(used[0].path, "src/main.rs");
+
+    let marks = symbols::unused_in(&state, "src/lib.rs", None, None).unwrap();
+    assert_eq!(
+        marked(&marks),
+        vec![
+            ("unused_local".to_string(), "dim"),
+            ("dead".to_string(), "dim"),
+            ("public_dead".to_string(), "hint"),
+            ("private_method".to_string(), "dim"),
+            ("run".to_string(), "hint"),
+        ]
+    );
+    // main, and a name only a string in another file mentions.
+    assert!(symbols::unused_in(&state, "src/main.rs", None, None)
+        .unwrap()
+        .is_empty());
+    assert!(symbols::unused_in(&state, "src/more.rs", None, None)
+        .unwrap()
+        .is_empty());
+}
+
+#[test]
+fn the_index_follows_files_as_they_change() {
+    let sandbox = Sandbox::new("symbols-touched");
+    sandbox.commit("a.ts", "export function one() {}\n", "First");
+    let state = sandbox.state();
+    assert_eq!(
+        symbols::definitions(&state, "two", None, None).unwrap(),
+        vec![]
+    );
+
+    put(&sandbox, "b.ts", "export function two() {}\none()\n");
+    files::forget(&sandbox.root);
+    let touched = std::collections::HashSet::from([sandbox.root.join("b.ts")]);
+    symbols::touched(&sandbox.root, &touched);
+    let found = symbols::definitions(&state, "two", None, None).unwrap();
+    assert_eq!(found.len(), 1);
+    assert_eq!(found[0].path, "b.ts");
+    assert_eq!(symbols::usages(&state, "one", None, None).unwrap().len(), 1);
+
+    std::fs::remove_file(sandbox.root.join("b.ts")).unwrap();
+    files::forget(&sandbox.root);
+    symbols::touched(&sandbox.root, &touched);
+    assert_eq!(
+        symbols::definitions(&state, "two", None, None).unwrap(),
+        vec![]
+    );
+    symbols::forget(&sandbox.root);
+}
+
+/// Not a check: a report of what would be grayed out in gitnoob's own source.
+/// `cargo test --test repo -- --ignored own_source --nocapture`
+#[test]
+#[ignore]
+fn own_source_unused_report() {
+    let root = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .unwrap()
+        .to_path_buf();
+    let state = AppState::new(std::env::temp_dir().join("gitnoob-own-source-config"));
+    state.set_path(root.clone());
+    let paths = files::all_files(&root).unwrap();
+    let sample: Vec<&String> = paths
+        .iter()
+        .filter(|p| {
+            (p.starts_with("src-tauri/src/") && p.ends_with(".rs"))
+                || (p.starts_with("app/") && (p.ends_with(".ts") || p.ends_with(".vue")))
+        })
+        .collect();
+    let started = std::time::Instant::now();
+    let mut total = 0;
+    for path in &sample {
+        let marks = symbols::unused_in(&state, path, None, None).unwrap();
+        for mark in marks {
+            total += 1;
+            println!(
+                "{path}:{} {} {} {}{}",
+                mark.line,
+                mark.level,
+                mark.kind,
+                mark.name,
+                if mark.new { " (new)" } else { "" }
+            );
+        }
+    }
+    println!(
+        "{} files, {total} marks, {:?}",
+        sample.len(),
+        started.elapsed()
+    );
+}
+
+#[test]
+fn a_file_that_mixes_line_endings_opens_read_only_and_is_never_rewritten() {
+    let sandbox = Sandbox::new("edit-mixed");
+    let mixed = b"one\r\ntwo\nthree\r\n";
+    std::fs::write(sandbox.root.join("mixed.txt"), mixed).unwrap();
+    let read = edit::read_file_at(&sandbox.root, "mixed.txt").unwrap();
+    assert_eq!(read.readonly.as_deref(), Some("endings"));
+    // What the editor gets has no `\r` left, so it equals what CodeMirror holds.
+    assert_eq!(read.text, "one\ntwo\nthree\n");
+    let refused = edit::write_file_at(
+        &sandbox.root,
+        "mixed.txt",
+        &read.text,
+        Some(&read.hash),
+        None,
+    );
+    assert!(refused.is_err());
+    assert_eq!(
+        std::fs::read(sandbox.root.join("mixed.txt")).unwrap(),
+        mixed
+    );
+
+    std::fs::write(sandbox.root.join("old-mac.txt"), b"a\rb\r").unwrap();
+    let read = edit::read_file_at(&sandbox.root, "old-mac.txt").unwrap();
+    assert_eq!(read.readonly.as_deref(), Some("endings"));
+    assert_eq!(read.text, "a\nb\n");
+
+    // All CRLF is not mixed, and stays editable.
+    std::fs::write(sandbox.root.join("crlf.txt"), b"a\r\nb\r\n").unwrap();
+    assert_eq!(
+        edit::read_file_at(&sandbox.root, "crlf.txt")
+            .unwrap()
+            .readonly,
+        None
+    );
+}
+
+#[test]
+fn a_file_deleted_under_the_editor_comes_back_with_its_endings_and_bom() {
+    let sandbox = Sandbox::new("edit-recreate");
+    let hash =
+        edit::write_file_at(&sandbox.root, "w.txt", "a\nb\n", None, Some((true, true))).unwrap();
+    let bytes = std::fs::read(sandbox.root.join("w.txt")).unwrap();
+    assert_eq!(bytes, b"\xEF\xBB\xBFa\r\nb\r\n");
+    assert_eq!(hash, edit::hash_of(&bytes));
+}
+
+#[test]
+fn a_huge_file_is_not_read_whole() {
+    let sandbox = Sandbox::new("edit-huge");
+    let file = std::fs::File::create(sandbox.root.join("huge.bin")).unwrap();
+    file.set_len(17 * 1024 * 1024).unwrap();
+    drop(file);
+    let read = edit::read_file_at(&sandbox.root, "huge.bin").unwrap();
+    assert_eq!(read.readonly.as_deref(), Some("binary"));
+    assert!(read.text.is_empty());
+    assert!(read.hash.starts_with("size:17825792:"));
+}
+
+#[test]
+fn a_regex_anchored_at_the_end_of_the_line_matches_in_a_crlf_file() {
+    let sandbox = Sandbox::new("search-crlf-anchor");
+    std::fs::write(sandbox.root.join("w.txt"), b"one end\r\ntwo\r\n").unwrap();
+    let options = search::SearchOptions {
+        regex: true,
+        ..search::SearchOptions::default()
+    };
+    let mut lines = Vec::new();
+    let done = search::search(&sandbox.root, "end$", &options, 1, None, |event| {
+        if let search::Event::Hits(hits) = event {
+            lines.extend(hits.hits.iter().map(|hit| hit.line));
+        }
+    });
+    assert_eq!(done.error, None, "{done:?}");
+    assert_eq!(lines, vec![1], "{done:?}");
+}
+
+#[test]
+fn an_unused_check_overtaken_by_a_newer_one_gives_up() {
+    let sandbox = php_project("symbols-superseded");
+    let state = sandbox.state();
+    let path = "app/Billing/InvoiceService.php";
+    let newer = symbols::unused_in(&state, path, None, Some(10)).unwrap();
+    assert!(newer.iter().any(|mark| mark.name == "legacyRound"));
+    let older = symbols::unused_in(&state, path, None, Some(5)).unwrap();
+    assert!(older.iter().all(|mark| mark.name != "legacyRound"));
+}
+
+#[test]
+fn a_project_coming_back_catches_its_index_up_with_the_disk() {
+    let sandbox = Sandbox::new("symbols-catch-up");
+    sandbox.commit("a.ts", "export function one() {}\n", "First");
+    let state = sandbox.state();
+    assert_eq!(
+        symbols::definitions(&state, "one", None, None)
+            .unwrap()
+            .len(),
+        1
+    );
+
+    // Changed while another project was open: nobody told the index.
+    std::thread::sleep(std::time::Duration::from_millis(20));
+    put(&sandbox, "a.ts", "export function renamed() {}\n");
+    put(&sandbox, "b.ts", "export function added() {}\n");
+    symbols::start(sandbox.root.clone());
+    let mut caught = false;
+    for _ in 0..100 {
+        if symbols::definitions(&state, "added", None, None)
+            .unwrap()
+            .len()
+            == 1
+            && symbols::definitions(&state, "one", None, None)
+                .unwrap()
+                .is_empty()
+        {
+            caught = true;
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(20));
+    }
+    assert!(caught);
+
+    // Closing the project lets the index go; asked again, it is built anew.
+    symbols::forget(&sandbox.root);
+    assert_eq!(
+        symbols::definitions(&state, "renamed", None, None)
+            .unwrap()
+            .len(),
+        1
+    );
+}
+
+/// A function called through its module is written like a method call, and
+/// is still a usage of the function.
+#[test]
+fn a_call_through_a_module_counts_as_a_usage_of_the_function() {
+    let sandbox = Sandbox::new("symbols-module-call");
+    put(
+        &sandbox,
+        "money.py",
+        "def format_money(value):\n    return str(value)\n",
+    );
+    put(
+        &sandbox,
+        "invoice.py",
+        "import money\n\ndef show(total):\n    return money.format_money(total)\n",
+    );
+    put(
+        &sandbox,
+        "src/dates.ts",
+        "export function formatDate(d: Date) {\n  return d.toISOString()\n}\n",
+    );
+    put(
+        &sandbox,
+        "src/page.ts",
+        "import * as dates from './dates'\nexport const now = dates.formatDate(new Date())\n",
+    );
+    sandbox.git(&["add", "--all"]);
+    sandbox.git(&["commit", "-q", "-m", "Modules"]);
+    let state = sandbox.state();
+
+    let used = symbols::usages(&state, "format_money", Some("money.py"), Some("function")).unwrap();
+    assert_eq!(used.len(), 1, "{used:?}");
+    assert_eq!(used[0].path, "invoice.py");
+
+    let used =
+        symbols::usages(&state, "formatDate", Some("src/dates.ts"), Some("function")).unwrap();
+    assert_eq!(used.len(), 1, "{used:?}");
+    assert_eq!(used[0].path, "src/page.ts");
+}
+
+/// A private method called by a name built at run time is spelled nowhere in
+/// full, so nothing in a file that calls that way is dimmed as unused.
+#[test]
+fn a_method_called_by_a_built_name_is_not_dimmed() {
+    let sandbox = Sandbox::new("symbols-dynamic");
+    let plain = "<?php\nfinal class Plain\n{\n    public function run(): void {}\n    private function handleLoad(): void {}\n}\n";
+    let dynamic = "<?php\nfinal class Dynamic\n{\n    public function run(string $action): void\n    {\n        $this->{'handle' . ucfirst($action)}();\n    }\n    private function handleSave(): void {}\n}\n";
+    put(&sandbox, "app/Plain.php", plain);
+    put(&sandbox, "app/Dynamic.php", dynamic);
+    sandbox.git(&["add", "--all"]);
+    sandbox.git(&["commit", "-q", "-m", "Dynamic"]);
+    let state = sandbox.state();
+
+    let marks = symbols::unused_in(&state, "app/Plain.php", None, None).unwrap();
+    assert!(
+        marks.iter().any(|mark| mark.name == "handleLoad"),
+        "{marks:?}"
+    );
+    let marks = symbols::unused_in(&state, "app/Dynamic.php", None, None).unwrap();
+    assert!(
+        !marks.iter().any(|mark| mark.name == "handleSave"),
+        "{marks:?}"
+    );
 }

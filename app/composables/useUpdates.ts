@@ -2,6 +2,7 @@ import { getVersion } from '@tauri-apps/api/app'
 import { relaunch } from '@tauri-apps/plugin-process'
 import { check, type Update } from '@tauri-apps/plugin-updater'
 import { computed, reactive } from 'vue'
+import { prepareToQuit } from './useFileEdit'
 
 /**
  * Updating from the releases the tag pipeline builds.
@@ -127,6 +128,9 @@ export function useUpdates() {
    */
   async function install() {
     if (!pending || busy.value) return
+    // The restart, and on Windows the installer, end the app without the
+    // window closing first: edits are saved now, or the update waits.
+    if (!(await prepareToQuit())) return
     store.stage = 'downloading'
     store.downloaded = 0
     store.total = 0
@@ -138,6 +142,9 @@ export function useUpdates() {
         else if (event.event === 'Finished') store.downloaded = store.total || store.downloaded
       })
       store.stage = 'ready'
+      // Edits made while it downloaded are saved, or asked about, again. A
+      // no leaves the update installed for the next start.
+      if (!(await prepareToQuit())) return
       await relaunch()
     } catch (error) {
       store.error = String(error)

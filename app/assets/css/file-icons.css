@@ -1,0 +1,97 @@
+/*
+ * The colours of the file icons (FileIcon.vue).
+ *
+ * Each language keeps the colour people know it by, but never pure: it is
+ * mixed with the theme's own text colour. On a dark theme that lifts it a
+ * little towards white, on a light theme it pulls it towards the ink, so
+ * JavaScript yellow is still readable on a white tree. Yellows and other
+ * pale tones get more of the text colour than the rest.
+ *
+ * This file is written by hand; themes.css is the generated one.
+ */
+.file-icon {
+  --brand: var(--fg-subtle);
+  --mix: 78%;
+  color: color-mix(in oklab, var(--brand) var(--mix), var(--fg));
+  flex: none;
+}
+
+.file-icon.t-plain,
+.file-icon.t-lock {
+  color: var(--fg-subtle);
+}
+.file-icon.t-folder {
+  color: var(--fg-muted);
+}
+.file-icon.t-text {
+  color: var(--fg-muted);
+}
+
+/* Pale ones: more ink, or they vanish on a light theme. */
+.file-icon.t-js { --brand: #f7df1e; --mix: 58%; }
+.file-icon.t-json { --brand: #cbcb41; --mix: 60%; }
+.file-icon.t-env { --brand: #ecd53f; --mix: 58%; }
+.file-icon.t-react { --brand: #61dafb; --mix: 62%; }
+.file-icon.t-shell { --brand: #89e051; --mix: 62%; }
+.file-icon.t-license { --brand: #d4af37; --mix: 66%; }
+.file-icon.t-rust { --brand: #dea584; --mix: 66%; }
+
+.file-icon.t-php { --brand: #777bb4; }
+.file-icon.t-blade { --brand: #f05340; }
+.file-icon.t-ts { --brand: #3178c6; }
+.file-icon.t-vue { --brand: #42b883; }
+.file-icon.t-go { --brand: #00add8; }
+.file-icon.t-python { --brand: #3776ab; }
+.file-icon.t-ruby { --brand: #cc342d; }
+.file-icon.t-java { --brand: #e76f00; }
+.file-icon.t-kotlin { --brand: #7f52ff; }
+.file-icon.t-swift { --brand: #f05138; }
+.file-icon.t-c { --brand: #5c8dbc; }
+.file-icon.t-cpp { --brand: #f34b7d; }
+.file-icon.t-csharp { --brand: #9b4f96; }
+.file-icon.t-yaml { --brand: #cb171e; }
+.file-icon.t-toml { --brand: #9c4221; }
+.file-icon.t-xml { --brand: #e37933; }
+.file-icon.t-html { --brand: #e34c26; }
+.file-icon.t-css { --brand: #663399; }
+.file-icon.t-scss { --brand: #c6538c; }
+.file-icon.t-less { --brand: #2a4d80; }
+.file-icon.t-markdown { --brand: #519aba; }
+.file-icon.t-readme { --brand: #519aba; }
+.file-icon.t-sql { --brand: #e38c00; }
+.file-icon.t-image { --brand: #a074c4; }
+.file-icon.t-svg { --brand: #ffb13b; --mix: 62%; }
+.file-icon.t-archive { --brand: #8d6e63; }
+.file-icon.t-pdf { --brand: #e5252a; }
+.file-icon.t-config { --brand: #6d8086; }
+.file-icon.t-csv { --brand: #3d9970; }
+.file-icon.t-git { --brand: #f05032; }
+.file-icon.t-docker { --brand: #2496ed; }
+.file-icon.t-make { --brand: #6d8086; }
+.file-icon.t-npm { --brand: #cb3837; }
+.file-icon.t-composer { --brand: #885630; }
+.file-icon.t-laravel { --brand: #ff2d20; }
+
+/* Folders: a hint of a tint, no more. */
+.file-icon[class*='t-folder-'] {
+  --mix: 45%;
+  color: color-mix(in oklab, var(--brand) var(--mix), var(--fg-muted));
+}
+.file-icon.t-folder-git { --brand: #f05032; }
+.file-icon.t-folder-github { --brand: #8b949e; }
+.file-icon.t-folder-npm { --brand: #cb3837; }
+.file-icon.t-folder-composer { --brand: #885630; }
+.file-icon.t-folder-src { --brand: #3178c6; }
+.file-icon.t-folder-tests { --brand: #42b883; }
+.file-icon.t-folder-public { --brand: #e38c00; }
+
+/* The letters inside a badge are the background showing through. */
+.file-icon .badge-text {
+  fill: var(--bg);
+}
+
+/* Ignored entries: the type still shows, but quietly. (A row that already
+   fades as a whole, like the Files tree's, leaves its icon alone.) */
+.file-icon.dim {
+  opacity: 0.45;
+}

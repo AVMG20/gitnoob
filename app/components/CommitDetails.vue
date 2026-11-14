@@ -23,6 +23,7 @@ import { useContextMenu } from '~/composables/useContextMenu'
 import { useFileView } from '~/composables/useFileView'
 import { useForge } from '~/composables/useForge'
 import { useAi } from '~/composables/useAi'
+import { openTab } from '~/composables/useTabs'
 
 const git = useGit()
 const store = git.store
@@ -86,22 +87,26 @@ const stats = computed(() => {
   }
 })
 
-/** Opens the file across the graph area rather than inline. */
+/**
+ * Opens the file as this commit has it, in a tab of its own: read-only, in
+ * Diff mode against the commit's parent. A single click previews it.
+ */
 function show(path: string) {
   if (!detail.value) return
-  store.viewer =
-    store.viewer?.path === path && store.viewer?.commit === detail.value.oid
-      ? null
-      : { path, commit: detail.value.oid }
+  openTab({ path, commit: detail.value.oid, mode: 'diff' }, { preview: true })
 }
 
-// Moving to another commit closes whatever file was open from the last one,
-// and abandons a message being edited: both belong to the commit they were
-// opened from.
+function keep(path: string) {
+  if (!detail.value) return
+  openTab({ path, commit: detail.value.oid, mode: 'diff' })
+}
+
+// Moving to another commit abandons a message being edited: it belongs to the
+// commit it was opened from. Files opened from the last one stay in their
+// tabs, which say which commit they are.
 watch(
   () => store.detail?.oid,
   () => {
-    if (store.viewer?.commit) store.viewer = null
     if (editing.value) cancel()
   }
 )
@@ -557,6 +562,7 @@ function fileMenu(event: MouseEvent, path: string) {
         :selected="openFile"
         empty="No files in this commit."
         @select="show"
+        @keep="keep"
         @menu="(event, entry) => fileMenu(event, entry.path)"
       />
     </template>

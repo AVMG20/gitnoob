@@ -4,6 +4,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { invoke } from '@tauri-apps/api/core'
 import DiffViewer from '~/components/DiffViewer.vue'
 import FileView from '~/components/FileView.vue'
+import FileEditor from '~/components/FileEditor.vue'
 import { diffMode } from '~/composables/useDiffMode'
 import { useGit } from '~/composables/useGit'
 
@@ -53,7 +54,7 @@ const show = async () => {
   // The viewer reaches for its two views by name, which is Nuxt's doing and
   // not this environment's; the file one is the point of these tests.
   open = mount(DiffViewer, {
-    global: { components: { FileView }, stubs: { Spinner: true, ChangeRuler: true } }
+    global: { components: { FileView, FileEditor }, stubs: { Spinner: true, ChangeRuler: true } }
   })
   await flushPromises()
   return open
@@ -86,13 +87,15 @@ describe('the blame toggle in the bar', () => {
     expect(blamed()).toHaveLength(0)
   })
 
-  it('reads the blame when the button opens the column, and draws it', async () => {
+  it('reads the blame when the button turns it on, and shows it on the caret line', async () => {
     const wrapper = await show()
     await toggle(wrapper).trigger('click')
     await flushPromises()
     expect(diffMode.blame).toBe(true)
     expect(blamed()).toHaveLength(1)
-    expect(wrapper.find('button.chip').text()).toContain('Ramon Robben')
+    // A working-tree file is the editor, which says who wrote the line the
+    // caret is on rather than drawing a column.
+    expect(wrapper.find('.cm-blame').text()).toContain('Ramon Robben')
   })
 
   it('takes the column away again, and the file stays', async () => {
@@ -101,8 +104,8 @@ describe('the blame toggle in the bar', () => {
     await flushPromises()
     await toggle(wrapper).trigger('click')
     await flushPromises()
-    expect(wrapper.find('.chip').exists()).toBe(false)
-    expect(wrapper.findAll('.line').length).toBeGreaterThan(1)
+    expect(wrapper.find('.cm-blame').exists()).toBe(false)
+    expect(wrapper.findAll('.cm-line').length).toBeGreaterThan(1)
   })
 
   it('stands in the bar in the patch too, so switching views moves nothing', async () => {
@@ -124,6 +127,22 @@ describe('the blame toggle in the bar', () => {
     await flushPromises()
     expect(diffMode.mode).toBe('file')
     expect(diffMode.blame).toBe(true)
+    expect(wrapper.find('.cm-blame').text()).toContain('Ramon Robben')
+  })
+
+  it('keeps the blame column for a commit’s copy, which is not the editor', async () => {
+    git.store.viewer = { path: 'app/app.vue', commit: 'a91c4e2000000000000000000000000000000000' }
+    asked.mockImplementation(async (cmd: string, args?: Record<string, unknown>) => {
+      calls.push({ cmd, args: args ?? {} })
+      if (cmd === 'file_text') return 'one\ntwo'
+      if (cmd === 'commit_file_diff') return { path: 'app/app.vue', binary: false, truncated: 0, hunks: [] }
+      if (cmd === 'blame_file') return RUNS
+      return null
+    })
+    const wrapper = await show()
+    await toggle(wrapper).trigger('click')
+    await flushPromises()
     expect(wrapper.find('button.chip').text()).toContain('Ramon Robben')
+    git.store.viewer = null
   })
 })

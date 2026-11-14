@@ -5,6 +5,9 @@ pub mod config;
 pub mod conflict;
 pub mod create;
 pub mod diff;
+pub mod edit;
+pub mod editorconfig;
+pub mod files;
 pub mod forge;
 pub mod git_cmd;
 pub mod graph;
@@ -13,16 +16,20 @@ pub mod home;
 pub mod identity;
 pub mod journal;
 pub mod lfs;
+pub mod mouse;
+pub mod quit;
 pub mod rebase;
 pub mod recover;
 pub mod refs;
 pub mod remote;
 pub mod review;
 pub mod rewrite;
+pub mod search;
 pub mod sign;
 pub mod ssh;
 pub mod state;
 pub mod submodule;
+pub mod symbols;
 pub mod watch;
 pub mod work;
 pub mod worktree;
@@ -124,6 +131,9 @@ async fn open_repo(
     // Watch this one instead of whichever was open before. Assigning replaces
     // the old watch, and dropping it stops its thread.
     *watching.lock().unwrap() = watch::start(app, PathBuf::from(&recorded));
+    // The names in its code, for ⌘-click and unused code: built on a thread
+    // of its own, so a large project opens as fast as a small one.
+    symbols::start(PathBuf::from(&recorded));
 
     refs::describe(&state)
 }
@@ -238,6 +248,12 @@ async fn working_file_diff(
     diff::working_file_diff(&state, &path, side)
 }
 
+/// A working-tree file against the last commit, for the editor's change bars.
+#[tauri::command]
+async fn head_file_diff(path: String, state: Aimed) -> Result<diff::FileDiff, String> {
+    diff::head_file_diff(&state, &path)
+}
+
 /// The whole file, for the view that shows the changes in place rather than
 /// pulled out into hunks.
 #[tauri::command]
@@ -253,6 +269,173 @@ async fn file_text(
         commit.as_deref(),
         matches!(side, Some(diff::Side::Staged)),
     )
+}
+
+// --- the files in the work tree -------------------------------------------
+
+/// What is directly inside one folder of the work tree, `""` for the root.
+/// Ignored entries are flagged rather than left out.
+#[tauri::command]
+async fn list_dir(path: String, state: Aimed) -> Result<Vec<files::Entry>, String> {
+    files::list_dir(&state, &path)
+}
+
+/// Class, function and method names matching `query`, for the search
+/// window's Symbols mode.
+#[tauri::command]
+async fn find_symbols(
+    query: String,
+    limit: Option<usize>,
+    state: Aimed,
+) -> Result<Vec<symbols::FoundSymbol>, String> {
+    symbols::find_symbols(&state, &query, limit.unwrap_or(60))
+}
+
+/// What `.editorconfig` says about indenting this file, if anything.
+#[tauri::command]
+async fn indent_config(path: String, state: Aimed) -> Result<editorconfig::Indent, String> {
+    editorconfig::indent_for(&state, &path)
+}
+
+/// Whether git ignores this path.
+#[tauri::command]
+async fn path_ignored(path: String, state: Aimed) -> Result<bool, String> {
+    files::path_ignored(&state, &path)
+}
+
+/// Opens a work-tree file in the desktop's default app for it.
+#[tauri::command]
+fn open_default(path: String, state: Aimed) -> Result<(), String> {
+    files::open_default(&state, &path)
+}
+
+/// Files whose path fuzzily matches `query`, best first. `request` goes up
+/// with every call, and an older call still running gives up.
+///
+/// `also` are paths the window ranks first (recently opened, changed): they
+/// are matched too and kept even when they fall outside `limit`.
+#[tauri::command]
+async fn find_files(
+    query: String,
+    limit: Option<usize>,
+    request: Option<u64>,
+    also: Option<Vec<String>>,
+    state: Aimed,
+) -> Result<Vec<files::Found>, String> {
+    files::find_files(
+        &state,
+        &query,
+        limit.unwrap_or(200),
+        request.unwrap_or(0),
+        &also.unwrap_or_default(),
+    )
+}
+
+/// Searches inside the files of the work tree. Returns at once; what is found
+/// arrives as `search:hit` events, a file at a time, and `search:done` ends
+/// it. Every event carries `request`, and a newer search stops an older one.
+#[tauri::command]
+async fn search_text(
+    query: String,
+    options: search::SearchOptions,
+    request: u64,
+    app: tauri::AppHandle,
+    state: Aimed,
+) -> Result<(), String> {
+    let root = state.path()?;
+    search::claim(&root, request);
+    let changed = if options.changed_only {
+        Some(search::changed_paths(&state)?)
+    } else {
+        None
+    };
+    std::thread::spawn(move || {
+        search::search(&root, &query, &options, request, changed, |event| {
+            let _ = match event {
+                search::Event::Hits(hits) => app.emit(search::HIT_EVENT, hits),
+                search::Event::Done(done) => app.emit(search::DONE_EVENT, done),
+            };
+        });
+    });
+    Ok(())
+}
+
+/// The name at a UTF-16 offset in a file, in `text` when the editor has
+/// edits the disk does not.
+#[tauri::command]
+async fn symbol_at(
+    path: String,
+    offset: u32,
+    text: Option<String>,
+    state: Aimed,
+) -> Result<Option<symbols::SymbolAt>, String> {
+    symbols::symbol_at(&state, &path, offset, text.as_deref())
+}
+
+/// Where a name is defined, among files of the same language as `path`.
+#[tauri::command]
+async fn definitions(
+    name: String,
+    path: Option<String>,
+    shape: Option<symbols::Shape>,
+    state: Aimed,
+) -> Result<Vec<symbols::Location>, String> {
+    symbols::definitions(&state, &name, path.as_deref(), shape)
+}
+
+/// Every use of a name, among files of the same language as `path`.
+#[tauri::command]
+async fn usages(
+    name: String,
+    path: Option<String>,
+    kind: Option<String>,
+    state: Aimed,
+) -> Result<Vec<symbols::Location>, String> {
+    symbols::usages(&state, &name, path.as_deref(), kind.as_deref())
+}
+
+/// What nothing uses in a file: dimmed if private, hinted at if public.
+#[tauri::command]
+async fn unused_in(
+    path: String,
+    text: Option<String>,
+    request: Option<u64>,
+    state: Aimed,
+) -> Result<Vec<symbols::Mark>, String> {
+    symbols::unused_in(&state, &path, text.as_deref(), request)
+}
+
+/// "3 usages" over each definition in a file.
+#[tauri::command]
+async fn usage_counts(
+    path: String,
+    text: Option<String>,
+    state: Aimed,
+) -> Result<Vec<symbols::Lens>, String> {
+    symbols::usage_counts(&state, &path, text.as_deref())
+}
+
+/// A file for the editor: its text in `\n`, the hash a save has to name, how
+/// it is written, and why it is read-only when it is.
+#[tauri::command]
+async fn read_file(path: String, state: Aimed) -> Result<edit::FileRead, String> {
+    edit::read_file(&state, &path)
+}
+
+/// Saves the editor's text over a file, refused with a `Conflict` when the
+/// file is no longer the one `expected_hash` names. Returns the new hash.
+/// `eol` and `bom` say how to write a file that is not on disk any more.
+#[tauri::command]
+async fn write_file(
+    path: String,
+    text: String,
+    expected_hash: Option<String>,
+    eol: Option<String>,
+    bom: Option<bool>,
+    state: Aimed,
+) -> Result<String, String> {
+    let new_shape = eol.map(|eol| (eol == "crlf", bom.unwrap_or(false)));
+    edit::write_file(&state, &path, &text, expected_hash.as_deref(), new_shape)
 }
 
 // --- branches ---------------------------------------------------------------
@@ -1123,6 +1306,8 @@ fn project_close(path: String, state: State<'_, AppState>) -> Result<config::Con
     if open.as_deref() == Some(path.as_str()) {
         state.clear_path();
     }
+    // Its code index is not watched any more, and would only go stale.
+    symbols::forget(std::path::Path::new(&path));
     Ok(state.config())
 }
 
@@ -2021,6 +2206,12 @@ pub fn run() {
             if let Some(window) = app.get_webview_window("main") {
                 snap_scrolling(&window);
             }
+            // The mouse's back and forward buttons, which the macOS web view
+            // does not pass to the page. A no-op elsewhere.
+            mouse::watch_side_buttons(app.handle());
+            // ⌘Q asks the window first, the way the close button does.
+            #[cfg(target_os = "macos")]
+            quit_through_the_window(app.handle())?;
             // The inspector is only compiled into debug builds, and having it
             // open from the start is the only way to see a failure that happens
             // before the page can report anything itself.
@@ -2046,6 +2237,24 @@ pub fn run() {
             commit_file_diff,
             working_file_diff,
             file_text,
+            head_file_diff,
+            list_dir,
+            path_ignored,
+            indent_config,
+            find_symbols,
+            open_default,
+            find_files,
+            search_text,
+            quit_ready,
+            quit_guard,
+            quit_heard,
+            symbol_at,
+            definitions,
+            usages,
+            unused_in,
+            usage_counts,
+            read_file,
+            write_file,
             checkout,
             create_branch,
             checkout_review,
@@ -2248,6 +2457,114 @@ pub fn run() {
         ]))
         .run(tauri::generate_context!())
         .expect("error while running gitnoob");
+}
+
+/// The macOS menu bar, built here rather than taken from `Menu::default`, so
+/// that Quit is ours: the stock one ends the process without the window
+/// hearing about it. Everything else is what the default menu has.
+#[cfg(target_os = "macos")]
+fn quit_through_the_window(app: &tauri::AppHandle) -> tauri::Result<()> {
+    use tauri::menu::{AboutMetadata, Menu, MenuItem, PredefinedMenuItem, Submenu};
+    let info = app.package_info();
+    let config = app.config();
+    let about = AboutMetadata {
+        name: Some(info.name.clone()),
+        version: Some(info.version.to_string()),
+        copyright: config.bundle.copyright.clone(),
+        authors: config.bundle.publisher.clone().map(|p| vec![p]),
+        ..Default::default()
+    };
+    let quit = MenuItem::with_id(
+        app,
+        "quit",
+        format!("Quit {}", info.name),
+        true,
+        Some("CmdOrCtrl+Q"),
+    )?;
+    let app_menu = Submenu::with_items(
+        app,
+        info.name.clone(),
+        true,
+        &[
+            &PredefinedMenuItem::about(app, None, Some(about))?,
+            &PredefinedMenuItem::separator(app)?,
+            &PredefinedMenuItem::services(app, None)?,
+            &PredefinedMenuItem::separator(app)?,
+            &PredefinedMenuItem::hide(app, None)?,
+            &PredefinedMenuItem::hide_others(app, None)?,
+            &PredefinedMenuItem::show_all(app, None)?,
+            &PredefinedMenuItem::separator(app)?,
+            &quit,
+        ],
+    )?;
+    let file = Submenu::with_items(
+        app,
+        "File",
+        true,
+        &[&PredefinedMenuItem::close_window(app, None)?],
+    )?;
+    let edit = Submenu::with_items(
+        app,
+        "Edit",
+        true,
+        &[
+            &PredefinedMenuItem::undo(app, None)?,
+            &PredefinedMenuItem::redo(app, None)?,
+            &PredefinedMenuItem::separator(app)?,
+            &PredefinedMenuItem::cut(app, None)?,
+            &PredefinedMenuItem::copy(app, None)?,
+            &PredefinedMenuItem::paste(app, None)?,
+            &PredefinedMenuItem::select_all(app, None)?,
+        ],
+    )?;
+    let view = Submenu::with_items(
+        app,
+        "View",
+        true,
+        &[&PredefinedMenuItem::fullscreen(app, None)?],
+    )?;
+    let window = Submenu::with_id_and_items(
+        app,
+        tauri::menu::WINDOW_SUBMENU_ID,
+        "Window",
+        true,
+        &[
+            &PredefinedMenuItem::minimize(app, None)?,
+            &PredefinedMenuItem::maximize(app, None)?,
+            &PredefinedMenuItem::separator(app)?,
+            &PredefinedMenuItem::close_window(app, None)?,
+        ],
+    )?;
+    let help = Submenu::with_id_and_items(app, tauri::menu::HELP_SUBMENU_ID, "Help", true, &[])?;
+    let menu = Menu::with_items(app, &[&app_menu, &file, &edit, &view, &window, &help])?;
+    app.set_menu(menu)?;
+    app.on_menu_event(|app, event| {
+        if event.id() == "quit" {
+            quit::requested(app);
+        }
+    });
+    // The Dock's Quit, logout and shutdown.
+    quit::watch_terminate(app);
+    Ok(())
+}
+
+/// The page is listening for `quit-requested`.
+#[tauri::command]
+fn quit_ready() {
+    quit::set_ready(true);
+}
+
+/// Whether the page holds edits that are not on disk: only then does a quit
+/// wait for it.
+#[tauri::command]
+fn quit_guard(needed: bool) {
+    quit::set_guard(needed);
+}
+
+/// The page heard quit request `ticket` and is deciding.
+#[tauri::command]
+fn quit_heard(ticket: u64) {
+    quit::heard(ticket);
 }
 
 /// Points the open repository at whichever one the caller meant, per call.

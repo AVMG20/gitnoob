@@ -141,6 +141,22 @@ pub struct Global {
     /// only check is the button in settings.
     #[serde(default = "yes")]
     pub check_updates: bool,
+    /// "3 usages" over each function, method and class in the editor.
+    #[serde(default = "yes")]
+    pub usage_counts: bool,
+    /// A small type icon (PHP, TypeScript, a folder…) before each file name.
+    #[serde(default = "yes")]
+    pub file_icons: bool,
+    /// How the editor indents when neither `.editorconfig` nor the file says:
+    /// `detect` (from the file, then the language), `spaces` or `tabs`.
+    #[serde(default = "default_indent_style")]
+    pub indent_style: String,
+    /// Spaces per level when indenting with spaces.
+    #[serde(default = "default_indent_size")]
+    pub indent_size: u32,
+    /// How wide a tab is drawn.
+    #[serde(default = "default_indent_size")]
+    pub tab_width: u32,
     /// Check the signature on every commit the graph draws. Off by default:
     /// it is a `git log` that runs gpg or ssh-keygen once per commit, and on a
     /// large page that is the slowest thing on the screen.
@@ -336,6 +352,12 @@ fn one() -> u32 {
 fn yes() -> bool {
     true
 }
+fn default_indent_style() -> String {
+    "detect".into()
+}
+fn default_indent_size() -> u32 {
+    4
+}
 fn default_page_size() -> usize {
     500
 }
@@ -393,6 +415,11 @@ impl Default for Global {
             diverged_checkout: default_diverged_checkout(),
             show_avatars: true,
             check_updates: true,
+            usage_counts: true,
+            file_icons: true,
+            indent_style: default_indent_style(),
+            indent_size: default_indent_size(),
+            tab_width: default_indent_size(),
             verify_signatures: false,
             worktree_replaces_tab: false,
             window: None,

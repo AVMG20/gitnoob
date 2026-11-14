@@ -6,12 +6,16 @@ import {
   Check,
   ChevronDown,
   ChevronUp,
-  Copy,
+  Ellipsis,
   FileBox,
-  FolderOpen,
+  FilePlus,
+  FileText,
+  FolderTree,
   History,
   Minus,
   Search,
+  Trash2,
+  TriangleAlert,
   Undo2,
   Users,
   X
@@ -23,12 +27,20 @@ import {
   type BlameRun,
   type FileDiff
 } from '~/composables/useGit'
-import { useContextMenu } from '~/composables/useContextMenu'
+import { useContextMenu, type MenuItem } from '~/composables/useContextMenu'
 import { labelFor } from '~/composables/useHighlight'
 import { diffMode, type DiffMode } from '~/composables/useDiffMode'
 import type { PickedLines } from '~/components/DiffView.vue'
 import { humanSize, readPointer } from '~/composables/useLfs'
-import { stepFile, useFileView, walkOrder, type FileStep } from '~/composables/useFileView'
+import {
+  deletingFiles,
+  stepFile,
+  useFileView,
+  walkOrder,
+  type FileStep
+} from '~/composables/useFileView'
+import { headerState } from '~/composables/fileHeader'
+import { revealInFiles } from '~/composables/useFileTree'
 import {
   CODE_ROW,
   diffRows,
@@ -39,6 +51,19 @@ import {
 } from '~/composables/useCode'
 import { findIn, type FindMarks } from '~/composables/useFind'
 import { keyLabel, useShortcuts } from '~/composables/useShortcuts'
+import { closeTab, goToLine, openTab, showGraph, tabId, useTabs } from '~/composables/useTabs'
+import { aimedAt, invoke } from '~/composables/useInvoke'
+import {
+  closeTabsSafely,
+  editKey,
+  readFile,
+  saveErrorOf,
+  saveStateOf
+} from '~/composables/useFileEdit'
+import FileEditor, { type EditorFacts } from '~/components/FileEditor.vue'
+import { indentLabel, indentOverrides } from '~/composables/indentation'
+import FileIcon from '~/components/FileIcon.vue'
+import MidTruncate from '~/components/MidTruncate.vue'
 
 /** The order Tab walks the views in. */
 const MODES: DiffMode[] = ['diff', 'file']
@@ -47,12 +72,35 @@ const git = useGit()
 const menu = useContextMenu()
 const store = git.store
 const view = useFileView()
+const tabs = useTabs()
 
 const diff = ref<FileDiff | null>(null)
 const loading = ref(false)
 /** The file itself, for the whole-file view. Only read when that view is on. */
 const text = ref<string | null>(null)
 const textError = ref<string | null>(null)
+
+/**
+ * The working tree against the last commit, for the editor's change bars.
+ * The diff above is one side of the index; the bars mark everything since
+ * the commit, staged or not.
+ */
+const headDiff = ref<FileDiff | null>(null)
+/** The text in the editor as it now stands, which the find box searches. */
+const editorText = ref<string | null>(null)
+/** The element the editor scrolls in, for the strip beside it. */
+const editorScroller = ref<HTMLElement | null>(null)
+const editor = ref<{
+  goToLine: (line: number, mark?: boolean) => void
+  nextChange: (by: number) => void
+  focus: () => void
+  jumpAtCaret: () => void
+} | null>(null)
+/**
+ * Nothing on disk and nothing in the status: deleted and committed since the
+ * tab was opened, or a tab reopened by back after the file went.
+ */
+const missing = ref(false)
 
 /** The scrolling half of the viewer, which the ruler measures. */
 const body = ref<HTMLElement | null>(null)
@@ -95,7 +143,241 @@ function onScroll() {
 let sizer: ResizeObserver | null = null
 
 const target = computed(() => store.viewer)
+
+/** The tab on screen, for its save state and its id. */
+const currentId = computed(() => (target.value ? tabId(target.value.path, target.value.commit) : ''))
+
+/**
+ * Whether File mode is the editor: a file in the work tree that is there.
+ * A commit's copy and a deleted file keep the read-only view, with its
+ * blame column.
+ */
+const editing = computed(
+  () =>
+    diffMode.mode === 'file' &&
+    !!target.value &&
+    !target.value.commit &&
+    !gone.value &&
+    !missing.value
+)
+
+/**
+ * A chip for the save states that need doing something about. Saving, saved
+ * and unsaved are already on the tab (its dot) and in the panel (the M), so
+ * the bar says nothing about them.
+ */
+const saveLabel = computed(() => {
+  if (!editing.value) return null
+  switch (saveStateOf(aimedAt(), currentId.value)) {
+    case 'conflict':
+      return { text: 'Changed on disk', title: 'The file changed on disk under your edits; the bar below asks which to keep' }
+    case 'failed':
+      return { text: 'Not saved', title: saveErrorOf(aimedAt(), currentId.value) ?? 'The last save failed' }
+    default:
+      return null
+  }
+})
 const language = computed(() => (target.value ? labelFor(target.value.path) : null))
+
+// --- the bar over the file
+//
+// Which badge and which buttons it has is decided in one place, `headerState`,
+// from the file, the status and the tab. This only gathers what it needs.
+
+/** How the editor found the file: read-only or not, its endings, a BOM. */
+const facts = ref<EditorFacts | null>(null)
+/** Git ignores the file. Only asked for one the status does not list. */
+const ignored = ref(false)
+/** Commit subjects, for the hash's tooltip on a commit tab. */
+const subjects = ref<Record<string, string>>({})
+
+const head = computed(() => {
+  const current = target.value
+  if (!current) return null
+  const status = store.status
+  const staged = status?.staged.find((entry) => entry.path === current.path) ?? null
+  const unstaged = status?.unstaged.find((entry) => entry.path === current.path) ?? null
+  return headerState(
+    {
+      path: current.path,
+      readonly: facts.value?.readonly ?? null,
+      ignored: ignored.value,
+      missing: missing.value
+    },
+    {
+      staged: staged ? { kind: staged.kind ?? 'modified' } : null,
+      unstaged: unstaged ? { kind: unstaged.kind ?? 'modified' } : null,
+      conflicted: !!status?.conflicted.includes(current.path)
+    },
+    { commit: current.commit, subject: current.commit ? subjects.value[current.commit] : null }
+  )
+})
+
+/** The folders above the file, each one a way to it in the Files tree. */
+const crumbs = computed(() => {
+  const path = target.value?.path ?? ''
+  const parts = path.split('/').slice(0, -1)
+  return parts.map((name, at) => ({ name, path: parts.slice(0, at + 1).join('/') }))
+})
+const baseName = computed(() => target.value?.path.split('/').pop() ?? '')
+
+/** Where the caret is, as Ln and Col, from the tab and the editor's text. */
+const caret = computed(() => {
+  const tab = tabs.state.tabs.find((one) => one.id === currentId.value)
+  const now = editorText.value ?? ''
+  const at = Math.min(tab?.caret ?? 0, now.length)
+  // `lastIndexOf` reads a start of -1 as 0, and would find a newline that
+  // opens the file: at the very start there is nothing before the caret.
+  const start = at === 0 ? 0 : now.lastIndexOf('\n', at - 1) + 1
+  return { line: tab?.line ?? 1, col: at - start + 1 }
+})
+
+/** A narrow window keeps the bar to one row by folding the quieter tools away. */
+const bar = ref<HTMLElement | null>(null)
+const narrow = ref(false)
+let barSizer: ResizeObserver | null = null
+watch(bar, (element) => {
+  barSizer?.disconnect()
+  if (!element || typeof ResizeObserver === 'undefined') return
+  barSizer = new ResizeObserver(() => (narrow.value = element.clientWidth < 760))
+  barSizer.observe(element)
+})
+
+watch(
+  () => [target.value?.path, target.value?.commit],
+  () => {
+    facts.value = null
+    ignored.value = false
+    void loadSubject()
+  }
+)
+
+/** The subject of the commit a commit tab shows, read once per commit. */
+async function loadSubject() {
+  const oid = target.value?.commit
+  if (!oid || subjects.value[oid] !== undefined) return
+  const known = store.detail?.oid === oid ? store.detail.summary : null
+  if (known !== null) {
+    subjects.value = { ...subjects.value, [oid]: known }
+    return
+  }
+  const found = await git.commitDetail(oid)
+  if (found) subjects.value = { ...subjects.value, [oid]: found.summary }
+}
+
+/** Asks git whether a file the status does not list is one it ignores. */
+async function loadIgnored(current: NonNullable<typeof target.value>) {
+  if (current.commit) return
+  const listed = [...(store.status?.staged ?? []), ...(store.status?.unstaged ?? [])].some(
+    (entry) => entry.path === current.path
+  )
+  if (listed) {
+    ignored.value = false
+    return
+  }
+  const answer = await invoke<boolean>('path_ignored', { path: current.path }).catch(() => false)
+  if (target.value === current) ignored.value = !!answer
+}
+
+// A file with nothing to compare is read in File mode; there is no Diff to show.
+watch(
+  () => [head.value?.modes, head.value?.kind, !!store.status] as const,
+  ([modes, kind, known]) => {
+    // Everything committed or thrown away closes a diff tab instead (below).
+    const status = store.status
+    const empty = !!status && !status.staged.length && !status.unstaged.length && !status.conflicted.length
+    if (known && !empty && modes === false && kind !== 'missing' && diffMode.mode === 'diff') {
+      diffMode.mode = 'file'
+    }
+  }
+)
+
+/** The path from the top of the repository, or on disk. */
+function absolutePath(path: string) {
+  const root = store.repo?.path ?? ''
+  return root ? `${root.replace(/[\\/]$/, '')}/${path}` : path
+}
+
+const INDENT_FROM: Record<string, string> = {
+  override: 'picked here for this file',
+  editorconfig: 'from .editorconfig',
+  file: 'read from the file',
+  settings: 'from Settings → Editor',
+  language: 'the usual for this language',
+  default: 'from Settings → Editor'
+}
+
+const indentTitle = computed(() => {
+  const now = facts.value?.indent
+  return now ? `Indenting with ${indentLabel(now).toLowerCase()}, ${INDENT_FROM[now.from]}. Click to change it for this file.` : ''
+})
+
+/** Spaces or tabs for this file, this session; or back to what was worked out. */
+function showIndentMenu(event: MouseEvent) {
+  const key = editKey(aimedAt(), currentId.value)
+  const now = facts.value?.indent
+  const pick = (tabs: boolean, size: number) => () => {
+    indentOverrides[key] = { tabs, size }
+  }
+  const items: MenuItem[] = [
+    ...[2, 4, 8].map((size) => ({
+      label: `Spaces: ${size}`,
+      hint: now && !now.tabs && now.size === size ? 'now' : undefined,
+      action: pick(false, size)
+    })),
+    { label: 'Tabs', hint: now?.tabs ? 'now' : undefined, action: pick(true, 0) }
+  ]
+  if (indentOverrides[key]) {
+    items.push(
+      { label: '', separator: true },
+      { label: 'Back to what the file says', action: () => delete indentOverrides[key] }
+    )
+  }
+  menu.show(event, items, 'Indentation for this file')
+}
+
+/** The ⋯ menu: everything the bar has no room or no reason to show. */
+function showMore(event: MouseEvent) {
+  const current = target.value
+  if (!current) return
+  const items = []
+  if (narrow.value) {
+    items.push(
+      { label: 'History', action: () => void showHistory(event) },
+      {
+        label: diffMode.blame && diffMode.mode === 'file' ? 'Hide blame' : 'Show blame',
+        action: toggleBlame
+      },
+      { label: 'Reveal in Files', action: () => revealInFiles(current.path) }
+    )
+  }
+  items.push(
+    { label: 'Copy path', action: () => copyText(absolutePath(current.path), 'Path') },
+    { label: 'Copy relative path', action: () => copyText(current.path, 'Path') }
+  )
+  if (!current.commit) {
+    items.push(
+      { label: git.revealLabel, action: () => void git.reveal(current.path) },
+      {
+        label: 'Open in default app',
+        action: () =>
+          void invoke('open_default', { path: current.path }).catch((error) => git.note(String(error)))
+      }
+    )
+  }
+  menu.show(event, items, current.path)
+}
+
+/** The git buttons the state asks for. */
+function act(action: string) {
+  const current = target.value
+  if (!current || store.busy) return
+  if (action === 'discard') void git.discard([current.path])
+  else if (action === 'stage' || action === 'add') void git.stage([current.path])
+  else if (action === 'unstage') void git.unstage([current.path])
+  else if (action === 'delete') deletingFiles.value = [current.path]
+  else if (action === 'open-current') openTab({ path: current.path, mode: 'file' })
+}
 /**
  * Whether the file being read has been deleted.
  *
@@ -140,11 +422,22 @@ async function load(settle = true) {
   // view now.
   if (target.value !== current) return
   diff.value = fresh
+  void loadIgnored(current)
   await loadText()
+  await loadHead(current)
   await loadBlame()
   loading.value = false
   if (settle) {
-    await toFirstChange()
+    // A tab come back to is read from where it was left; a file just opened
+    // from wherever its change is.
+    const kept = tabs.activeTab()?.scrollTop
+    if (editing.value) {
+      // The editor keeps its own place.
+    } else if (kept !== undefined && body.value) {
+      await nextTick()
+      body.value.scrollTop = kept
+      top.value = body.value.scrollTop
+    } else await toFirstChange()
     // Another file is another set of matches; the search carries on in it from
     // wherever the file was opened at.
     findFrom(null)
@@ -166,7 +459,7 @@ async function load(settle = true) {
  */
 async function toFirstChange() {
   const box = body.value
-  if (!box) return
+  if (!box || editing.value) return
   // A file just opened is read from wherever its change is, not from wherever
   // the last one happened to be left.
   box.scrollTop = 0
@@ -202,10 +495,75 @@ async function loadText() {
   textError.value = null
   try {
     text.value = await git.fileText(current.path, current.commit, current.side ?? 'unstaged')
+    if (target.value === current) missing.value = false
   } catch (error) {
     text.value = null
     textError.value = String(error)
+    // Gone from the disk and from git's index and HEAD: there is nothing to
+    // show, and that is the page rather than an error.
+    if (!current.commit && target.value === current) missing.value = await isMissing(current.path)
   }
+}
+
+/** Whether a working-tree path has nothing on disk and nothing in the status. */
+async function isMissing(path: string) {
+  const listed = [...(store.status?.staged ?? []), ...(store.status?.unstaged ?? [])].some(
+    (entry) => entry.path === path
+  )
+  if (listed) return false
+  const read = await readFile(path)
+  return !!read?.missing
+}
+
+/** The bars' diff, for a working-tree file shown in the editor. */
+async function loadHead(current: NonNullable<typeof target.value>) {
+  if (current.commit || diffMode.mode !== 'file') {
+    headDiff.value = null
+    return
+  }
+  try {
+    const found = await invoke<FileDiff>('head_file_diff', { path: current.path })
+    if (target.value === current) headDiff.value = found
+  } catch {
+    if (target.value === current) headDiff.value = null
+  }
+}
+
+/**
+ * "Show in Diff" on a change bar's card: the same change in Diff mode, at its
+ * hunk, on whichever side of the index it is on.
+ */
+async function toBar(line: number) {
+  const current = target.value
+  if (!current || current.commit) return
+  const unstaged = (store.status?.unstaged ?? []).some((entry) => entry.path === current.path)
+  const side = unstaged ? 'unstaged' : 'staged'
+  pendingLine = line
+  if (current.side !== side) store.viewer = { path: current.path, side }
+  diffMode.mode = 'diff'
+}
+
+/** A line the diff should scroll to once it is drawn, from a bar click. */
+let pendingLine: number | null = null
+
+async function toPendingHunk() {
+  const line = pendingLine
+  pendingLine = null
+  const box = body.value
+  if (line === null || !box || diffMode.mode !== 'diff') return
+  const hunks = diff.value?.hunks ?? []
+  const covering = hunks.findIndex((hunk) => {
+    const found = /\+(\d+)(?:,(\d+))?/.exec(hunk.header)
+    const start = Number(found?.[1] ?? 0)
+    const count = found?.[2] === undefined ? 1 : Number(found[2])
+    return line >= start && line <= start + Math.max(count, 1)
+  })
+  const index = covering < 0 ? 0 : covering
+  await nextTick()
+  const head = diffRows(hunks).rows.find((row) => row.kind === 'head' && row.hunk === index)
+  if (!head) return
+  box.scrollTop = Math.max(0, rowsTop(box) + head.top - 8)
+  top.value = box.scrollTop
 }
 
 /**
@@ -243,7 +601,7 @@ async function showHistory(event: MouseEvent) {
     label: one.summary || one.short,
     hint: `${one.short} · ${relativeTime(one.time)}`,
     action: () => {
-      store.viewer = { path: current.path, commit: one.oid }
+      openTab({ path: current.path, commit: one.oid, mode: 'diff' })
     }
   }))
   if (found.length > HISTORY_SHOWN) {
@@ -303,8 +661,11 @@ async function loadBlame() {
 
 watch(() => diffMode.mode, async () => {
   await loadText()
+  const current = target.value
+  if (current) await loadHead(current)
   await loadBlame()
-  await toFirstChange()
+  if (pendingLine !== null) await toPendingHunk()
+  else await toFirstChange()
   findFrom(null)
 })
 
@@ -320,13 +681,26 @@ watch(() => diffMode.blame, () => loadBlame())
  * changes that are nowhere near the part of the file being looked at.
  */
 const marks = computed(() => {
+  if (editing.value) {
+    return fileMarks(markedLines(editorText.value ?? text.value, headDiff.value?.hunks ?? []))
+  }
   if (diffMode.mode === 'file') return fileMarks(markedLines(text.value, diff.value?.hunks ?? []))
   const laid = diffRows(diff.value?.hunks ?? [])
   return patchMarks(laid.rows, laid.height)
 })
 
+/** Closes this file's tab; the last one closed brings the graph back. */
 function close() {
-  store.viewer = null
+  const tab = tabs.activeTab()
+  if (tab) void closeTabsSafely([tab.id], () => closeTab(tab.id))
+}
+
+/** Flips between the diff and the whole file. */
+function flipMode(by = 1) {
+  // Nothing changed, nothing to compare: Tab and the key leave the file be.
+  if (head.value && !head.value.modes) return
+  const at = MODES.indexOf(diffMode.mode)
+  diffMode.mode = MODES[(at + by + MODES.length) % MODES.length]!
 }
 
 // --- finding text in the file
@@ -348,8 +722,9 @@ let findRow: number | null = null
 const searched = computed<{ text: string; top: number }[]>(() => {
   if (pointer.value) return []
   if (diffMode.mode === 'file') {
-    if (diff.value?.binary || text.value === null) return []
-    const source = text.value.split('\n')
+    const shown = editing.value ? (editorText.value ?? text.value) : text.value
+    if (diff.value?.binary || shown === null) return []
+    const source = shown.split('\n')
     // The same last empty piece `markedLines` drops, so a row here is a row there.
     if (source.length && source[source.length - 1] === '') source.pop()
     return source.map((line, at) => ({ text: line, top: at * CODE_ROW }))
@@ -391,8 +766,8 @@ function findFrom(row: number | null) {
   }
   let from = row
   if (from === null) {
-    const box = body.value
-    const scrolled = box ? box.scrollTop - rowsTop(box) : 0
+    const box = editing.value ? editorScroller.value : body.value
+    const scrolled = box ? box.scrollTop - (editing.value ? 0 : rowsTop(box)) : 0
     from = searched.value.findIndex((one) => one.top >= scrolled)
   }
   const at = list.findIndex((one) => one.row >= (from ?? 0))
@@ -410,6 +785,8 @@ function findFrom(row: number | null) {
  */
 async function reveal() {
   const box = body.value
+  // The editor brings its own current match into view.
+  if (editing.value) return
   const at = hits.value[hit.value]
   const row = at ? searched.value[at.row] : undefined
   if (!box || !row) return
@@ -478,9 +855,6 @@ function onFindKey(event: KeyboardEvent) {
   } else if (event.key === 'ArrowUp' || (event.key === 'Enter' && event.shiftKey)) {
     event.preventDefault()
     step(-1)
-  } else if (mod && event.key.toLowerCase() === 'g') {
-    event.preventDefault()
-    step(event.shiftKey ? -1 : 1)
   } else if (mod && event.key.toLowerCase() === 'f') {
     event.preventDefault()
     findBox.value?.select()
@@ -492,8 +866,104 @@ function onFindKey(event: KeyboardEvent) {
 useShortcuts({
   'viewer.search': () => openFind(),
   'viewer.next': () => (finding.value ? step(1) : openFind()),
-  'viewer.previous': () => (finding.value ? step(-1) : openFind())
+  'viewer.previous': () => (finding.value ? step(-1) : openFind()),
+  'file.mode': () => flipMode(),
+  'file.line': () => openLine(),
+  'file.nextChange': () => changeStep(1),
+  'file.previousChange': () => changeStep(-1),
+  'file.jump': () => editor.value?.jumpAtCaret()
 })
+
+// --- go to line
+
+const asking = ref(false)
+const lineInput = ref('')
+const lineBox = ref<HTMLInputElement | null>(null)
+
+async function openLine() {
+  lineInput.value = ''
+  asking.value = true
+  await nextTick()
+  lineBox.value?.focus()
+}
+
+function closeLine() {
+  asking.value = false
+  if (editing.value) editor.value?.focus()
+}
+
+/** A jump, so back returns to where the caret was. Diff mode goes to the file. */
+function submitLine() {
+  const line = Number.parseInt(lineInput.value, 10)
+  asking.value = false
+  if (!Number.isFinite(line) || line < 1) return
+  if (diffMode.mode !== 'file') diffMode.mode = 'file'
+  goToLine(line)
+}
+
+function onLineKey(event: KeyboardEvent) {
+  if (event.key === 'Enter') {
+    event.preventDefault()
+    submitLine()
+  } else if (event.key === 'Escape') {
+    event.preventDefault()
+    event.stopPropagation()
+    closeLine()
+  }
+}
+
+/** Where a jump lands when the read-only views are on screen. */
+async function landOutsideEditor(line: number) {
+  const box = body.value
+  if (!box || editing.value) return
+  if (diffMode.mode !== 'file') return
+  await nextTick()
+  box.scrollTop = Math.max(0, (line - 1) * CODE_ROW - box.clientHeight / 2)
+  top.value = box.scrollTop
+}
+
+watch(
+  () => tabs.state.landing,
+  (landing) => {
+    if (landing && landing.tab === currentId.value) void landOutsideEditor(landing.line)
+  }
+)
+
+// --- the next change, in the file or the patch
+
+function changeStep(by: number) {
+  if (editing.value) {
+    editor.value?.nextChange(by)
+    return
+  }
+  const box = body.value
+  if (!box) return
+  if (diffMode.mode === 'diff') {
+    const heads = diffRows(diff.value?.hunks ?? []).rows.filter((row) => row.kind === 'head')
+    const offset = rowsTop(box)
+    const now = box.scrollTop - offset
+    const next =
+      by > 0
+        ? heads.find((row) => row.top > now + 2)
+        : [...heads].reverse().find((row) => row.top < now - 2)
+    if (next) {
+      box.scrollTop = Math.max(0, offset + next.top)
+      top.value = box.scrollTop
+    }
+    return
+  }
+  const lines = markedLines(text.value, diff.value?.hunks ?? [])
+  const starts = lines
+    .filter((line, at) => (line.mark || line.removed.length) && !lines[at - 1]?.mark)
+    .map((line) => line.number)
+  const now = Math.floor(box.scrollTop / CODE_ROW) + 1
+  const next =
+    by > 0 ? starts.find((line) => line > now + 1) : [...starts].reverse().find((line) => line < now - 1)
+  if (next !== undefined) {
+    box.scrollTop = Math.max(0, (next - 1) * CODE_ROW - 72)
+    top.value = box.scrollTop
+  }
+}
 
 /**
  * The files the arrows walk: the commit's own when a commit is open, and the
@@ -591,9 +1061,12 @@ async function onHunk(
 
 function onKey(event: KeyboardEvent) {
   if (event.key === 'Escape') {
-    // The find box is the thing on top, so it goes first.
+    // The find box is the thing on top, so it goes first. Otherwise Escape is
+    // the way home: the graph comes forward and the file stays in its tab.
+    // A dialog in front of the viewer takes the key, and takes it alone.
+    if (covered()) return
     if (finding.value) closeFind()
-    else close()
+    else if (!typing(event)) showGraph()
     return
   }
   if (typing(event) || covered() || event.altKey || event.ctrlKey || event.metaKey) return
@@ -602,11 +1075,7 @@ function onKey(event: KeyboardEvent) {
   // "next field", and wherever a modifier makes it mean something else.
   if (event.key === 'Tab') {
     event.preventDefault()
-    // Round the three in order, backwards with shift: the same key that used
-    // to swap two views now walks them, rather than stranding the third.
-    const at = MODES.indexOf(diffMode.mode)
-    const step = event.shiftKey ? -1 : 1
-    diffMode.mode = MODES[(at + step + MODES.length) % MODES.length]!
+    flipMode(event.shiftKey ? -1 : 1)
     return
   }
   // The same two keys the commit list uses, and free while the viewer is open:
@@ -640,7 +1109,26 @@ function typing(event: KeyboardEvent) {
   )
 }
 
-watch(target, () => load(), { deep: true })
+/** The tab on screen, so where it was scrolled to can be kept on leaving it. */
+let shown: string | null = null
+
+function keepScroll() {
+  const box = body.value
+  // The editor keeps its own place, on its own way out.
+  if (!shown || !box || editing.value) return
+  const left = tabs.state.tabs.find((tab) => tab.id === shown)
+  if (left) left.scrollTop = box.scrollTop
+}
+
+watch(
+  target,
+  (now) => {
+    keepScroll()
+    shown = now ? tabId(now.path, now.commit) : null
+    load()
+  },
+  { deep: true }
+)
 // Staging changes which side a file lives on, so follow the status — quietly,
 // and only when what is on screen could actually have changed. The watcher
 // hands out a fresh status object for any write anywhere in the work tree, and
@@ -657,7 +1145,9 @@ watch(
     // other ways the changes can go.
     const nothingLeft =
       status && !status.staged.length && !status.unstaged.length && !status.conflicted.length
-    if (target.value && !target.value.commit && nothingLeft) {
+    // A tab reading the whole file is about the file, not its changes, and
+    // stays open.
+    if (target.value && !target.value.commit && nothingLeft && diffMode.mode === 'diff') {
       close()
       return
     }
@@ -666,7 +1156,9 @@ watch(
 )
 
 onMounted(() => {
+  shown = target.value ? tabId(target.value.path, target.value.commit) : null
   load()
+  void loadSubject()
   window.addEventListener('keydown', onKey)
   const box = body.value
   if (!box) return
@@ -681,8 +1173,10 @@ onMounted(() => {
 })
 
 onBeforeUnmount(() => {
+  keepScroll()
   body.value?.removeEventListener('scroll', onScroll)
   sizer?.disconnect()
+  barSizer?.disconnect()
 })
 
 onUnmounted(() => window.removeEventListener('keydown', onKey))
@@ -690,28 +1184,79 @@ onUnmounted(() => window.removeEventListener('keydown', onKey))
 
 <template>
   <section v-if="target" class="viewer">
-    <header class="bar">
+    <header ref="bar" class="bar" :data-state="head?.kind">
+      <span class="type" :title="language ?? undefined"><FileIcon :path="target.path" :size="15" /></span>
+      <!-- Where the file is: each folder a way to it in the Files tree. The
+           folders give way first and the name never does, the way MidTruncate
+           cuts a long name in the middle rather than at the end. -->
       <span class="path" :title="target.path">
-        <span class="dir">{{ target.path.slice(0, target.path.lastIndexOf('/') + 1) }}</span>
-        <span class="base-name">{{ target.path.slice(target.path.lastIndexOf('/') + 1) }}</span>
+        <span class="dir">
+          <template v-for="crumb in crumbs" :key="crumb.path">
+            <button
+              class="crumb"
+              :title="`Show ${crumb.path} in Files`"
+              @click="revealInFiles(crumb.path)"
+            >
+              {{ crumb.name }}</button
+            ><span class="sep">/</span>
+          </template>
+        </span>
+        <MidTruncate class="base-name" :text="baseName" :tail="8" />
       </span>
-      <span v-if="language" class="pill">{{ language }}</span>
-      <span v-if="target.commit" class="pill">{{ target.commit.slice(0, 7) }}</span>
-      <span v-else class="pill">{{ target.side }}</span>
-      <span class="stats">
+      <span
+        v-for="badge in head?.badges ?? []"
+        :key="badge.text"
+        class="badge"
+        :class="badge.tone"
+        :title="badge.title"
+        >{{ badge.text }}</span
+      >
+      <span v-if="head?.commit" class="pill hash" :title="head.commit.subject || target.commit!">{{
+        head.commit.short
+      }}</span>
+      <span v-else-if="head?.kind === 'modified'" class="pill">{{ target.side }}</span>
+      <span v-if="head?.counts" class="stats">
         <span class="plus">+{{ stats.additions }}</span>
         <span class="minus">−{{ stats.deletions }}</span>
       </span>
+      <span v-if="saveLabel" class="save-warning" :title="saveLabel.title"
+        ><TriangleAlert :size="11" />{{ saveLabel.text }}</span
+      >
 
       <span class="grow" />
 
+      <!-- How the file is written, in the editor: where the caret is (click to
+           go to a line), its line endings, its encoding, its language. -->
+      <span v-if="editing && facts" class="facts">
+        <button class="fact" title="Go to line (⌘G)" @click="openLine">
+          Ln {{ caret.line }}, Col {{ caret.col }}
+        </button>
+        <template v-if="!narrow">
+          <span class="fact" :title="facts.eol === 'crlf' ? 'Windows line endings' : 'Unix line endings'">{{
+            facts.eol === 'crlf' ? 'CRLF' : 'LF'
+          }}</span>
+          <span class="fact">{{ facts.bom ? 'UTF-8 BOM' : 'UTF-8' }}</span>
+          <span v-if="language" class="fact">{{ language }}</span>
+        </template>
+        <button
+          v-if="facts.indent"
+          class="fact"
+          data-fact="indent"
+          :title="indentTitle"
+          @click="showIndentMenu"
+        >
+          {{ indentLabel(facts.indent) }}
+        </button>
+      </span>
+
       <!-- Two ways to read the same change: the patch, or the file with the
-           change marked in it. Which one you prefer is remembered. -->
-      <span class="modes">
+           change marked in it. A file with no change has only the one. -->
+      <span class="modes" :class="{ off: !head?.modes }" :title="head?.modes ? undefined : 'No changes'">
         <button
           class="seg"
-          :class="{ on: diffMode.mode === 'diff' }"
-          title="The changed lines, in hunks (Tab)"
+          :class="{ on: diffMode.mode === 'diff' && head?.modes }"
+          :disabled="!head?.modes"
+          :title="head?.modes ? 'The changed lines, in hunks (Tab)' : 'No changes'"
           @click="diffMode.mode = 'diff'"
         >
           Diff
@@ -719,45 +1264,65 @@ onUnmounted(() => window.removeEventListener('keydown', onKey))
         <button
           class="seg"
           :class="{ on: diffMode.mode === 'file' }"
-          title="The whole file, with the changes marked down the side (Tab)"
+          :disabled="!head?.modes"
+          :title="head?.modes ? 'The whole file, with the changes marked down the side (Tab)' : 'No changes'"
           @click="diffMode.mode = 'file'"
         >
           File
         </button>
       </span>
 
-      <!-- Discard left, stage right, matching the hunk buttons in the diff
-           below: the destructive one is never where the hand already is. -->
-      <template v-if="!target.commit">
-        <!-- Only beside the unstaged copy. From the staged one it threw away
-             the edits on disk — not what was on screen — while the staged
-             copy it was showing stayed exactly as it was. -->
-        <button
-          v-if="target.side !== 'staged'"
-          class="btn danger"
-          :disabled="store.busy"
-          title="Throw away the unstaged changes to this file"
-          @click="git.discard([target.path])"
-        >
-          <Undo2 :size="14" /> Discard
-        </button>
-        <button
-          v-if="target.side === 'unstaged'"
-          class="btn stage"
-          :disabled="store.busy"
-          @click="git.stage([target.path])"
-        >
-          <Check :size="14" /> Stage file
-        </button>
-        <button v-else class="btn stage" :disabled="store.busy" @click="git.unstage([target.path])">
-          <Minus :size="14" /> Unstage file
-        </button>
+      <!-- The git buttons, as the state has them: Discard left of Stage, the
+           destructive one never where the hand already is. -->
+      <template v-if="head?.actions.length">
+        <template v-for="action in head.actions" :key="action">
+          <button
+            v-if="action === 'discard'"
+            class="btn danger"
+            :disabled="store.busy"
+            title="Throw away the unstaged changes to this file"
+            @click="act('discard')"
+          >
+            <Undo2 :size="14" /> Discard
+          </button>
+          <button v-else-if="action === 'stage'" class="btn stage" :disabled="store.busy" @click="act('stage')">
+            <Check :size="14" /> Stage file
+          </button>
+          <button v-else-if="action === 'unstage'" class="btn stage" :disabled="store.busy" @click="act('unstage')">
+            <Minus :size="14" /> Unstage file
+          </button>
+          <button
+            v-else-if="action === 'delete'"
+            class="btn danger"
+            :disabled="store.busy"
+            title="Delete it from disk; git has no copy"
+            @click="act('delete')"
+          >
+            <Trash2 :size="14" /> Delete file
+          </button>
+          <button
+            v-else-if="action === 'add'"
+            class="btn stage"
+            :disabled="store.busy"
+            title="Start tracking it: stage the whole file"
+            @click="act('add')"
+          >
+            <FilePlus :size="14" /> Add file
+          </button>
+          <button
+            v-else-if="action === 'open-current'"
+            class="btn"
+            title="The file as it is in the work tree now"
+            @click="act('open-current')"
+          >
+            <FileText :size="14" /> Open current version
+          </button>
+        </template>
         <span class="divider" />
       </template>
 
-      <!-- The same box ⌘F opens, for whoever does not know the key. It searches
-           whichever view is on screen, so it sits outside the two modes, and a
-           press leaves the selection alone so selected text still starts it. -->
+      <!-- The same box ⌘F opens, for whoever does not know the key. A press
+           leaves the selection alone so selected text still starts it. -->
       <button
         class="btn tool"
         :class="{ on: finding }"
@@ -768,42 +1333,45 @@ onUnmounted(() => window.removeEventListener('keydown', onKey))
         <Search :size="14" />
       </button>
 
-      <!-- Always here, whichever view is on screen. It used to appear along
-           with the file view and shove everything beside it sideways, so
-           switching views moved the buttons under the pointer. Blame is still
-           a column of the file, so asking for it from the patch opens that
-           view rather than doing nothing. -->
-      <button
-        class="btn tool"
-        :class="{ on: diffMode.mode === 'file' && diffMode.blame }"
-        :title="
-          diffMode.mode !== 'file'
-            ? 'Show who last touched each line — opens the file view'
-            : diffMode.blame
-              ? 'Hide who last touched each line'
-              : 'Show who last touched each line'
-        "
-        @click="toggleBlame"
-      >
-        <Users :size="14" />
+      <!-- Always in the same place whichever view is on screen; asking for it
+           from the patch opens the file view with the column. -->
+      <template v-if="!narrow">
+        <button
+          class="btn tool"
+          :class="{ on: diffMode.mode === 'file' && diffMode.blame }"
+          :title="
+            diffMode.mode !== 'file'
+              ? 'Show who last touched each line — opens the file view'
+              : diffMode.blame
+                ? 'Hide who last touched each line'
+                : 'Show who last touched each line'
+          "
+          @click="toggleBlame"
+        >
+          <Users :size="14" />
+        </button>
+        <button class="btn tool" title="Every commit that touched this file" @click="showHistory">
+          <History :size="14" />
+        </button>
+        <button
+          v-if="!target.commit"
+          class="btn tool"
+          title="Show it in the Files tree"
+          @click="revealInFiles(target.path)"
+        >
+          <FolderTree :size="14" />
+        </button>
+      </template>
+      <button class="btn tool more" title="More" @click="showMore">
+        <Ellipsis :size="14" />
       </button>
-
-      <button class="btn tool" title="Every commit that touched this file" @click="showHistory">
-        <History :size="14" />
-      </button>
-      <button class="btn tool" title="Copy path" @click="copyText(target.path, 'Path')">
-        <Copy :size="14" />
-      </button>
-      <button class="btn tool" :title="git.revealLabel" @click="git.reveal(target.path)">
-        <FolderOpen :size="14" />
-      </button>
-      <button class="btn tool" title="Close (Esc)" @click="close">
+      <button class="btn tool" title="Close this tab" @click="close">
         <X :size="16" />
       </button>
     </header>
 
     <div class="pane">
-      <div ref="body" class="body">
+      <div ref="body" class="body" :class="{ editing }">
         <!-- What is on disk is the pointer, not the file. Nothing below can
              say anything useful about it, so this stands in their place. -->
         <div v-if="pointer" class="lfs">
@@ -827,6 +1395,39 @@ onUnmounted(() => window.removeEventListener('keydown', onKey))
             can fetch it.
           </p>
         </div>
+
+        <!-- Deleted and gone from git's index and HEAD too: there is no copy
+             to show, and the page says so rather than showing an error. -->
+        <div v-else-if="missing" class="lfs missing">
+          <h3>{{ target?.path.split('/').pop() }}</h3>
+          <p class="dim">
+            This file is not in the work tree any more, and nothing uncommitted is left of it. Its
+            history still has every version that was committed.
+          </p>
+          <span class="row-buttons">
+            <button class="btn" @click="showHistory">
+              <History :size="14" /> Its history
+            </button>
+            <button class="btn" @click="close">Close the tab</button>
+          </span>
+        </div>
+
+        <FileEditor
+          v-else-if="editing && target"
+          :key="currentId"
+          ref="editor"
+          :tab-id="currentId"
+          :path="target.path"
+          :hunks="headDiff?.hunks ?? []"
+          :runs="blame"
+          :blame="diffMode.blame"
+          :find="findMarks"
+          :fallback="text"
+          @text="(value: string) => (editorText = value)"
+          @scroller="(element: HTMLElement | null) => (editorScroller = element)"
+          @bar="toBar"
+          @facts="(value: EditorFacts) => (facts = value)"
+        />
 
         <FileView
           v-else-if="diffMode.mode === 'file'"
@@ -890,7 +1491,7 @@ onUnmounted(() => window.removeEventListener('keydown', onKey))
         <button
           class="step"
           :disabled="!hits.length"
-          :title="`Previous (↑ or ${keyLabel('mod+shift+g')})`"
+          :title="'Previous (↑ or ⇧↵)'"
           @mousedown.prevent
           @click="step(-1)"
         >
@@ -899,7 +1500,7 @@ onUnmounted(() => window.removeEventListener('keydown', onKey))
         <button
           class="step"
           :disabled="!hits.length"
-          :title="`Next (↓ or ${keyLabel('mod+g')})`"
+          :title="'Next (↓ or ↵)'"
           @mousedown.prevent
           @click="step(1)"
         >
@@ -909,12 +1510,50 @@ onUnmounted(() => window.removeEventListener('keydown', onKey))
           <X :size="13" />
         </button>
       </div>
-      <ChangeRuler :container="body" :marks="marks" />
+      <!-- ⌘G: a line to go to, in the same corner as the find box. -->
+      <div v-if="asking" class="find goto">
+        <span class="faint">Line</span>
+        <input
+          ref="lineBox"
+          v-model="lineInput"
+          type="text"
+          inputmode="numeric"
+          spellcheck="false"
+          placeholder="Go to line"
+          @keydown="onLineKey"
+          @blur="asking = false"
+        />
+      </div>
+      <ChangeRuler :container="editing ? editorScroller : body" :marks="marks" />
     </div>
   </section>
 </template>
 
 <style scoped>
+/* The editor scrolls itself; the box only holds it. */
+.body.editing {
+  overflow: hidden;
+}
+
+.save-warning {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  flex: none;
+  padding: 1px 6px;
+  font-size: 11px;
+  line-height: 16px;
+  white-space: nowrap;
+  color: var(--danger);
+  border: 1px solid color-mix(in srgb, var(--danger) 40%, transparent);
+  border-radius: var(--radius-sm);
+}
+
+.row-buttons {
+  display: flex;
+  gap: 8px;
+}
+
 /* The viewer is a pane of the shell's grid and takes the page tone from it, so
    it paints nothing behind itself. */
 .viewer {
@@ -935,6 +1574,10 @@ onUnmounted(() => window.removeEventListener('keydown', onKey))
   align-items: center;
   gap: 6px;
   min-height: 40px;
+  /* A bar with more on it than the pane is wide is cut at the pane's edge
+     rather than drawn over the panel beside it. */
+  min-width: 0;
+  overflow: hidden;
   padding: 5px 8px 5px 12px;
   background: var(--canvas);
   border-bottom: 1px solid var(--line);
@@ -967,6 +1610,93 @@ onUnmounted(() => window.removeEventListener('keydown', onKey))
   white-space: nowrap;
   font-weight: 600;
   color: var(--text);
+}
+
+/* A folder in the path is a way to it in the Files tree. */
+.crumb {
+  display: inline;
+  padding: 0;
+  border: 0;
+  background: none;
+  color: inherit;
+  font: inherit;
+  cursor: pointer;
+}
+
+.crumb:hover {
+  color: var(--text);
+  text-decoration: underline;
+}
+
+.sep {
+  padding: 0 1px;
+  opacity: 0.6;
+}
+
+.type {
+  display: inline-flex;
+  flex: none;
+}
+
+/* What kind of file this is to git: new, ignored, read-only. */
+.badge {
+  flex: none;
+  padding: 1px 6px;
+  border-radius: var(--radius-sm);
+  font-size: 11px;
+  line-height: 16px;
+  white-space: nowrap;
+  color: var(--text-dim);
+  background: var(--bg-raised);
+  border: 1px solid var(--line);
+}
+
+.badge.new {
+  color: var(--green-soft);
+  border-color: color-mix(in srgb, var(--green-soft) 40%, transparent);
+}
+
+.badge.deleted,
+.badge.conflict {
+  color: var(--amber);
+  border-color: color-mix(in srgb, var(--amber) 40%, transparent);
+}
+
+.badge.readonly,
+.badge.ignored {
+  color: var(--text-faint);
+}
+
+/* Where the caret is and how the file is written, quiet until wanted. */
+.facts {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  margin-right: 4px;
+  font-size: 11.5px;
+  color: var(--text-faint);
+  white-space: nowrap;
+}
+
+.fact {
+  padding: 0;
+  border: 0;
+  background: none;
+  color: inherit;
+  font: inherit;
+}
+
+button.fact {
+  cursor: pointer;
+  font-variant-numeric: tabular-nums;
+}
+
+button.fact:hover {
+  color: var(--text);
+}
+
+.modes.off {
+  opacity: 0.5;
 }
 
 /* The language and the side are labels, not counts: square-cornered tags. */

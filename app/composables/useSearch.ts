@@ -1,0 +1,290 @@
+import { reactive } from 'vue'
+import { listen, type UnlistenFn } from '@tauri-apps/api/event'
+import { invoke } from './useInvoke'
+import { useGit } from './useGit'
+import { useTabs } from './useTabs'
+import { editorSelection } from './useCodeMirror'
+
+/**
+ * The search window: inside files (⌘⇧F), file names (⌘⇧N) and symbols
+ * (⌘⌥O), one window with three modes.
+ *
+ * Each mode keeps its own last search and options for the session. Pressing
+ * another mode's key, or Tab, while the window is open switches mode and
+ * takes what was typed along.
+ */
+
+export type SearchMode = 'text' | 'files' | 'symbols'
+
+/** The order Tab walks the modes in. */
+export const SEARCH_MODES: SearchMode[] = ['text', 'files', 'symbols']
+
+export interface LineHit {
+  line: number
+  text: string
+  /** Where the matches are in `text`, in UTF-16 units. */
+  ranges: [number, number][]
+}
+
+export interface FileHits {
+  request: number
+  path: string
+  hits: LineHit[]
+}
+
+export interface SearchDone {
+  request: number
+  matches: number
+  files: number
+  more: number
+  searched: number
+  cancelled: boolean
+  error: string | null
+}
+
+export const search = reactive({
+  open: false,
+  mode: 'text' as SearchMode,
+  text: { query: '', case: false, word: false, regex: false, changedOnly: false, glob: '' },
+  files: { query: '' },
+  symbols: { query: '' },
+  /** What the text search found, as it arrives. */
+  found: [] as FileHits[],
+  done: null as SearchDone | null,
+  running: false,
+  /** The request whose answers are wanted; anything else is stale. */
+  request: 0
+})
+
+let lastRequest = 0
+
+/** The next request number: from the clock, so a reload never goes backwards. */
+function nextRequest() {
+  lastRequest = Math.max(lastRequest + 1, Date.now())
+  return lastRequest
+}
+
+/** Starts a search inside files with the box as it reads now. */
+export async function runTextSearch() {
+  const query = search.text.query
+  const request = nextRequest()
+  search.request = request
+  search.found = []
+  search.done = null
+  if (!query) {
+    search.running = false
+    cancelRunning(request)
+    return
+  }
+  search.running = true
+  await ensureListening()
+  try {
+    await invoke('search_text', {
+      query,
+      options: {
+        case: search.text.case,
+        word: search.text.word,
+        regex: search.text.regex,
+        changed_only: search.text.changedOnly,
+        glob: search.text.glob
+      },
+      request
+    })
+  } catch (error) {
+    if (search.request === request) {
+      search.running = false
+      search.done = {
+        request,
+        matches: 0,
+        files: 0,
+        more: 0,
+        searched: 0,
+        cancelled: false,
+        error: String(error)
+      }
+    }
+  }
+}
+
+/** Hands one event's worth of results to the window, if it is still wanted. */
+export function takeHits(payload: FileHits) {
+  if (payload.request !== search.request) return
+  search.found.push(payload)
+}
+
+export function takeDone(payload: SearchDone) {
+  if (payload.request !== search.request) return
+  search.done = payload
+  search.running = false
+}
+
+let listening: Promise<UnlistenFn[]> | null = null
+
+function ensureListening() {
+  if (!listening) {
+    listening = Promise.all([
+      listen<FileHits>('search:hit', ({ payload }) => takeHits(payload)),
+      listen<SearchDone>('search:done', ({ payload }) => takeDone(payload))
+    ]).catch(() => [])
+  }
+  return listening
+}
+
+/**
+ * Opens the window, or switches it to the other mode. In-files mode starts
+ * from text selected in the editor. `recent` opens the file finder empty, on
+ * the list of recent files.
+ */
+export function openSearch(mode: SearchMode, recent = false) {
+  const wasOpen = search.open
+  const typed = wasOpen ? queryOf(search.mode) : ''
+  // Leaving the search inside files while it is still reading: nobody is
+  // looking at what it finds, so it stops rather than read the whole tree.
+  if (wasOpen && search.mode === 'text' && mode !== 'text' && search.running) {
+    const request = nextRequest()
+    search.request = request
+    search.running = false
+    cancelRunning(request)
+  }
+  search.mode = mode
+  if (wasOpen && typed) setQueryOf(mode, typed)
+  if (!wasOpen && mode === 'text') {
+    const picked = editorSelection() || windowSelection()
+    if (picked) search.text.query = picked
+  }
+  if (recent) search.files.query = ''
+  search.open = true
+}
+
+/** What is typed in a mode's box. */
+export function queryOf(mode: SearchMode) {
+  return mode === 'text' ? search.text.query : mode === 'files' ? search.files.query : search.symbols.query
+}
+
+export function setQueryOf(mode: SearchMode, value: string) {
+  if (mode === 'text') search.text.query = value
+  else if (mode === 'files') search.files.query = value
+  else search.symbols.query = value
+}
+
+function windowSelection() {
+  const picked = typeof window === 'undefined' ? '' : (window.getSelection?.()?.toString() ?? '')
+  return picked && !picked.includes('\n') && picked.length <= 200 ? picked : ''
+}
+
+export function closeSearch() {
+  search.open = false
+  if (search.running) {
+    const request = nextRequest()
+    search.request = request
+    search.running = false
+    cancelRunning(request)
+  }
+}
+
+/**
+ * Tells the backend a newer search exists, with nothing in it: the one still
+ * reading files stops at the next one, rather than reading the whole tree for
+ * a window that is shut or a box that was cleared.
+ */
+function cancelRunning(request: number) {
+  void invoke('search_text', {
+    query: '',
+    options: { case: false, word: false, regex: false, changed_only: false, glob: '' },
+    request
+  }).catch(() => undefined)
+}
+
+/** `app/Tax.php:42` as the path and the line. */
+export function splitLine(query: string): { query: string; line: number | null } {
+  const found = /^(.*?):(\d+)$/.exec(query.trim())
+  if (!found) return { query: query.trim(), line: null }
+  return { query: found[1]!, line: Number(found[2]) }
+}
+
+export interface FoundName {
+  path: string
+  indices: number[]
+  group: 'recent' | 'changed' | 'files'
+}
+
+/**
+ * Files whose name matches, ranked: recently opened first, then the ones the
+ * working tree panel lists as changed, then everything else by how well it
+ * matched. An empty query lists the recent files and then the changed ones.
+ */
+export async function findNames(query: string, limit = 60): Promise<FoundName[] | null> {
+  const git = useGit()
+  const recent = useTabs().state.recent
+  const changed = [
+    ...new Set(
+      [...(git.store.status?.unstaged ?? []), ...(git.store.status?.staged ?? [])]
+        .filter((entry) => entry.kind !== 'deleted')
+        .map((entry) => entry.path)
+    )
+  ]
+  if (!query.trim()) {
+    const seen = new Set(recent)
+    return [
+      ...recent.map((path) => ({ path, indices: [], group: 'recent' as const })),
+      ...changed
+        .filter((path) => !seen.has(path))
+        .map((path) => ({ path, indices: [], group: 'changed' as const }))
+    ].slice(0, limit)
+  }
+  const request = nextRequest()
+  let found: { path: string; score: number; indices: number[] }[]
+  try {
+    found = await invoke<{ path: string; score: number; indices: number[] }[]>('find_files', {
+      query,
+      limit,
+      request,
+      also: [...recent, ...changed]
+    })
+  } catch {
+    return null
+  }
+  if (request !== lastRequest) return null
+  const rank = (path: string) => (recent.includes(path) ? 0 : changed.includes(path) ? 1 : 2)
+  return found
+    .map((one, order) => ({ one, order, rank: rank(one.path) }))
+    .sort((a, b) => a.rank - b.rank || a.order - b.order)
+    .map(({ one, rank }) => ({
+      path: one.path,
+      indices: one.indices,
+      group: (['recent', 'changed', 'files'] as const)[rank]!
+    }))
+}
+
+export interface FoundSymbol {
+  name: string
+  kind: string
+  path: string
+  line: number
+  column: number
+  indices: number[]
+}
+
+let symbolAsk = 0
+
+/** Class, function and method names that match, best first; null when stale. */
+export async function findSymbols(query: string, limit = 60): Promise<FoundSymbol[] | null> {
+  const mine = ++symbolAsk
+  if (!query.trim()) return []
+  const found = await invoke<FoundSymbol[]>('find_symbols', { query, limit }).catch(() => null)
+  return mine === symbolAsk ? (found ?? []) : null
+}
+
+/** Forgets the window's state. For tests. */
+export function resetSearch() {
+  search.open = false
+  search.mode = 'text'
+  search.text = { query: '', case: false, word: false, regex: false, changedOnly: false, glob: '' }
+  search.files = { query: '' }
+  search.symbols = { query: '' }
+  search.found = []
+  search.done = null
+  search.running = false
+  search.request = 0
+  listening = null
+}

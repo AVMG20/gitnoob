@@ -150,6 +150,39 @@ export function setHighlightTheme(id: string): void {
   })
 }
 
+/** One colour rule of the theme in use, the way a TextMate theme writes it. */
+export interface ThemeRule {
+  scopes: string[]
+  color?: string
+  fontStyle?: string
+}
+
+/**
+ * The theme in use as plain rules, for the editor to colour with the same
+ * palette the diff uses. Null while nothing is loaded, or with colour off.
+ */
+export function themeRules(): { fg?: string; rules: ThemeRule[] } | null {
+  void version.value
+  if (!highlighter || theme.value === 'plain') return null
+  try {
+    const resolved = highlighter.getTheme(theme.value) as {
+      fg?: string
+      settings?: { scope?: string | string[]; settings?: { foreground?: string; fontStyle?: string } }[]
+    }
+    const rules: ThemeRule[] = []
+    for (const one of resolved.settings ?? []) {
+      if (!one.scope) continue
+      const scopes = (Array.isArray(one.scope) ? one.scope : one.scope.split(','))
+        .map((scope) => scope.trim())
+        .filter(Boolean)
+      rules.push({ scopes, color: one.settings?.foreground, fontStyle: one.settings?.fontStyle })
+    }
+    return { fg: resolved.fg, rules }
+  } catch {
+    return null
+  }
+}
+
 const escapeHtml = (text: string) =>
   text.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
 
