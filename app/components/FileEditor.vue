@@ -824,7 +824,7 @@ async function start() {
         }),
         unusedCode,
         usageLenses((lens, event) =>
-          void showUsages(lens.name, props.path, lens.kind, { x: event.clientX, y: event.clientY })
+          void showUsages(lens.name, props.path, lens.kind, { x: event.clientX, y: event.clientY }, lens.line)
         ),
         language.of([]),
         colours.of(syntaxColours()),

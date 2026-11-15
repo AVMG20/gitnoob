@@ -569,7 +569,22 @@ describe('names in the editor', () => {
     expect(lens.text()).toBe('3 usages')
     lens.element.dispatchEvent(new MouseEvent('mousedown', { bubbles: true }))
     await flushPromises()
-    expect(calls.find((one) => one.cmd === 'usages')?.args).toEqual({ name: 'total', path: PATH, kind: 'method' })
+    expect(calls.find((one) => one.cmd === 'usages')?.args).toEqual({ name: 'total', path: PATH, kind: 'method', line: 2 })
+  })
+
+  it('shows possible usages muted, and what the framework calls by the uses of its class', async () => {
+    lenses = [
+      { name: 'total', kind: 'method', line: 2, from: 6, count: 2, possible: 50, framework: false, owner: null },
+      { name: 'handle', kind: 'method', line: 3, from: 20, count: 2, possible: 0, framework: true, owner: 'ExportAnalyticsCommand' },
+      { name: 'boot', kind: 'method', line: 4, from: 40, count: 0, possible: 0, framework: true, owner: null }
+    ]
+    disk = { text: '<?php\nfunction total() {}\nfunction handle() {}\nfunction boot() {}\n', hash: 'h1' }
+    const w = await show()
+    await flush()
+    await flushPromises()
+    const texts = w.findAll('.cm-lens').map((lens) => lens.text())
+    expect(texts).toEqual(['2 usages · 50 possible', '2 uses of ExportAnalyticsCommand', 'called by the framework'])
+    expect(w.find('.cm-lens-possible').text()).toBe('· 50 possible')
   })
 
   it('leaves the counts out when settings turn them off', async () => {

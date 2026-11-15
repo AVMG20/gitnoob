@@ -9,6 +9,9 @@ import { closeUsages, openLocation, usagesPopup, type PopupItem } from '~/compos
  * definitions. Placed where the click was, kept on screen. ↑ and ↓ move, ↵
  * opens, Esc or a click outside closes. Focus goes back where it was.
  *
+ * Definite usages come first. The possible ones (same name, receiver
+ * unknown) sit under a "Possible (n)" row that ↵ or a click unfolds.
+ *
  * The backdrop is an `.overlay`, so the app's shortcuts stand aside while it
  * is open.
  */
@@ -18,10 +21,23 @@ let before: Element | null = null
 
 const WIDTH = 460
 
+type Row = { type: 'item'; item: PopupItem; possible: boolean } | { type: 'group' }
+
+const rows = computed<Row[]>(() => {
+  const out: Row[] = usagesPopup.items.map((item) => ({ type: 'item', item, possible: false }))
+  if (usagesPopup.possible.length) {
+    out.push({ type: 'group' })
+    if (usagesPopup.showPossible) {
+      for (const item of usagesPopup.possible) out.push({ type: 'item', item, possible: true })
+    }
+  }
+  return out
+})
+
 const place = computed(() => {
   const x = Math.max(8, Math.min(usagesPopup.x, window.innerWidth - WIDTH - 8))
   const below = usagesPopup.y + 18
-  const height = Math.min(360, 64 + usagesPopup.items.length * 26)
+  const height = Math.min(360, 64 + (usagesPopup.note ? 18 : 0) + rows.value.length * 26)
   const y = below + height > window.innerHeight - 8 ? Math.max(8, usagesPopup.y - height - 6) : below
   return { left: `${x}px`, top: `${y}px`, width: `${WIDTH}px` }
 })
@@ -37,8 +53,18 @@ function open(item: PopupItem | undefined) {
   openLocation(item)
 }
 
+function togglePossible() {
+  usagesPopup.showPossible = !usagesPopup.showPossible
+}
+
+function pick(row: Row | undefined) {
+  if (!row) return
+  if (row.type === 'group') togglePossible()
+  else open(row.item)
+}
+
 async function move(by: number) {
-  const count = usagesPopup.items.length
+  const count = rows.value.length
   if (!count) return
   usagesPopup.cursor = (usagesPopup.cursor + by + count) % count
   await nextTick()
@@ -57,7 +83,7 @@ function onKey(event: KeyboardEvent) {
     void move(-1)
   } else if (event.key === 'Enter') {
     event.preventDefault()
-    open(usagesPopup.items[usagesPopup.cursor])
+    pick(rows.value[usagesPopup.cursor])
   } else if (event.key === 'Tab') {
     // Nothing else in the popup takes focus, so Tab stays where it is rather
     // than walking into the page behind the backdrop.
@@ -87,33 +113,50 @@ onBeforeUnmount(() => {
       role="dialog"
       aria-modal="true"
       :aria-label="usagesPopup.title"
-      :aria-activedescendant="usagesPopup.items.length ? `usage-${usagesPopup.cursor}` : undefined"
+      :aria-activedescendant="rows.length ? `usage-${usagesPopup.cursor}` : undefined"
       tabindex="-1"
       :style="place"
       @keydown="onKey"
     >
       <div class="title">{{ usagesPopup.title }}</div>
+      <div v-if="usagesPopup.note" class="note faint">{{ usagesPopup.note }}</div>
       <div class="rows" role="listbox">
-        <div
-          v-for="(item, at) in usagesPopup.items"
-          :key="`${item.path}:${item.line}:${item.column}`"
-          :id="`usage-${at}`"
-          class="row"
-          role="option"
-          :class="{ on: at === usagesPopup.cursor }"
-          :aria-selected="at === usagesPopup.cursor"
-          :title="`${item.path}:${item.line}`"
-          @mousemove="usagesPopup.cursor = at"
-          @click="open(item)"
-        >
-          <span class="where">
-            <FileIcon :path="item.path" :size="13" class="icon" />
-            <span class="file">{{ base(item.path) }}</span><span class="num">:{{ item.line }}</span>
-            <span class="dir">{{ folder(item.path) }}</span>
-          </span>
-          <span class="code">{{ item.text }}</span>
-          <span v-if="LABEL[item.state]" class="state" :class="item.state">{{ LABEL[item.state] }}</span>
-        </div>
+        <template v-for="(row, at) in rows" :key="row.type === 'group' ? 'possible' : `${row.possible ? 'p' : 'd'}:${row.item.path}:${row.item.line}:${row.item.column}`">
+          <div
+            v-if="row.type === 'group'"
+            :id="`usage-${at}`"
+            class="group"
+            role="option"
+            :class="{ on: at === usagesPopup.cursor }"
+            :aria-selected="at === usagesPopup.cursor"
+            :aria-expanded="usagesPopup.showPossible"
+            title="The same name, called on something whose class could not be worked out"
+            @mousemove="usagesPopup.cursor = at"
+            @click="togglePossible"
+          >
+            <span class="chevron" :class="{ open: usagesPopup.showPossible }">›</span>
+            Possible ({{ usagesPopup.possible.length }})
+          </div>
+          <div
+            v-else
+            :id="`usage-${at}`"
+            class="row"
+            role="option"
+            :class="{ on: at === usagesPopup.cursor, possible: row.possible }"
+            :aria-selected="at === usagesPopup.cursor"
+            :title="`${row.item.path}:${row.item.line}`"
+            @mousemove="usagesPopup.cursor = at"
+            @click="open(row.item)"
+          >
+            <span class="where">
+              <FileIcon :path="row.item.path" :size="13" class="icon" />
+              <span class="file">{{ base(row.item.path) }}</span><span class="num">:{{ row.item.line }}</span>
+              <span class="dir">{{ folder(row.item.path) }}</span>
+            </span>
+            <span class="code">{{ row.item.text }}</span>
+            <span v-if="LABEL[row.item.state]" class="state" :class="row.item.state">{{ LABEL[row.item.state] }}</span>
+          </div>
+        </template>
       </div>
       <div class="foot faint">↵ open · {{ backKey }} or the mouse's back button goes back to where you were</div>
     </div>
@@ -165,8 +208,43 @@ onBeforeUnmount(() => {
   cursor: pointer;
 }
 
-.row.on {
+.row.on,
+.group.on {
   background: var(--active);
+}
+
+.row.possible .file,
+.row.possible .code {
+  color: var(--text-faint);
+}
+
+.note {
+  padding: 0 12px 6px;
+  font-size: 11px;
+  flex-shrink: 0;
+}
+
+.group {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 12px;
+  margin-top: 2px;
+  border-top: 1px solid var(--line);
+  color: var(--text-dim);
+  font-size: 11px;
+  cursor: pointer;
+  user-select: none;
+}
+
+.chevron {
+  display: inline-block;
+  width: 10px;
+  transition: transform 0.12s;
+}
+
+.chevron.open {
+  transform: rotate(90deg);
 }
 
 .where .icon {

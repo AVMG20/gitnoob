@@ -4,13 +4,19 @@
 //! Every file the work tree has in a language below is parsed with
 //! tree-sitter, and each language's own tags query (the one GitHub's code
 //! navigation uses) picks out the definitions and the references. That is
-//! names, not types: `$this->total()` is a use of every method called `total`.
-//! It is the same trade every editor without a language server makes, and it
-//! is why the counts are "usages", not "callers".
+//! names, not types. For PHP and TypeScript, `receivers.rs` then walks the
+//! same tree for the class each method call is made on, where the code says
+//! it plainly, so a method's usages split in two: definite when the receiver
+//! is its class or one in that hierarchy, possible when the receiver is
+//! unknown. A call on another class is not counted. Methods the framework
+//! calls (`handle` on a command, a controller action, `__construct`, a Tauri
+//! command) are counted by the uses of their class, or of their name in
+//! strings, instead.
 //!
 //! The index lives in memory, one per work tree. It is built on a thread of
 //! its own when a repository opens and kept current a file at a time by the
-//! watcher. Ignored files and files over 1 MB are left out.
+//! watcher. Ignored files, files over 1 MB, and dependencies and build output
+//! (`vendor`, `node_modules`, `dist`, …, see `generated`) are left out.
 //!
 //! Graying out unused code is where being wrong costs the most, so it is
 //! careful on purpose:
@@ -41,6 +47,7 @@ use serde::Serialize;
 use tree_sitter::{Language, Node, Parser, Query, QueryCursor, StreamingIterator, Tree};
 
 use crate::files;
+use crate::receivers::{self, ClassInfo};
 use crate::search;
 use crate::state::AppState;
 
@@ -384,6 +391,35 @@ pub struct Symbol {
     /// UTF-16 offsets of the whole definition, for dimming all of it.
     #[serde(skip)]
     pub block: (u32, u32),
+    /// For a method call, the class its receiver is; for a class name, the
+    /// class it means once `use` aliases are undone; for a route action,
+    /// its controller; for a method, the class it is in; for a plain call
+    /// to an imported function, the module it comes from. PHP and
+    /// TypeScript only, and only when the tree says so plainly.
+    #[serde(skip)]
+    pub via: Option<Box<str>>,
+    /// For a definition: how the framework calls it, if it does.
+    #[serde(skip)]
+    pub hook: Hook,
+}
+
+/// A definition the framework calls, whose usages are the uses of what it
+/// belongs to rather than calls by its name.
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
+pub enum Hook {
+    #[default]
+    None,
+    /// `handle` on a command, job, listener or middleware, `__invoke`,
+    /// `__construct`, a lifecycle hook on a class: counted by the uses of
+    /// its class, and for an artisan command by its name in strings.
+    Class,
+    /// A controller action: the uses of its controller, and the routes
+    /// that name the action.
+    Action,
+    /// `#[tauri::command]`: the `invoke('name')` calls in the front end.
+    Tauri,
+    /// A lifecycle hook in an options object: nothing in the code calls it.
+    Framework,
 }
 
 impl Symbol {
@@ -426,18 +462,41 @@ fn shape_of(kind: &str, name: Node) -> Shape {
     }
 }
 
-/// Every definition and reference the tags query finds in one file.
-fn symbols_in(path: &str, text: &str) -> (Lang, String, Option<Tree>, Vec<Symbol>) {
+/// One file parsed: its tree, its names, and its classes.
+struct Parsed {
+    lang: Lang,
+    source: String,
+    tree: Option<Tree>,
+    symbols: Vec<Symbol>,
+    classes: Vec<ClassInfo>,
+}
+
+/// Every definition and reference the tags query finds in one file, with
+/// what the receiver walk adds to them.
+fn symbols_in(path: &str, text: &str) -> Parsed {
     let (lang, source) = source_for(path, text);
     let Some(tree) = parse(lang, &source) else {
-        return (lang, source, None, Vec::new());
+        return Parsed {
+            lang,
+            source,
+            tree: None,
+            symbols: Vec::new(),
+            classes: Vec::new(),
+        };
     };
     let Some(grammar) = grammar(lang) else {
-        return (lang, source, Some(tree), Vec::new());
+        return Parsed {
+            lang,
+            source,
+            tree: Some(tree),
+            symbols: Vec::new(),
+            classes: Vec::new(),
+        };
     };
     let lines = Lines::new(text);
     let mut found: Vec<Symbol> = Vec::new();
     let mut seen: HashMap<(usize, usize, bool), usize> = HashMap::new();
+    let mut starts: Vec<usize> = Vec::new();
     let skipped_file = skipped(path);
     let mut cursor = QueryCursor::new();
     let mut matches = cursor.matches(&grammar.query, tree.root_node(), source.as_bytes());
@@ -480,7 +539,13 @@ fn symbols_in(path: &str, text: &str) -> (Lang, String, Option<Tree>, Vec<Symbol
         } else {
             (false, false)
         };
+        let hook = if definition {
+            hook_of(lang, path, node, word, &source)
+        } else {
+            Hook::None
+        };
         seen.insert(key, found.len());
+        starts.push(name.start_byte());
         found.push(Symbol {
             name: word.to_string(),
             kind,
@@ -497,10 +562,144 @@ fn symbols_in(path: &str, text: &str) -> (Lang, String, Option<Tree>, Vec<Symbol
             public,
             entry,
             block: (lines.at(node.start_byte()).2, lines.at(node.end_byte()).2),
+            via: None,
+            hook,
         });
     }
     drop(matches);
-    (lang, source, Some(tree), found)
+    let mut walked = match lang {
+        Lang::Php => receivers::php(&tree, &source),
+        Lang::Js | Lang::Ts | Lang::Tsx => receivers::script(&tree, &source),
+        _ => receivers::Found::default(),
+    };
+    for (symbol, start) in found.iter_mut().zip(&starts) {
+        symbol.via = walked.via.remove(start);
+    }
+    for extra in walked.extra {
+        if seen.contains_key(&(extra.start, extra.end, false)) {
+            continue;
+        }
+        seen.insert((extra.start, extra.end, false), found.len());
+        let (line, column, from) = lines.at(extra.start);
+        let to = lines.at(extra.end).2;
+        found.push(Symbol {
+            name: extra.name,
+            kind: extra.kind,
+            definition: false,
+            shape: extra.shape,
+            line,
+            column,
+            from,
+            to,
+            public: false,
+            entry: false,
+            block: (from, to),
+            via: walked.via.remove(&extra.start),
+            hook: Hook::None,
+        });
+    }
+    Parsed {
+        lang,
+        source,
+        tree: Some(tree),
+        symbols: found,
+        classes: walked.classes,
+    }
+}
+
+/// Vue's lifecycle: the methods it calls on a component.
+const VUE_LIFECYCLE: &[&str] = &[
+    "setup",
+    "data",
+    "render",
+    "beforeCreate",
+    "created",
+    "beforeMount",
+    "mounted",
+    "beforeUpdate",
+    "updated",
+    "beforeUnmount",
+    "unmounted",
+    "beforeDestroy",
+    "destroyed",
+    "activated",
+    "deactivated",
+    "errorCaptured",
+    "renderTracked",
+    "renderTriggered",
+    "serverPrefetch",
+];
+
+/// Folders whose classes Laravel calls `handle` on.
+const HANDLER_FOLDERS: &[&str] = &[
+    "/Console/",
+    "/Commands/",
+    "/Jobs/",
+    "/Listeners/",
+    "/Middleware/",
+    "/Controllers/",
+    "/Http/",
+    "/Events/",
+    "/Notifications/",
+    "/Mail/",
+];
+
+/// Whether, and how, the framework calls a definition.
+fn hook_of(lang: Lang, path: &str, node: Node, name: &str, source: &str) -> Hook {
+    match (lang, node.kind()) {
+        (Lang::Php, "method_declaration") => {
+            let Some(class) = node
+                .parent()
+                .and_then(|list| list.parent())
+                .filter(|class| class.kind() == "class_declaration")
+            else {
+                return Hook::None;
+            };
+            if name == "__construct" || name == "__invoke" {
+                return Hook::Class;
+            }
+            let inherits = has_child(class, &["base_clause", "class_interface_clause"]);
+            let slashed = format!("/{path}");
+            if name == "handle"
+                && (inherits || HANDLER_FOLDERS.iter().any(|dir| slashed.contains(dir)))
+            {
+                return Hook::Class;
+            }
+            let class_name = class
+                .child_by_field_name("name")
+                .map(|n| text_of(n, source))
+                .unwrap_or("");
+            let visibility = child_text(node, "visibility_modifier", source).unwrap_or("public");
+            let controller =
+                class_name.ends_with("Controller") || slashed.contains("/Controllers/");
+            if controller
+                && visibility == "public"
+                && !name.starts_with("__")
+                && !has_child(node, &["static_modifier"])
+            {
+                return Hook::Action;
+            }
+            Hook::None
+        }
+        (Lang::Js | Lang::Ts | Lang::Tsx, "method_definition") if VUE_LIFECYCLE.contains(&name) => {
+            if node.parent().is_some_and(|p| p.kind() == "class_body") {
+                Hook::Class
+            } else {
+                Hook::Framework
+            }
+        }
+        (Lang::Rust, "function_item") => {
+            let tauri = rust_attributes(node, source)
+                .iter()
+                .any(|attribute| attribute.replace(' ', "").contains("tauri::command"));
+            if tauri {
+                Hook::Tauri
+            } else {
+                Hook::None
+            }
+        }
+        _ => Hook::None,
+    }
 }
 
 /// The tags queries call PHP methods functions and Python methods functions.
@@ -833,8 +1032,12 @@ fn judge_go(node: Node, name: &str) -> (bool, bool) {
 
 // --- the index ---------------------------------------------------------------
 
-/// What one file holds: its family and every name in it.
-type FileSymbols = (Family, Vec<Symbol>);
+/// What one file holds: its family, every name in it, and its classes.
+struct FileSymbols {
+    family: Family,
+    symbols: Vec<Symbol>,
+    classes: Vec<ClassInfo>,
+}
 
 /// A file's size and time when it was read, to tell whether it changed while
 /// nobody was watching.
@@ -898,25 +1101,40 @@ fn index_file(root: &Path, path: &str) -> Indexed {
     else {
         return (None, stamp);
     };
-    let (_, _, _, symbols) = symbols_in(path, &text);
-    (Some((lang.family(), symbols)), stamp)
+    let parsed = symbols_in(path, &text);
+    (
+        Some(FileSymbols {
+            family: lang.family(),
+            symbols: parsed.symbols,
+            classes: parsed.classes,
+        }),
+        stamp,
+    )
 }
 
-/// Parses files on as many threads as there are cores, up to eight.
+/// Parses files on as many threads as there are cores, up to eight. Each
+/// thread takes the next file when it is done with one, so a slow core or a
+/// big file holds up only itself.
 fn index_many(root: &Path, paths: &[String]) -> Vec<(String, Indexed)> {
+    use std::sync::atomic::AtomicUsize;
     let workers = std::thread::available_parallelism()
         .map(|n| n.get())
         .unwrap_or(4)
-        .clamp(1, 8);
-    let chunk = paths.len().div_ceil(workers).max(1);
+        .clamp(1, 8)
+        .min(paths.len().max(1));
+    let next = AtomicUsize::new(0);
     std::thread::scope(|scope| {
-        let handles: Vec<_> = paths
-            .chunks(chunk)
-            .map(|part| {
+        let handles: Vec<_> = (0..workers)
+            .map(|_| {
+                let next = &next;
                 scope.spawn(move || {
-                    part.iter()
-                        .map(|path| (path.clone(), index_file(root, path)))
-                        .collect::<Vec<_>>()
+                    let mut done = Vec::new();
+                    loop {
+                        let at = next.fetch_add(1, Ordering::Relaxed);
+                        let Some(path) = paths.get(at) else { break };
+                        done.push((path.clone(), index_file(root, path)));
+                    }
+                    done
                 })
             })
             .collect();
@@ -927,11 +1145,30 @@ fn index_many(root: &Path, paths: &[String]) -> Vec<(String, Indexed)> {
     })
 }
 
+/// Code the project did not write: dependencies, build output, compiled
+/// templates. Left out of the index even when git does not ignore it, so a
+/// vendored `handle()` is never counted as a usage of the project's own.
+pub fn generated(path: &str) -> bool {
+    let parts: Vec<&str> = path.split('/').collect();
+    let dirs = &parts[..parts.len().saturating_sub(1)];
+    dirs.iter().enumerate().any(|(at, dir)| {
+        let next = dirs.get(at + 1).copied();
+        match *dir {
+            "vendor" | "node_modules" | ".output" | ".nuxt" | "dist" => true,
+            // Laravel's: at the top, or wherever its compiled views are.
+            "storage" => at == 0 || next == Some("framework"),
+            "bootstrap" => next == Some("cache"),
+            "public" => next == Some("build"),
+            _ => false,
+        }
+    })
+}
+
 fn named_paths(root: &Path) -> Vec<String> {
     files::all_files(root)
         .map(|all| {
             all.iter()
-                .filter(|path| lang_of(path).is_some())
+                .filter(|path| lang_of(path).is_some() && !generated(path))
                 .cloned()
                 .collect()
         })
@@ -1132,7 +1369,7 @@ pub fn touched(root: &Path, paths: &HashSet<PathBuf>) {
             .map(|part| part.as_os_str().to_string_lossy().into_owned())
             .collect::<Vec<_>>()
             .join("/");
-        if lang_of(&relative).is_some() {
+        if lang_of(&relative).is_some() && !generated(&relative) {
             relatives.push(relative);
         }
     }
@@ -1216,10 +1453,15 @@ pub fn symbol_at(
         return Ok(None);
     }
     let text = current_text(&root, path, text)?;
-    let (_, source, tree, symbols) = symbols_in(path, &text);
+    let Parsed {
+        source,
+        tree,
+        symbols,
+        ..
+    } = symbols_in(path, &text);
     if let Some(symbol) = symbols
         .iter()
-        .filter(|s| s.from <= offset && offset <= s.to)
+        .filter(|s| s.from <= offset && offset <= s.to && s.kind != "command")
         .min_by_key(|s| (s.to - s.from, !s.definition))
     {
         return Ok(Some(SymbolAt {
@@ -1314,11 +1556,11 @@ pub fn definitions(
     let family = from.and_then(family_of);
     let index = shared.index.read().map_err(|e| e.to_string())?;
     let mut all: Vec<(String, &Symbol)> = Vec::new();
-    for (path, (file_family, symbols)) in index.files.iter() {
-        if family.is_some_and(|family| family != *file_family) {
+    for (path, held) in index.files.iter() {
+        if family.is_some_and(|family| family != held.family) {
             continue;
         }
-        for symbol in symbols {
+        for symbol in &held.symbols {
             if symbol.definition && symbol.name == name {
                 all.push((path.clone(), symbol));
             }
@@ -1395,8 +1637,8 @@ pub fn find_symbols_at(root: &Path, query: &str, limit: usize) -> Result<Vec<Fou
     let capitals = files::is_initials(query);
     let mut buffer = Vec::new();
     let mut scored: Vec<(u32, FoundSymbol)> = Vec::new();
-    for (path, (_, symbols)) in index.files.iter() {
-        for symbol in symbols {
+    for (path, held) in index.files.iter() {
+        for symbol in &held.symbols {
             if !symbol.definition || !FINDABLE.contains(&symbol.kind) {
                 continue;
             }
@@ -1457,48 +1699,464 @@ pub fn find_symbols_at(root: &Path, query: &str, limit: usize) -> Result<Vec<Fou
     Ok(scored.into_iter().map(|(_, found)| found).collect())
 }
 
-/// Every reference to a name, in files of the same family as `from`. `kind`
-/// is the definition's: a method's usages are calls on something, a
-/// function's are plain calls.
+/// How sure a usage is: the receiver is the class or one in its hierarchy,
+/// or the name matches and the receiver could not be worked out.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum Verdict {
+    Definite,
+    Possible,
+}
+
+/// What extends, implements or uses what, across one family.
+struct Graph<'a> {
+    up: HashMap<&'a str, Vec<&'a str>>,
+    down: HashMap<&'a str, Vec<&'a str>>,
+}
+
+impl<'a> Graph<'a> {
+    fn new(lists: impl Iterator<Item = &'a [ClassInfo]>) -> Self {
+        let mut graph = Graph {
+            up: HashMap::new(),
+            down: HashMap::new(),
+        };
+        for class in lists.flatten() {
+            for parent in &class.supers {
+                graph.up.entry(&class.name).or_default().push(parent);
+                graph.down.entry(parent).or_default().push(&class.name);
+            }
+        }
+        graph
+    }
+
+    /// A class with everything above and below it: the classes a call can
+    /// be made on and still reach a method defined in it.
+    fn related(&self, class: &'a str) -> HashSet<&'a str> {
+        let mut out = HashSet::from([class]);
+        for map in [&self.up, &self.down] {
+            let mut stack = vec![class];
+            let mut seen = HashSet::from([class]);
+            while let Some(at) = stack.pop() {
+                for next in map.get(at).into_iter().flatten() {
+                    if seen.insert(*next) {
+                        out.insert(*next);
+                        stack.push(*next);
+                    }
+                }
+            }
+        }
+        out
+    }
+}
+
+/// The name a reference is counted under: a class name under the class it
+/// means once aliases are undone, anything else under its own.
+fn counted_as(symbol: &Symbol) -> &str {
+    if symbol.shape == Shape::Type && !symbol.definition {
+        symbol.via.as_deref().unwrap_or(&symbol.name)
+    } else {
+        &symbol.name
+    }
+}
+
+/// The references one request looks at, by the name they count under.
+#[derive(Default)]
+struct Refs<'a> {
+    by_name: HashMap<&'a str, Vec<(&'a str, &'a Symbol)>>,
+    /// Files that define a function of a wanted name themselves.
+    defines: HashSet<(&'a str, &'a str)>,
+}
+
+impl<'a> Refs<'a> {
+    fn gather(files: &[(&'a str, &'a [Symbol])], wanted: &HashSet<&str>) -> Self {
+        let mut refs = Refs::default();
+        for (path, symbols) in files {
+            for symbol in symbols.iter() {
+                let name = counted_as(symbol);
+                if !wanted.contains(name) {
+                    continue;
+                }
+                if symbol.definition {
+                    if symbol.kind == "function" {
+                        refs.defines.insert((path, &symbol.name));
+                    }
+                    continue;
+                }
+                refs.by_name.entry(name).or_default().push((path, symbol));
+            }
+        }
+        refs
+    }
+
+    fn named(&self, name: &str) -> impl Iterator<Item = &(&'a str, &'a Symbol)> {
+        self.by_name.get(name).into_iter().flatten()
+    }
+}
+
+/// A path without its extension, when the extension is a language's.
+fn without_ext(path: &str) -> &str {
+    if lang_of(path).is_some() {
+        path.rsplit_once('.').map(|(stem, _)| stem).unwrap_or(path)
+    } else {
+        path
+    }
+}
+
+/// Whether an import names the file a function is defined in: `./money`
+/// from next to it, or anything ending in its name. Only a plain mismatch
+/// says no.
+fn module_matches(module: &str, from: &str, def_path: &str) -> bool {
+    let def = without_ext(def_path);
+    let def_dir = def.strip_suffix("/index");
+    if module.starts_with("./") || module.starts_with("../") {
+        let mut parts: Vec<&str> = from.split('/').collect();
+        parts.pop();
+        for segment in module.split('/') {
+            match segment {
+                "" | "." => {}
+                ".." => {
+                    parts.pop();
+                }
+                other => parts.push(other),
+            }
+        }
+        let joined = parts.join("/");
+        let target = without_ext(&joined);
+        target == def || def_dir == Some(target)
+    } else {
+        let last = without_ext(module.rsplit('/').next().unwrap_or(module));
+        let stem = match def_dir {
+            Some(dir) => dir.rsplit('/').next().unwrap_or(dir),
+            None => def.rsplit('/').next().unwrap_or(def),
+        };
+        last == stem
+    }
+}
+
+/// What a definition's usages are, judged.
+struct Judged<'a> {
+    /// The framework calls it: the usages are the uses of what it belongs to.
+    framework: bool,
+    /// The class whose uses are counted, for "2 uses of Foo".
+    owner: Option<&'a str>,
+    found: Vec<(&'a str, &'a Symbol, Verdict)>,
+}
+
+/// Everything a usage question about definitions in one file needs from the
+/// index, gathered in one pass.
+struct Request<'a> {
+    path: &'a str,
+    family: Family,
+    fresh: &'a Parsed,
+    graph: Graph<'a>,
+    refs: Refs<'a>,
+    /// TypeScript's `invoke('name')` calls, for Tauri commands.
+    invokes: Refs<'a>,
+}
+
+impl<'a> Request<'a> {
+    fn new(
+        index: &'a Index,
+        path: &'a str,
+        family: Family,
+        fresh: &'a Parsed,
+        targets: &[&'a Symbol],
+    ) -> Self {
+        let mut files: Vec<(&str, &[Symbol])> = index
+            .files
+            .iter()
+            .filter(|(other, held)| held.family == family && other.as_str() != path)
+            .map(|(other, held)| (other.as_str(), held.symbols.as_slice()))
+            .collect();
+        files.push((path, fresh.symbols.as_slice()));
+        let graph = Graph::new(
+            index
+                .files
+                .iter()
+                .filter(|(other, held)| held.family == family && other.as_str() != path)
+                .map(|(_, held)| held.classes.as_slice())
+                .chain(std::iter::once(fresh.classes.as_slice())),
+        );
+        let mut wanted: HashSet<&str> = HashSet::new();
+        let mut tauri: HashSet<&str> = HashSet::new();
+        for target in targets {
+            wanted.insert(&target.name);
+            if let Some(owner) = owner_of(target) {
+                wanted.insert(owner);
+                if let Some(signature) = signature_of(fresh, owner) {
+                    wanted.insert(signature);
+                }
+            }
+            if target.hook == Hook::Tauri {
+                tauri.insert(&target.name);
+            }
+        }
+        let refs = Refs::gather(&files, &wanted);
+        let invokes = if tauri.is_empty() {
+            Refs::default()
+        } else {
+            let scripts: Vec<(&str, &[Symbol])> = index
+                .files
+                .iter()
+                .filter(|(_, held)| held.family == Family::Script)
+                .map(|(other, held)| (other.as_str(), held.symbols.as_slice()))
+                .collect();
+            Refs::gather(&scripts, &tauri)
+        };
+        Request {
+            path,
+            family,
+            fresh,
+            graph,
+            refs,
+            invokes,
+        }
+    }
+
+    fn judge(&self, def: &'a Symbol) -> Judged<'a> {
+        let owner = owner_of(def);
+        let found = match (def.hook, owner) {
+            (Hook::Framework, _) => Vec::new(),
+            (Hook::Class | Hook::Action, Some(owner)) => {
+                return Judged {
+                    framework: true,
+                    owner: (def.hook == Hook::Class).then_some(owner),
+                    found: self.class_uses(def, owner),
+                };
+            }
+            (Hook::Tauri, _) => {
+                let mut found = self.plain(def);
+                found.extend(
+                    self.invokes
+                        .named(&def.name)
+                        .filter(|(_, s)| s.kind == "command")
+                        .map(|(path, s)| (*path, *s, Verdict::Definite)),
+                );
+                found
+            }
+            _ => match def.kind {
+                "method" => self.method(def, owner),
+                "function" => self.plain(def),
+                kind => self
+                    .refs
+                    .named(&def.name)
+                    .filter(|(_, s)| {
+                        !matches!(s.kind, "command" | "route")
+                            && used_as(Some(kind), s.shape, self.family)
+                    })
+                    .map(|(path, s)| (*path, *s, Verdict::Definite))
+                    .collect(),
+            },
+        };
+        Judged {
+            framework: def.hook != Hook::None,
+            owner: None,
+            found,
+        }
+    }
+
+    /// A method's calls: on its class or one in its hierarchy, definite; on
+    /// another class, not counted; on something unknown, possible.
+    fn method(&self, def: &Symbol, owner: Option<&'a str>) -> Vec<(&'a str, &'a Symbol, Verdict)> {
+        let precise = matches!(self.family, Family::Php | Family::Script);
+        let related = owner
+            .map(|owner| self.graph.related(owner))
+            .unwrap_or_default();
+        self.refs
+            .named(&def.name)
+            .filter(|(_, s)| s.kind != "command" && used_as(Some("method"), s.shape, self.family))
+            .filter_map(|(path, s)| {
+                let verdict = if !precise {
+                    Verdict::Definite
+                } else {
+                    match s.via.as_deref() {
+                        Some(class) if related.contains(class) => Verdict::Definite,
+                        Some(_) => return None,
+                        None => Verdict::Possible,
+                    }
+                };
+                Some((*path, *s, verdict))
+            })
+            .collect()
+    }
+
+    /// A plain function's calls, by name, less the files that define a
+    /// function of that name themselves and the calls imported from
+    /// somewhere else.
+    fn plain(&self, def: &Symbol) -> Vec<(&'a str, &'a Symbol, Verdict)> {
+        self.refs
+            .named(&def.name)
+            .filter(|(path, s)| {
+                if matches!(s.kind, "command" | "route")
+                    || !used_as(Some("function"), s.shape, self.family)
+                {
+                    return false;
+                }
+                if *path != self.path && self.refs.defines.contains(&(*path, def.name.as_str())) {
+                    return false;
+                }
+                match (self.family, s.shape, s.via.as_deref()) {
+                    (Family::Script, Shape::Plain, Some(module)) => {
+                        module_matches(module, path, self.path)
+                    }
+                    _ => true,
+                }
+            })
+            .map(|(path, s)| (*path, *s, Verdict::Definite))
+            .collect()
+    }
+
+    /// A method the framework calls: the uses of its class, the routes that
+    /// name it, the calls on its class from elsewhere, and an artisan
+    /// command's name in strings. One per line.
+    fn class_uses(&self, def: &Symbol, owner: &'a str) -> Vec<(&'a str, &'a Symbol, Verdict)> {
+        let related = self.graph.related(owner);
+        let block = self
+            .fresh
+            .symbols
+            .iter()
+            .find(|s| s.definition && s.name == owner && s.kind == "class")
+            .map(|s| s.block);
+        let inside = |path: &str, s: &Symbol| {
+            path == self.path && block.is_some_and(|(from, to)| from <= s.from && s.from <= to)
+        };
+        let mut found: Vec<(&'a str, &'a Symbol, Verdict)> = Vec::new();
+        for (path, s) in self.refs.named(owner) {
+            if s.shape == Shape::Type && !matches!(s.kind, "command" | "route") && !inside(path, s)
+            {
+                found.push((path, s, Verdict::Definite));
+            }
+        }
+        for (path, s) in self.refs.named(&def.name) {
+            let call = s.kind == "route"
+                || (s.kind != "command" && used_as(Some("method"), s.shape, self.family));
+            let on_it = s
+                .via
+                .as_deref()
+                .is_some_and(|class| related.contains(class));
+            if call && on_it && !inside(path, s) {
+                found.push((path, s, Verdict::Definite));
+            }
+        }
+        if let Some(signature) = signature_of(self.fresh, owner) {
+            for (path, s) in self.refs.named(signature) {
+                if s.kind == "command" {
+                    found.push((path, s, Verdict::Definite));
+                }
+            }
+        }
+        found.sort_by(|a, b| a.0.cmp(b.0).then(a.1.line.cmp(&b.1.line)));
+        found.dedup_by(|a, b| a.0 == b.0 && a.1.line == b.1.line);
+        found
+    }
+}
+
+/// The class a method is defined in.
+fn owner_of(def: &Symbol) -> Option<&str> {
+    (def.definition && def.kind == "method")
+        .then_some(def.via.as_deref())
+        .flatten()
+}
+
+fn signature_of<'a>(parsed: &'a Parsed, class: &str) -> Option<&'a str> {
+    parsed
+        .classes
+        .iter()
+        .find(|c| &*c.name == class)
+        .and_then(|c| c.signature.as_deref())
+}
+
+/// A definition's usages, for the popup.
+#[derive(Serialize, Clone, Debug, Default)]
+pub struct UsageList {
+    pub definite: Vec<Location>,
+    /// The name matches and the receiver could not be worked out.
+    pub possible: Vec<Location>,
+    /// The framework calls it; the usages are the uses of its class.
+    pub framework: bool,
+    /// The class those uses are of.
+    pub owner: Option<String>,
+}
+
+/// Every usage of a definition, in files of the same family as `from`.
+/// `kind` and `line` pick the definition in `from`; its class decides which
+/// calls are its. Without them, every reference to the name, as written.
 pub fn usages(
     state: &AppState,
     name: &str,
     from: Option<&str>,
     kind: Option<&str>,
-) -> Result<Vec<Location>, String> {
+    line: Option<u32>,
+) -> Result<UsageList, String> {
     let root = key(&state.path()?);
     let shared = ready(&root)?;
     let family = from.and_then(family_of);
+    let parsed = match (from, family) {
+        (Some(from), Some(_)) => current_text(&root, from, None)
+            .ok()
+            .map(|text| symbols_in(from, &text)),
+        _ => None,
+    };
     let index = shared.index.read().map_err(|e| e.to_string())?;
     let mut cache = HashMap::new();
-    let mut out: Vec<Location> = Vec::new();
+    let mut place = |path: &str, symbol: &Symbol| Location {
+        path: path.to_string(),
+        line: symbol.line,
+        column: symbol.column,
+        kind: symbol.kind,
+        text: line_text(&root, path, symbol.line, &mut cache),
+    };
+    let def = parsed.as_ref().and_then(|parsed| {
+        parsed
+            .symbols
+            .iter()
+            .filter(|s| s.definition && s.name == name && kind.map_or(true, |kind| s.kind == kind))
+            .min_by_key(|s| line.map(|line| s.line.abs_diff(line)).unwrap_or(0))
+    });
+    if let (Some(def), Some(parsed), Some(from), Some(family)) = (def, &parsed, from, family) {
+        let request = Request::new(&index, from, family, parsed, &[def]);
+        let mut judged = request.judge(def);
+        judged
+            .found
+            .sort_by(|a, b| (a.0, a.1.line, a.1.column).cmp(&(b.0, b.1.line, b.1.column)));
+        let mut list = UsageList {
+            framework: judged.framework,
+            owner: judged.owner.map(str::to_string),
+            ..UsageList::default()
+        };
+        for (path, symbol, verdict) in judged.found {
+            let into = match verdict {
+                Verdict::Definite => &mut list.definite,
+                Verdict::Possible => &mut list.possible,
+            };
+            if into.len() < MAX_LOCATIONS {
+                into.push(place(path, symbol));
+            }
+        }
+        return Ok(list);
+    }
+    let mut list = UsageList::default();
     let mut paths: Vec<&String> = index.files.keys().collect();
     paths.sort();
     for path in paths {
-        let (file_family, symbols) = &index.files[path];
-        if family.is_some_and(|family| family != *file_family) {
+        let held = &index.files[path];
+        if family.is_some_and(|family| family != held.family) {
             continue;
         }
-        for symbol in symbols {
+        for symbol in &held.symbols {
             if symbol.definition
                 || symbol.name != name
-                || !used_as(kind, symbol.shape, *file_family)
+                || symbol.kind == "command"
+                || !used_as(kind, symbol.shape, held.family)
             {
                 continue;
             }
-            if out.len() >= MAX_LOCATIONS {
-                return Ok(out);
+            if list.definite.len() >= MAX_LOCATIONS {
+                return Ok(list);
             }
-            out.push(Location {
-                path: path.clone(),
-                line: symbol.line,
-                column: symbol.column,
-                kind: symbol.kind,
-                text: line_text(&root, path, symbol.line, &mut cache),
-            });
+            list.definite.push(place(path, symbol));
         }
     }
-    Ok(out)
+    Ok(list)
 }
 
 fn used_as(kind: Option<&str>, shape: Shape, family: Family) -> bool {
@@ -1525,7 +2183,14 @@ pub struct Lens {
     pub kind: &'static str,
     pub line: u32,
     pub from: u32,
+    /// Definite usages.
     pub count: usize,
+    /// Calls by the name on something whose class is not known.
+    pub possible: usize,
+    /// The framework calls it; `count` is the uses of what it belongs to.
+    pub framework: bool,
+    /// The class whose uses `count` is.
+    pub owner: Option<String>,
 }
 
 /// How many usages each function, method and class in a file has, counted
@@ -1536,38 +2201,37 @@ pub fn usage_counts(state: &AppState, path: &str, text: Option<&str>) -> Result<
         return Ok(Vec::new());
     };
     let text = current_text(&root, path, text)?;
-    let (_, _, _, symbols) = symbols_in(path, &text);
+    let parsed = symbols_in(path, &text);
     let shared = ready(&root)?;
     let index = shared.index.read().map_err(|e| e.to_string())?;
-    let mut lenses = Vec::new();
-    for def in symbols
+    let targets: Vec<&Symbol> = parsed
+        .symbols
         .iter()
         .filter(|s| s.definition && matches!(s.kind, "function" | "method" | "class" | "interface"))
-    {
-        let mut count = symbols
+        .collect();
+    if targets.is_empty() {
+        return Ok(Vec::new());
+    }
+    let request = Request::new(&index, path, family, &parsed, &targets);
+    let mut lenses = Vec::new();
+    for def in targets {
+        let judged = request.judge(def);
+        let count = judged
+            .found
             .iter()
-            .filter(|s| {
-                !s.definition && s.name == def.name && used_as(Some(def.kind), s.shape, family)
-            })
+            .filter(|(_, _, verdict)| *verdict == Verdict::Definite)
             .count();
-        for (other, (other_family, found)) in index.files.iter() {
-            if other == path || *other_family != family {
-                continue;
-            }
-            count += found
-                .iter()
-                .filter(|s| {
-                    !s.definition && s.name == def.name && used_as(Some(def.kind), s.shape, family)
-                })
-                .count();
-        }
-        if count > 0 {
+        let possible = judged.found.len() - count;
+        if judged.framework || count + possible > 0 {
             lenses.push(Lens {
                 name: def.name.clone(),
                 kind: def.kind,
                 line: def.line,
                 from: def.from,
                 count,
+                possible,
+                framework: judged.framework,
+                owner: judged.owner.map(str::to_string),
             });
         }
     }
@@ -1810,7 +2474,13 @@ pub fn unused_in(
         return Ok(Vec::new());
     }
     let text = current_text(&root, path, text)?;
-    let (lang, source, tree, symbols) = symbols_in(path, &text);
+    let Parsed {
+        lang,
+        source,
+        tree,
+        symbols,
+        ..
+    } = symbols_in(path, &text);
     let Some(tree) = tree else {
         return Ok(Vec::new());
     };
@@ -1844,10 +2514,10 @@ pub fn unused_in(
             candidates
                 .into_iter()
                 .filter(|symbol| {
-                    !index.files.iter().any(|(other, (other_family, found))| {
+                    !index.files.iter().any(|(other, held)| {
                         other != path
-                            && *other_family == family
-                            && found.iter().any(|s| s.name == symbol.name)
+                            && held.family == family
+                            && held.symbols.iter().any(|s| s.name == symbol.name)
                     })
                 })
                 .collect()
@@ -1951,9 +2621,14 @@ mod tests {
         let newer: Stamp = (2, None);
         let mut index = Index::default();
         index.stamps.insert("a.ts".into(), newer);
-        index
-            .files
-            .insert("a.ts".into(), (Family::Script, Vec::new()));
+        index.files.insert(
+            "a.ts".into(),
+            FileSymbols {
+                family: Family::Script,
+                symbols: Vec::new(),
+                classes: Vec::new(),
+            },
+        );
         let since = HashMap::from([("a.ts".to_string(), old)]);
         // The pass read `a.ts` before the watcher's newer read landed.
         apply(

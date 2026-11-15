@@ -14,8 +14,12 @@ import { change } from './useFileView'
  * there, and more are listed with the ones in changed files first and marked.
  * Every jump is a pinned tab and a step in the history, so ⌘[ comes back.
  *
- * The names come from tree-sitter in the backend (symbols.rs), by name and
- * not by type: every method called `total` is a candidate for `->total()`.
+ * The names come from tree-sitter in the backend (symbols.rs). A method's
+ * usages are split: definite when the call's receiver is its class or one in
+ * that hierarchy, possible when the receiver could not be worked out. Calls
+ * on another class are not its usages at all. What the framework calls
+ * (a command's `handle`, a controller action) is counted by the uses of its
+ * class instead of by its name.
  */
 
 export type NameShape = 'plain' | 'member' | 'scoped' | 'type'
@@ -45,11 +49,24 @@ export interface PopupItem extends CodeLocation {
   state: UsageState
 }
 
+/** What the backend's `usages` answers. */
+export interface UsageList {
+  definite: CodeLocation[]
+  possible: CodeLocation[]
+  framework: boolean
+  owner: string | null
+}
+
 export const usagesPopup = reactive({
   open: false,
   /** `Usages of total()`, `Definitions of Money`. */
   title: '',
+  /** A line under the title: `handle() is called by the framework`. */
+  note: '',
   items: [] as PopupItem[],
+  /** Same name, receiver unknown: listed under a group, folded at first. */
+  possible: [] as PopupItem[],
+  showPossible: false,
   cursor: 0,
   /** Where the click was, in window coordinates, for placing the list. */
   x: 0,
@@ -86,13 +103,24 @@ export function openLocation(place: CodeLocation) {
   openTab({ path: place.path, mode: 'file', side: 'unstaged' }, { line: place.line, reveal: 'switch' })
 }
 
-function showPopup(title: string, found: CodeLocation[], at: { x: number; y: number } | null) {
-  const items = found
+function marked(found: CodeLocation[]): PopupItem[] {
+  return found
     .map((one, order) => ({ one: { ...one, state: stateOf(one.path) }, order }))
     .sort((a, b) => ORDER[a.one.state] - ORDER[b.one.state] || a.order - b.order)
     .map(({ one }) => one)
+}
+
+function showPopup(
+  title: string,
+  found: CodeLocation[],
+  at: { x: number; y: number } | null,
+  extra: { possible?: CodeLocation[]; note?: string } = {}
+) {
   usagesPopup.title = title
-  usagesPopup.items = items
+  usagesPopup.note = extra.note ?? ''
+  usagesPopup.items = marked(found)
+  usagesPopup.possible = marked(extra.possible ?? [])
+  usagesPopup.showPossible = !found.length
   usagesPopup.cursor = 0
   usagesPopup.x = at?.x ?? Math.round(window.innerWidth / 2 - 220)
   usagesPopup.y = at?.y ?? 120
@@ -107,34 +135,59 @@ function label(name: string, kind: string) {
   return kind === 'function' || kind === 'method' ? `${name}()` : name
 }
 
-/** The usages of a definition: a notice, a jump, or the list. */
+/**
+ * The usages of a definition: a notice, a jump, or the list. `line` picks the
+ * definition when a file has several of that name. ⌘-click jumps whenever
+ * there is one definite usage (`jump: 'one'`); a click on the count only
+ * when there is nothing else to show.
+ */
 export async function showUsages(
   name: string,
   path: string,
   kind: string,
-  at: { x: number; y: number } | null = null
+  at: { x: number; y: number } | null = null,
+  line: number | null = null,
+  jump: 'one' | 'only' = 'only'
 ) {
-  let found: CodeLocation[]
+  let list: UsageList | null
   try {
-    found = (await invoke<CodeLocation[] | null>('usages', { name, path, kind })) ?? []
+    list = await invoke<UsageList | null>('usages', { name, path, kind, line })
   } catch (error) {
     useToasts().info('Could not look up the usages', String(error))
     return
   }
-  if (!found.length) {
-    useToasts().info('No usages found', 'Templates and names built at run time are not looked through.')
+  const definite = list?.definite ?? []
+  const possible = list?.possible ?? []
+  const framework = !!list?.framework
+  const owner = list?.owner ?? null
+  if (!definite.length && !possible.length) {
+    if (framework) {
+      useToasts().info(
+        `${label(name, kind)} is called by the framework`,
+        owner ? `Nothing in the code uses ${owner}.` : 'Nothing in the code calls it by name.'
+      )
+    } else {
+      useToasts().info('No usages found', 'Templates and names built at run time are not looked through.')
+    }
     return
   }
-  if (found.length === 1) {
-    openLocation(found[0]!)
+  if (definite.length === 1 && (jump === 'one' || !possible.length)) {
+    openLocation(definite[0]!)
     return
   }
-  const files = new Set(found.map((one) => one.path)).size
-  showPopup(
-    `Usages of ${label(name, kind)} · ${found.length} in ${files} ${files === 1 ? 'file' : 'files'}`,
-    found,
-    at
-  )
+  const files = new Set(definite.map((one) => one.path)).size
+  const where = `${definite.length} in ${files} ${files === 1 ? 'file' : 'files'}`
+  const title = framework
+    ? owner
+      ? `Uses of ${owner} · ${definite.length}`
+      : `References to ${label(name, kind)} · ${definite.length}`
+    : definite.length
+      ? `Usages of ${label(name, kind)} · ${where}`
+      : `Possible usages of ${label(name, kind)} · ${possible.length}`
+  showPopup(title, definite, at, {
+    possible,
+    note: framework ? `${label(name, kind)} is called by the framework` : ''
+  })
 }
 
 /**
@@ -155,7 +208,7 @@ export async function jumpFrom(
   }
   if (!symbol) return
   if (symbol.definition) {
-    await showUsages(symbol.name, path, symbol.kind, at)
+    await showUsages(symbol.name, path, symbol.kind, at, symbol.line, 'one')
     return
   }
   let found: CodeLocation[]

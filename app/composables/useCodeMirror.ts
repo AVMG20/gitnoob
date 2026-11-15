@@ -279,7 +279,8 @@ export const chrome = EditorView.theme({
     cursor: 'pointer',
     userSelect: 'none'
   },
-  '.cm-lens:hover': { color: 'var(--text-dim)', textDecoration: 'underline' }
+  '.cm-lens:hover': { color: 'var(--text-dim)', textDecoration: 'underline' },
+  '.cm-lens-possible': { opacity: '0.6' }
 })
 
 // --- the change bars ------------------------------------------------------------
@@ -776,7 +777,33 @@ export interface UsageLens {
   kind: string
   line: number
   from: number
+  /** Usages on the definition's class or one in its hierarchy. */
   count: number
+  /** Calls by the name on something whose class is not known. */
+  possible?: number
+  /** The framework calls it, and `count` is the uses of what it belongs to. */
+  framework?: boolean
+  /** The class whose uses `count` is. */
+  owner?: string | null
+}
+
+const plural = (count: number, one: string, many: string) => `${count} ${count === 1 ? one : many}`
+
+/**
+ * What a lens says: "2 usages", with "· 50 possible" kept apart to be
+ * shown muted, or for what the framework calls, "2 uses of ExportCommand",
+ * "called by the framework · 2 references", or "called by the framework".
+ */
+export function lensText(lens: UsageLens): { main: string; possible: string } {
+  if (lens.framework) {
+    if (!lens.count) return { main: 'called by the framework', possible: '' }
+    if (lens.owner) return { main: `${plural(lens.count, 'use', 'uses')} of ${lens.owner}`, possible: '' }
+    return { main: `called by the framework · ${plural(lens.count, 'reference', 'references')}`, possible: '' }
+  }
+  return {
+    main: plural(lens.count, 'usage', 'usages'),
+    possible: lens.possible ? `${lens.possible} possible` : ''
+  }
 }
 
 export const setUnused = StateEffect.define<UnusedMark[]>()
@@ -837,14 +864,37 @@ class LensWidget extends WidgetType {
   }
 
   override eq(other: LensWidget) {
-    return other.lens.count === this.lens.count && other.lens.name === this.lens.name && other.indent === this.indent
+    const a = other.lens
+    const b = this.lens
+    return (
+      a.count === b.count &&
+      a.name === b.name &&
+      (a.possible ?? 0) === (b.possible ?? 0) &&
+      !!a.framework === !!b.framework &&
+      (a.owner ?? null) === (b.owner ?? null) &&
+      other.indent === this.indent
+    )
   }
 
   override toDOM() {
     const div = document.createElement('div')
     div.className = 'cm-lens'
     div.style.paddingLeft = `calc(6px + ${this.indent.length}ch)`
-    div.textContent = `${this.lens.count} ${this.lens.count === 1 ? 'usage' : 'usages'}`
+    const { main, possible } = lensText(this.lens)
+    div.textContent = main
+    if (possible) {
+      const muted = document.createElement('span')
+      muted.className = 'cm-lens-possible'
+      muted.textContent = ` · ${possible}`
+      div.appendChild(muted)
+    }
+    if (this.lens.framework) {
+      div.title = this.lens.owner
+        ? `The framework calls ${this.lens.name}(). Counted: the places that use ${this.lens.owner}.`
+        : `The framework calls ${this.lens.name}().`
+    } else if (possible) {
+      div.title = 'Possible: the same name, called on something whose class could not be worked out.'
+    }
     div.addEventListener('mousedown', (event) => {
       event.preventDefault()
       this.open(this.lens, event)

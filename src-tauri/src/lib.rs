@@ -20,6 +20,7 @@ pub mod lfs;
 pub mod mouse;
 pub mod quit;
 pub mod rebase;
+pub mod receivers;
 pub mod recover;
 pub mod refs;
 pub mod remote;
@@ -395,15 +396,17 @@ async fn definitions(
     symbols::definitions(&state, &name, path.as_deref(), shape)
 }
 
-/// Every use of a name, among files of the same language as `path`.
+/// Every use of a definition, among files of the same language as `path`:
+/// the one of that name and kind nearest `line` there.
 #[tauri::command]
 async fn usages(
     name: String,
     path: Option<String>,
     kind: Option<String>,
+    line: Option<u32>,
     state: Aimed,
-) -> Result<Vec<symbols::Location>, String> {
-    symbols::usages(&state, &name, path.as_deref(), kind.as_deref())
+) -> Result<symbols::UsageList, String> {
+    symbols::usages(&state, &name, path.as_deref(), kind.as_deref(), line)
 }
 
 /// What nothing uses in a file: dimmed if private, hinted at if public.

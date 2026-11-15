@@ -6,7 +6,7 @@ import UsagesPopup from '~/components/UsagesPopup.vue'
 import { useGit } from '~/composables/useGit'
 import { openTab, resetTabs, switchTabs, useTabs } from '~/composables/useTabs'
 import { useToasts } from '~/composables/useToasts'
-import { closeUsages, jumpFrom, usagesPopup, type CodeLocation } from '~/composables/useSymbols'
+import { closeUsages, jumpFrom, showUsages, usagesPopup, type CodeLocation } from '~/composables/useSymbols'
 
 vi.mock('@tauri-apps/api/core', () => ({ invoke: vi.fn() }))
 vi.mock('@tauri-apps/api/event', () => ({ listen: vi.fn(async () => () => undefined) }))
@@ -22,6 +22,9 @@ const at = (path: string, line: number, text: string): CodeLocation => ({ path, 
 
 let symbol: Record<string, unknown> | null = null
 let found: CodeLocation[] = []
+let possible: CodeLocation[] = []
+let framework = false
+let owner: string | null = null
 
 beforeEach(() => {
   resetTabs()
@@ -41,10 +44,14 @@ beforeEach(() => {
     at('app/Http/InvoiceController.php', 42, '$this->billing->total($invoice)'),
     at('tests/InvoiceServiceTest.php', 18, 'assertEquals(1, $svc->total($i))')
   ]
+  possible = []
+  framework = false
+  owner = null
   asked.mockReset()
   asked.mockImplementation(async (cmd: string) => {
     if (cmd === 'symbol_at') return symbol
-    if (cmd === 'usages' || cmd === 'definitions') return found
+    if (cmd === 'usages') return { definite: found, possible, framework, owner }
+    if (cmd === 'definitions') return found
     return null
   })
 })
@@ -70,7 +77,7 @@ describe('⌘-click on a definition', () => {
   it('lists the usages, the ones in changed files first and marked', async () => {
     await jumpFrom(SERVICE, 122, 'the text', { x: 100, y: 200 })
     expect(asked).toHaveBeenCalledWith('symbol_at', { path: SERVICE, offset: 122, text: 'the text' })
-    expect(asked).toHaveBeenCalledWith('usages', { name: 'total', path: SERVICE, kind: 'method' })
+    expect(asked).toHaveBeenCalledWith('usages', { name: 'total', path: SERVICE, kind: 'method', line: 9 })
     expect(usagesPopup.open).toBe(true)
     const w = await show()
     expect(w.find('.title').text()).toBe('Usages of total() · 3 in 3 files')
@@ -141,6 +148,93 @@ describe('⌘-click on a definition', () => {
     expect(usagesPopup.open).toBe(false)
     expect(toasts.items.value.map((one) => one.title)).toContain('No usages found')
     expect(tabs.activeTab()?.path).toBe(SERVICE)
+  })
+})
+
+describe('definite and possible usages', () => {
+  const unknown = [
+    at('app/Jobs/Rebuild.php', 12, '$thing->total()'),
+    at('app/Support/Report.php', 30, '$row->total()'),
+    at('app/Support/Sheet.php', 8, '$x->total()')
+  ]
+
+  it('lists the definite ones, then a folded group of the possible ones', async () => {
+    found = found.slice(0, 2)
+    possible = unknown
+    await jumpFrom(SERVICE, 122, null)
+    const w = await show()
+    expect(w.find('.title').text()).toBe('Usages of total() · 2 in 2 files')
+    expect(w.findAll('.row')).toHaveLength(2)
+    expect(w.find('.group').text()).toContain('Possible (3)')
+    expect(w.find('.group').attributes('aria-expanded')).toBe('false')
+
+    // ↓ ↓ reaches the group, ↵ unfolds it, and the possible rows are muted.
+    press(w, 'ArrowDown')
+    press(w, 'ArrowDown')
+    await flushPromises()
+    expect(w.find('.group').classes()).toContain('on')
+    press(w, 'Enter')
+    await flushPromises()
+    expect(usagesPopup.open).toBe(true)
+    const rows = w.findAll('.row')
+    expect(rows).toHaveLength(5)
+    expect(rows.slice(2).every((row) => row.classes().includes('possible'))).toBe(true)
+    expect(rows[2]!.find('.code').text()).toBe('$thing->total()')
+
+    // A click folds it again.
+    await w.find('.group').trigger('click')
+    expect(w.findAll('.row')).toHaveLength(2)
+  })
+
+  it('opens the group by itself when nothing is definite', async () => {
+    found = []
+    possible = unknown
+    await jumpFrom(SERVICE, 122, null)
+    const w = await show()
+    expect(w.find('.title').text()).toBe('Possible usages of total() · 3')
+    expect(w.findAll('.row')).toHaveLength(3)
+  })
+
+  it('⌘-click jumps to the one definite usage; the count lists it with the possible ones', async () => {
+    found = [at('app/Http/InvoiceController.php', 42, '$this->billing->total($invoice)')]
+    possible = unknown
+    await jumpFrom(SERVICE, 122, null)
+    expect(usagesPopup.open).toBe(false)
+    expect(tabs.activeTab()).toMatchObject({ path: 'app/Http/InvoiceController.php', line: 42 })
+
+    await showUsages('total', SERVICE, 'method', { x: 1, y: 1 }, 9)
+    expect(usagesPopup.open).toBe(true)
+    expect(usagesPopup.items).toHaveLength(1)
+    expect(usagesPopup.possible).toHaveLength(3)
+  })
+})
+
+describe('what the framework calls', () => {
+  beforeEach(() => {
+    symbol = { name: 'handle', kind: 'method', definition: true, shape: 'plain', line: 12, from: 120, to: 126 }
+    framework = true
+    owner = 'ExportAnalyticsCommand'
+    found = [
+      at('routes/console.php', 5, "Schedule::command('export:analytics')->daily();"),
+      at('tests/Feature/ExportAnalyticsTest.php', 6, "$this->artisan('export:analytics')")
+    ]
+  })
+
+  it('lists the uses of its class, and says why', async () => {
+    await jumpFrom(SERVICE, 122, null)
+    const w = await show()
+    expect(w.find('.title').text()).toBe('Uses of ExportAnalyticsCommand · 2')
+    expect(w.find('.note').text()).toBe('handle() is called by the framework')
+    expect(w.findAll('.row')).toHaveLength(2)
+    expect(w.find('.group').exists()).toBe(false)
+  })
+
+  it('says it is called by the framework when nothing uses the class', async () => {
+    found = []
+    await jumpFrom(SERVICE, 122, null)
+    expect(usagesPopup.open).toBe(false)
+    expect(toasts.items.value.map((one) => one.title)).toContain('handle() is called by the framework')
+    expect(toasts.items.value.map((one) => one.title)).not.toContain('No usages found')
   })
 })
 

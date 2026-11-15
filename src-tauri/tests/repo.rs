@@ -8480,7 +8480,9 @@ fn php_definitions_and_usages_follow_the_names() {
         .unwrap();
     assert!(at.definition);
     assert_eq!(at.kind, "method");
-    let used = symbols::usages(&state, "total", Some(path), Some("method")).unwrap();
+    let used = symbols::usages(&state, "total", Some(path), Some("method"), None)
+        .unwrap()
+        .definite;
     let mut paths: Vec<&str> = used.iter().map(|u| u.path.as_str()).collect();
     paths.sort();
     assert_eq!(
@@ -8624,8 +8626,15 @@ onMounted(() => {})
         symbols::definitions(&state, "formatTotal", Some("src/App.vue"), Some(at.shape)).unwrap();
     assert_eq!(found.len(), 1);
     assert_eq!((found[0].path.as_str(), found[0].line), ("src/util.ts", 1));
-    let used =
-        symbols::usages(&state, "formatTotal", Some("src/util.ts"), Some("function")).unwrap();
+    let used = symbols::usages(
+        &state,
+        "formatTotal",
+        Some("src/util.ts"),
+        Some("function"),
+        None,
+    )
+    .unwrap()
+    .definite;
     assert_eq!(used.len(), 1);
     assert_eq!((used[0].path.as_str(), used[0].line), ("src/App.vue", 10));
 
@@ -8718,9 +8727,19 @@ mod tests {
     );
     let found = symbols::definitions(&state, "called", Some("src/lib.rs"), Some(at.shape)).unwrap();
     assert_eq!((found[0].line, found[0].kind), (32, "method"));
-    let used = symbols::usages(&state, "assoc", Some("src/lib.rs"), Some("method")).unwrap();
+    let used = symbols::usages(&state, "assoc", Some("src/lib.rs"), Some("method"), None)
+        .unwrap()
+        .definite;
     assert_eq!(used.len(), 1);
-    let used = symbols::usages(&state, "used_api", Some("src/lib.rs"), Some("function")).unwrap();
+    let used = symbols::usages(
+        &state,
+        "used_api",
+        Some("src/lib.rs"),
+        Some("function"),
+        None,
+    )
+    .unwrap()
+    .definite;
     assert_eq!(used[0].path, "src/main.rs");
 
     let marks = symbols::unused_in(&state, "src/lib.rs", None, None).unwrap();
@@ -8760,7 +8779,13 @@ fn the_index_follows_files_as_they_change() {
     let found = symbols::definitions(&state, "two", None, None).unwrap();
     assert_eq!(found.len(), 1);
     assert_eq!(found[0].path, "b.ts");
-    assert_eq!(symbols::usages(&state, "one", None, None).unwrap().len(), 1);
+    assert_eq!(
+        symbols::usages(&state, "one", None, None, None)
+            .unwrap()
+            .definite
+            .len(),
+        1
+    );
 
     std::fs::remove_file(sandbox.root.join("b.ts")).unwrap();
     files::forget(&sandbox.root);
@@ -8975,12 +9000,27 @@ fn a_call_through_a_module_counts_as_a_usage_of_the_function() {
     sandbox.git(&["commit", "-q", "-m", "Modules"]);
     let state = sandbox.state();
 
-    let used = symbols::usages(&state, "format_money", Some("money.py"), Some("function")).unwrap();
+    let used = symbols::usages(
+        &state,
+        "format_money",
+        Some("money.py"),
+        Some("function"),
+        None,
+    )
+    .unwrap()
+    .definite;
     assert_eq!(used.len(), 1, "{used:?}");
     assert_eq!(used[0].path, "invoice.py");
 
-    let used =
-        symbols::usages(&state, "formatDate", Some("src/dates.ts"), Some("function")).unwrap();
+    let used = symbols::usages(
+        &state,
+        "formatDate",
+        Some("src/dates.ts"),
+        Some("function"),
+        None,
+    )
+    .unwrap()
+    .definite;
     assert_eq!(used.len(), 1, "{used:?}");
     assert_eq!(used[0].path, "src/page.ts");
 }
@@ -9008,4 +9048,478 @@ fn a_method_called_by_a_built_name_is_not_dimmed() {
         !marks.iter().any(|mark| mark.name == "handleSave"),
         "{marks:?}"
     );
+}
+
+// --- usage counts that know the receiver --------------------------------------
+
+fn lens<'a>(lenses: &'a [symbols::Lens], name: &str, line: u32) -> &'a symbols::Lens {
+    lenses
+        .iter()
+        .find(|lens| lens.name == name && lens.line == line)
+        .unwrap_or_else(|| panic!("no lens for {name} on line {line}: {lenses:#?}"))
+}
+
+const EXPORT_COMMAND: &str = r#"<?php
+
+namespace App\Console\Commands\Analytics;
+
+use Illuminate\Console\Command;
+
+class ExportAnalyticsCommand extends Command
+{
+    protected $signature = 'export:analytics
+                            {--from= : The first day}';
+
+    public function handle(): void
+    {
+        $this->line('done');
+    }
+}
+"#;
+
+/// An artisan command used twice, by the schedule and by a test, next to
+/// ten `->handle(` calls on other things.
+fn command_project(tag: &str) -> Sandbox {
+    let sandbox = Sandbox::new(tag);
+    put(
+        &sandbox,
+        "app/Console/Commands/Analytics/ExportAnalyticsCommand.php",
+        EXPORT_COMMAND,
+    );
+    put(
+        &sandbox,
+        "app/Jobs/SyncOrders.php",
+        "<?php\nnamespace App\\Jobs;\n\nclass SyncOrders implements ShouldQueue\n{\n    public function handle(): void\n    {\n    }\n}\n",
+    );
+    put(
+        &sandbox,
+        "app/Http/Middleware/TrustHosts.php",
+        "<?php\nnamespace App\\Http\\Middleware;\n\nclass TrustHosts\n{\n    public function handle($request, $next)\n    {\n        return $next($request);\n    }\n}\n",
+    );
+    put(
+        &sandbox,
+        "app/Services/Pipeline.php",
+        r#"<?php
+namespace App\Services;
+
+use App\Jobs\SyncOrders;
+use App\Http\Middleware\TrustHosts;
+
+class Pipeline
+{
+    public function run(SyncOrders $job, TrustHosts $hosts, $anything, $request, $next)
+    {
+        $job->handle();
+        $hosts->handle($request, $next);
+        (new SyncOrders)->handle();
+        $anything->handle();
+        $this->handler->handle();
+        $x = new TrustHosts;
+        $x->handle($request, $next);
+        $listener->handle($request);
+        app(SyncOrders::class)->handle();
+        $queue->handle();
+        $hosts?->handle($request, $next);
+    }
+}
+"#,
+    );
+    put(
+        &sandbox,
+        "routes/console.php",
+        "<?php\n\nuse Illuminate\\Support\\Facades\\Schedule;\n\nSchedule::command('export:analytics')->daily();\n",
+    );
+    put(
+        &sandbox,
+        "tests/Feature/ExportAnalyticsTest.php",
+        r#"<?php
+class ExportAnalyticsTest extends TestCase
+{
+    public function test_it_exports(): void
+    {
+        $this->artisan('export:analytics --from=2024-01-01')->assertSuccessful();
+    }
+}
+"#,
+    );
+    sandbox.git(&["add", "--all"]);
+    sandbox.git(&["commit", "-q", "-m", "Commands"]);
+    sandbox
+}
+
+#[test]
+fn a_commands_handle_counts_the_uses_of_the_command_not_every_handle() {
+    let sandbox = command_project("usages-command");
+    let state = sandbox.state();
+    let path = "app/Console/Commands/Analytics/ExportAnalyticsCommand.php";
+
+    let lenses = symbols::usage_counts(&state, path, None).unwrap();
+    let handle = lens(&lenses, "handle", 12);
+    assert!(handle.framework);
+    assert_eq!(handle.owner.as_deref(), Some("ExportAnalyticsCommand"));
+    assert_eq!((handle.count, handle.possible), (2, 0), "{handle:?}");
+
+    let used = symbols::usages(&state, "handle", Some(path), Some("method"), Some(12)).unwrap();
+    assert!(used.framework);
+    let places: Vec<(&str, u32)> = used
+        .definite
+        .iter()
+        .map(|u| (u.path.as_str(), u.line))
+        .collect();
+    assert_eq!(
+        places,
+        vec![
+            ("routes/console.php", 5),
+            ("tests/Feature/ExportAnalyticsTest.php", 6)
+        ]
+    );
+    assert!(used.possible.is_empty());
+
+    // The ten calls in the pipeline: the four on something unknown are
+    // possible for a `handle` nobody resolved; the six on the job or the
+    // middleware are theirs. A service's plain `handle` sees just that.
+    put(
+        &sandbox,
+        "app/Services/Relay.php",
+        "<?php\nnamespace App\\Services;\n\nclass Relay\n{\n    public function handle(): void\n    {\n    }\n}\n",
+    );
+    let lenses = symbols::usage_counts(&state, "app/Services/Relay.php", None).unwrap();
+    let relay = lens(&lenses, "handle", 6);
+    assert!(!relay.framework);
+    assert_eq!((relay.count, relay.possible), (0, 4), "{relay:?}");
+    let used = symbols::usages(
+        &state,
+        "handle",
+        Some("app/Services/Relay.php"),
+        Some("method"),
+        Some(6),
+    )
+    .unwrap();
+    assert!(used.definite.is_empty());
+    let lines: Vec<u32> = used.possible.iter().map(|u| u.line).collect();
+    assert_eq!(lines, vec![14, 15, 18, 20]);
+}
+
+#[test]
+fn a_command_nothing_names_is_called_by_the_framework() {
+    let sandbox = Sandbox::new("usages-command-alone");
+    put(
+        &sandbox,
+        "app/Console/Commands/Analytics/ExportAnalyticsCommand.php",
+        EXPORT_COMMAND,
+    );
+    sandbox.git(&["add", "--all"]);
+    sandbox.git(&["commit", "-q", "-m", "Alone"]);
+    let state = sandbox.state();
+    let lenses = symbols::usage_counts(
+        &state,
+        "app/Console/Commands/Analytics/ExportAnalyticsCommand.php",
+        None,
+    )
+    .unwrap();
+    let handle = lens(&lenses, "handle", 12);
+    assert!(handle.framework);
+    assert_eq!((handle.count, handle.possible), (0, 0));
+}
+
+#[test]
+fn this_and_a_typed_parameter_tell_two_methods_of_one_name_apart() {
+    let sandbox = Sandbox::new("usages-receivers");
+    put(
+        &sandbox,
+        "app/Billing/Ledger.php",
+        r#"<?php
+namespace App\Billing;
+
+class Ledger
+{
+    public function balance(): int
+    {
+        return 0;
+    }
+
+    public function report(Statement $other, $loose): void
+    {
+        $this->balance();
+        $other->balance();
+        $loose->balance();
+    }
+}
+"#,
+    );
+    put(
+        &sandbox,
+        "app/Billing/Statement.php",
+        "<?php\nnamespace App\\Billing;\n\nclass Statement\n{\n    public function balance(): int\n    {\n        return 1;\n    }\n}\n",
+    );
+    sandbox.git(&["add", "--all"]);
+    sandbox.git(&["commit", "-q", "-m", "Ledger"]);
+    let state = sandbox.state();
+
+    let lenses = symbols::usage_counts(&state, "app/Billing/Ledger.php", None).unwrap();
+    let ledger = lens(&lenses, "balance", 6);
+    assert_eq!((ledger.count, ledger.possible), (1, 1), "{ledger:?}");
+    let lenses = symbols::usage_counts(&state, "app/Billing/Statement.php", None).unwrap();
+    let statement = lens(&lenses, "balance", 6);
+    assert_eq!(
+        (statement.count, statement.possible),
+        (1, 1),
+        "{statement:?}"
+    );
+
+    let used = symbols::usages(
+        &state,
+        "balance",
+        Some("app/Billing/Statement.php"),
+        Some("method"),
+        Some(6),
+    )
+    .unwrap();
+    assert_eq!(used.definite.len(), 1);
+    assert_eq!(used.definite[0].line, 14);
+    assert_eq!(used.possible[0].line, 15);
+}
+
+#[test]
+fn static_calls_follow_the_class_and_its_hierarchy() {
+    let sandbox = Sandbox::new("usages-static");
+    put(
+        &sandbox,
+        "app/Support/Money.php",
+        "<?php\nnamespace App\\Support;\n\nclass Money\n{\n    public static function sum(array $parts): int\n    {\n        return 0;\n    }\n}\n",
+    );
+    put(
+        &sandbox,
+        "app/Support/Cash.php",
+        r#"<?php
+namespace App\Support;
+
+class Cash extends Money
+{
+    public static function total(): int
+    {
+        return static::sum([]) + parent::sum([]) + self::sum([]);
+    }
+}
+"#,
+    );
+    put(
+        &sandbox,
+        "app/Support/Report.php",
+        r#"<?php
+namespace App\Support;
+
+class Report
+{
+    public function build(): int
+    {
+        return Money::sum([]) + Price::sum([]) + Cash::sum([]);
+    }
+}
+"#,
+    );
+    sandbox.git(&["add", "--all"]);
+    sandbox.git(&["commit", "-q", "-m", "Money"]);
+    let state = sandbox.state();
+    let lenses = symbols::usage_counts(&state, "app/Support/Money.php", None).unwrap();
+    let sum = lens(&lenses, "sum", 6);
+    // Three in the subclass, `Money::` and `Cash::` in the report; never
+    // `Price::`.
+    assert_eq!((sum.count, sum.possible), (5, 0), "{sum:?}");
+}
+
+#[test]
+fn a_use_alias_resolves_to_the_class_it_names() {
+    let sandbox = Sandbox::new("usages-alias");
+    put(
+        &sandbox,
+        "app/Billing/Ledger.php",
+        "<?php\nnamespace App\\Billing;\n\nclass Ledger\n{\n    public function balance(): int\n    {\n        return 0;\n    }\n}\n",
+    );
+    put(
+        &sandbox,
+        "app/Http/Books.php",
+        r#"<?php
+namespace App\Http;
+
+use App\Billing\Ledger as Books;
+
+class Shelf
+{
+    public function count(Books $books): int
+    {
+        $fresh = new Books();
+        return $books->balance() + $fresh->balance() + Books::balance();
+    }
+}
+"#,
+    );
+    sandbox.git(&["add", "--all"]);
+    sandbox.git(&["commit", "-q", "-m", "Alias"]);
+    let state = sandbox.state();
+    let lenses = symbols::usage_counts(&state, "app/Billing/Ledger.php", None).unwrap();
+    let balance = lens(&lenses, "balance", 6);
+    assert_eq!((balance.count, balance.possible), (3, 0), "{balance:?}");
+    // The class itself: the type hint, `new` and the static call's class.
+    let class = lens(&lenses, "Ledger", 4);
+    assert_eq!(class.count, 3, "{class:?}");
+}
+
+#[test]
+fn a_route_action_counts_for_that_action_only() {
+    let sandbox = Sandbox::new("usages-routes");
+    put(
+        &sandbox,
+        "app/Http/Controllers/InvoiceController.php",
+        r#"<?php
+namespace App\Http\Controllers;
+
+class InvoiceController extends Controller
+{
+    public function show(int $id)
+    {
+        return $id;
+    }
+
+    public function index()
+    {
+        return [];
+    }
+
+    public function export()
+    {
+        return [];
+    }
+}
+"#,
+    );
+    put(
+        &sandbox,
+        "routes/web.php",
+        r#"<?php
+use App\Http\Controllers\InvoiceController;
+
+Route::get('/invoices/{id}', [InvoiceController::class, 'show']);
+Route::get('/invoices', [InvoiceController::class, 'index']);
+Route::get('/other', [OtherController::class, 'show']);
+"#,
+    );
+    sandbox.git(&["add", "--all"]);
+    sandbox.git(&["commit", "-q", "-m", "Routes"]);
+    let state = sandbox.state();
+    let path = "app/Http/Controllers/InvoiceController.php";
+    let lenses = symbols::usage_counts(&state, path, None).unwrap();
+    let show = lens(&lenses, "show", 6);
+    assert!(show.framework);
+    assert_eq!(show.count, 1, "{show:?}");
+    assert_eq!(lens(&lenses, "index", 11).count, 1);
+    let export = lens(&lenses, "export", 16);
+    assert!(export.framework);
+    assert_eq!(export.count, 0);
+    let used = symbols::usages(&state, "show", Some(path), Some("method"), Some(6)).unwrap();
+    assert_eq!(used.definite.len(), 1);
+    assert_eq!(
+        (used.definite[0].path.as_str(), used.definite[0].line),
+        ("routes/web.php", 4)
+    );
+}
+
+#[test]
+fn typescript_methods_resolve_this_and_typed_parameters() {
+    let sandbox = Sandbox::new("usages-script");
+    put(
+        &sandbox,
+        "src/cart.ts",
+        r#"export class Cart {
+  total(): number {
+    return 0
+  }
+
+  checkout() {
+    return this.total()
+  }
+}
+
+export class Wishlist {
+  total(): number {
+    return 1
+  }
+}
+"#,
+    );
+    put(
+        &sandbox,
+        "src/page.ts",
+        r#"import { Cart, Wishlist as Wishes } from './cart'
+
+export function show(cart: Cart, list: Wishes, thing: any) {
+  return cart.total() + list.total() + thing.total()
+}
+"#,
+    );
+    put(
+        &sandbox,
+        "src-tauri/src/lib.rs",
+        "#[tauri::command]\nfn usage_counts() {}\n",
+    );
+    put(
+        &sandbox,
+        "src/editor.ts",
+        "import { invoke } from './invoke'\nexport const lenses = () => invoke<number>('usage_counts', {})\n",
+    );
+    sandbox.git(&["add", "--all"]);
+    sandbox.git(&["commit", "-q", "-m", "Cart"]);
+    let state = sandbox.state();
+    let lenses = symbols::usage_counts(&state, "src/cart.ts", None).unwrap();
+    let cart = lens(&lenses, "total", 2);
+    assert_eq!((cart.count, cart.possible), (2, 1), "{cart:?}");
+    let wishlist = lens(&lenses, "total", 12);
+    assert_eq!((wishlist.count, wishlist.possible), (1, 1), "{wishlist:?}");
+
+    // A Tauri command is counted by the front end's `invoke` calls.
+    let lenses = symbols::usage_counts(&state, "src-tauri/src/lib.rs", None).unwrap();
+    let command = lens(&lenses, "usage_counts", 2);
+    assert!(command.framework);
+    assert_eq!(command.count, 1, "{command:?}");
+}
+
+#[test]
+fn vendored_and_generated_code_is_left_out_of_the_index() {
+    let sandbox = Sandbox::new("usages-vendor");
+    put(
+        &sandbox,
+        "app/Services/Relay.php",
+        "<?php\nclass Relay\n{\n    public function handle(): void\n    {\n    }\n}\n",
+    );
+    // None of these are ignored by git, and none count.
+    for path in [
+        "vendor/laravel/framework/src/Kernel.php",
+        "storage/framework/views/abc123.php",
+        "bootstrap/cache/services.php",
+        "public/build/assets/app.js",
+        "node_modules/pkg/index.js",
+        "dist/bundle.js",
+    ] {
+        put(
+            &sandbox,
+            path,
+            "<?php\nclass VendoredKernel { public function handle() { $x->handle(); } }\n",
+        );
+    }
+    sandbox.git(&["add", "--all"]);
+    sandbox.git(&["commit", "-q", "-m", "Vendored"]);
+    let state = sandbox.state();
+    assert!(symbols::find_symbols(&state, "VendoredKernel", 5)
+        .unwrap()
+        .is_empty());
+    let lenses = symbols::usage_counts(&state, "app/Services/Relay.php", None).unwrap();
+    assert!(
+        lenses.iter().all(|lens| lens.name != "handle"),
+        "{lenses:?}"
+    );
+    assert!(symbols::generated("vendor/a/b.php"));
+    assert!(symbols::generated("packages/x/node_modules/y.js"));
+    assert!(!symbols::generated("app/Storage/Disk.php"));
+    assert!(!symbols::generated("src/storage/local.ts"));
+    assert!(!symbols::generated("vendor.php"));
 }
