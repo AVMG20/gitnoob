@@ -111,6 +111,17 @@ jobs:
           workspaces: src-tauri -> target
           key: check
 
+      # The bundled magequery (bundle.externalBin). The build script would
+      # put an empty placeholder in its place, but the check should build
+      # what ships, so it is fetched (and its sha256 checked) here.
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: magequery sidecar
+        shell: bash
+        run: node scripts/magequery.mjs
+
       - name: Formatting
         if: matrix.runner == 'ubuntu-22.04'
         run: cargo fmt --manifest-path src-tauri/Cargo.toml --check

@@ -104,6 +104,7 @@ src-tauri/src
   edit.rs       reading a file for the editor and saving it
   symbols.rs    code navigation and unused code, with tree-sitter
   complete.rs   autocomplete: members after -> :: and ., project names, PHP use lines
+  frameworks/   framework-aware navigation: the provider trait, Magento, magequery
   mouse.rs      the mouse's back and forward buttons on macOS
 src-tauri/tests
   repo.rs       integration tests against real repos built with git
@@ -245,6 +246,56 @@ The popup is a CodeMirror tooltip in the app's colours and the code font at `--c
 ### Keys that moved in 0.10
 
 Fetch is ⌘⌥F (was ⌘⇧F, now search inside files). Next and previous changed file are ⌘⌥↓ / ⌘⌥↑ (were ⌘] / ⌘[, now back and forward). Next match in the find bar is ↵ and ⇧↵ in the box (⌘G goes to a line now). A key someone rebound keeps their binding. The release notes are written by hand on the release page, so these have to be copied there.
+
+## Frameworks
+
+A framework wires code together through things the language cannot follow: class names in XML, template paths in strings, event names. `src-tauri/src/frameworks/` is where that lives, as one small layer with a provider per framework. Magento is the only one so far; Laravel and Nuxt/Next are meant to be added the same way.
+
+### How a provider plugs in
+
+`frameworks/mod.rs` has the `Provider` trait and the dispatch. A provider is a module with a `detect(root) -> Option<Arc<dyn Provider>>` function, listed in `DETECTORS`. Detection must be cheap: a few `stat` calls and at most a small file read (`composer.json`, a lock file read as text). Its answer is cached per work tree, stamped with the times of `composer.json`, `composer.lock`, `bin/magento` and `registration.php`, so asking again costs those stats. Everything else the trait has defaults for:
+
+- `info()`: the name and version for the chip in the title bar ("Magento 2.4.7 detected").
+- `links_at(root, path, text, byte) -> Option<Links>`: what a ⌘-click on a token leads to, in any file type. `None` means "not mine" and the click goes on to the language's own rules; `Some` with no targets is a token it recognised and found nothing for, and its `note` is shown.
+- `extra_references(root, fqn)`: config files that name a class. They are added to the class's usage count ("3 usages · 2 in config"), listed in the usages popup under `references_label()` ("Magento config"), and a class they name has its public methods treated as entry points, so nothing it declares is hinted at as unused.
+- `complete(root, path, text, byte)`: names to offer in the framework's config files.
+- `locate_class` and `wiring`: a class by its fully qualified name, and an outside tool's account of how it is wired.
+- `stale(relative)` and `forget(root)`: the watcher hands every changed path to `frameworks::touched`, and a provider says which ones make what it worked out stale.
+
+The commands are `framework_info`, `framework_links`, `framework_complete`, `framework_class`, `framework_wiring` and `magequery_status`. Each checks Settings → Frameworks → Framework support first and answers nothing when it is off. On the window's side, `useFramework.ts` holds the detected framework (asked again on every project switch), `jumpFrom` in `useSymbols.ts` asks `framework_links` before anything else whenever a framework is detected and the file is XML, PHTML, PHP, JS, JSON or HTML, and `frameworkToken` widens the ⌘-hover underline from the word to the whole `Foo\Bar\Baz` or `Vendor_Module::path.phtml`. Several targets go to the usages popup in the order the provider gave them, each with its label.
+
+Every path a provider reads or returns goes through `files::resolve`, the same guard as everywhere else, so a module or theme linked out of the work tree is not followed.
+
+### Magento
+
+Detected by `bin/magento` next to `app/etc/di.xml`, a `composer.json` that requires `magento/framework` or `magento/product-*`, or a `registration.php` that calls `ComponentRegistrar::register` next to `etc/module.xml` (a repository that is one module). The version is the `magento/product-*` package in `composer.lock`, else `magento/framework`.
+
+`magento/registry.rs` is the component registry: modules from `app/code/*/*/registration.php`, a root `registration.php`, and the `magento2-module` packages in `vendor/composer/installed.json` (each package's own `registration.php`, at its `install-path`); themes the same way from `app/design/{frontend,adminhtml}/*/*` and `magento2-theme` packages, with each `theme.xml` parent. `vendor/` is never walked for it. It is built on the first framework request and kept until `composer.lock`, `installed.json` or `app/etc/config.php` change (stamped) or the watcher sees a `registration.php`, `theme.xml` or any XML change. The indexes over config files are built the first time each is needed: virtual types from every module's `etc/**/di.xml`, observers from every area's `events.xml`, layout files from module `view/*/layout` and theme `Vendor_Module/layout` folders (by listing), block and container names in them (by reading), and which classes the project's own config names (non-vendor modules, `app/etc/di.xml`, the project's themes).
+
+What ⌘-click follows:
+
+- **Class names in XML**, read with a forgiving scanner (`frameworks/xml.rs`) that copes with half-typed markup: the `type`, `for`, `class`, `instance`, `model`, `*_model`, `handler`, `consumerInstance`, `provider` and `entity` attributes, `name` on `<type>`, `xsi:type="object"` text and `<source_model>`-style elements, and any other value shaped like `Foo\Bar`. A class is found through Composer's maps (`deps::resolve_class`), then the module it is named after (`Vendor\Module\X` in that module's folder, for an install whose `app/code` is only reachable through Magento's own autoloader), then the symbol index. A name that is no class may be a virtual type, which opens its `<virtualType>` declaration in whichever `di.xml` has it; `<virtualType name>` itself opens the type it is made from. Generated names (`…Factory`, `…\Proxy`, `…\Interceptor`, `…ExtensionInterface`, `…Extension`, `…SearchResults`) open the class they are generated from, with a notice saying so.
+- **`method="…"`** next to `instance`, `class`, `type`, `model` or `service`: that method, up the class's parents and traits.
+- **Templates**: `Vendor_Module::path.phtml` (or a bare `path.phtml`, in the module the referring file belongs to) in PHP strings and in XML (`template="…"`, `<argument name="template">`). The area comes from the referring path (`/adminhtml/`, `Block/Adminhtml`, `/frontend/`); `base` is always looked in. Candidates: the module's own `view/<area>/templates` and `view/base/templates`, then each registered theme of that area's `Vendor_Module/templates`, parents first. One opens; several are listed with "adminhtml · module" or "frontend · Vendor/theme (inherits Magento/luma) · override".
+- **Assets**: `Vendor_Module/js/foo` in `requirejs-config.js`, `x-magento-init` JSON and a ui_component's `component`, and `Vendor_Module::css/x.css`, resolve to `view/<area>/web/…` (trying `.js` and `.html`) and the themes' `web` overrides the same way.
+- **Layout**: `<update handle="x"/>` lists every `x.xml` layout file; `<referenceBlock>`, `<referenceContainer>` and `<move>` list where that block or container is declared.
+- **Events**: a string right after `dispatch(` lists the observers of that event across every module and area, each opening its class. An `<event name="…">` in `events.xml` lists where it is dispatched by name, searched in the project's PHP and every vendor module's folder, stopping after 100 hits, 60,000 files or six seconds. Names built at run time (`$this->_eventPrefix . '_save_after'`) are not found, and the notice says so.
+
+Class names complete inside those XML attributes and `xsi:type="object"` text: the namespaces and classes in the folders Composer's PSR-4 maps (and the registered modules) give for what has been typed, plus the project's classes from the index.
+
+### magequery
+
+`magequery` (https://github.com/cresset-tools/magequery, EUPL-1.2) reads a whole Magento installation's config. gitnoob ships it unmodified as a Tauri sidecar (`bundle.externalBin` in `tauri.conf.json`), next to its own executable; `THIRD_PARTY_NOTICES.md` and `licenses/` carry its licence, and both are bundled as resources. Settings → Frameworks shows which copy runs and takes an absolute path to use another one. Nothing else needs it: every ⌘-click above works without it.
+
+It is used for the "Magento wiring" view of a class, from the ⋯ menu over a PHP file and from the foot of a ⌘-click list: `whatis <class> --json` and `plugins <class> --json`, run together, read into a shape of gitnoob's own (`frameworks/magequery.rs`: preference, plugins with sort order and the methods they wrap, preference-for, injections, observers, cron jobs, web API routes and the rest, each with its config file and line). The JSON is read field by field and anything missing is skipped, so a newer magequery that adds fields does not break it. The rules for running it: `std::process::Command` with an argument array and no shell, the class name checked against `^[A-Za-z_\\][A-Za-z0-9_\\]*$` and passed after `--`, `--db` never passed, ten seconds at most, 8 MB of output at most, and the tool's own error message shown when it fails.
+
+The binary comes from `scripts/magequery.mjs`, which pins the version and the sha256 of every release asset and of the source tarball, downloads the one for the target, refuses it on a hash mismatch, and puts it in `src-tauri/binaries/magequery-<target triple>[.exe]` (git-ignored) with a stamp, so running it again does nothing. x86_64 Linux gets the static musl build, so the AppImage's glibc floor stays where 22.04 put it. The release has no Intel Mac build, so `x86_64-apple-darwin` is built from the pinned source with `cargo build --release --target x86_64-apple-darwin`, and `universal-apple-darwin` downloads the arm64 one, builds the Intel one and joins them with `lipo` (checked to hold both); a machine that cannot build for Intel fails there instead of shipping half a universal binary. `npm run app` runs it with `--optional` (offline still starts, without the wiring view), `npm run app:build` runs it strictly, and both workflows run it before building. `build.rs` writes an empty placeholder when the file is missing in a debug build, so `cargo test` and clippy work on a fresh checkout; the app treats an empty file as "not bundled", and a release build refuses to start without the real one.
+
+To move to a new magequery: change `VERSION` in `scripts/magequery.mjs`, copy the new hashes from the release's `sha256.sum` and `source.tar.gz.sha256` into `ASSETS` and `SOURCE`, change `PINNED` in `frameworks/magequery.rs` and the version in `THIRD_PARTY_NOTICES.md`, run the script, and open the wiring view on a real Magento checkout to see the JSON still reads.
+
+### Adding Laravel or Nuxt
+
+Make `frameworks/laravel/mod.rs` (or `nuxt`) with a `detect` that looks for its marker files (`artisan`, `nuxt.config.*`), implement `info` and whichever of `links_at`, `extra_references` and `complete` it has something for, add it to `DETECTORS`, and give it a fake-tree test in `tests/repo.rs` like the Magento ones. The window needs nothing new unless the provider's files are a type `LINKED` in `useFramework.ts` does not list yet.
 
 ## Undo
 

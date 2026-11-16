@@ -21,6 +21,7 @@ import { language, syntaxTree } from '@codemirror/language'
 import { Annotation, Prec, Transaction, type EditorState, type Extension } from '@codemirror/state'
 import { EditorView, keymap, type Command } from '@codemirror/view'
 import { invokeAt } from './useInvoke'
+import { frameworkFile } from './useFramework'
 
 /**
  * Autocomplete in the editor. Not an IDE: no language server and no type
@@ -88,6 +89,13 @@ const MEMBER_TYPES: Record<string, string> = {
 }
 
 const PHP = /\.php$/i
+const XML = /\.xml$/i
+
+/** What `framework_complete` answers. */
+interface FrameworkCompletions {
+  from: number
+  items: { label: string; kind: 'class' | 'namespace'; detail: string | null }[]
+}
 const BLADE = /\.blade\.php$/i
 const SCRIPT = /\.(m|c)?(j|t)sx?$|\.vue$/i
 /** The languages the backend knows members in. */
@@ -183,6 +191,7 @@ function folder(path: string) {
 export function autocomplete(options: AutocompleteOptions): Extension {
   let latestMembers = 0
   let latestNames = 0
+  let latestFramework = 0
 
   /** Guards every source: the setting, read-only editors, comments, strings. */
   function allowed(context: CompletionContext) {
@@ -218,6 +227,37 @@ export function autocomplete(options: AutocompleteOptions): Extension {
           info: item.summary ?? undefined,
           // Its own before what it inherits, among equal matches.
           boost: item.inherited ? -1 : 0
+        })
+      )
+    }
+  }
+
+  /**
+   * Class names inside a framework's XML config (a `type=""`, an
+   * `xsi:type="object"` argument): the project's classes and what Composer's
+   * PSR-4 folders hold for the namespace typed so far.
+   */
+  const frameworkClasses: CompletionSource = async (context) => {
+    const path = options.path()
+    if (!XML.test(path) || !frameworkFile(path) || !allowed(context)) return null
+    const before = context.state.sliceDoc(Math.max(0, context.pos - 200), context.pos)
+    const typed = /[\w\\]*$/.exec(before)?.[0] ?? ''
+    if (!context.explicit && typed.replace(/\\/g, '').length < 2) return null
+    if (!(await settle(context))) return null
+    const mine = ++latestFramework
+    const list = await invokeAt<FrameworkCompletions | null>(options.repo, 'framework_complete', {
+      path,
+      offset: context.pos,
+      text: context.state.doc.toString()
+    }).catch(() => null)
+    if (mine !== latestFramework || context.aborted || !list?.items.length) return null
+    return {
+      from: list.from,
+      options: list.items.map(
+        (item): Completion => ({
+          label: item.label,
+          type: item.kind === 'namespace' ? 'namespace' : 'class',
+          detail: item.detail ?? undefined
         })
       )
     }
@@ -374,7 +414,7 @@ export function autocomplete(options: AutocompleteOptions): Extension {
 
   return [
     autocompletion({
-      override: [members, words],
+      override: [frameworkClasses, members, words],
       defaultKeymap: false,
       activateOnTypingDelay: 30,
       closeOnBlur: true,

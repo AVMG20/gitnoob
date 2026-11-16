@@ -10715,3 +10715,915 @@ fn autocomplete_is_on_unless_turned_off() {
     let read: gitnoob_lib::config::Global = serde_json::from_str("{}").unwrap();
     assert!(read.autocomplete && read.autocomplete_typing);
 }
+
+// --- frameworks: Magento ---------------------------------------------------------
+
+use gitnoob_lib::frameworks;
+
+const MAGENTO_DI: &str = r#"<?xml version="1.0"?>
+<config xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance">
+    <type name="Magento\Catalog\Model\Product">
+        <plugin name="bb_name" type="BigBridge\Foo\Plugin\ProductPlugin"/>
+        <arguments>
+            <argument name="helper" xsi:type="object">BigBridge\Foo\Helper\Data</argument>
+            <argument name="factory" xsi:type="object">Magento\Catalog\Model\ProductFactory</argument>
+        </arguments>
+    </type>
+    <virtualType name="BigBridgeFooLogger" type="BigBridge\Foo\Helper\Data"/>
+    <type name="BigBridge\Foo\Block\Info">
+        <arguments>
+            <argument name="logger" xsi:type="object">BigBridgeFooLogger</argument>
+        </arguments>
+    </type>
+</config>
+"#;
+
+const MAGENTO_LAYOUT: &str = r#"<?xml version="1.0"?>
+<page>
+    <update handle="bb_common"/>
+    <body>
+        <referenceContainer name="product.info.main">
+            <block class="BigBridge\Foo\Block\Info" name="bb.info" template="BigBridge_Foo::info.phtml"/>
+            <block class="BigBridge\Foo\Block\Info" name="bb.inline" template="info.phtml"/>
+        </referenceContainer>
+    </body>
+</page>
+"#;
+
+const SCREENSHOT_BLOCK: &str = r#"<?php
+
+namespace BigBridge\ProductAttributeExtensions\Block\Adminhtml\Product\Attribute\Edit;
+
+class Options
+{
+    protected $_template = 'BigBridge_ProductAttributeExtensions::catalog/product/attribute/options.phtml';
+}
+"#;
+
+fn registration(kind: &str, name: &str) -> String {
+    format!(
+        "<?php\nuse Magento\\Framework\\Component\\ComponentRegistrar;\n\nComponentRegistrar::register(ComponentRegistrar::{kind}, '{name}', __DIR__);\n"
+    )
+}
+
+fn php_class(namespace: &str, body: &str) -> String {
+    format!("<?php\n\nnamespace {namespace};\n\n{body}\n")
+}
+
+/// A small Magento project: one module of ours with config, templates and a
+/// layout, the catalog module installed by Composer, and a theme of ours
+/// that overrides a template.
+fn magento_tree(tag: &str) -> Sandbox {
+    let sandbox = Sandbox::new(tag);
+    let s = &sandbox;
+    put(s, ".gitignore", "vendor/\n");
+    put(
+        s,
+        "composer.json",
+        r#"{"require": {"magento/product-community-edition": "2.4.7"}}"#,
+    );
+    put(
+        s,
+        "composer.lock",
+        r#"{"packages": [
+    {"name": "magento/framework", "version": "103.0.7"},
+    {"name": "magento/product-community-edition", "version": "2.4.7"}
+]}"#,
+    );
+    // Composer's side.
+    put(
+        s,
+        "vendor/composer/autoload_psr4.php",
+        r#"<?php
+$vendorDir = dirname(__DIR__);
+$baseDir = dirname($vendorDir);
+
+return array(
+    'Magento\\Catalog\\' => array($vendorDir . '/magento/module-catalog'),
+);
+"#,
+    );
+    put(
+        s,
+        "vendor/composer/installed.json",
+        r#"{"packages": [
+    {"name": "magento/module-catalog", "type": "magento2-module", "install-path": "../magento/module-catalog",
+     "autoload": {"files": ["registration.php"], "psr-4": {"Magento\\Catalog\\": ""}}},
+    {"name": "magento/theme-frontend-luma", "type": "magento2-theme", "install-path": "../magento/theme-frontend-luma"},
+    {"name": "evil/escape", "type": "magento2-module", "install-path": "../../../escape"},
+    {"name": "monolog/monolog", "type": "library", "install-path": "../monolog/monolog"}
+]}"#,
+    );
+    put(
+        s,
+        "vendor/magento/module-catalog/registration.php",
+        &registration("MODULE", "Magento_Catalog"),
+    );
+    put(
+        s,
+        "vendor/magento/module-catalog/Model/Product.php",
+        &php_class(
+            "Magento\\Catalog\\Model",
+            "class Product\n{\n    public function getName()\n    {\n        $this->_eventManager->dispatch('catalog_product_save_after', ['product' => $this]);\n    }\n}",
+        ),
+    );
+    put(
+        s,
+        "vendor/magento/module-catalog/view/frontend/layout/catalog_product_view.xml",
+        "<page>\n    <body>\n        <container name=\"product.info.main\" htmlTag=\"div\"/>\n    </body>\n</page>\n",
+    );
+    put(
+        s,
+        "vendor/magento/theme-frontend-luma/registration.php",
+        &registration("THEME", "frontend/Magento/luma"),
+    );
+    // Our module.
+    let ours = "app/code/BigBridge/Foo";
+    put(
+        s,
+        &format!("{ours}/registration.php"),
+        &registration("MODULE", "BigBridge_Foo"),
+    );
+    put(
+        s,
+        &format!("{ours}/etc/module.xml"),
+        "<config><module name=\"BigBridge_Foo\"/></config>\n",
+    );
+    put(s, &format!("{ours}/etc/di.xml"), MAGENTO_DI);
+    put(
+        s,
+        &format!("{ours}/etc/events.xml"),
+        "<config>\n    <event name=\"catalog_product_save_after\">\n        <observer name=\"bb_saved\" instance=\"BigBridge\\Foo\\Observer\\ProductSaved\"/>\n    </event>\n</config>\n",
+    );
+    put(
+        s,
+        &format!("{ours}/etc/crontab.xml"),
+        "<config>\n    <group id=\"default\">\n        <job name=\"bb_cleanup\" instance=\"BigBridge\\Foo\\Cron\\Cleanup\" method=\"purgeOld\"/>\n    </group>\n</config>\n",
+    );
+    put(
+        s,
+        &format!("{ours}/etc/adminhtml/routes.xml"),
+        "<config>\n    <router id=\"admin\">\n        <route id=\"bbfoo\" frontName=\"bbfoo\">\n            <module name=\"BigBridge_Foo\" before=\"Magento_Backend\"/>\n        </route>\n    </router>\n</config>\n",
+    );
+    put(
+        s,
+        &format!("{ours}/view/adminhtml/templates/catalog/options.phtml"),
+        "<div>options</div>\n",
+    );
+    put(
+        s,
+        &format!("{ours}/view/frontend/layout/catalog_product_view.xml"),
+        MAGENTO_LAYOUT,
+    );
+    put(
+        s,
+        &format!("{ours}/view/frontend/layout/bb_common.xml"),
+        "<page/>\n",
+    );
+    put(
+        s,
+        &format!("{ours}/view/frontend/templates/info.phtml"),
+        "<p>info</p>\n",
+    );
+    put(
+        s,
+        &format!("{ours}/view/frontend/web/js/foo.js"),
+        "define([], function () {});\n",
+    );
+    put(
+        s,
+        &format!("{ours}/view/frontend/requirejs-config.js"),
+        "var config = { map: { '*': { bbFoo: 'BigBridge_Foo/js/foo' } } };\n",
+    );
+    put(
+        s,
+        &format!("{ours}/Block/Info.php"),
+        &php_class(
+            "BigBridge\\Foo\\Block",
+            "class Info\n{\n    protected $_template = 'catalog/options.phtml';\n}",
+        ),
+    );
+    put(
+        s,
+        &format!("{ours}/Block/Adminhtml/Options.php"),
+        &php_class(
+            "BigBridge\\Foo\\Block\\Adminhtml",
+            "class Options\n{\n    protected $_template = 'BigBridge_Foo::catalog/options.phtml';\n}",
+        ),
+    );
+    put(
+        s,
+        &format!("{ours}/Plugin/ProductPlugin.php"),
+        &php_class(
+            "BigBridge\\Foo\\Plugin",
+            "class ProductPlugin\n{\n    public function afterGetName($subject, $result)\n    {\n        return $result;\n    }\n}",
+        ),
+    );
+    put(
+        s,
+        &format!("{ours}/Observer/ProductSaved.php"),
+        &php_class("BigBridge\\Foo\\Observer", "class ProductSaved\n{\n}"),
+    );
+    put(
+        s,
+        &format!("{ours}/Cron/Cleanup.php"),
+        &php_class(
+            "BigBridge\\Foo\\Cron",
+            "class Cleanup\n{\n    public function purgeOld()\n    {\n    }\n}",
+        ),
+    );
+    put(
+        s,
+        &format!("{ours}/Helper/Data.php"),
+        &php_class("BigBridge\\Foo\\Helper", "class Data\n{\n}"),
+    );
+    // The screenshot's module: a template asked for from an admin block, with
+    // a frontend file of the same name that must not be offered.
+    let pae = "app/code/BigBridge/ProductAttributeExtensions";
+    put(
+        s,
+        &format!("{pae}/registration.php"),
+        &registration("MODULE", "BigBridge_ProductAttributeExtensions"),
+    );
+    put(
+        s,
+        &format!("{pae}/Block/Adminhtml/Product/Attribute/Edit/Options.php"),
+        SCREENSHOT_BLOCK,
+    );
+    put(
+        s,
+        &format!("{pae}/view/adminhtml/templates/catalog/product/attribute/options.phtml"),
+        "<table/>\n",
+    );
+    put(
+        s,
+        &format!("{pae}/view/frontend/templates/catalog/product/attribute/options.phtml"),
+        "<table/>\n",
+    );
+    // Our theme, inheriting Luma, overriding one template.
+    let theme = "app/design/frontend/BigBridge/default";
+    put(
+        s,
+        &format!("{theme}/registration.php"),
+        &registration("THEME", "frontend/BigBridge/default"),
+    );
+    put(
+        s,
+        &format!("{theme}/theme.xml"),
+        "<theme><title>Default</title><parent>Magento/luma</parent></theme>\n",
+    );
+    put(
+        s,
+        &format!("{theme}/BigBridge_Foo/templates/info.phtml"),
+        "<p>our info</p>\n",
+    );
+    frameworks::forget(&s.root);
+    sandbox
+}
+
+/// ⌘-click at the first occurrence of `needle` (plus `into` characters) in a
+/// file of the tree.
+fn magento_click(
+    sandbox: &Sandbox,
+    state: &AppState,
+    path: &str,
+    needle: &str,
+    into: usize,
+) -> Option<frameworks::Links> {
+    let text = std::fs::read_to_string(sandbox.root.join(path)).unwrap();
+    let at = text
+        .find(needle)
+        .unwrap_or_else(|| panic!("{needle} is not in {path}"))
+        + into;
+    frameworks::links_at(state, path, at as u32, Some(&text)).unwrap()
+}
+
+fn paths_of(links: &frameworks::Links) -> Vec<&str> {
+    links.targets.iter().map(|one| one.path.as_str()).collect()
+}
+
+#[test]
+fn magento_is_detected_three_ways_with_its_version() {
+    let project = magento_tree("mage-detect");
+    let state = project.state();
+    let info = frameworks::info(&state).unwrap();
+    assert_eq!((info.id, info.how), ("magento", "composer.json"));
+    assert_eq!(info.version.as_deref(), Some("2.4.7"));
+
+    let install = Sandbox::new("mage-detect-bin");
+    put(&install, "bin/magento", "#!/usr/bin/env php\n");
+    put(&install, "app/etc/di.xml", "<config/>\n");
+    put(
+        &install,
+        "composer.lock",
+        r#"{"packages": [{"name": "magento/framework", "version": "103.0.7"}]}"#,
+    );
+    let info = frameworks::info(&install.state()).unwrap();
+    assert_eq!(info.how, "bin/magento");
+    assert_eq!(info.version.as_deref(), Some("103.0.7"));
+
+    let module = Sandbox::new("mage-detect-module");
+    put(
+        &module,
+        "registration.php",
+        &registration("MODULE", "BigBridge_Solo"),
+    );
+    put(&module, "etc/module.xml", "<config/>\n");
+    let info = frameworks::info(&module.state()).unwrap();
+    assert_eq!((info.how, info.version), ("module", None));
+    // The module registers itself, from the root.
+    let registry = frameworks::magento::registry::registry(&module.root.canonicalize().unwrap());
+    assert_eq!(registry.module("BigBridge_Solo").unwrap().dir, "");
+
+    // A registration.php without etc/module.xml is not enough.
+    let plain = Sandbox::new("mage-detect-plain");
+    put(&plain, "registration.php", &registration("MODULE", "X_Y"));
+    assert!(frameworks::info(&plain.state()).is_none());
+}
+
+#[test]
+fn the_magento_registry_lists_modules_and_themes_without_walking_vendor() {
+    let sandbox = magento_tree("mage-registry");
+    let registry = frameworks::magento::registry::registry(&sandbox.root.canonicalize().unwrap());
+    let mut modules: Vec<(&str, &str, bool)> = registry
+        .modules
+        .iter()
+        .map(|m| (m.name.as_str(), m.dir.as_str(), m.vendor))
+        .collect();
+    modules.sort();
+    assert_eq!(
+        modules,
+        vec![
+            ("BigBridge_Foo", "app/code/BigBridge/Foo", false),
+            (
+                "BigBridge_ProductAttributeExtensions",
+                "app/code/BigBridge/ProductAttributeExtensions",
+                false
+            ),
+            ("Magento_Catalog", "vendor/magento/module-catalog", true),
+        ]
+    );
+    let ours = registry.theme("frontend/BigBridge/default").unwrap();
+    assert_eq!(ours.parent.as_deref(), Some("frontend/Magento/luma"));
+    assert_eq!(ours.dir, "app/design/frontend/BigBridge/default");
+    assert!(registry.theme("frontend/Magento/luma").unwrap().vendor);
+    // Parents before children.
+    let order: Vec<&str> = registry
+        .themes_in(&["frontend"])
+        .iter()
+        .map(|t| t.key.as_str())
+        .collect();
+    assert_eq!(
+        order,
+        vec!["frontend/Magento/luma", "frontend/BigBridge/default"]
+    );
+}
+
+#[test]
+fn magento_class_names_in_xml_open_the_class() {
+    let sandbox = magento_tree("mage-xml-class");
+    let state = sandbox.state();
+    let di = "app/code/BigBridge/Foo/etc/di.xml";
+
+    // An attribute: a plugin's type, found through the module it is named after.
+    let links = magento_click(&sandbox, &state, di, "BigBridge\\Foo\\Plugin", 3).unwrap();
+    assert_eq!(
+        paths_of(&links),
+        vec!["app/code/BigBridge/Foo/Plugin/ProductPlugin.php"]
+    );
+    assert_eq!(links.targets[0].line, 5);
+    assert_eq!(
+        links.class.as_deref(),
+        Some("BigBridge\\Foo\\Plugin\\ProductPlugin")
+    );
+    // The underline covers the whole name.
+    let text = std::fs::read_to_string(sandbox.root.join(di)).unwrap();
+    assert_eq!(
+        &text[links.from as usize..links.to as usize],
+        "BigBridge\\Foo\\Plugin\\ProductPlugin"
+    );
+
+    // `<type name>`, through Composer's PSR-4 map into vendor, read-only.
+    let links = magento_click(
+        &sandbox,
+        &state,
+        di,
+        "Magento\\Catalog\\Model\\Product\"",
+        2,
+    )
+    .unwrap();
+    assert_eq!(
+        paths_of(&links),
+        vec!["vendor/magento/module-catalog/Model/Product.php"]
+    );
+    assert!(links.targets[0].dependency);
+
+    // xsi:type="object" text.
+    let links = magento_click(&sandbox, &state, di, "BigBridge\\Foo\\Helper\\Data<", 4).unwrap();
+    assert_eq!(
+        paths_of(&links),
+        vec!["app/code/BigBridge/Foo/Helper/Data.php"]
+    );
+
+    // A layout block's class.
+    let layout = "app/code/BigBridge/Foo/view/frontend/layout/catalog_product_view.xml";
+    let links = magento_click(&sandbox, &state, layout, "BigBridge\\Foo\\Block\\Info", 2).unwrap();
+    assert_eq!(
+        paths_of(&links),
+        vec!["app/code/BigBridge/Foo/Block/Info.php"]
+    );
+
+    // A module name in routes.xml is not a class, and is left alone.
+    let routes = "app/code/BigBridge/Foo/etc/adminhtml/routes.xml";
+    assert!(magento_click(&sandbox, &state, routes, "BigBridge_Foo", 2).is_none());
+    // Nor is an attribute that is not a name of anything.
+    assert!(magento_click(&sandbox, &state, routes, "bbfoo", 1).is_none());
+}
+
+#[test]
+fn a_generated_magento_class_opens_the_class_it_is_made_from() {
+    let sandbox = magento_tree("mage-generated");
+    let state = sandbox.state();
+    let links = magento_click(
+        &sandbox,
+        &state,
+        "app/code/BigBridge/Foo/etc/di.xml",
+        "ProductFactory",
+        3,
+    )
+    .unwrap();
+    assert_eq!(
+        paths_of(&links),
+        vec!["vendor/magento/module-catalog/Model/Product.php"]
+    );
+    let note = links.note.unwrap();
+    assert!(
+        note.contains("ProductFactory is generated") && note.contains("opened Product"),
+        "{note}"
+    );
+}
+
+#[test]
+fn a_magento_virtual_type_opens_its_declaration() {
+    let sandbox = magento_tree("mage-virtual");
+    let state = sandbox.state();
+    let di = "app/code/BigBridge/Foo/etc/di.xml";
+    let links = magento_click(&sandbox, &state, di, "BigBridgeFooLogger<", 3).unwrap();
+    assert_eq!(links.targets.len(), 1);
+    assert_eq!(links.targets[0].path, di);
+    assert_eq!(links.targets[0].line, 10);
+    assert_eq!(links.targets[0].kind, "virtualType");
+    // On the declaration itself: the type it is made from.
+    let links = magento_click(&sandbox, &state, di, "BigBridgeFooLogger\"", 3).unwrap();
+    assert_eq!(
+        paths_of(&links),
+        vec!["app/code/BigBridge/Foo/Helper/Data.php"]
+    );
+    assert!(links.note.unwrap().contains("virtual type of Data"));
+}
+
+#[test]
+fn a_magento_method_attribute_opens_that_method() {
+    let sandbox = magento_tree("mage-method");
+    let state = sandbox.state();
+    let links = magento_click(
+        &sandbox,
+        &state,
+        "app/code/BigBridge/Foo/etc/crontab.xml",
+        "purgeOld",
+        2,
+    )
+    .unwrap();
+    assert_eq!(
+        paths_of(&links),
+        vec!["app/code/BigBridge/Foo/Cron/Cleanup.php"]
+    );
+    assert_eq!(
+        (links.targets[0].line, links.targets[0].kind),
+        (7, "method")
+    );
+}
+
+#[test]
+fn a_magento_template_string_opens_the_template_for_its_area() {
+    let sandbox = magento_tree("mage-template");
+    let state = sandbox.state();
+    // The screenshot: an admin block's `$_template` opens the admin file,
+    // not the frontend one of the same name.
+    let block = "app/code/BigBridge/ProductAttributeExtensions/Block/Adminhtml/Product/Attribute/Edit/Options.php";
+    let links = magento_click(&sandbox, &state, block, "catalog/product", 2).unwrap();
+    assert_eq!(
+        paths_of(&links),
+        vec!["app/code/BigBridge/ProductAttributeExtensions/view/adminhtml/templates/catalog/product/attribute/options.phtml"]
+    );
+    assert_eq!(
+        links.targets[0].label.as_deref(),
+        Some("adminhtml · module")
+    );
+
+    // From our own admin block, the same way.
+    let links = magento_click(
+        &sandbox,
+        &state,
+        "app/code/BigBridge/Foo/Block/Adminhtml/Options.php",
+        "BigBridge_Foo::",
+        3,
+    )
+    .unwrap();
+    assert_eq!(
+        paths_of(&links),
+        vec!["app/code/BigBridge/Foo/view/adminhtml/templates/catalog/options.phtml"]
+    );
+
+    // From layout XML: the module's own file first, then the theme's override.
+    let layout = "app/code/BigBridge/Foo/view/frontend/layout/catalog_product_view.xml";
+    let links = magento_click(&sandbox, &state, layout, "BigBridge_Foo::info", 3).unwrap();
+    assert_eq!(
+        paths_of(&links),
+        vec![
+            "app/code/BigBridge/Foo/view/frontend/templates/info.phtml",
+            "app/design/frontend/BigBridge/default/BigBridge_Foo/templates/info.phtml",
+        ]
+    );
+    assert_eq!(
+        links.targets[1].label.as_deref(),
+        Some("frontend · BigBridge/default (inherits Magento/luma) · override")
+    );
+
+    // No `Vendor_Module::`: the module the referring file belongs to.
+    let links = magento_click(&sandbox, &state, layout, "\"info.phtml", 2).unwrap();
+    assert_eq!(links.targets.len(), 2);
+    assert_eq!(
+        links.targets[0].path,
+        "app/code/BigBridge/Foo/view/frontend/templates/info.phtml"
+    );
+
+    // A JS module path in requirejs-config.js.
+    let links = magento_click(
+        &sandbox,
+        &state,
+        "app/code/BigBridge/Foo/view/frontend/requirejs-config.js",
+        "BigBridge_Foo/js",
+        2,
+    )
+    .unwrap();
+    assert_eq!(
+        paths_of(&links),
+        vec!["app/code/BigBridge/Foo/view/frontend/web/js/foo.js"]
+    );
+
+    // A template nobody has.
+    let text = "<?php $block->setTemplate('BigBridge_Foo::missing.phtml');";
+    let at = text.find("missing").unwrap() as u32;
+    let links = frameworks::links_at(
+        &state,
+        "app/code/BigBridge/Foo/Block/Info.php",
+        at,
+        Some(text),
+    )
+    .unwrap()
+    .unwrap();
+    assert!(links.targets.is_empty() && links.note.is_some());
+}
+
+#[test]
+fn magento_layout_handles_and_block_names_list_their_files() {
+    let sandbox = magento_tree("mage-layout");
+    let state = sandbox.state();
+    let layout = "app/code/BigBridge/Foo/view/frontend/layout/catalog_product_view.xml";
+    let links = magento_click(&sandbox, &state, layout, "bb_common", 2).unwrap();
+    assert_eq!(
+        paths_of(&links),
+        vec!["app/code/BigBridge/Foo/view/frontend/layout/bb_common.xml"]
+    );
+    let links = magento_click(&sandbox, &state, layout, "product.info.main", 2).unwrap();
+    assert_eq!(
+        paths_of(&links),
+        vec!["vendor/magento/module-catalog/view/frontend/layout/catalog_product_view.xml"]
+    );
+    assert_eq!(links.targets[0].line, 3);
+}
+
+#[test]
+fn magento_events_lead_from_dispatch_to_observers_and_back() {
+    let sandbox = magento_tree("mage-events");
+    let state = sandbox.state();
+    let links = magento_click(
+        &sandbox,
+        &state,
+        "vendor/magento/module-catalog/Model/Product.php",
+        "catalog_product_save_after",
+        3,
+    )
+    .unwrap();
+    assert_eq!(
+        paths_of(&links),
+        vec!["app/code/BigBridge/Foo/Observer/ProductSaved.php"]
+    );
+    assert_eq!(links.targets[0].label.as_deref(), Some("global · bb_saved"));
+
+    let links = magento_click(
+        &sandbox,
+        &state,
+        "app/code/BigBridge/Foo/etc/events.xml",
+        "catalog_product_save_after",
+        3,
+    )
+    .unwrap();
+    assert_eq!(
+        paths_of(&links),
+        vec!["vendor/magento/module-catalog/Model/Product.php"]
+    );
+    assert_eq!(links.targets[0].kind, "dispatch");
+    assert_eq!(links.targets[0].line, 9);
+}
+
+#[test]
+fn a_class_only_magento_config_uses_is_counted_and_never_marked_unused() {
+    let sandbox = magento_tree("mage-unused");
+    let state = sandbox.state();
+    let plugin = "app/code/BigBridge/Foo/Plugin/ProductPlugin.php";
+    // `afterGetName` is named nowhere else, and its class only in di.xml.
+    let marks = symbols::unused_in(&state, plugin, None, None).unwrap();
+    assert!(marks.is_empty(), "{marks:?}");
+
+    let lenses = symbols::usage_counts(&state, plugin, None).unwrap();
+    let class = lenses
+        .iter()
+        .find(|lens| lens.name == "ProductPlugin")
+        .unwrap();
+    assert_eq!((class.count, class.config), (0, 1));
+
+    let list = symbols::usages(
+        &state,
+        "ProductPlugin",
+        Some(plugin),
+        Some("class"),
+        Some(5),
+    )
+    .unwrap();
+    assert_eq!(list.config_label.as_deref(), Some("Magento config"));
+    assert_eq!(list.config.len(), 1);
+    assert_eq!(list.config[0].path, "app/code/BigBridge/Foo/etc/di.xml");
+    assert_eq!(list.config[0].line, 4);
+
+    // With framework support off, the same method is hinted at.
+    state
+        .update_config(|config| config.global.frameworks = false)
+        .unwrap();
+    let marks = symbols::unused_in(&state, plugin, None, None).unwrap();
+    assert!(marks
+        .iter()
+        .any(|mark| mark.name == "afterGetName" && mark.level == "hint"));
+}
+
+#[test]
+fn magento_links_stay_inside_the_work_tree() {
+    let sandbox = magento_tree("mage-guard");
+    let state = sandbox.state();
+    // A package installed outside the work tree is not registered.
+    let registry = frameworks::magento::registry::registry(&sandbox.root.canonicalize().unwrap());
+    assert!(registry
+        .modules
+        .iter()
+        .all(|m| !m.dir.contains("..") && !m.dir.contains("escape")));
+    // A path from the window that leaves the work tree is refused.
+    assert!(frameworks::links_at(&state, "../outside.xml", 0, None).is_err());
+    assert!(frameworks::links_at(&state, "/etc/hosts", 0, None).is_err());
+    // A theme folder linked out of the work tree offers nothing from there.
+    #[cfg(unix)]
+    {
+        let outside = scratch("mage-guard-outside");
+        std::fs::create_dir_all(outside.join("BigBridge_Foo/templates")).unwrap();
+        std::fs::write(outside.join("BigBridge_Foo/templates/info.phtml"), "x").unwrap();
+        std::fs::write(
+            outside.join("registration.php"),
+            registration("THEME", "frontend/Evil/linked"),
+        )
+        .unwrap();
+        std::fs::create_dir_all(sandbox.root.join("app/design/frontend/Evil")).unwrap();
+        std::os::unix::fs::symlink(
+            &outside,
+            sandbox.root.join("app/design/frontend/Evil/linked"),
+        )
+        .unwrap();
+        frameworks::forget(&sandbox.root);
+        let layout = "app/code/BigBridge/Foo/view/frontend/layout/catalog_product_view.xml";
+        let links = magento_click(&sandbox, &state, layout, "BigBridge_Foo::info", 3).unwrap();
+        assert!(
+            paths_of(&links).iter().all(|path| !path.contains("Evil")),
+            "{links:?}"
+        );
+        let _ = std::fs::remove_dir_all(&outside);
+    }
+}
+
+#[test]
+fn a_repository_without_a_framework_has_no_framework_links() {
+    let sandbox = Sandbox::new("no-framework");
+    put(
+        &sandbox,
+        "composer.json",
+        r#"{"require": {"laravel/framework": "^11"}}"#,
+    );
+    put(
+        &sandbox,
+        "config.xml",
+        "<config><type name=\"Foo\\Bar\"/></config>\n",
+    );
+    let state = sandbox.state();
+    assert!(frameworks::info(&state).is_none());
+    assert!(frameworks::links_at(&state, "config.xml", 20, None)
+        .unwrap()
+        .is_none());
+
+    // Magento with framework support turned off is the same.
+    let magento = magento_tree("mage-off");
+    let state = magento.state();
+    state
+        .update_config(|config| config.global.frameworks = false)
+        .unwrap();
+    assert!(frameworks::info(&state).is_none());
+    assert!(magento_click(
+        &magento,
+        &state,
+        "app/code/BigBridge/Foo/etc/di.xml",
+        "ProductPlugin",
+        2
+    )
+    .is_none());
+}
+
+#[test]
+fn magento_class_names_complete_inside_config() {
+    let sandbox = magento_tree("mage-complete");
+    let state = sandbox.state();
+    let text = "<config><type name=\"Magento\\Catalog\\Model\\Pro\"/></config>";
+    let at = text.find("Pro\"").unwrap() + 3;
+    let found =
+        frameworks::complete(&state, "app/code/BigBridge/Foo/etc/di.xml", at as u32, text).unwrap();
+    assert_eq!(found.from as usize, text.find("Magento").unwrap());
+    let labels: Vec<&str> = found.items.iter().map(|item| item.label.as_str()).collect();
+    assert!(
+        labels.contains(&"Magento\\Catalog\\Model\\Product"),
+        "{labels:?}"
+    );
+
+    let text = "<config><plugin type=\"BigBridge\\Foo\\\"/></config>";
+    let at = text.find("\\\"").unwrap() + 1;
+    let found =
+        frameworks::complete(&state, "app/code/BigBridge/Foo/etc/di.xml", at as u32, text).unwrap();
+    let labels: Vec<&str> = found.items.iter().map(|item| item.label.as_str()).collect();
+    assert!(labels.contains(&"BigBridge\\Foo\\Plugin\\"), "{labels:?}");
+    // Not in an attribute that holds no class.
+    let text = "<config><plugin name=\"x\"/></config>";
+    assert!(frameworks::complete(&state, "a.xml", 22, text).is_none());
+}
+
+/// A stand-in for magequery: a shell script that answers `whatis` and
+/// `plugins` with fixed JSON and writes down what it was asked.
+#[cfg(unix)]
+fn fake_magequery(dir: &Path, root: &Path) -> PathBuf {
+    use std::os::unix::fs::PermissionsExt;
+    let root = root.canonicalize().unwrap();
+    let file = root.join("app/code/BigBridge/Foo/Plugin/ProductPlugin.php");
+    let di = root.join("app/code/BigBridge/Foo/etc/di.xml");
+    let whatis = format!(
+        r#"{{"class":"Magento\\Catalog\\Model\\Product","file":"{}","kind":"class","module":"Magento_Catalog","resolves_to":"BigBridge\\Foo\\Model\\Product","uses":{{"preferred_for":[{{"name":"Magento\\Catalog\\Api\\Data\\ProductInterface","source":{{"file":"{}","line":3,"area":"global"}}}}],"virtual_types":[],"injections":[]}},"observes":[],"cron_jobs":[],"webapi":[{{"method":"GET","url":"/V1/products","service_method":"getList","source":{{"file":"/elsewhere/webapi.xml","line":30,"area":"webapi_rest"}}}}],"command":null}}"#,
+        file.display(),
+        di.display()
+    );
+    let plugins = format!(
+        r#"[{{"name":"bb_name","class":"BigBridge\\Foo\\Plugin\\ProductPlugin","sort_order":10,"methods":[{{"kind":"after","target":"getName","plugin_method":"afterGetName"}}],"disabled":false,"source":{{"file":"{}","line":4,"area":"global"}}}}]"#,
+        di.display()
+    );
+    std::fs::create_dir_all(dir).unwrap();
+    std::fs::write(dir.join("whatis.json"), whatis).unwrap();
+    std::fs::write(dir.join("plugins.json"), plugins).unwrap();
+    let script = dir.join("magequery");
+    std::fs::write(
+        &script,
+        format!(
+            "#!/bin/sh\necho \"$@\" >> '{log}'\ncase \"$1\" in\n  whatis) cat '{dir}/whatis.json' ;;\n  plugins) cat '{dir}/plugins.json' ;;\n  *) echo 'Error: unknown' >&2; exit 1 ;;\nesac\n",
+            log = dir.join("args.log").display(),
+            dir = dir.display()
+        ),
+    )
+    .unwrap();
+    std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).unwrap();
+    script
+}
+
+#[cfg(unix)]
+#[test]
+fn magequery_describes_a_class_through_a_fake_binary() {
+    let sandbox = magento_tree("mage-query");
+    let tools = scratch("mage-query-tool");
+    let binary = fake_magequery(&tools, &sandbox.root);
+    let state = sandbox.state();
+    state
+        .update_config(|config| {
+            config.global.magequery_path = Some(binary.to_string_lossy().into_owned())
+        })
+        .unwrap();
+    assert!(frameworks::info(&state).unwrap().wiring);
+    let status = frameworks::magequery::status(&state);
+    assert_eq!(status.source, Some("setting"));
+
+    let (root, provider) = frameworks::active(&state).unwrap();
+    let wiring = provider
+        .wiring(&root, "\\Magento\\Catalog\\Model\\Product", Some(&binary))
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        wiring.preference.as_deref(),
+        Some("BigBridge\\Foo\\Model\\Product")
+    );
+    assert_eq!(
+        wiring.path.as_deref(),
+        Some("app/code/BigBridge/Foo/Plugin/ProductPlugin.php")
+    );
+    let plugins = &wiring.sections[0];
+    assert_eq!(plugins.title, "Plugins");
+    assert_eq!(plugins.rows[0].label, "bb_name");
+    assert_eq!(
+        plugins.rows[0].class.as_deref(),
+        Some("BigBridge\\Foo\\Plugin\\ProductPlugin")
+    );
+    assert!(plugins.rows[0]
+        .detail
+        .as_deref()
+        .unwrap()
+        .contains("sort 10"));
+    assert!(plugins.rows[0]
+        .detail
+        .as_deref()
+        .unwrap()
+        .contains("after getName"));
+    assert_eq!(
+        plugins.rows[0].path.as_deref(),
+        Some("app/code/BigBridge/Foo/etc/di.xml")
+    );
+    let api = wiring
+        .sections
+        .iter()
+        .find(|s| s.title == "Web API")
+        .unwrap();
+    // A file outside the work tree is shown, not linked.
+    assert_eq!(
+        (api.rows[0].label.as_str(), api.rows[0].path.as_deref()),
+        ("/V1/products", None)
+    );
+
+    // The class went in after `--`, the root after `-r`, and never `--db`.
+    let log = std::fs::read_to_string(tools.join("args.log")).unwrap();
+    assert!(
+        log.lines().any(|line| line.starts_with("whatis --json -r ")
+            && line.ends_with("-- Magento\\Catalog\\Model\\Product")),
+        "{log}"
+    );
+    assert!(!log.contains("--db"));
+
+    // Something shaped like a flag is refused before anything runs.
+    let lines = log.lines().count();
+    assert!(provider.wiring(&root, "--db", Some(&binary)).is_err());
+    assert!(provider
+        .wiring(&root, "Foo; rm -rf /", Some(&binary))
+        .is_err());
+    assert_eq!(
+        std::fs::read_to_string(tools.join("args.log"))
+            .unwrap()
+            .lines()
+            .count(),
+        lines
+    );
+    let _ = std::fs::remove_dir_all(&tools);
+}
+
+#[test]
+fn without_magequery_the_wiring_view_says_so_and_navigation_still_works() {
+    let sandbox = magento_tree("mage-no-query");
+    let state = sandbox.state();
+    let missing = std::env::temp_dir().join("gitnoob-no-such-magequery");
+    state
+        .update_config(|config| {
+            config.global.magequery_path = Some(missing.to_string_lossy().into_owned())
+        })
+        .unwrap();
+    assert!(frameworks::magequery::find(&state).is_none());
+    let status = frameworks::magequery::status(&state);
+    assert!(status.missing_setting && status.path.is_none());
+    assert!(!frameworks::info(&state).unwrap().wiring);
+    // A binary that cannot be started is an error, said plainly.
+    let error = frameworks::magequery::run(&missing, &["whatis".to_string()]).unwrap_err();
+    assert!(error.contains("Could not run magequery"), "{error}");
+    // ⌘-click does not need it.
+    assert!(magento_click(
+        &sandbox,
+        &state,
+        "app/code/BigBridge/Foo/etc/di.xml",
+        "ProductPlugin",
+        2
+    )
+    .is_some());
+}

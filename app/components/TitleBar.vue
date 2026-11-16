@@ -31,6 +31,7 @@ import { leadWithForce, trunkLocalName } from '~/composables/useSync'
 import type { BranchDeletion } from '~/composables/useGit'
 import { useRewrite } from '~/composables/useRewrite'
 import { useForge } from '~/composables/useForge'
+import { framework, frameworkLabel } from '~/composables/useFramework'
 
 const emit = defineEmits<{ leave: [depth: number] }>()
 const rewrite = useRewrite()
@@ -398,6 +399,14 @@ async function reconcile(rebase: boolean) {
         </template>
       </template>
       <strong v-else class="name">{{ store.repo?.name }}</strong>
+      <span
+        v-if="framework.info && !store.inside.length"
+        class="framework-chip"
+        data-testid="framework-chip"
+        :title="frameworkLabel(framework.info)"
+      >
+        {{ framework.info.name }}
+      </span>
       </div>
       <!-- The branch you are on, under the repository's name: the one fact
            about it that changes under you all day. -->
@@ -956,6 +965,21 @@ async function reconcile(rebase: boolean) {
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
+}
+
+/* The framework the project uses, from a few stat calls at open. */
+.framework-chip {
+  flex-shrink: 0;
+  margin-left: 6px;
+  padding: 0 6px;
+  border-radius: 8px;
+  border: 1px solid var(--line);
+  background: var(--hover);
+  color: var(--text-dim);
+  font-size: 10px;
+  font-weight: 600;
+  line-height: 16px;
+  white-space: nowrap;
 }
 
 /* The trail. The last step is where you are and carries the way out; the ones

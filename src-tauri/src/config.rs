@@ -151,6 +151,15 @@ pub struct Global {
     /// The list opens while typing. Off, it opens only on Ctrl+Space.
     #[serde(default = "yes")]
     pub autocomplete_typing: bool,
+    /// Framework support: ⌘-click through config files, templates and
+    /// events, config references in the usage counts, the chip in the title
+    /// bar. Magento for now.
+    #[serde(default = "yes")]
+    pub frameworks: bool,
+    /// A `magequery` to run instead of the bundled one. Absolute; empty or
+    /// absent means the one that ships with the app.
+    #[serde(default)]
+    pub magequery_path: Option<String>,
     /// A small type icon (PHP, TypeScript, a folder…) before each file name.
     #[serde(default = "yes")]
     pub file_icons: bool,
@@ -445,6 +454,8 @@ impl Default for Global {
             usage_counts: true,
             autocomplete: true,
             autocomplete_typing: true,
+            frameworks: true,
+            magequery_path: None,
             file_icons: true,
             indent_style: default_indent_style(),
             indent_size: default_indent_size(),

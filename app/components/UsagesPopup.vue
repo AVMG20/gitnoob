@@ -3,6 +3,7 @@ import { computed, nextTick, onBeforeUnmount, onMounted, ref } from 'vue'
 import { keyLabel, keysFor } from '~/composables/useShortcuts'
 import FileIcon from '~/components/FileIcon.vue'
 import { closeUsages, openLocation, usagesPopup, type PopupItem } from '~/composables/useSymbols'
+import { framework, openWiring } from '~/composables/useFramework'
 
 /**
  * The list ⌘-click shows when a name has several usages, or several
@@ -21,23 +22,50 @@ let before: Element | null = null
 
 const WIDTH = 460
 
-type Row = { type: 'item'; item: PopupItem; possible: boolean } | { type: 'group' }
+type Row =
+  | { type: 'item'; item: PopupItem; possible: boolean; config: boolean; heading: boolean }
+  | { type: 'group' }
 
 const rows = computed<Row[]>(() => {
-  const out: Row[] = usagesPopup.items.map((item) => ({ type: 'item', item, possible: false }))
+  const out: Row[] = usagesPopup.items.map((item) => ({
+    type: 'item',
+    item,
+    possible: false,
+    config: false,
+    heading: false
+  }))
+  // Framework config that names it (Magento's XML), under its own heading.
+  usagesPopup.config.forEach((item, at) =>
+    out.push({ type: 'item', item, possible: false, config: true, heading: at === 0 })
+  )
   if (usagesPopup.possible.length) {
     out.push({ type: 'group' })
     if (usagesPopup.showPossible) {
-      for (const item of usagesPopup.possible) out.push({ type: 'item', item, possible: true })
+      for (const item of usagesPopup.possible) {
+        out.push({ type: 'item', item, possible: true, config: false, heading: false })
+      }
     }
   }
   return out
 })
 
+/** The footer's link to the framework's account of the class, when it has one. */
+const wiringClass = computed(() => (framework.info?.wiring ? usagesPopup.wiring : null))
+
+function showWiring() {
+  const fqn = wiringClass.value
+  if (!fqn) return
+  closeUsages()
+  void openWiring(fqn)
+}
+
 const place = computed(() => {
   const x = Math.max(8, Math.min(usagesPopup.x, window.innerWidth - WIDTH - 8))
   const below = usagesPopup.y + 18
-  const height = Math.min(360, 64 + (usagesPopup.note ? 18 : 0) + rows.value.length * 26)
+  const height = Math.min(
+    360,
+    64 + (usagesPopup.note ? 18 : 0) + rows.value.length * 26 + (usagesPopup.config.length ? 24 : 0)
+  )
   const y = below + height > window.innerHeight - 8 ? Math.max(8, usagesPopup.y - height - 6) : below
   return { left: `${x}px`, top: `${y}px`, width: `${WIDTH}px` }
 })
@@ -121,7 +149,10 @@ onBeforeUnmount(() => {
       <div class="title">{{ usagesPopup.title }}</div>
       <div v-if="usagesPopup.note" class="note faint">{{ usagesPopup.note }}</div>
       <div class="rows" role="listbox">
-        <template v-for="(row, at) in rows" :key="row.type === 'group' ? 'possible' : `${row.possible ? 'p' : 'd'}:${row.item.path}:${row.item.line}:${row.item.column}`">
+        <template v-for="(row, at) in rows" :key="row.type === 'group' ? 'possible' : `${row.possible ? 'p' : row.config ? 'c' : 'd'}:${row.item.path}:${row.item.line}:${row.item.column}`">
+          <div v-if="row.type === 'item' && row.heading" class="heading" data-testid="config-heading">
+            {{ usagesPopup.configLabel }} ({{ usagesPopup.config.length }})
+          </div>
           <div
             v-if="row.type === 'group'"
             :id="`usage-${at}`"
@@ -154,11 +185,17 @@ onBeforeUnmount(() => {
               <span class="dir">{{ folder(row.item.path) }}</span>
             </span>
             <span class="code">{{ row.item.text }}</span>
-            <span v-if="LABEL[row.item.state]" class="state" :class="row.item.state">{{ LABEL[row.item.state] }}</span>
+            <span v-if="row.item.label" class="tag" :class="{ override: row.item.label.endsWith('override') }">{{ row.item.label }}</span>
+            <span v-else-if="LABEL[row.item.state]" class="state" :class="row.item.state">{{ LABEL[row.item.state] }}</span>
           </div>
         </template>
       </div>
-      <div class="foot faint">↵ open · {{ backKey }} or the mouse's back button goes back to where you were</div>
+      <div class="foot faint">
+        ↵ open · {{ backKey }} or the mouse's back button goes back to where you were
+        <button v-if="wiringClass" type="button" class="wiring-link" data-testid="wiring-link" @click="showWiring">
+          {{ framework.info?.name }} wiring
+        </button>
+      </div>
     </div>
   </div>
 </template>
@@ -296,8 +333,47 @@ onBeforeUnmount(() => {
 }
 
 .foot {
+  display: flex;
+  align-items: center;
+  gap: 8px;
   padding: 6px 12px 8px;
   border-top: 1px solid var(--line);
   font-size: 11px;
+}
+
+.heading {
+  padding: 6px 12px 2px;
+  margin-top: 2px;
+  border-top: 1px solid var(--line);
+  color: var(--text-dim);
+  font-size: 11px;
+  font-weight: 600;
+}
+
+.tag {
+  font-size: 10px;
+  padding: 0 6px;
+  border-radius: 8px;
+  color: var(--text-dim);
+  background: var(--hover);
+  white-space: nowrap;
+}
+
+.tag.override {
+  color: var(--info);
+}
+
+.wiring-link {
+  margin-left: auto;
+  border: none;
+  background: none;
+  padding: 0;
+  color: var(--primary);
+  font-size: 11px;
+  cursor: pointer;
+}
+
+.wiring-link:hover {
+  text-decoration: underline;
 }
 </style>

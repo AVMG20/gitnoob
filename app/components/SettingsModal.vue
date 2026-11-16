@@ -2,6 +2,7 @@
 import { CODE_FONT_DEFAULT, CODE_FONT_MAX, CODE_FONT_MIN, codeFontSize, setCodeFont } from '~/composables/useCodeFont'
 import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
 import {
+  Boxes,
   Check,
   Code,
   Download,
@@ -58,6 +59,7 @@ import { useSyntax } from '~/composables/useSyntax'
 import { highlightWhole } from '~/composables/useHighlight'
 import SearchSelect from '~/components/SearchSelect.vue'
 import { useRewrite } from '~/composables/useRewrite'
+import { invoke } from '~/composables/useInvoke'
 
 const config = useConfig()
 const forge = useForge()
@@ -123,6 +125,33 @@ const previewLines = computed(() => highlightWhole(PREVIEW, 'vue'))
 const updates = useUpdates()
 
 const section = computed(() => config.store.settingsSection)
+
+// --- frameworks
+
+interface MagequeryStatus {
+  path: string | null
+  source: 'setting' | 'bundled' | null
+  pinned: string
+  missing_setting: boolean
+}
+
+/** Which magequery would run; asked when the section opens. Nothing is run. */
+const magequery = ref<MagequeryStatus | null>(null)
+
+async function readMagequery() {
+  magequery.value = await invoke<MagequeryStatus>('magequery_status').catch(() => null)
+}
+
+watch(
+  () => [section.value, config.settings.value?.magequery_path] as const,
+  ([now]) => {
+    if (now === 'frameworks') void readMagequery()
+  },
+  { immediate: true }
+)
+
+const MAGEQUERY_SOURCE = 'https://github.com/cresset-tools/magequery'
+const EUPL = 'https://interoperable-europe.ec.europa.eu/collection/eupl/eupl-text-eupl-12'
 
 // --- updates
 
@@ -493,6 +522,14 @@ onMounted(async () => {
           @click="config.store.settingsSection = 'editor'"
         >
           <Code :size="15" /> Editor
+        </button>
+        <button
+          class="nav-item"
+          :class="{ on: section === 'frameworks' }"
+          data-nav="frameworks"
+          @click="config.store.settingsSection = 'frameworks'"
+        >
+          <Boxes :size="15" /> Frameworks
         </button>
         <button
           class="nav-item"
@@ -1262,6 +1299,64 @@ onMounted(async () => {
             For every view of code: the editor, diffs, the search preview, the conflict resolver.
             {{ keyLabel(keysFor('editor.fontBigger')) }} and {{ keyLabel(keysFor('editor.fontSmaller')) }}
             over code change it too; elsewhere they zoom the whole window.
+          </p>
+        </section>
+
+        <section v-else-if="section === 'frameworks'" data-section="frameworks">
+          <h2>Frameworks</h2>
+          <p class="dim intro">
+            What a framework wires together through config files and strings. Magento for now:
+            ⌘-click on a class in XML, a template, a layout handle or an event name, config files
+            counted in a class's usages, and a chip by the project's name.
+          </p>
+
+          <label class="check">
+            <input
+              type="checkbox"
+              data-setting="frameworks"
+              :checked="config.settings.value?.frameworks !== false"
+              @change="patchGlobal({ frameworks: ($event.target as HTMLInputElement).checked })"
+            />
+            <span>
+              <strong>Framework support</strong>
+              <span class="faint block">
+                Off, ⌘-click and the usage counts only read the language, and nothing is detected.
+              </span>
+            </span>
+          </label>
+
+          <h3 class="sub">magequery</h3>
+          <p class="hint faint no-top">
+            The "Magento wiring" view of a class (plugins, preferences, observers, every config
+            reference) comes from
+            <a :href="MAGEQUERY_SOURCE" target="_blank" rel="noopener">magequery</a>, which ships
+            with gitnoob. Nothing else needs it.
+          </p>
+          <label class="field">
+            <span class="label">Use another copy</span>
+            <input
+              data-setting="magequery-path"
+              type="text"
+              spellcheck="false"
+              placeholder="The bundled one"
+              :value="config.settings.value?.magequery_path ?? ''"
+              @change="
+                patchGlobal({ magequery_path: ($event.target as HTMLInputElement).value.trim() || null })
+              "
+            />
+          </label>
+          <p class="hint faint no-top" data-testid="magequery-status">
+            <template v-if="magequery?.missing_setting">That path is not a file, so nothing runs.</template>
+            <template v-else-if="magequery?.path">
+              Runs <span class="mono">{{ magequery.path }}</span>
+              ({{ magequery.source === 'setting' ? 'from this setting' : `bundled, ${magequery.pinned}` }}).
+            </template>
+            <template v-else>This build has no bundled magequery.</template>
+          </p>
+          <p class="hint faint" data-testid="magequery-notice">
+            magequery {{ magequery?.pinned ?? '' }}, by the cresset-tools project, is licensed under the
+            <a :href="EUPL" target="_blank" rel="noopener">EUPL-1.2</a> and shipped unmodified as a
+            separate program. Source: <a :href="MAGEQUERY_SOURCE" target="_blank" rel="noopener">{{ MAGEQUERY_SOURCE }}</a>.
           </p>
         </section>
 

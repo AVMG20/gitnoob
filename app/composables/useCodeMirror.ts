@@ -1,4 +1,4 @@
-import { Compartment, Facet, RangeSet, StateEffect, StateField, type Extension, type Range } from '@codemirror/state'
+import { Compartment, Facet, RangeSet, StateEffect, StateField, type EditorState, type Extension, type Range } from '@codemirror/state'
 import {
   Decoration,
   EditorView,
@@ -44,6 +44,11 @@ type Loader = () => Promise<Extension>
 
 const LANGUAGES: Record<string, Loader> = {
   php: async () => (await import('@codemirror/lang-php')).php(),
+  // A Magento template: HTML with PHP in it, which is what lang-php does by default.
+  phtml: async () => (await import('@codemirror/lang-php')).php(),
+  xml: async () => (await import('@codemirror/lang-xml')).xml(),
+  xsd: async () => (await import('@codemirror/lang-xml')).xml(),
+  xsl: async () => (await import('@codemirror/lang-xml')).xml(),
   js: async () => (await import('@codemirror/lang-javascript')).javascript(),
   mjs: async () => (await import('@codemirror/lang-javascript')).javascript(),
   cjs: async () => (await import('@codemirror/lang-javascript')).javascript(),
@@ -672,7 +677,11 @@ const linkMark = Decoration.mark({ class: 'cm-navlink' })
  * the position clicked. What the word is, and where it leads, is the
  * backend's to say.
  */
-export function navigation(open: (pos: number, event: MouseEvent) => void): Extension {
+export function navigation(
+  open: (pos: number, event: MouseEvent) => void,
+  /** A wider token than the word at `pos` (a framework's `Foo\\Bar`), if any. */
+  token?: (state: EditorState, pos: number) => { from: number; to: number } | null
+): Extension {
   const plugin = ViewPlugin.fromClass(
     class {
       decorations: DecorationSet = Decoration.none
@@ -689,7 +698,7 @@ export function navigation(open: (pos: number, event: MouseEvent) => void): Exte
         let word: { from: number; to: number } | null = null
         if (this.held) {
           const pos = view.posAtCoords({ x: this.x, y: this.y })
-          word = pos === null ? null : view.state.wordAt(pos)
+          word = pos === null ? null : (token?.(view.state, pos) ?? view.state.wordAt(pos))
         }
         const key = word ? `${word.from}:${word.to}` : ''
         if (key === this.shown) return
@@ -786,6 +795,8 @@ export interface UsageLens {
   framework?: boolean
   /** The class whose uses `count` is. */
   owner?: string | null
+  /** Places in a framework's config that name the class. */
+  config?: number
 }
 
 const plural = (count: number, one: string, many: string) => `${count} ${count === 1 ? one : many}`
@@ -801,8 +812,15 @@ export function lensText(lens: UsageLens): { main: string; possible: string } {
     if (lens.owner) return { main: `${plural(lens.count, 'use', 'uses')} of ${lens.owner}`, possible: '' }
     return { main: `called by the framework · ${plural(lens.count, 'reference', 'references')}`, possible: '' }
   }
+  const config = lens.config ?? 0
+  if (config && !lens.count) {
+    return {
+      main: plural(config, 'reference in config', 'references in config'),
+      possible: lens.possible ? `${lens.possible} possible` : ''
+    }
+  }
   return {
-    main: plural(lens.count, 'usage', 'usages'),
+    main: plural(lens.count, 'usage', 'usages') + (config ? ` · ${config} in config` : ''),
     possible: lens.possible ? `${lens.possible} possible` : ''
   }
 }
@@ -883,6 +901,7 @@ class LensWidget extends WidgetType {
       (a.possible ?? 0) === (b.possible ?? 0) &&
       !!a.framework === !!b.framework &&
       (a.owner ?? null) === (b.owner ?? null) &&
+      (a.config ?? 0) === (b.config ?? 0) &&
       other.indent === this.indent
     )
   }

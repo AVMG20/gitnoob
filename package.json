@@ -6,13 +6,14 @@
   "scripts": {
     "dev": "nuxt dev",
     "generate": "nuxt generate",
-    "app": "tauri dev",
-    "app:build": "tauri build",
+    "app": "node scripts/magequery.mjs --optional && tauri dev",
+    "app:build": "node scripts/magequery.mjs && tauri build",
     "tauri": "tauri",
     "release": "node scripts/release.mjs",
     "test": "vitest run",
     "typecheck": "nuxt prepare && vue-tsc --noEmit",
-    "theme": "node scripts/theme/generate.mjs"
+    "theme": "node scripts/theme/generate.mjs",
+    "magequery": "node scripts/magequery.mjs"
   },
   "dependencies": {
     "@codemirror/autocomplete": "^6.20.4",
@@ -28,6 +29,7 @@
     "@codemirror/lang-rust": "^6.0.2",
     "@codemirror/lang-sql": "^6.10.0",
     "@codemirror/lang-vue": "^0.1.3",
+    "@codemirror/lang-xml": "^6.1.0",
     "@codemirror/lang-yaml": "^6.1.3",
     "@codemirror/language": "^6.13.1",
     "@codemirror/search": "^6.7.2",

@@ -11,6 +11,7 @@ pub mod edit;
 pub mod editorconfig;
 pub mod files;
 pub mod forge;
+pub mod frameworks;
 pub mod git_cmd;
 pub mod graph;
 pub mod guard;
@@ -401,6 +402,89 @@ async fn dependency_definition(
 ) -> Result<Option<deps::Jump>, String> {
     let root = state.path()?;
     deps::dependency_definition(&root, &path, offset, text.as_deref())
+}
+
+/// The framework the open repository uses, for the chip in the title bar;
+/// `None` when there is none or framework support is off.
+#[tauri::command]
+async fn framework_info(state: Aimed) -> Result<Option<frameworks::FrameworkInfo>, String> {
+    let state = state.pinned();
+    tauri::async_runtime::spawn_blocking(move || frameworks::info(&state))
+        .await
+        .map_err(|e| e.to_string())
+}
+
+/// Where a ⌘-click on a framework token (a class in XML, a template, an
+/// event) leads. `None` leaves the click to the language's own rules.
+#[tauri::command]
+async fn framework_links(
+    path: String,
+    offset: u32,
+    text: Option<String>,
+    state: Aimed,
+) -> Result<Option<frameworks::Links>, String> {
+    let state = state.pinned();
+    tauri::async_runtime::spawn_blocking(move || {
+        frameworks::links_at(&state, &path, offset, text.as_deref())
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+/// Class names to offer inside a framework's config file.
+#[tauri::command]
+async fn framework_complete(
+    path: String,
+    offset: u32,
+    text: String,
+    state: Aimed,
+) -> Result<Option<frameworks::Completions>, String> {
+    let state = state.pinned();
+    tauri::async_runtime::spawn_blocking(move || frameworks::complete(&state, &path, offset, &text))
+        .await
+        .map_err(|e| e.to_string())
+}
+
+/// How a class is wired, from the framework's own tool (`magequery`).
+#[tauri::command]
+async fn framework_wiring(
+    class: String,
+    state: Aimed,
+) -> Result<Option<frameworks::magequery::Wiring>, String> {
+    let state = state.pinned();
+    tauri::async_runtime::spawn_blocking(move || {
+        let Some((root, provider)) = frameworks::active(&state) else {
+            return Ok(None);
+        };
+        let tool = frameworks::magequery::find(&state);
+        if tool.is_none() {
+            return Err(
+                "magequery is not bundled with this build, and Settings → Frameworks names none"
+                    .to_string(),
+            );
+        }
+        provider.wiring(&root, &class, tool.as_deref())
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+/// Where a class is, by its fully qualified name: a row in the wiring view.
+#[tauri::command]
+async fn framework_class(
+    class: String,
+    state: Aimed,
+) -> Result<Option<frameworks::Target>, String> {
+    let state = state.pinned();
+    tauri::async_runtime::spawn_blocking(move || frameworks::locate_class(&state, &class))
+        .await
+        .map_err(|e| e.to_string())
+}
+
+/// Which magequery would run, for Settings → Frameworks. Nothing is run.
+#[tauri::command]
+async fn magequery_status(state: Aimed) -> Result<frameworks::magequery::Status, String> {
+    Ok(frameworks::magequery::status(&state))
 }
 
 /// What can follow the `->`, `::` or `.` before the caret: the receiver's
@@ -2376,6 +2460,12 @@ pub fn run() {
             search_text,
             search_file,
             dependency_definition,
+            framework_info,
+            framework_links,
+            framework_complete,
+            framework_wiring,
+            framework_class,
+            magequery_status,
             complete_members,
             complete_symbols,
             complete_import,

@@ -2241,6 +2241,44 @@ pub struct UsageList {
     pub framework: bool,
     /// The class those uses are of.
     pub owner: Option<String>,
+    /// Config files a framework reads that name the class (Magento's XML).
+    pub config: Vec<Location>,
+    /// What those are called in the popup: `Magento config`.
+    pub config_label: Option<String>,
+}
+
+/// The fully qualified name of a PHP class defined in `text` as `name`.
+fn php_fqn(text: &str, name: &str) -> String {
+    let space = crate::deps::php_imports(text).namespace;
+    if space.is_empty() {
+        name.to_string()
+    } else {
+        format!("{space}\\{name}")
+    }
+}
+
+/// The framework config that names a PHP class, as usages.
+fn config_references(
+    state: &AppState,
+    path: &str,
+    text: &str,
+    name: &str,
+) -> Option<(String, Vec<Location>)> {
+    if lang_of(path) != Some(Lang::Php) {
+        return None;
+    }
+    let (label, found) = crate::frameworks::extra_references(state, &php_fqn(text, name))?;
+    let found = found
+        .into_iter()
+        .map(|one| Location {
+            path: one.path,
+            line: one.line,
+            column: one.column,
+            kind: "config",
+            text: one.text,
+        })
+        .collect();
+    Some((label.to_string(), found))
 }
 
 /// Every usage of a definition, in files of the same family as `from`.
@@ -2296,6 +2334,13 @@ pub fn usages(
             };
             if into.len() < MAX_LOCATIONS {
                 into.push(place(path, symbol));
+            }
+        }
+        if matches!(def.kind, "class" | "interface") {
+            let text = current_text(&root, from, None).unwrap_or_default();
+            if let Some((label, found)) = config_references(state, from, &text, &def.name) {
+                list.config = found;
+                list.config_label = Some(label);
             }
         }
         return Ok(list);
@@ -2357,6 +2402,8 @@ pub struct Lens {
     pub framework: bool,
     /// The class whose uses `count` is.
     pub owner: Option<String>,
+    /// Places in a framework's config that name the class.
+    pub config: usize,
 }
 
 /// How many usages each function, method and class in a file has, counted
@@ -2388,7 +2435,12 @@ pub fn usage_counts(state: &AppState, path: &str, text: Option<&str>) -> Result<
             .filter(|(_, _, verdict)| *verdict == Verdict::Definite)
             .count();
         let possible = judged.found.len() - count;
-        if judged.framework || count + possible > 0 {
+        let config = if matches!(def.kind, "class" | "interface") {
+            config_references(state, path, &text, &def.name).map_or(0, |(_, found)| found.len())
+        } else {
+            0
+        };
+        if judged.framework || count + possible + config > 0 {
             lenses.push(Lens {
                 name: def.name.clone(),
                 kind: def.kind,
@@ -2398,6 +2450,7 @@ pub fn usage_counts(state: &AppState, path: &str, text: Option<&str>) -> Result<
                 possible,
                 framework: judged.framework,
                 owner: judged.owner.map(str::to_string),
+                config,
             });
         }
     }
@@ -2717,6 +2770,21 @@ pub fn unused_in(
                     new: false,
                 });
             }
+        }
+    }
+    // A class a framework's config names is made by the framework, and so
+    // are calls to its public methods (a Magento plugin's `afterGetName`,
+    // an observer's method): not unused for want of a caller in the code.
+    if lang == Lang::Php && marks.iter().any(|mark| mark.level == "hint") {
+        let wired = symbols
+            .iter()
+            .filter(|s| s.definition && s.kind == "class")
+            .any(|class| {
+                config_references(state, path, &text, &class.name)
+                    .is_some_and(|(_, found)| !found.is_empty())
+            });
+        if wired {
+            marks.retain(|mark| mark.level != "hint");
         }
     }
     marks.extend(unused_locals(lang, &tree, &source, &text, &lines));

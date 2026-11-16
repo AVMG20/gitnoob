@@ -89,4 +89,4 @@ Use `Ctrl` on Windows and Linux. Full list under Settings → Shortcuts.
 
 ## License
 
-[GPL-3.0-only](LICENSE).
+[GPL-3.0-only](LICENSE). The bundled magequery is EUPL-1.2; see [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).

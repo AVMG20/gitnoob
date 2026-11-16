@@ -4,6 +4,7 @@ import { useGit } from './useGit'
 import { openTab } from './useTabs'
 import { useToasts } from './useToasts'
 import { change } from './useFileView'
+import { frameworkLinks, type FrameworkLinks } from './useFramework'
 
 /**
  * ⌘-click and ⌘J: from a name to where it is defined, or from a definition
@@ -47,6 +48,8 @@ export type UsageState = 'changed' | 'new' | 'unchanged'
 
 export interface PopupItem extends CodeLocation {
   state: UsageState
+  /** A short tag: `adminhtml · module`, `frontend · Vendor/theme · override`. */
+  label?: string | null
 }
 
 /** What the backend's `usages` answers. */
@@ -55,6 +58,10 @@ export interface UsageList {
   possible: CodeLocation[]
   framework: boolean
   owner: string | null
+  /** Config files a framework reads that name the class. */
+  config?: CodeLocation[]
+  /** Their group's name: `Magento config`. */
+  config_label?: string | null
 }
 
 export const usagesPopup = reactive({
@@ -67,6 +74,11 @@ export const usagesPopup = reactive({
   /** Same name, receiver unknown: listed under a group, folded at first. */
   possible: [] as PopupItem[],
   showPossible: false,
+  /** Framework config that names it (Magento's XML), under its own heading. */
+  config: [] as PopupItem[],
+  configLabel: '',
+  /** A class whose framework wiring the footer offers to show. */
+  wiring: null as string | null,
   cursor: 0,
   /** Where the click was, in window coordinates, for placing the list. */
   x: 0,
@@ -125,12 +137,24 @@ function showPopup(
   title: string,
   found: CodeLocation[],
   at: { x: number; y: number } | null,
-  extra: { possible?: CodeLocation[]; note?: string } = {}
+  extra: {
+    possible?: CodeLocation[]
+    note?: string
+    config?: CodeLocation[]
+    configLabel?: string
+    wiring?: string | null
+    keepOrder?: boolean
+  } = {}
 ) {
   usagesPopup.title = title
   usagesPopup.note = extra.note ?? ''
-  usagesPopup.items = marked(found)
+  // Framework candidates come in the backend's order (the module's own file
+  // first), which means more than which ones are changed.
+  usagesPopup.items = extra.keepOrder ? found.map((one) => ({ ...one, state: stateOf(one.path) })) : marked(found)
   usagesPopup.possible = marked(extra.possible ?? [])
+  usagesPopup.config = marked(extra.config ?? [])
+  usagesPopup.configLabel = extra.configLabel ?? 'Config'
+  usagesPopup.wiring = extra.wiring ?? null
   usagesPopup.showPossible = !found.length
   usagesPopup.cursor = 0
   usagesPopup.x = at?.x ?? Math.round(window.innerWidth / 2 - 220)
@@ -169,8 +193,18 @@ export async function showUsages(
   }
   const definite = list?.definite ?? []
   const possible = list?.possible ?? []
+  const config = list?.config ?? []
+  const configLabel = list?.config_label ?? 'Config'
   const framework = !!list?.framework
   const owner = list?.owner ?? null
+  if (!definite.length && !possible.length && config.length) {
+    showPopup(`${label(name, kind)} · ${config.length} in ${configLabel}`, [], at, {
+      config,
+      configLabel,
+      note: 'Nothing in the code uses it by name; config does.'
+    })
+    return
+  }
   if (!definite.length && !possible.length) {
     if (framework) {
       useToasts().info(
@@ -182,7 +216,7 @@ export async function showUsages(
     }
     return
   }
-  if (definite.length === 1 && (jump === 'one' || !possible.length)) {
+  if (definite.length === 1 && (jump === 'one' || !possible.length) && !config.length) {
     openLocation(definite[0]!)
     return
   }
@@ -197,8 +231,28 @@ export async function showUsages(
       : `Possible usages of ${label(name, kind)} · ${possible.length}`
   showPopup(title, definite, at, {
     possible,
+    config,
+    configLabel,
     note: framework ? `${label(name, kind)} is called by the framework` : ''
   })
+}
+
+/**
+ * What a framework link found: a notice for nothing, a jump for one, the
+ * list for several, each with its label (area, theme, override).
+ */
+export function showFrameworkLinks(links: FrameworkLinks, at: { x: number; y: number } | null) {
+  const targets = links.targets
+  if (!targets.length) {
+    useToasts().info(links.note ?? `Nothing found for ${links.title}`)
+    return
+  }
+  if (targets.length === 1) {
+    openLocation(targets[0]!)
+    if (links.note) useToasts().info(links.note)
+    return
+  }
+  showPopup(links.title, targets, at, { note: links.note ?? '', wiring: links.class, keepOrder: true })
 }
 
 /**
@@ -211,6 +265,13 @@ export async function jumpFrom(
   text: string | null,
   at: { x: number; y: number } | null = null
 ) {
+  // The framework first: a class in XML, a template or an event name is a
+  // string to the language, and nothing would come of it below.
+  const links = await frameworkLinks(path, offset, text)
+  if (links) {
+    showFrameworkLinks(links, at)
+    return
+  }
   let symbol: SymbolAt | null
   try {
     symbol = await invoke<SymbolAt | null>('symbol_at', { path, offset, text })

@@ -75,6 +75,10 @@ export interface GlobalSettings {
   autocomplete?: boolean
   /** The list opens while typing; off, only on Ctrl+Space. */
   autocomplete_typing?: boolean
+  /** Framework support: ⌘-click through config and templates, config usages, the title chip. */
+  frameworks?: boolean
+  /** A magequery to run instead of the bundled one; absolute. */
+  magequery_path?: string | null
   /** A type icon before each file name, everywhere files are listed. */
   file_icons?: boolean
   /** How the editor indents when neither .editorconfig nor the file says. */
@@ -149,6 +153,7 @@ export type SettingsSection =
   | 'shortcuts'
   | 'behaviour'
   | 'editor'
+  | 'frameworks'
   | 'updates'
 
 const store = reactive({

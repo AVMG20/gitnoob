@@ -167,6 +167,7 @@ jobs:
             runner: macos-latest
             targets: aarch64-apple-darwin,x86_64-apple-darwin
             args: --target universal-apple-darwin
+            sidecar: universal-apple-darwin
           # 22.04 rather than the newest Ubuntu: the AppImage carries whatever
           # glibc it was built against as a floor, and building on the newest
           # release quietly excludes everyone on an older one.
@@ -174,10 +175,12 @@ jobs:
             runner: ubuntu-22.04
             targets: ''
             args: ''
+            sidecar: x86_64-unknown-linux-gnu
           - name: Windows (x86_64)
             runner: windows-latest
             targets: ''
             args: ''
+            sidecar: x86_64-pc-windows-msvc
     runs-on: ${{ matrix.runner }}
     steps:
       - uses: actions/checkout@v4
@@ -215,6 +218,14 @@ jobs:
           cache: npm
 
       - run: npm ci
+
+      # magequery, bundled as a sidecar (tauri.conf.json bundle.externalBin).
+      # Downloaded from its pinned release and checked against the sha256 in
+      # the script; the Intel half of the universal Mac binary is built from
+      # the pinned source, since the release has no Intel Mac build.
+      - name: magequery sidecar
+        shell: bash
+        run: node scripts/magequery.mjs --target ${{ matrix.sidecar }}
 
       # Before the build, not after: the number compiled into the app is what
       # the updater compares a future release against.

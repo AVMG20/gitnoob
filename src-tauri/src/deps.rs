@@ -1250,6 +1250,39 @@ fn find_decl(root: &Path, fqn: &str, here: Option<(&str, &str)>) -> Option<Class
     exact.or(by_name).map(|at| all[at].clone())
 }
 
+/// Where a class is declared: `(path, line, column)`. `path` is a file the
+/// caller already believes holds it (a Magento module folder, say); without
+/// one, or when it is not there, Composer's maps and then the index decide.
+pub fn class_location(root: &Path, fqn: &str, path: Option<&str>) -> Option<(String, u32, u32)> {
+    let text = path.and_then(|path| read(root, path));
+    let here = path.zip(text.as_deref());
+    let decl = find_decl(root, fqn, here)
+        .filter(|decl| decl.fqn.eq_ignore_ascii_case(fqn.trim_start_matches('\\')))?;
+    Some((decl.path.clone(), decl.line, decl.column))
+}
+
+/// Where a method of a class is declared, its parents, traits and
+/// interfaces included.
+pub fn method_location(
+    root: &Path,
+    fqn: &str,
+    path: Option<&str>,
+    method: &str,
+) -> Option<(String, u32, u32)> {
+    let text = path.and_then(|path| read(root, path));
+    let here = path.zip(text.as_deref());
+    let decl = find_decl(root, fqn, here)?;
+    let member = find_member(root, &decl, here, method, Want::Method)?;
+    Some((member.path, member.line, member.column))
+}
+
+/// The folders Composer's PSR-4 maps (and `composer.json`) give for the
+/// namespace a partly typed class name is in, longest prefix first:
+/// `(prefix, folders)`.
+pub fn psr4_prefixes(root: &Path) -> Vec<(String, Vec<String>)> {
+    autoload(root).psr4.clone()
+}
+
 /// Walks a class and what it inherits, nearest first: its own members, its
 /// traits, its parent and theirs, then its interfaces. `visit` stops the walk
 /// by returning true.

@@ -121,7 +121,10 @@ pub fn start(app: AppHandle, root: PathBuf) -> Option<Watch> {
             if !touched.is_empty() {
                 let root = places.root.clone();
                 let paths = std::mem::take(&mut touched);
-                std::thread::spawn(move || crate::symbols::touched(&root, &paths));
+                std::thread::spawn(move || {
+                    crate::frameworks::touched(&root, &paths);
+                    crate::symbols::touched(&root, &paths);
+                });
             }
             pending = Changed::default();
         }

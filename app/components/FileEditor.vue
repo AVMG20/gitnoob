@@ -66,6 +66,7 @@ import { aimedAt, invokeAt } from '~/composables/useInvoke'
 import { useConfig } from '~/composables/useConfig'
 import { onCodeFont } from '~/composables/useCodeFont'
 import { jumpFrom, nextSymbolRequest, showUsages } from '~/composables/useSymbols'
+import { frameworkFile, frameworkToken } from '~/composables/useFramework'
 import { autocomplete, closeList, listOpen } from '~/composables/useAutocomplete'
 import {
   acquire,
@@ -710,9 +711,22 @@ function named() {
   return NAMED.test(props.path) && !/\.(blade\.php|d\.ts)$/i.test(props.path)
 }
 
+/** Whether ⌘-click means anything here: a language the backend reads, or a framework's file. */
+function linked() {
+  return named() || frameworkFile(props.path)
+}
+
+/** What ⌘ underlines: a framework's whole `Foo\\Bar` or `Vendor_Module::x.phtml`, else the word. */
+function linkToken(state: EditorState, pos: number) {
+  if (!frameworkFile(props.path)) return null
+  const line = state.doc.lineAt(pos)
+  const found = frameworkToken(line.text, pos - line.from)
+  return found ? { from: line.from + found.from, to: line.from + found.to } : null
+}
+
 /** ⌘J: what ⌘-click does, at the caret. */
 function jumpAtCaret() {
-  if (!view || !named()) return
+  if (!view || !linked()) return
   const head = view.state.selection.main.head
   const box = view.coordsAtPos(head)
   void jumpFrom(props.path, head, text(), box ? { x: box.left, y: box.bottom - 18 } : null)
@@ -843,8 +857,8 @@ function own() {
   return [
     changeBars((line) => openCard(line)),
     navigation((pos, event) => {
-      if (named()) void jumpFrom(props.path, pos, text(), { x: event.clientX, y: event.clientY })
-    }),
+      if (linked()) void jumpFrom(props.path, pos, text(), { x: event.clientX, y: event.clientY })
+    }, linkToken),
     usageLenses((lens, event) =>
       void showUsages(lens.name, props.path, lens.kind, { x: event.clientX, y: event.clientY }, lens.line)
     ),

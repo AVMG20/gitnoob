@@ -6,3 +6,5 @@ dist
 .DS_Store
 .idea/
 .opencode/
+# The bundled magequery, fetched by scripts/magequery.mjs.
+src-tauri/binaries/

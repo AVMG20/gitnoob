@@ -17,6 +17,7 @@ import { followConfig, installCodeFontKeys } from '~/composables/useCodeFont'
 import { useNavButtons } from '~/composables/useNavButtons'
 import { openSearch, search } from '~/composables/useSearch'
 import { usagesPopup } from '~/composables/useSymbols'
+import { loadFramework, wiring } from '~/composables/useFramework'
 import { workTreeMoved } from '~/composables/editorBuffers'
 import { unwatchQuit, watchQuit } from '~/composables/useQuit'
 import { runHomeAct, type HomeAct } from '~/composables/useForgeNudges'
@@ -24,6 +25,13 @@ import { runHomeAct, type HomeAct } from '~/composables/useForgeNudges'
 const git = useGit()
 const store = git.store
 const config = useConfig()
+// Which framework the open project uses, for the title bar's chip and for
+// ⌘-click: asked again on every project switch and when the setting flips.
+watch(
+  () => [store.repo?.path ?? null, config.settings.value?.frameworks] as const,
+  ([path]) => void loadFramework(path),
+  { immediate: true }
+)
 const forge = useForge()
 const review = useReview()
 const ai = useAi()
@@ -520,6 +528,7 @@ onUnmounted(() => {
     <ConflictOverlay v-if="store.resolving !== null" />
     <SearchModal v-if="search.open && store.repo" />
     <UsagesPopup v-if="usagesPopup.open && store.repo" />
+    <WiringPopover v-if="wiring.open && store.repo" />
     <ContextMenu />
   </div>
 </template>

@@ -41,6 +41,7 @@ import {
   type FileStep
 } from '~/composables/useFileView'
 import { headerState } from '~/composables/fileHeader'
+import { framework, openWiringForFile } from '~/composables/useFramework'
 import { revealInFiles } from '~/composables/useFileTree'
 import {
   codeRow,
@@ -411,6 +412,10 @@ function showMore(event: MouseEvent) {
     { label: 'Copy path', action: () => copyText(absolutePath(current.path), 'Path') },
     { label: 'Copy relative path', action: () => copyText(current.path, 'Path') }
   )
+  // The framework's account of the class in this file (Magento's magequery).
+  if (!current.commit && framework.info?.wiring && /\.php$/i.test(current.path)) {
+    items.push({ label: `${framework.info.name} wiring`, action: () => void openWiringForFile(current.path) })
+  }
   if (!current.commit) {
     items.push(
       { label: git.revealLabel, action: () => void git.reveal(current.path) },
