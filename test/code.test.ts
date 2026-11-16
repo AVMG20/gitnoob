@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import {
-  CODE_ROW,
+  codeRow,
   HUNK_HEAD,
   OVERSCAN,
   diffRows,
@@ -44,14 +44,14 @@ const hunk = (...lines: DiffLine[]): DiffHunk => ({ header: '@@', lines })
 
 describe('windowOf', () => {
   it('covers the rows on screen and a margin either side', () => {
-    const { first, last } = windowOf(1000, 100 * CODE_ROW, 10 * CODE_ROW)
+    const { first, last } = windowOf(1000, 100 * codeRow(), 10 * codeRow())
     expect(first).toBe(100 - OVERSCAN)
     expect(last).toBe(110 + OVERSCAN)
   })
 
   it('never runs past either end of the list', () => {
-    expect(windowOf(1000, 0, 10 * CODE_ROW).first).toBe(0)
-    expect(windowOf(20, 0, 1000 * CODE_ROW).last).toBe(20)
+    expect(windowOf(1000, 0, 10 * codeRow()).first).toBe(0)
+    expect(windowOf(20, 0, 1000 * codeRow()).last).toBe(20)
   })
 
   it('draws something before the box has been measured', () => {
@@ -70,9 +70,9 @@ describe('diffRows', () => {
     expect(rows.map((row) => row.kind)).toEqual(['head', 'line', 'line', 'head', 'line'])
     expect(rows[0]!.top).toBe(0)
     expect(rows[1]!.top).toBe(HUNK_HEAD)
-    expect(rows[2]!.top).toBe(HUNK_HEAD + CODE_ROW)
-    expect(rows[3]!.top).toBe(HUNK_HEAD + CODE_ROW * 2)
-    expect(height).toBe(HUNK_HEAD * 2 + CODE_ROW * 3)
+    expect(rows[2]!.top).toBe(HUNK_HEAD + codeRow())
+    expect(rows[3]!.top).toBe(HUNK_HEAD + codeRow() * 2)
+    expect(height).toBe(HUNK_HEAD * 2 + codeRow() * 3)
   })
 
   it('keeps each row pointing at the hunk it can be staged from', () => {
@@ -85,13 +85,13 @@ describe('diffWindow', () => {
   const { rows } = diffRows([hunk(...Array.from({ length: 200 }, (_, i) => add(i + 1)))])
 
   it('finds the rows at a scroll position', () => {
-    const { first, last } = diffWindow(rows, 50 * CODE_ROW, 10 * CODE_ROW)
-    expect(rows[first]!.top).toBeLessThanOrEqual(50 * CODE_ROW)
-    expect(rows[last - 1]!.top).toBeGreaterThanOrEqual(60 * CODE_ROW)
+    const { first, last } = diffWindow(rows, 50 * codeRow(), 10 * codeRow())
+    expect(rows[first]!.top).toBeLessThanOrEqual(50 * codeRow())
+    expect(rows[last - 1]!.top).toBeGreaterThanOrEqual(60 * codeRow())
   })
 
   it('starts at the top when the view is at the top', () => {
-    expect(diffWindow(rows, 0, 10 * CODE_ROW).first).toBe(0)
+    expect(diffWindow(rows, 0, 10 * codeRow()).first).toBe(0)
   })
 
   it('has no window over an empty patch', () => {
@@ -214,7 +214,7 @@ describe('marks', () => {
     const { rows, height } = diffRows([hunk(ctx(1, 1), add(2))])
     const marks = patchMarks(rows, height)
     expect(marks).toHaveLength(1)
-    expect(marks[0]!.top).toBeCloseTo((HUNK_HEAD + CODE_ROW) / height)
+    expect(marks[0]!.top).toBeCloseTo((HUNK_HEAD + codeRow()) / height)
   })
 
   it('has nothing to draw for a file with no changes', () => {

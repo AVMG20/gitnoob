@@ -80,8 +80,8 @@ describe('buildGrid', () => {
 
   it('measures where each conflict sits, for the strip and the arrows', () => {
     expect(grid.spots).toHaveLength(1)
-    expect(grid.spots[0]).toMatchObject({ index: 0, top: ROW, height: HEAD + 2 * ROW })
-    expect(grid.height).toBe(ROW + HEAD + 2 * ROW + ROW)
+    expect(grid.spots[0]).toMatchObject({ index: 0, top: ROW(), height: HEAD + 2 * ROW() })
+    expect(grid.height).toBe(ROW() + HEAD + 2 * ROW() + ROW())
   })
 
   it('only lays out the base side when it is asked for', () => {
@@ -98,14 +98,14 @@ describe('rowWindow', () => {
   const grid = buildGrid(blocks, paint(blocks))
 
   it('covers the rows on screen and a margin either side', () => {
-    const { first, last } = rowWindow(grid.rows, 100 * ROW, 10 * ROW, 5)
+    const { first, last } = rowWindow(grid.rows, 100 * ROW(), 10 * ROW(), 5)
     expect(first).toBe(95)
     expect(last).toBe(115)
   })
 
   it('never runs past either end', () => {
-    expect(rowWindow(grid.rows, 0, 10 * ROW).first).toBe(0)
-    expect(rowWindow(grid.rows, 0, 10000 * ROW).last).toBe(400)
+    expect(rowWindow(grid.rows, 0, 10 * ROW()).first).toBe(0)
+    expect(rowWindow(grid.rows, 0, 10000 * ROW()).last).toBe(400)
     expect(rowWindow([], 0, 100)).toEqual({ first: 0, last: 0 })
   })
 
@@ -188,7 +188,7 @@ describe('conflictMarks', () => {
     expect(marks).toHaveLength(2)
     expect(marks[0]!.kind).toBe('settled')
     expect(marks[0]!.top).toBe(0)
-    expect(marks[1]!.top).toBeCloseTo((HEAD + ROW + ROW) / grid.height)
+    expect(marks[1]!.top).toBeCloseTo((HEAD + ROW() + ROW()) / grid.height)
     expect(conflictMarks(grid.spots, 0, () => 'open')).toEqual([])
   })
 })
@@ -203,18 +203,18 @@ describe('pinning the result to the panes', () => {
 
   it('agrees with both at every block boundary', () => {
     expect(anchors[0]).toEqual({ from: 0, to: 0 })
-    expect(anchors[1]).toEqual({ from: ROW, to: ROW })
-    expect(anchors[2]).toEqual({ from: ROW + HEAD + 3 * ROW, to: ROW + 3 * ROW })
-    expect(height).toBe(ROW + 3 * ROW + ROW)
+    expect(anchors[1]).toEqual({ from: ROW(), to: ROW() })
+    expect(anchors[2]).toEqual({ from: ROW() + HEAD + 3 * ROW(), to: ROW() + 3 * ROW() })
+    expect(height).toBe(ROW() + 3 * ROW() + ROW())
   })
 
   it('reads one off against the other, and back again', () => {
     expect(mapTop(anchors, 0)).toBe(0)
-    expect(mapTop(anchors, ROW)).toBe(ROW)
+    expect(mapTop(anchors, ROW())).toBe(ROW())
     expect(mapTop(anchors, anchors[2]!.from)).toBe(anchors[2]!.to)
     // Halfway through the region lands halfway through what it produced.
-    const half = ROW + (HEAD + 3 * ROW) / 2
-    expect(mapTop(anchors, half)).toBeCloseTo(ROW + (3 * ROW) / 2)
+    const half = ROW() + (HEAD + 3 * ROW()) / 2
+    expect(mapTop(anchors, half)).toBeCloseTo(ROW() + (3 * ROW()) / 2)
     expect(mapTop(anchors, mapTop(anchors, half), true)).toBeCloseTo(half)
   })
 

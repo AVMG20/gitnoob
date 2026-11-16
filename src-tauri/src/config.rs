@@ -157,6 +157,13 @@ pub struct Global {
     /// How wide a tab is drawn.
     #[serde(default = "default_indent_size")]
     pub tab_width: u32,
+    /// The size of the code font, in pixels, in every view that shows code:
+    /// the editor, the diff, the search preview, the conflict resolver. ⌘+
+    /// and ⌘− over code change it. Kept between `CODE_FONT_MIN` and
+    /// `CODE_FONT_MAX` on the way in, so a hand-edited file cannot make code
+    /// unreadable.
+    #[serde(default = "default_code_font", deserialize_with = "code_font_in_range")]
+    pub editor_font_size: u32,
     /// Check the signature on every commit the graph draws. Off by default:
     /// it is a `git log` that runs gpg or ssh-keygen once per commit, and on a
     /// large page that is the slowest thing on the screen.
@@ -358,6 +365,19 @@ fn default_indent_style() -> String {
 fn default_indent_size() -> u32 {
     4
 }
+
+/// The smallest and largest code font, in pixels.
+pub const CODE_FONT_MIN: u32 = 9;
+pub const CODE_FONT_MAX: u32 = 28;
+
+fn default_code_font() -> u32 {
+    12
+}
+
+fn code_font_in_range<'de, D: serde::Deserializer<'de>>(from: D) -> Result<u32, D::Error> {
+    let size = <u32 as Deserialize>::deserialize(from)?;
+    Ok(size.clamp(CODE_FONT_MIN, CODE_FONT_MAX))
+}
 fn default_page_size() -> usize {
     500
 }
@@ -420,6 +440,7 @@ impl Default for Global {
             indent_style: default_indent_style(),
             indent_size: default_indent_size(),
             tab_width: default_indent_size(),
+            editor_font_size: default_code_font(),
             verify_signatures: false,
             worktree_replaces_tab: false,
             window: None,
@@ -1069,6 +1090,21 @@ mod tests {
         };
         super::tidy_projects(&mut config);
         assert_eq!(config.profiles[0].active_project, None);
+    }
+
+    #[test]
+    fn the_code_font_size_defaults_and_stays_in_range() {
+        let global: Global = serde_json::from_str("{}").unwrap();
+        assert_eq!(global.editor_font_size, 12);
+        let big: Global = serde_json::from_str(r#"{"editor_font_size": 400}"#).unwrap();
+        assert_eq!(big.editor_font_size, CODE_FONT_MAX);
+        let small: Global = serde_json::from_str(r#"{"editor_font_size": 2}"#).unwrap();
+        assert_eq!(small.editor_font_size, CODE_FONT_MIN);
+        let set: Global = serde_json::from_str(r#"{"editor_font_size": 15}"#).unwrap();
+        assert_eq!(set.editor_font_size, 15);
+        // Written back as it was read.
+        let text = serde_json::to_string(&set).unwrap();
+        assert!(text.contains(r#""editor_font_size":15"#));
     }
 
     #[test]

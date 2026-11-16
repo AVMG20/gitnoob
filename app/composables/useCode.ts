@@ -1,3 +1,4 @@
+import { ref } from 'vue'
 import type { DiffHunk, DiffLine, FileDiff } from './useGit'
 
 /**
@@ -17,8 +18,16 @@ import type { DiffHunk, DiffLine, FileDiff } from './useGit'
  * can reach without a browser.
  */
 
-/** One line of code: `line-height: 1.5` on the 12px monospace both views use. */
-export const CODE_ROW = 18
+/** The code font's size in px, which ⌘+ and ⌘− over code change (`useCodeFont.ts`). */
+export const codeFont = ref(12)
+
+/**
+ * One row of code: one and a half times the font, 18 px at the standard 12.
+ * Read at the time it is needed, never kept, so rows follow ⌘+ and ⌘−.
+ */
+export function codeRow(font = codeFont.value) {
+  return Math.round(font * 1.5)
+}
 
 /** A hunk heading: one line of text, its padding, and the rule above and below. */
 export const HUNK_HEAD = 24
@@ -37,7 +46,7 @@ export interface Window {
 }
 
 /** Which rows of a list of equal-height ones are worth drawing. */
-export function windowOf(total: number, top: number, view: number, row = CODE_ROW): Window {
+export function windowOf(total: number, top: number, view: number, row = codeRow()): Window {
   if (total <= 0) return { first: 0, last: 0 }
   const first = Math.max(0, Math.floor(top / row) - OVERSCAN)
   // `view` is 0 until the box has been measured, which is before the first
@@ -75,8 +84,8 @@ export function diffRows(hunks: DiffHunk[]): { rows: DiffRow[]; height: number }
     rows.push({ kind: 'head', hunk: at, line: null, at: -1, top, height: HUNK_HEAD })
     top += HUNK_HEAD
     hunk.lines.forEach((line, within) => {
-      rows.push({ kind: 'line', hunk: at, line, at: within, top, height: CODE_ROW })
-      top += CODE_ROW
+      rows.push({ kind: 'line', hunk: at, line, at: within, top, height: codeRow() })
+      top += codeRow()
     })
   })
   return { rows, height: top }
@@ -91,7 +100,7 @@ export function diffRows(hunks: DiffHunk[]): { rows: DiffRow[]; height: number }
  */
 export function diffWindow(rows: DiffRow[], top: number, view: number): Window {
   if (!rows.length) return { first: 0, last: 0 }
-  const height = view || CODE_ROW * 40
+  const height = view || codeRow() * 40
   let low = 0
   let high = rows.length - 1
   while (low < high) {
@@ -319,13 +328,13 @@ function run(
 export function fileMarks(lines: Line[]): Mark[] {
   const found: { kind: Mark['kind']; top: number; height: number }[] = []
   lines.forEach((line, at) => {
-    const top = at * CODE_ROW
+    const top = at * codeRow()
     // The seam is drawn on the boundary above the line, so it is its own bar
     // rather than part of whatever the line itself is.
     if (line.removed.length) run(found, 'gone', top - 2, 4)
-    if (line.mark) run(found, line.mark, top, CODE_ROW)
+    if (line.mark) run(found, line.mark, top, codeRow())
   })
-  return fold(found, lines.length * CODE_ROW)
+  return fold(found, lines.length * codeRow())
 }
 
 /** The same, for the patch view, whose rows are not all the same height. */

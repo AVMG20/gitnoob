@@ -280,37 +280,8 @@ pub fn search(
         }
         done.searched += 1;
 
-        let mut hits: Vec<LineHit> = Vec::new();
-        let mut counted = 0usize;
         let room = MAX_HITS.saturating_sub(done.matches);
-        let _ = searcher.search_path(
-            &matcher,
-            &file,
-            Lossy(|number, line| {
-                if hits.len() >= room {
-                    counted += 1;
-                    return Ok(true);
-                }
-                let mut found: Vec<(usize, usize)> = Vec::new();
-                let _ = matcher.find_iter(line.as_bytes(), |m| {
-                    found.push((m.start(), m.end()));
-                    true
-                });
-                let first = found.first().map(|m| m.0).unwrap_or(0);
-                let (text, start) = trimmed(line, first);
-                let ranges = found
-                    .iter()
-                    .filter(|(from, to)| *from >= start && *to <= start + text.len())
-                    .map(|(from, to)| (utf16_at(text, from - start), utf16_at(text, to - start)))
-                    .collect();
-                hits.push(LineHit {
-                    line: number,
-                    text: text.to_string(),
-                    ranges,
-                });
-                Ok(true)
-            }),
-        );
+        let (hits, counted) = hits_in(&mut searcher, &matcher, &file, room);
         done.more += counted;
         if !hits.is_empty() {
             done.matches += hits.len();
@@ -323,6 +294,75 @@ pub fn search(
         }
     }
     finish(done, &mut emit)
+}
+
+/// Every matching line in one file, up to `room` of them; the rest are only
+/// counted.
+fn hits_in(
+    searcher: &mut grep_searcher::Searcher,
+    matcher: &RegexMatcher,
+    file: &Path,
+    room: usize,
+) -> (Vec<LineHit>, usize) {
+    let mut hits: Vec<LineHit> = Vec::new();
+    let mut counted = 0usize;
+    let _ = searcher.search_path(
+        matcher,
+        file,
+        Lossy(|number, line| {
+            if hits.len() >= room {
+                counted += 1;
+                return Ok(true);
+            }
+            let mut found: Vec<(usize, usize)> = Vec::new();
+            let _ = matcher.find_iter(line.as_bytes(), |m| {
+                found.push((m.start(), m.end()));
+                true
+            });
+            let first = found.first().map(|m| m.0).unwrap_or(0);
+            let (text, start) = trimmed(line, first);
+            let ranges = found
+                .iter()
+                .filter(|(from, to)| *from >= start && *to <= start + text.len())
+                .map(|(from, to)| (utf16_at(text, from - start), utf16_at(text, to - start)))
+                .collect();
+            hits.push(LineHit {
+                line: number,
+                text: text.to_string(),
+                ranges,
+            });
+            Ok(true)
+        }),
+    );
+    (hits, counted)
+}
+
+/// The same search over one file, for the search window to bring that file's
+/// hits up to date after it was edited in the preview, without running the
+/// whole search again. The file's masks and "changed only" are not asked
+/// again: the file was in the results already.
+pub fn search_file(
+    root: &Path,
+    relative: &str,
+    query: &str,
+    options: &SearchOptions,
+) -> Result<Vec<LineHit>, String> {
+    if query.is_empty() {
+        return Ok(Vec::new());
+    }
+    let matcher = matcher(query, options)?;
+    let file = files::resolve(root, relative, false)?;
+    if std::fs::metadata(&file)
+        .map(|meta| meta.len() > MAX_FILE)
+        .unwrap_or(true)
+    {
+        return Ok(Vec::new());
+    }
+    let mut searcher = SearcherBuilder::new()
+        .binary_detection(BinaryDetection::quit(b'\x00'))
+        .line_number(true)
+        .build();
+    Ok(hits_in(&mut searcher, &matcher, &file, MAX_HITS).0)
 }
 
 /// Which of `words` appear as whole words anywhere in the work tree's files,

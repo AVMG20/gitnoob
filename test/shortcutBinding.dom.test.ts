@@ -108,7 +108,11 @@ describe('the keys that ship', () => {
           (one.where === other.where || one.where === anywhere || other.where === anywhere)
         // ⌘F, ⌘G and ⇧⌘G are the commit list's and an open file's in turn,
         // and the two are never on screen together.
-        const knownPair = [one.id, other.id].every((id) => /^(graph|viewer|file)\./.test(id))
+        const knownPair =
+          [one.id, other.id].every((id) => /^(graph|viewer|file)\./.test(id)) ||
+          // ⌘+ ⌘− ⌘0 size the code over code and the window everywhere else.
+          one.inPlaceOf === other.id ||
+          other.inPlaceOf === one.id
         expect(clash && !knownPair, `${one.id} and ${other.id}`).toBe(false)
       }
     }

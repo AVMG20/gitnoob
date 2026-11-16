@@ -1,4 +1,4 @@
-import { CODE_ROW, type Mark } from './useCode'
+import { codeRow, type Mark } from './useCode'
 import type { ConflictBlock, Resolution } from './useGit'
 
 /**
@@ -14,8 +14,8 @@ import type { ConflictBlock, Resolution } from './useGit'
  * and the strip beside the scrollbar can say where the conflicts are.
  */
 
-/** One line of code: `line-height: 1.5` on the 12px monospace the panes use. */
-export const ROW = CODE_ROW
+/** One line of code: one and a half times the code font, as in every view of code. */
+export const ROW = () => codeRow()
 
 /** The bar above a region, which carries its checkbox. */
 export const HEAD = 22
@@ -100,14 +100,14 @@ export function buildGrid(
           kind: 'context',
           conflict: -1,
           top,
-          height: ROW,
+          height: ROW(),
           ours: cell('ours'),
           theirs: cell('theirs'),
           base: withBase ? cell('base') : empty(),
           ourAt: -1,
           theirAt: -1
         })
-        top += ROW
+        top += ROW()
       }
       continue
     }
@@ -137,14 +137,14 @@ export function buildGrid(
         kind: 'code',
         conflict: block.index,
         top,
-        height: ROW,
+        height: ROW(),
         ours: line < block.ours.length ? cell('ours') : empty(),
         theirs: line < block.theirs.length ? cell('theirs') : empty(),
         base: withBase && line < block.base.length ? cell('base') : empty(),
         ourAt: line < block.ours.length ? line : -1,
         theirAt: line < block.theirs.length ? line : -1
       })
-      top += ROW
+      top += ROW()
     }
 
     spots.push({ index: block.index, top: at, height: top - at, first, last: rows.length })
@@ -162,7 +162,7 @@ export function buildGrid(
  */
 export function rowWindow(rows: GridRow[], top: number, view: number, overscan = 14) {
   if (!rows.length) return { first: 0, last: 0 }
-  const height = view || ROW * 40
+  const height = view || ROW() * 40
   let low = 0
   let high = rows.length - 1
   while (low < high) {
@@ -514,11 +514,11 @@ export function resultAnchors(
   let to = 0
   for (const block of blocks) {
     if (block.kind === 'context') {
-      from += block.lines.length * ROW
-      to += block.lines.length * ROW
+      from += block.lines.length * ROW()
+      to += block.lines.length * ROW()
     } else {
-      from += tall.get(block.index) ?? HEAD + Math.max(block.ours.length, block.theirs.length) * ROW
-      to += rows(block.index) * ROW
+      from += tall.get(block.index) ?? HEAD + Math.max(block.ours.length, block.theirs.length) * ROW()
+      to += rows(block.index) * ROW()
     }
     anchors.push({ from, to })
   }

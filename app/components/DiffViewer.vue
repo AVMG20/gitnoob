@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { computed, nextTick, onBeforeUnmount, onMounted, onUnmounted, ref, watch } from 'vue'
+import { onCodeFont } from '~/composables/useCodeFont'
 import {
   ArrowDownToLine,
   CaseSensitive,
@@ -42,7 +43,7 @@ import {
 import { headerState } from '~/composables/fileHeader'
 import { revealInFiles } from '~/composables/useFileTree'
 import {
-  CODE_ROW,
+  codeRow,
   diffRows,
   fileMarks,
   firstChangedLine,
@@ -527,7 +528,7 @@ async function toFirstChange() {
   // height before there is anywhere to scroll to.
   await nextTick()
   // A few lines of what came before, so the change has somewhere to sit.
-  box.scrollTop = Math.max(0, (at - 1) * CODE_ROW - 72)
+  box.scrollTop = Math.max(0, (at - 1) * codeRow() - 72)
   top.value = box.scrollTop
 }
 
@@ -790,7 +791,7 @@ const searched = computed<{ text: string; top: number }[]>(() => {
     const source = shown.split('\n')
     // The same last empty piece `markedLines` drops, so a row here is a row there.
     if (source.length && source[source.length - 1] === '') source.pop()
-    return source.map((line, at) => ({ text: line, top: at * CODE_ROW }))
+    return source.map((line, at) => ({ text: line, top: at * codeRow() }))
   }
   return diffRows(diff.value?.hunks ?? []).rows.map((row) => ({
     text: row.line?.content ?? '',
@@ -855,7 +856,7 @@ async function reveal() {
   if (!box || !row) return
   const y = rowsTop(box) + row.top
   const margin = 44
-  if (y < box.scrollTop + margin || y + CODE_ROW > box.scrollTop + box.clientHeight - margin) {
+  if (y < box.scrollTop + margin || y + codeRow() > box.scrollTop + box.clientHeight - margin) {
     box.scrollTop = Math.max(0, y - box.clientHeight / 2)
     top.value = box.scrollTop
   }
@@ -981,7 +982,7 @@ async function landOutsideEditor(line: number) {
   if (!box || editing.value) return
   if (diffMode.mode !== 'file') return
   await nextTick()
-  box.scrollTop = Math.max(0, (line - 1) * CODE_ROW - box.clientHeight / 2)
+  box.scrollTop = Math.max(0, (line - 1) * codeRow() - box.clientHeight / 2)
   top.value = box.scrollTop
 }
 
@@ -1019,11 +1020,11 @@ function changeStep(by: number) {
   const starts = lines
     .filter((line, at) => (line.mark || line.removed.length) && !lines[at - 1]?.mark)
     .map((line) => line.number)
-  const now = Math.floor(box.scrollTop / CODE_ROW) + 1
+  const now = Math.floor(box.scrollTop / codeRow()) + 1
   const next =
     by > 0 ? starts.find((line) => line > now + 1) : [...starts].reverse().find((line) => line < now - 1)
   if (next !== undefined) {
-    box.scrollTop = Math.max(0, (next - 1) * CODE_ROW - 72)
+    box.scrollTop = Math.max(0, (next - 1) * codeRow() - 72)
     top.value = box.scrollTop
   }
 }
@@ -1235,7 +1236,20 @@ onMounted(() => {
   sizer.observe(box)
 })
 
+// The code changed size: the line at the top stays at the top. The editor
+// keeps its own place.
+const dropFontKeeper = onCodeFont(() => {
+  const box = body.value
+  if (!box || editing.value) return
+  const top = box.scrollTop
+  const row = codeRow()
+  return () => {
+    box.scrollTop = (top * codeRow()) / row
+  }
+})
+
 onBeforeUnmount(() => {
+  dropFontKeeper()
   keepScroll()
   body.value?.removeEventListener('scroll', onScroll)
   sizer?.disconnect()
@@ -1449,7 +1463,12 @@ onUnmounted(() => window.removeEventListener('keydown', onKey))
     </header>
 
     <div class="pane">
-      <div ref="body" class="body" :class="{ editing: editing || showImage }">
+      <div
+        ref="body"
+        class="body"
+        :class="{ editing: editing || showImage }"
+        :data-code-view="showImage || pointer ? undefined : ''"
+      >
         <!-- What is on disk is the pointer, not the file. Nothing below can
              say anything useful about it, so this stands in their place. -->
         <div v-if="pointer" class="lfs">

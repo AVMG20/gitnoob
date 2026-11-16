@@ -180,7 +180,7 @@ const LABEL: Record<string, string> = {
   border: 1px solid var(--line);
   border-radius: var(--radius);
   font-family: var(--mono);
-  font-size: 12px;
+  font-size: var(--code-size, 12px);
 }
 
 .side-head {

@@ -1249,6 +1249,7 @@ onUnmounted(() => window.removeEventListener('keydown', onKey))
             <div
               v-if="wholeFile && pane.side !== 'base' && !stages?.[pane.side]"
               class="pane-body gone"
+              data-code-view
             >
               This file is not on this side — it was deleted.
             </div>
@@ -1257,6 +1258,7 @@ onUnmounted(() => window.removeEventListener('keydown', onKey))
               v-else
               :ref="(element) => setBody(pane.side, element)"
               class="pane-body"
+              data-code-view
             >
               <!-- Not painted, and no height of its own; it is here to be
                    measured, so the pane's width does not change under the
@@ -1418,7 +1420,7 @@ onUnmounted(() => window.removeEventListener('keydown', onKey))
             </span>
           </button>
           <div v-if="showResult" class="out-pane">
-            <div ref="outBody" class="pane-body out-body" @scroll="onResultScroll">
+            <div ref="outBody" class="pane-body out-body" data-code-view @scroll="onResultScroll">
               <div class="row gauge" aria-hidden="true">
                 <span class="num">{{ resultRows.length }}</span>
                 <code>{{ outWidest }}</code>
@@ -1426,8 +1428,8 @@ onUnmounted(() => window.removeEventListener('keydown', onKey))
               <div
                 class="rows"
                 :style="{
-                  paddingTop: `${outShown.first * ROW}px`,
-                  paddingBottom: `${(resultRows.length - outShown.last) * ROW}px`
+                  paddingTop: `${outShown.first * ROW()}px`,
+                  paddingBottom: `${(resultRows.length - outShown.last) * ROW()}px`
                 }"
               >
                 <!-- A line that answers a conflict carries the colour of the
@@ -1907,8 +1909,8 @@ onUnmounted(() => window.removeEventListener('keydown', onKey))
   overflow: auto;
   min-height: 0;
   font-family: var(--mono);
-  font-size: 12px;
-  line-height: 1.5;
+  font-size: var(--code-size, 12px);
+  line-height: var(--code-row, 18px);
 }
 
 .rows {
@@ -1925,7 +1927,7 @@ onUnmounted(() => window.removeEventListener('keydown', onKey))
 .row {
   display: flex;
   align-items: flex-start;
-  height: 18px;
+  height: var(--code-row, 18px);
   tab-size: 4;
 }
 
@@ -1938,7 +1940,7 @@ onUnmounted(() => window.removeEventListener('keydown', onKey))
   gap: 4px;
   flex: none;
   width: 44px;
-  height: 18px;
+  height: var(--code-row, 18px);
   padding: 0 8px 0 6px;
   color: var(--text-faint);
   user-select: none;
@@ -2030,7 +2032,7 @@ onUnmounted(() => window.removeEventListener('keydown', onKey))
 /* Where one side simply has fewer lines than the other. Drawn rather than
    left blank: the gap is what tells you the sides are still lined up. */
 .filler code.hatch {
-  height: 18px;
+  height: var(--code-row, 18px);
   background-image: repeating-linear-gradient(
     135deg,
     color-mix(in srgb, var(--text-faint) 22%, transparent) 0 1px,

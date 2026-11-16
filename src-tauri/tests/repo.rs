@@ -7987,6 +7987,40 @@ fn search_line_numbers_are_right_in_a_crlf_checkout() {
 }
 
 #[test]
+fn searching_one_file_again_after_an_edit() {
+    let sandbox = search_sandbox("search-one");
+    // Edited in the preview: a line in front, and a second match.
+    sandbox.write(
+        "app/Tax.php",
+        "<?php\n// rates\nreturn $value->times(1.21);\n$x->times(2);\n",
+    );
+    let options = search::SearchOptions::default();
+    let hits = search::search_file(&sandbox.root, "app/Tax.php", "->times(", &options).unwrap();
+    let lines: Vec<u64> = hits.iter().map(|hit| hit.line).collect();
+    assert_eq!(lines, [3, 4]);
+    assert_eq!(hits[1].text, "$x->times(2);");
+    assert_eq!(hits[1].ranges, vec![(2, 10)]);
+    // Whole words and case are the window's, as for the full search.
+    let case = search::SearchOptions {
+        case: true,
+        ..Default::default()
+    };
+    assert!(
+        search::search_file(&sandbox.root, "app/Tax.php", "->TIMES(", &case)
+            .unwrap()
+            .is_empty()
+    );
+    // A file with nothing left in it has no hits, and outside the work tree is refused.
+    sandbox.write("app/Tax.php", "<?php\n");
+    assert!(
+        search::search_file(&sandbox.root, "app/Tax.php", "->times(", &options)
+            .unwrap()
+            .is_empty()
+    );
+    assert!(search::search_file(&sandbox.root, "../outside.php", "x", &options).is_err());
+}
+
+#[test]
 fn searching_only_changed_files_matches_the_working_tree_panel() {
     let sandbox = search_sandbox("search-changed");
     sandbox.write("app/Tax.php", "<?php\nreturn $value->times(1.09);\n");

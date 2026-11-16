@@ -3,7 +3,7 @@ import { computed, onMounted, onUnmounted, ref } from 'vue'
 import { Users } from 'lucide-vue-next'
 import { relativeTime, useGit, type BlameRun, type FileDiff } from '~/composables/useGit'
 import { highlightWhole, languageFor } from '~/composables/useHighlight'
-import { CODE_ROW, markedLines, wasRuns, windowOf, type Line } from '~/composables/useCode'
+import { codeRow, markedLines, wasRuns, windowOf, type Line } from '~/composables/useCode'
 import { useContextMenu } from '~/composables/useContextMenu'
 import { tint } from '~/composables/useAvatars'
 import { markHtml, type FindMarks } from '~/composables/useFind'
@@ -274,11 +274,10 @@ function onNumbers(event: MouseEvent) {
   ])
 }
 
-const ROW = CODE_ROW
 </script>
 
 <template>
-  <div class="file" :class="{ waiting: props.blame && props.blameLoading }">
+  <div class="file" data-code-view :class="{ waiting: props.blame && props.blameLoading }">
     <p v-if="props.loading" class="note dim">Loading file…</p>
     <p v-else-if="props.error" class="note dim">{{ props.error }}</p>
     <p v-else-if="props.diff?.binary" class="note dim">Binary file — nothing to read.</p>
@@ -308,8 +307,8 @@ const ROW = CODE_ROW
       <div
         class="lines"
         :style="{
-          paddingTop: `${shown.first * ROW}px`,
-          paddingBottom: `${(lines.length - shown.last) * ROW}px`
+          paddingTop: `${shown.first * codeRow()}px`,
+          paddingBottom: `${(lines.length - shown.last) * codeRow()}px`
         }"
       >
       <div v-for="line in visible" :key="line.number" class="line" :class="line.mark ?? ''">
@@ -402,8 +401,8 @@ const ROW = CODE_ROW
 <style scoped>
 .file {
   font-family: var(--mono);
-  font-size: 12px;
-  line-height: 1.5;
+  font-size: var(--code-size, 12px);
+  line-height: var(--code-row, 18px);
 }
 
 .note {
@@ -416,7 +415,7 @@ const ROW = CODE_ROW
   display: flex;
   align-items: flex-start;
   white-space: pre;
-  height: 18px;
+  height: var(--code-row, 18px);
 }
 
 /* Wide enough for the longest line in the file and tall enough for none of it,
@@ -438,11 +437,11 @@ const ROW = CODE_ROW
   gap: 5px;
   flex: none;
   width: 178px;
-  height: 18px;
+  height: var(--code-row, 18px);
   padding: 0 8px 0 6px;
   font-family: var(--font);
   font-size: 11px;
-  line-height: 18px;
+  line-height: var(--code-row, 18px);
   color: var(--text-dim);
   text-align: left;
   border-right: 1px solid var(--line-soft);

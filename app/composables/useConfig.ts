@@ -77,6 +77,8 @@ export interface GlobalSettings {
   indent_style?: 'detect' | 'spaces' | 'tabs'
   indent_size?: number
   tab_width?: number
+  /** The code font in px, in every view of code; ⌘+ and ⌘− over code change it. */
+  editor_font_size?: number
   /** Check the signature on every commit the graph draws. */
   verify_signatures: boolean
   /** Clicking a worktree turns this tab into it rather than opening a new one. */

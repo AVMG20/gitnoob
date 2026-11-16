@@ -59,7 +59,16 @@ function base(path: string) {
 function title(tab: Tab) {
   const where = tab.commit ? ` at ${tab.commit.slice(0, 7)}` : ''
   const how = tab.preview ? ' — preview, double-click to keep it' : ''
-  return `${tab.path}${where}${how}`
+  return `${tab.path}${where}${how}\nMiddle-click or ⇧-click to close`
+}
+
+/** A click: ⇧ closes the tab, as a middle click does, without going to it first. */
+function onTabClick(event: MouseEvent, tab: Tab) {
+  if (event.shiftKey) {
+    void closeTabsSafely([tab.id], () => tabs.closeTab(tab.id))
+    return
+  }
+  tabs.selectTab(tab.id)
 }
 
 function menuFor(event: MouseEvent, tab: Tab) {
@@ -150,7 +159,7 @@ const forwardTitle = computed(() => `Forward (${keyLabel(keysFor('nav.forward'))
         :class="{ on: tabs.state.active === null }"
         :aria-selected="tabs.state.active === null"
         title="The commit graph (Esc)"
-        @click="tabs.showGraph()"
+        @click="!$event.shiftKey && tabs.showGraph()"
       >
         <GitBranch :size="13" />
         <span class="name">Graph</span>
@@ -166,7 +175,8 @@ const forwardTitle = computed(() => `Forward (${keyLabel(keysFor('nav.forward'))
         :data-path="tab.path"
         :title="title(tab)"
         tabindex="0"
-        @click="tabs.selectTab(tab.id)"
+        @mousedown.shift.prevent
+        @click="onTabClick($event, tab)"
         @keydown.enter.self.prevent="tabs.selectTab(tab.id)"
         @keydown.space.self.prevent="tabs.selectTab(tab.id)"
         @dblclick="tabs.pinTab(tab.id)"

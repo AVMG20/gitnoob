@@ -463,7 +463,7 @@ describe("the window itself", () => {
     expect(w.findAll(".item")).toHaveLength(3);
   });
 
-  it("marks every match of the file in the preview and opens a clicked line", async () => {
+  it("marks every match of the file in the preview", async () => {
     const w = await show();
     await w.find('.search input[type="text"]').setValue("b");
     await wait(150);
@@ -485,10 +485,6 @@ describe("the window itself", () => {
     ).toBeGreaterThan(0);
     expect(document.querySelector(".where")!.textContent).toContain("Cart.php");
     expect(document.querySelector(".where")!.textContent).toContain(":2");
-    w.findComponent({ name: "CodePreview" }).vm.$emit("open", 3);
-    const tab = tabs.state.tabs.find((one) => one.path === "app/Cart.php")!;
-    expect(tab.line).toBe(3);
-    expect(search.open).toBe(false);
   });
 
   it("copies path:line for the result under the cursor on ⌘C", async () => {

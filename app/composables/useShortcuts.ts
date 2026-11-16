@@ -41,12 +41,19 @@ export interface Shortcut {
    * never git's.
    */
   editor?: boolean
+  /**
+   * The shortcut this one takes the place of over code: ⌘+ makes the code
+   * larger there and the whole window larger everywhere else, so the two
+   * share keys without being in each other's way.
+   */
+  inPlaceOf?: string
 }
 
 const isMac = typeof navigator !== 'undefined' && navigator.userAgent.includes('Mac')
 
 const ANYWHERE = 'Anywhere in the window'
 const WORKING = 'While the working tree is shown'
+const CODE = 'Over code: the editor, a diff, the search preview'
 
 export const SHORTCUTS: Shortcut[] = [
   // Repository
@@ -130,6 +137,9 @@ export const SHORTCUTS: Shortcut[] = [
   { id: 'tab.next', keys: 'ctrl+Tab', label: 'Next tab', where: ANYWHERE, group: 'Files and editing', note: 'The graph counts as the first tab.', editor: true },
   { id: 'tab.previous', keys: 'ctrl+shift+Tab', label: 'Previous tab', where: ANYWHERE, group: 'Files and editing', editor: true },
   { id: 'file.mode', keys: 'mod+d', label: 'Switch an open file between Diff and File', where: 'An open file', group: 'Files and editing', note: 'Tab does the same, except while typing.', editor: true },
+  { id: 'editor.fontBigger', keys: 'mod+=', label: 'Make the code larger', where: CODE, group: 'Files and editing', note: 'Every view of code at once, by a pixel. Anywhere else the same key makes the whole window larger.', editor: true, inPlaceOf: 'zoom.in' },
+  { id: 'editor.fontSmaller', keys: 'mod+-', label: 'Make the code smaller', where: CODE, group: 'Files and editing', editor: true, inPlaceOf: 'zoom.out' },
+  { id: 'editor.fontReset', keys: 'mod+0', label: 'Code back to its standard size', where: CODE, group: 'Files and editing', note: 'Settings → Editor has the size as a number.', editor: true, inPlaceOf: 'zoom.reset' },
   { id: 'graph.show', keys: 'Escape', label: 'Back to the graph', where: 'An open file', group: 'Files and editing', note: 'The file stays open in its tab. Closes the find box first when it is open.' }
 ]
 
@@ -230,7 +240,12 @@ export function clashFor(row: Shortcut, chord: string): Shortcut | undefined {
     if (nth && nth.id !== row.id) return nth
   }
   return SHORTCUTS.find(
-    (one) => one.id !== row.id && boundTo(chord, one.id) && together(one.where, row.where)
+    (one) =>
+      one.id !== row.id &&
+      boundTo(chord, one.id) &&
+      together(one.where, row.where) &&
+      one.inPlaceOf !== row.id &&
+      row.inPlaceOf !== one.id
   )
 }
 

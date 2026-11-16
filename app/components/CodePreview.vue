@@ -1,34 +1,26 @@
 <script setup lang="ts">
-import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
+import { computed, ref, watch } from 'vue'
+import FileEditor from '~/components/FileEditor.vue'
 import ImageView from '~/components/ImageView.vue'
 import { isImagePath } from '~/composables/useImage'
-import { Compartment, EditorState } from '@codemirror/state'
-import { EditorView } from '@codemirror/view'
-import type { FileDiff } from '~/composables/useGit'
-import { invoke } from '~/composables/useInvoke'
-import { version } from '~/composables/useHighlight'
-import { readFile } from '~/composables/useFileEdit'
-import {
-  barsFor,
-  basics,
-  changeBars,
-  editorLanguage,
-  readOnly,
-  searchHits,
-  setBars,
-  setHits,
-  setLanding,
-  syntaxColours,
-  type LineHits
-} from '~/composables/useCodeMirror'
+import type { DiffHunk, FileDiff } from '~/composables/useGit'
+import { aimedAt, invoke } from '~/composables/useInvoke'
+import { saveStateOf } from '~/composables/useFileEdit'
+import { tabId } from '~/composables/useTabs'
+import type { LineHits } from '~/composables/useCodeMirror'
 
 /**
- * A file, read-only, at one line: the search window's preview.
+ * The search window's preview: the file in the editor, at the search's line.
  *
- * The same view the editor is built from, with the change bars, so whether a
- * match sits on a line that changed can be seen before it is opened. Every
- * match in the file is marked, the selected one brighter; lines wrap, so
- * nothing needs scrolling sideways. A click on a line opens the file there.
+ * The editor the tabs use (`FileEditor` in its `preview` form), so it edits
+ * and saves the same way: the language, the colours, the indentation, the
+ * change bars, saving as you type against the hash it read, the bar when the
+ * file changed on disk. Every match in the file is marked, the selected one
+ * brighter; lines wrap, so nothing needs scrolling sideways. A file open in a
+ * tab is the tab's buffer, borrowed, never a second copy.
+ *
+ * Read-only where the tab would be: binary, LFS, too large, mixed endings.
+ * An image is shown as one.
  */
 
 const props = defineProps<{
@@ -36,125 +28,66 @@ const props = defineProps<{
   line: number | null
   /** Every match in this file, to mark. */
   hits?: LineHits[]
+  /** What the window is looking for, for ⌘F inside the preview. */
+  query?: { search: string; caseSensitive: boolean; wholeWord: boolean; regexp: boolean } | null
 }>()
 
-const emit = defineEmits<{ open: [number] }>()
-
-const host = ref<HTMLElement | null>(null)
-const empty = ref(false)
-let view: EditorView | null = null
-const language = new Compartment()
-const colours = new Compartment()
-let loaded: string | null = null
-/** Whether the file last read had nothing to show. */
-let blank = false
+const editor = ref<InstanceType<typeof FileEditor> | null>(null)
+const hunks = ref<DiffHunk[]>([])
+const image = computed(() => !!props.path && isImagePath(props.path))
+const repo = aimedAt()
 let seq = 0
 
-function center(line: number | null) {
-  if (!view || !line) return
-  const number = Math.min(Math.max(1, line), view.state.doc.lines)
-  const at = view.state.doc.line(number).from
-  view.dispatch({
-    effects: [EditorView.scrollIntoView(at, { y: 'center' }), setLanding.of(number)]
-  })
-}
-
-function marks() {
-  if (!view) return
-  view.dispatch({ effects: setHits.of({ hits: props.hits ?? [], now: props.line }) })
-}
-
-/** An image is shown as one, small and fitted, not read as text. */
-const image = computed(() => !!props.path && isImagePath(props.path))
-
-async function show() {
+/** The file against the last commit, for the change bars. */
+async function loadHunks() {
   const path = props.path
   const mine = ++seq
-  if (path && isImagePath(path)) return
-  if (!path) {
-    empty.value = true
+  if (!path || image.value) {
+    hunks.value = []
     return
   }
-  // The same file coming back after a search with nothing in it: what was
-  // read is still there, and so is whether it had anything to show.
-  empty.value = blank
-  if (path !== loaded) {
-    const read = await readFile(path)
-    if (mine !== seq || !view) return
-    loaded = path
-    const text = read && !read.missing && read.readonly !== 'binary' ? read.text : ''
-    blank = !text
-    empty.value = blank
-    view.dispatch({
-      changes: { from: 0, to: view.state.doc.length, insert: text },
-      effects: language.reconfigure([])
-    })
-    void editorLanguage(path).then((support) => {
-      if (support && view && loaded === path) view.dispatch({ effects: language.reconfigure(support) })
-    })
-    invoke<FileDiff>('head_file_diff', { path })
-      .then((diff) => {
-        if (view && loaded === path) {
-          view.dispatch({ effects: setBars.of(barsFor(view.state.doc.toString(), diff?.hunks ?? [])) })
-        }
-      })
-      .catch(() => undefined)
-  }
-  marks()
-  center(props.line)
+  const diff = await invoke<FileDiff>('head_file_diff', { path }).catch(() => null)
+  if (mine === seq) hunks.value = diff?.hunks ?? []
 }
 
-onMounted(() => {
-  if (!host.value) return
-  view = new EditorView({
-    parent: host.value,
-    state: EditorState.create({
-      doc: '',
-      extensions: [
-        basics(),
-        changeBars(() => undefined),
-        language.of([]),
-        colours.of(syntaxColours()),
-        readOnly(true),
-        searchHits,
-        EditorView.lineWrapping,
-        EditorView.domEventHandlers({
-          click(event, editor) {
-            // A click that selected text is a selection, not a jump.
-            if (!editor.state.selection.main.empty) return false
-            const at = editor.posAtCoords({ x: event.clientX, y: event.clientY })
-            if (at === null) return false
-            emit('open', editor.state.doc.lineAt(at).number)
-            return true
-          }
-        })
-      ]
-    })
-  })
-  void show()
-})
+watch(() => props.path, () => void loadHunks(), { immediate: true })
 
-onBeforeUnmount(() => {
-  view?.destroy()
-  view = null
-})
-
-watch(() => [props.path, props.line], () => void show())
-// More matches arriving while a search runs are marked where the view is: it
-// does not go back to the selected line under whoever is reading.
+// Saved: the bars are measured against the file as it is now.
 watch(
-  () => props.hits,
-  () => marks()
+  () => (props.path ? saveStateOf(repo, tabId(props.path)) : undefined),
+  (now, before) => {
+    if (now === 'saved' && before && before !== 'saved') void loadHunks()
+  }
 )
-watch(version, () => view?.dispatch({ effects: colours.reconfigure(syntaxColours()) }))
+
+/** The caret on the search's line at its first match, and the focus in the editor. */
+function focusAt(line: number | null, column = 0) {
+  editor.value?.focusAt(line, column)
+}
+
+defineExpose({ focusAt })
 </script>
 
 <template>
   <div class="preview">
     <p v-if="!props.path" class="none faint">Nothing to preview.</p>
     <ImageView v-else-if="image" :key="props.path!" :path="props.path!" :side="{ source: 'work' }" compact />
-    <p v-else-if="empty" class="none faint">Nothing to show for this file.</p>
-    <div ref="host" class="host" :class="{ hidden: !props.path || image }" />
+    <FileEditor
+      v-else
+      :key="props.path!"
+      ref="editor"
+      :tab-id="tabId(props.path!)"
+      :path="props.path!"
+      :hunks="hunks"
+      :runs="null"
+      :blame="false"
+      :find="null"
+      :fallback="null"
+      preview
+      :line="props.line"
+      :hits="props.hits ?? []"
+      :query="props.query ?? null"
+    />
   </div>
 </template>
 
@@ -166,21 +99,9 @@ watch(version, () => view?.dispatch({ effects: colours.reconfigure(syntaxColours
   height: 100%;
 }
 
-.host {
+.preview > .editor-pane {
   flex: 1;
   min-height: 0;
-}
-
-.host.hidden {
-  display: none;
-}
-
-.host :deep(.cm-editor) {
-  height: 100%;
-}
-
-.host :deep(.cm-content) {
-  cursor: pointer;
 }
 
 .none {

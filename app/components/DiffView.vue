@@ -487,8 +487,8 @@ function paint(line: DiffLine) {
    the row was bare as soon as the patch was scrolled sideways. */
 .diff {
   font-family: var(--mono);
-  font-size: 12px;
-  line-height: 1.5;
+  font-size: var(--code-size, 12px);
+  line-height: var(--code-row, 18px);
   width: max-content;
   min-width: 100%;
 }
@@ -580,7 +580,7 @@ function paint(line: DiffLine) {
 
 .line {
   display: flex;
-  height: 18px;
+  height: var(--code-row, 18px);
   white-space: pre;
   /* As wide as the widest line, and never narrower than the view. Without the
      first, the tint on an added or deleted row stops at the edge of the window

@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
-import { CaseSensitive, ChevronRight, Funnel, GitCompare, Regex, Search, WholeWord } from 'lucide-vue-next'
+import { CaseSensitive, ChevronRight, Funnel, GitCompare, Regex, Search, TriangleAlert, WholeWord } from 'lucide-vue-next'
 import { copyText, useGit } from '~/composables/useGit'
 import CodePreview from '~/components/CodePreview.vue'
 import FileIcon from '~/components/FileIcon.vue'
@@ -8,7 +8,10 @@ import ResizeHandle from '~/components/ResizeHandle.vue'
 import { change } from '~/composables/useFileView'
 import { usePanes } from '~/composables/usePanes'
 import { keyLabel, keysFor, matchesShortcut } from '~/composables/useShortcuts'
-import { openTab } from '~/composables/useTabs'
+import { openTab, tabId } from '~/composables/useTabs'
+import { aimedAt } from '~/composables/useInvoke'
+import { useToasts } from '~/composables/useToasts'
+import { editKey, flushing, saveErrorOf, saveStateOf, type SaveState } from '~/composables/useFileEdit'
 import { colourLines, runsOf, snippetTick } from '~/composables/snippetColours'
 import {
   closeSearch,
@@ -16,6 +19,7 @@ import {
   findSymbols,
   openSearch,
   queryOf,
+  refreshFile,
   runTextSearch,
   search,
   SEARCH_MODES,
@@ -35,6 +39,13 @@ import {
  * move, ↵ opens and closes, ⌘↵ opens and stays, Tab changes mode, ⌥C ⌥W ⌥R
  * flip the options, ← and → fold a file's hits, ⌘C copies path:line. Focus
  * goes back to wherever it was.
+ *
+ * The preview is an editor (`CodePreview`): a click, or ⌘↓ from the box, puts
+ * the caret in it at the match, and from then on the keys are the editor's
+ * (↵ is a new line, Tab indents, ⌘F finds in that file) until Esc goes back to
+ * the box. What is typed there saves as in a tab, and the file's hits are
+ * searched again once it is on disk. An edit that could not be saved opens
+ * the file in a tab when the window closes, so it is not left behind unseen.
  */
 
 const git = useGit()
@@ -44,6 +55,10 @@ const box = ref<HTMLInputElement | null>(null)
 const list = ref<HTMLElement | null>(null)
 /** The pane the preview is in, to tell a selection made there from one in a box. */
 const preview = ref<HTMLElement | null>(null)
+const previewer = ref<InstanceType<typeof CodePreview> | null>(null)
+/** The repository the window searches, fixed while it is open. */
+const repo = aimedAt()
+const toasts = useToasts()
 const cursor = ref(0)
 const names = ref<FoundName[]>([])
 const symbols = ref<FoundSymbol[]>([])
@@ -230,6 +245,125 @@ const previewHits = computed(() => {
 /** The folders of the file under the cursor, for the line over the preview. */
 const crumbs = computed(() => (current.value ? current.value.path.split('/') : []))
 
+/** What ⌘F inside the preview starts from: the window's own query, in files. */
+const previewQuery = computed(() =>
+  search.mode === 'text' && search.text.query
+    ? {
+        search: search.text.query,
+        caseSensitive: search.text.case,
+        wholeWord: search.text.word,
+        regexp: search.text.regex
+      }
+    : null
+)
+
+/**
+ * Where the edits in the previewed file stand, for the line over it: a dot
+ * while they are not on disk yet, a warning when they cannot get there. No
+ * word for saved, as in the file's header.
+ */
+const previewSave = computed(() => {
+  const path = current.value?.path
+  if (!path) return null
+  const state = saveStateOf(repo, tabId(path))
+  if (state === 'unsaved' || state === 'saving') return { dot: true, text: '', title: 'Not saved yet' }
+  if (state === 'conflict') {
+    return { dot: false, text: 'Changed on disk', title: 'The file changed on disk under your edits; the bar below asks which to keep' }
+  }
+  if (state === 'failed') {
+    return { dot: false, text: 'Not saved', title: saveErrorOf(repo, tabId(path)) ?? 'The last save failed' }
+  }
+  return null
+})
+
+// --- edits made in the preview
+
+/** Files edited in the preview while the window is open. */
+const touched = ref<string[]>([])
+/** How each one's edits last stood, to see them land. */
+const lastState = new Map<string, SaveState | undefined>()
+
+watch(
+  () => (current.value ? saveStateOf(repo, tabId(current.value.path)) : undefined),
+  (state) => {
+    const path = current.value?.path
+    if (path && state && state !== 'saved' && state !== 'readonly' && !touched.value.includes(path)) {
+      lastState.set(path, state)
+      touched.value = [...touched.value, path]
+    }
+  }
+)
+
+// A file edited in the preview landed on disk: its hits are searched again,
+// that file only, and the cursor stays on the nearest one.
+watch(
+  () => touched.value.map((path) => saveStateOf(repo, tabId(path))),
+  (states) => {
+    touched.value.forEach((path, at) => {
+      const state = states[at]
+      const before = lastState.get(path)
+      lastState.set(path, state)
+      if (state === 'saved' && before !== 'saved') void refreshHits(path)
+    })
+  }
+)
+
+/**
+ * After the window closed: an edit made in the preview that could not be
+ * saved (the file changed on disk, or the write failed) is opened in a tab,
+ * where its bar asks what to do, rather than left waiting unseen.
+ */
+async function openUnsaved(paths: string[]) {
+  // The preview's editor has gone by now, and left its edits to be saved.
+  await nextTick()
+  await Promise.all(paths.map((path) => flushing.get(editKey(repo, tabId(path)))))
+  if (aimedAt() !== repo) return
+  const stuck = paths.filter((path) => {
+    const state = saveStateOf(repo, tabId(path))
+    return state === 'conflict' || state === 'failed'
+  })
+  if (!stuck.length) return
+  for (const path of stuck) openTab({ path, mode: 'file', side: 'unstaged' }, { reveal: 'switch' })
+  const names = stuck.map((path) => path.slice(path.lastIndexOf('/') + 1)).join(', ')
+  toasts.info(
+    `Edits in ${names} are not saved`,
+    `The file changed on disk, or the save failed. ${stuck.length === 1 ? 'It is' : 'They are'} open in a tab, where the bar asks what to keep.`
+  )
+}
+
+async function refreshHits(path: string) {
+  if (search.mode !== 'text') return
+  const was = current.value
+  await refreshFile(path)
+  if (!was) return
+  if (was.path !== path) {
+    // Another file's row: the same row, wherever it is now.
+    const same = items.value.findIndex((one) => one.path === was.path && one.line === was.line)
+    if (same >= 0) cursor.value = same
+    return
+  }
+  let best = -1
+  let gap = Infinity
+  items.value.forEach((one, at) => {
+    if (one.path !== path) return
+    const distance = Math.abs((one.line ?? 0) - (was.line ?? 0))
+    if (distance < gap) {
+      gap = distance
+      best = at
+    }
+  })
+  if (best >= 0) cursor.value = best
+  else cursor.value = Math.min(cursor.value, Math.max(0, items.value.length - 1))
+}
+
+/** The caret in the preview, on the selected match. */
+function intoPreview() {
+  const item = current.value
+  if (!item) return
+  const column = item.kind === 'hit' ? (item.ranges?.[0]?.[0] ?? 0) : 0
+  previewer.value?.focusAt(item.line, column)
+}
+
 // --- running the search as the box changes
 
 function schedule() {
@@ -294,11 +428,6 @@ function open(item: Item | null, stay: boolean) {
   if (!stay) closeSearch()
 }
 
-/** A line clicked in the preview: that file, at that line. */
-function openAt(line: number) {
-  if (current.value) open({ ...current.value, line }, false)
-}
-
 async function move(by: number) {
   const count = items.value.length
   if (!count) return
@@ -332,10 +461,32 @@ const OPTION_KEYS: Record<string, 'case' | 'word' | 'regex'> = {
   KeyR: 'regex'
 }
 
+/** Whether a key was pressed in the preview's editor, or its find bar. */
+function inPreview(event: KeyboardEvent) {
+  const target = event.target as HTMLElement | null
+  return !!target?.closest?.('.cm-editor') && !!preview.value?.contains(target)
+}
+
 function onKey(event: KeyboardEvent) {
   const mod = isMac ? event.metaKey : event.ctrlKey
   const inBox = event.target === box.value
   const field = event.target as HTMLInputElement | null
+  if (inPreview(event)) {
+    // The editor's keys: ↵ is a new line, Tab indents, the arrows move the
+    // caret. Esc goes back to the box, once the editor has had it (its find
+    // bar, a selection); the next Esc in the box closes the window.
+    if (event.key !== 'Escape') return
+    event.stopPropagation()
+    if (event.defaultPrevented) return
+    event.preventDefault()
+    box.value?.focus()
+    return
+  }
+  if (event.key === 'ArrowDown' && mod && !event.altKey && !event.shiftKey && inBox) {
+    event.preventDefault()
+    intoPreview()
+    return
+  }
   if (matchesShortcut(event, 'search.text')) {
     event.preventDefault()
     openSearch('text')
@@ -413,6 +564,7 @@ onMounted(async () => {
 
 onBeforeUnmount(() => {
   clearTimeout(timer)
+  if (touched.value.length) void openUnsaved([...touched.value])
   if (before instanceof HTMLElement && before.isConnected) before.focus()
 })
 
@@ -424,7 +576,7 @@ const query = computed({
 const alt = isMac ? '⌥' : 'Alt+'
 const hint = computed(
   () =>
-    `↵ open · ${keyLabel('mod+enter')} open, keep searching · Tab mode · ${keyLabel('mod+c')} copy path:line · Esc close`
+    `↵ open · ${keyLabel('mod+enter')} open, keep searching · ${keyLabel('mod+arrowdown')} edit in the preview · Tab mode · ${keyLabel('mod+c')} copy path:line · Esc close`
 )
 </script>
 
@@ -637,12 +789,17 @@ const hint = computed(
               <span class="last">{{ crumbs[crumbs.length - 1] }}</span>
             </span>
             <span v-if="current.line" class="at">:{{ current.line }}</span>
+            <span v-if="previewSave?.dot" class="dirty" :title="previewSave.title" />
+            <span v-else-if="previewSave" class="save-warning" :title="previewSave.title"
+              ><TriangleAlert :size="11" />{{ previewSave.text }}</span
+            >
           </div>
           <CodePreview
+            ref="previewer"
             :path="current?.path ?? null"
             :line="current?.line ?? null"
             :hits="previewHits"
-            @open="openAt"
+            :query="previewQuery"
           />
         </div>
       </div>
@@ -857,6 +1014,30 @@ const hint = computed(
 .at {
   flex: none;
   font-family: var(--mono);
+}
+
+/* Edits in the preview not on disk yet: the tab strip's dot. */
+.where .dirty {
+  flex: none;
+  width: 8px;
+  height: 8px;
+  margin-left: 2px;
+  border-radius: 50%;
+  background: var(--text-dim);
+}
+
+/* Edits that cannot get to disk: the file header's chip. */
+.save-warning {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  flex: none;
+  padding: 1px 6px;
+  font-size: 11px;
+  line-height: 16px;
+  color: var(--danger);
+  border: 1px solid color-mix(in srgb, var(--danger) 40%, transparent);
+  border-radius: var(--radius-sm);
 }
 
 .group {

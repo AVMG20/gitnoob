@@ -139,7 +139,7 @@ function draftKey(line: DiffLine) {
 <template>
   <section class="file" data-testid="review-diff" :data-file="props.file.path">
 
-    <div class="diff">
+    <div class="diff" data-code-view>
       <p v-if="props.file.binary || !props.file.hunks.length" class="note dim">
         No text diff for this file.
       </p>
@@ -273,10 +273,10 @@ function draftKey(line: DiffLine) {
   align-items: center;
   width: max-content;
   min-width: 100%;
-  height: 18px;
+  height: var(--code-row, 18px);
   font-family: var(--mono);
-  font-size: 12px;
-  line-height: 18px;
+  font-size: var(--code-size, 12px);
+  line-height: var(--code-row, 18px);
   white-space: pre;
 }
 

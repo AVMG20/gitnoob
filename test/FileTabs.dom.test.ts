@@ -116,6 +116,25 @@ describe('the file tab strip', () => {
     expect(tabs.state.tabs.map((tab) => tab.path)).toEqual(['b.php'])
   })
 
+  it('closes a tab on a ⇧-click without going to it first, and leaves the graph tab alone', async () => {
+    openTab({ path: 'a.php' })
+    openTab({ path: 'b.php' })
+    const w = await show()
+    expect(fileTabs(w)[0]!.attributes('title')).toContain('Middle-click or ⇧-click to close')
+    expect(tabs.state.active).toBe(tabId('b.php'))
+    const back = tabs.state.back.length
+    await fileTabs(w)[0]!.trigger('click', { shiftKey: true })
+    await flushPromises()
+    expect(tabs.state.back).toHaveLength(back)
+    expect(tabs.state.tabs.map((tab) => tab.path)).toEqual(['b.php'])
+    // The tab on screen stayed the one on screen.
+    expect(tabs.state.active).toBe(tabId('b.php'))
+
+    await w.find('.ftab.graph').trigger('click', { shiftKey: true })
+    expect(tabs.state.tabs.map((tab) => tab.path)).toEqual(['b.php'])
+    expect(tabs.state.active).toBe(tabId('b.php'))
+  })
+
   it('goes when the last file closes, and back brings the file back', async () => {
     openTab({ path: 'a.php' })
     const w = await show()

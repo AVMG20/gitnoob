@@ -1,5 +1,6 @@
 import { computed, reactive, watch } from 'vue'
 import { diffMode, type DiffMode } from './useDiffMode'
+import { clearWarm, pruneWarm } from './editorBuffers'
 
 /**
  * The files open in the middle of the window, and the way back through them.
@@ -204,8 +205,10 @@ export function openTab(target: TabTarget, options: OpenOptions = {}) {
   }
 
   const old = preview ? state.tabs.findIndex((one) => one.preview) : -1
-  if (old >= 0) state.tabs.splice(old, 1, tab)
-  else {
+  if (old >= 0) {
+    state.tabs.splice(old, 1, tab)
+    forgetClosed()
+  } else {
     const at = from ? state.tabs.indexOf(from) + 1 : state.tabs.length
     state.tabs.splice(at, 0, tab)
   }
@@ -332,11 +335,13 @@ export function closeTab(id: string) {
   if (at < 0) return
   if (state.active !== id) {
     state.tabs.splice(at, 1)
+    forgetClosed()
     return
   }
   remember()
   state.tabs.splice(at, 1)
   activate(state.tabs[at - 1] ?? state.tabs[at] ?? null)
+  forgetClosed()
 }
 
 export function closeOthers(id: string) {
@@ -345,12 +350,14 @@ export function closeOthers(id: string) {
   if (state.active !== id) remember()
   state.tabs = [keep]
   activate(keep)
+  forgetClosed()
 }
 
 export function closeAll() {
   if (state.active !== null) remember()
   state.tabs = []
   activate(null)
+  forgetClosed()
 }
 
 /** Closes the file tabs a test says are done with, without moving the window. */
@@ -358,6 +365,12 @@ export function closeWhere(test: (tab: Tab) => boolean) {
   const active = activeTab()
   if (active && test(active)) closeTab(active.id)
   state.tabs = state.tabs.filter((tab) => !test(tab))
+  forgetClosed()
+}
+
+/** A closed tab's editor is not kept warm (`editorBuffers.ts`). */
+function forgetClosed() {
+  pruneWarm(state.tabs.map((tab) => tab.id))
 }
 
 /** Goes to a place: the graph, a tab that is open, or one closed since. */
@@ -427,6 +440,9 @@ export function stepTab(by: number) {
  */
 export function switchTabs(path: string | null) {
   if (path === current) return
+  // Editors are kept warm for the project in front only. The ones going
+  // away leave their unsaved edits to the drafts as they go.
+  clearWarm(path)
   if (current !== null) {
     sessions.set(current, {
       tabs: state.tabs,
@@ -454,6 +470,7 @@ export function switchTabs(path: string | null) {
 export function resetTabs() {
   sessions.clear()
   current = null
+  clearWarm(null)
   state.tabs = []
   state.active = null
   state.back = []

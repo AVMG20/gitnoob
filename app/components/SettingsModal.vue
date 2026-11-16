@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import { CODE_FONT_DEFAULT, CODE_FONT_MAX, CODE_FONT_MIN, codeFontSize, setCodeFont } from '~/composables/useCodeFont'
 import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
 import {
   Check,
@@ -1200,6 +1201,35 @@ onMounted(async () => {
               <option v-for="size in [2, 4, 8]" :key="size" :value="size">{{ size }} columns</option>
             </select>
           </label>
+
+          <label class="field">
+            <span class="label">Editor font size</span>
+            <span class="font-size">
+              <input
+                data-setting="editor-font-size"
+                type="number"
+                :min="CODE_FONT_MIN"
+                :max="CODE_FONT_MAX"
+                :value="codeFontSize()"
+                @change="setCodeFont(Number(($event.target as HTMLInputElement).value) || CODE_FONT_DEFAULT)"
+              />
+              <span class="faint">px</span>
+              <button
+                v-if="codeFontSize() !== CODE_FONT_DEFAULT"
+                type="button"
+                class="link"
+                data-setting="editor-font-reset"
+                @click="setCodeFont(CODE_FONT_DEFAULT)"
+              >
+                Reset
+              </button>
+            </span>
+          </label>
+          <p class="hint faint no-top">
+            For every view of code: the editor, diffs, the search preview, the conflict resolver.
+            {{ keyLabel(keysFor('editor.fontBigger')) }} and {{ keyLabel(keysFor('editor.fontSmaller')) }}
+            over code change it too; elsewhere they zoom the whole window.
+          </p>
         </section>
 
         <!-- Behaviour -->
@@ -1943,6 +1973,16 @@ h3 {
 }
 
 /* A sentence that does something, inside a sentence that does not. */
+.font-size {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.font-size input {
+  width: 64px;
+}
+
 .link {
   padding: 0;
   color: var(--text);

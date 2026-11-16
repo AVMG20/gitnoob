@@ -131,6 +131,13 @@ export function setSaveState(repo: string | null, tab: string, state: SaveState)
   if (found) found.dirty = state === 'unsaved' || state === 'saving' || state === 'conflict' || state === 'failed'
 }
 
+/**
+ * What a left-behind draft wrote, and the hash it left, by `editKey`: an
+ * editor taking up a state kept warm from before the save learns from it
+ * what is on disk now, without reading it.
+ */
+export const landed = new Map<string, { text: string; hash: string }>()
+
 /** Saves under way for drafts, so an editor reopened meanwhile waits for them. */
 export const flushing = new Map<string, Promise<void>>()
 
@@ -149,7 +156,8 @@ function track(key: string, run: Promise<void>) {
 async function flushDraft(draft: EditDraft) {
   const key = editKey(draft.repo, draft.tab)
   try {
-    await writeFile(draft.path, draft.text, draft.baseHash, draft.repo)
+    const hash = await writeFile(draft.path, draft.text, draft.baseHash, draft.repo)
+    if (typeof hash === 'string') landed.set(key, { text: draft.text, hash })
     if (drafts.get(key) === draft) drafts.delete(key)
     setSaveState(draft.repo, draft.tab, 'saved')
   } catch (error) {
@@ -295,6 +303,7 @@ export async function closeTabsSafely(ids: string[], close: () => void): Promise
 export function resetEdits() {
   drafts.clear()
   flushing.clear()
+  landed.clear()
   abandoned.clear()
   for (const key of Object.keys(saveErrors)) delete saveErrors[key]
   for (const key of Object.keys(saveStates)) delete saveStates[key]

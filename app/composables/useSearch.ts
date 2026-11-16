@@ -81,13 +81,7 @@ export async function runTextSearch() {
   try {
     await invoke('search_text', {
       query,
-      options: {
-        case: search.text.case,
-        word: search.text.word,
-        regex: search.text.regex,
-        changed_only: search.text.changedOnly,
-        glob: search.text.glob
-      },
+      options: optionsNow(),
       request
     })
   } catch (error) {
@@ -104,6 +98,34 @@ export async function runTextSearch() {
       }
     }
   }
+}
+
+function optionsNow() {
+  return {
+    case: search.text.case,
+    word: search.text.word,
+    regex: search.text.regex,
+    changed_only: search.text.changedOnly,
+    glob: search.text.glob
+  }
+}
+
+/**
+ * Searches one file again, after it was edited in the preview, and puts its
+ * new hits in place of the old: the same query and options, the same place in
+ * the list, without running the whole search again. A file left with nothing
+ * in it drops out. Nothing changes if the search moved on meanwhile.
+ */
+export async function refreshFile(path: string) {
+  const query = search.text.query
+  const request = search.request
+  if (!query) return
+  const hits = await invoke<LineHit[]>('search_file', { path, query, options: optionsNow() }).catch(() => null)
+  if (!hits || search.request !== request || search.text.query !== query) return
+  const at = search.found.findIndex((one) => one.path === path)
+  if (at < 0) return
+  if (hits.length) search.found.splice(at, 1, { request, path, hits })
+  else search.found.splice(at, 1)
 }
 
 /** Hands one event's worth of results to the window, if it is still wanted. */

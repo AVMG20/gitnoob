@@ -373,6 +373,18 @@ async fn search_text(
     Ok(())
 }
 
+/// One file's hits for the search window's query, after it was edited.
+#[tauri::command]
+async fn search_file(
+    path: String,
+    query: String,
+    options: search::SearchOptions,
+    state: Aimed,
+) -> Result<Vec<search::LineHit>, String> {
+    let root = state.path()?;
+    search::search_file(&root, &path, &query, &options)
+}
+
 /// The name at a UTF-16 offset in a file, in `text` when the editor has
 /// edits the disk does not.
 #[tauri::command]
@@ -2261,6 +2273,7 @@ pub fn run() {
             open_default,
             find_files,
             search_text,
+            search_file,
             quit_ready,
             quit_guard,
             quit_heard,

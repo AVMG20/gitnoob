@@ -13,9 +13,11 @@ import { useTheme } from '~/composables/useTheme'
 import { useUpdates } from '~/composables/useUpdates'
 import { useShortcuts } from '~/composables/useShortcuts'
 import { useZoom } from '~/composables/useZoom'
+import { followConfig, installCodeFontKeys } from '~/composables/useCodeFont'
 import { useNavButtons } from '~/composables/useNavButtons'
 import { openSearch, search } from '~/composables/useSearch'
 import { usagesPopup } from '~/composables/useSymbols'
+import { workTreeMoved } from '~/composables/editorBuffers'
 import { unwatchQuit, watchQuit } from '~/composables/useQuit'
 import { runHomeAct, type HomeAct } from '~/composables/useForgeNudges'
 
@@ -31,6 +33,10 @@ const updates = useUpdates()
 // paint, so neither the theme nor the size is seen changing.
 useTheme()
 const zoom = useZoom()
+// ⌘+ ⌘− ⌘0 over code size the code, ahead of the window's zoom, and the size
+// comes from the config.
+installCodeFontKeys()
+followConfig()
 // The mouse's back and forward buttons, wherever the pointer is.
 useNavButtons()
 
@@ -378,7 +384,10 @@ onMounted(async () => {
     'repo-changed',
     ({ payload }) => {
       if (payload.git_dir) pending.gitDir = true
-      if (payload.work_tree) pending.workTree = true
+      if (payload.work_tree) {
+        pending.workTree = true
+        workTreeMoved()
+      }
       drain()
     }
   ).catch(() => undefined)
@@ -496,6 +505,7 @@ onUnmounted(() => {
 
     <ActivityLog />
     <Toasts />
+    <CodeFontToast />
     <ForgeWatch />
 
     <ProjectSwitcher

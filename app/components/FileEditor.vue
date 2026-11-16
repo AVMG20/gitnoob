@@ -1,8 +1,15 @@
 <script setup lang="ts">
 import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { listen, type UnlistenFn } from '@tauri-apps/api/event'
-import { Compartment, EditorState, Transaction } from '@codemirror/state'
-import { EditorView, type ViewUpdate } from '@codemirror/view'
+import { EditorState, Prec, Transaction, type ChangeSet, type EditorSelection } from '@codemirror/state'
+import { EditorView, keymap, type ViewUpdate } from '@codemirror/view'
+import {
+  openSearchPanel,
+  search as findPanel,
+  searchKeymap,
+  SearchQuery,
+  setSearchQuery
+} from '@codemirror/search'
 import { TriangleAlert } from 'lucide-vue-next'
 import CompareDialog from '~/components/CompareDialog.vue'
 import ChangeCard from '~/components/ChangeCard.vue'
@@ -39,9 +46,11 @@ import {
   editorLanguage,
   readOnly,
   rememberFocus,
+  searchHits,
   setBars,
   setBlame,
   setFind,
+  setHits,
   setLanding,
   setLenses,
   setUnused,
@@ -49,17 +58,32 @@ import {
   navigation,
   unusedCode,
   usageLenses,
+  type LineHits,
   type UnusedMark,
   type UsageLens
 } from '~/composables/useCodeMirror'
 import { aimedAt, invokeAt } from '~/composables/useInvoke'
 import { useConfig } from '~/composables/useConfig'
+import { onCodeFont } from '~/composables/useCodeFont'
 import { jumpFrom, nextSymbolRequest, showUsages } from '~/composables/useSymbols'
+import {
+  acquire,
+  follow,
+  inCharge,
+  isStale,
+  release,
+  slots,
+  workTreeEpoch,
+  workTreeMoved,
+  type Held,
+  type Holder
+} from '~/composables/editorBuffers'
 import {
   drafts,
   editKey,
   flushing,
   isConflict,
+  landed,
   leave,
   onFlush,
   readFile,
@@ -80,6 +104,17 @@ import {
  *
  * Read-only for a binary, an LFS pointer, anything not UTF-8 or over 2 MB, and
  * whatever `locked` says (a commit's copy).
+ *
+ * Its state outlives it (`editorBuffers.ts`): switching tabs puts it away
+ * and coming back takes it up again, parsed, coloured, with its caret, scroll
+ * and undo history, without reading the file. A second editor of the same
+ * file borrows the state, and this one follows its edits and saves nothing
+ * until it is given back.
+ *
+ * `preview` is the search window's pane: the same editor without a tab of its
+ * own, every match marked, lines wrapped, and ⌘F opening CodeMirror's own find
+ * bar inside the pane. Over a file open in a tab it borrows the tab's state,
+ * so the two are one buffer.
  */
 
 const props = defineProps<{
@@ -94,6 +129,14 @@ const props = defineProps<{
   /** Text to show read-only when the file cannot be read for editing. */
   fallback: string | null
   locked?: boolean
+  /** The search window's preview. */
+  preview?: boolean
+  /** For the preview: the line the search is on, to bring into view. */
+  line?: number | null
+  /** For the preview: every match in the file, to mark. */
+  hits?: LineHits[]
+  /** For the preview's ⌘F: what the search window is looking for. */
+  query?: { search: string; caseSensitive: boolean; wholeWord: boolean; regexp: boolean } | null
 }>()
 
 const emit = defineEmits<{
@@ -166,10 +209,11 @@ let timer: ReturnType<typeof setTimeout> | undefined
 
 const editable = computed(() => !reason.value && !props.locked)
 
-const language = new Compartment()
-const colours = new Compartment()
-const access = new Compartment()
-const indenting = new Compartment()
+const { language, colours, access, indenting, bound } = slots
+/** Lent to another editor of this file: this one saves nothing until it is back. */
+let lent = false
+/** The work tree's count of changes this editor has caught up with. */
+let seenEpoch = 0
 
 // --- indentation
 //
@@ -246,7 +290,7 @@ async function save(): Promise<void> {
   clearTimeout(timer)
   // One write at a time: the next names the hash the last one left.
   while (inflight) await inflight
-  if (!view || conflict.value || !editable.value || base.hash === null) return
+  if (lent || !view || conflict.value || !editable.value || base.hash === null) return
   const now = text()
   if (now === base.text) return
   inflight = write(now)
@@ -255,7 +299,7 @@ async function save(): Promise<void> {
   } finally {
     inflight = null
   }
-  if (view && !conflict.value && !failure.value && text() !== base.text) {
+  if (view && !lent && !conflict.value && !failure.value && text() !== base.text) {
     state('unsaved')
     schedule()
   }
@@ -310,12 +354,13 @@ function replaceText(next: string, record = false) {
 
 /** Something on disk moved: is it this file, and what does it mean here? */
 async function checkDisk() {
-  if (!view || inflight || base.hash === null) return
+  if (lent || !view || inflight || base.hash === null) return
+  seenEpoch = workTreeEpoch()
   const before = base.hash
   const read = await readFile(props.path, repo)
   // A save landed meanwhile: this read may be from before it, and taking it
   // would put the text back to what it was.
-  if (!read || !view || inflight || base.hash !== before) return
+  if (!read || lent || !view || inflight || base.hash !== before) return
   const dirty = text() !== base.text
   if (read.missing) {
     if (dirty) {
@@ -680,7 +725,7 @@ function refreshSymbols(delay = 300) {
 }
 
 async function loadSymbols() {
-  if (!view || !named() || props.locked) return
+  if (lent || !view || !named() || props.locked || props.preview) return
   const mine = ++symbolSeq
   const asked = text()
   const counts = config.settings.value?.usage_counts !== false
@@ -692,19 +737,23 @@ async function loadSymbols() {
   ])
   // Typed over since: the offsets are for a text that is gone. The next save
   // asks again.
-  if (mine !== symbolSeq || !view || text() !== asked) return
+  if (mine !== symbolSeq || lent || !view || text() !== asked) return
   view.dispatch({ effects: [setUnused.of(marks ?? []), setLenses.of(lenses ?? [])] })
 }
 
-defineExpose({ goToLine, nextChange, focus, save, text, jumpAtCaret, openCard, closeCard })
+defineExpose({ goToLine, nextChange, focus, focusAt, save, text, jumpAtCaret, openCard, closeCard })
 
 // --- building the view
 
 function onUpdate(update: ViewUpdate) {
+  if (lent) return
   if (update.docChanged) {
-    // Typing in a preview tab keeps it.
+    // The editor this was borrowed from shows the edit too.
+    follow(repo, props.tabId, holder, update.changes)
+    // Typing in a preview tab keeps it. Not typing in the search window's
+    // preview: that opens no tab.
     const typed = update.transactions.some((tr) => tr.annotation(Transaction.userEvent) !== undefined)
-    if (typed) {
+    if (typed && !props.preview) {
       const tab = tabs.state.tabs.find((one) => one.id === props.tabId)
       if (tab?.preview) pinTab(tab.id)
     }
@@ -724,7 +773,7 @@ function onUpdate(update: ViewUpdate) {
       if (dirty) schedule()
     }
   }
-  if (update.selectionSet) {
+  if (update.selectionSet && !props.preview) {
     const tab = tabs.state.tabs.find((one) => one.id === props.tabId)
     if (tab) {
       const head = update.state.selection.main.head
@@ -761,6 +810,18 @@ function showFind() {
   view.dispatch({ effects })
 }
 
+// The code changed size: the caret's line stays where it was on screen.
+const dropFontKeeper = onCodeFont(() => {
+  if (!view) return
+  const head = view.state.selection.main.head
+  const offset = view.lineBlockAt(head).top - view.scrollDOM.scrollTop
+  return () => {
+    if (!view) return
+    view.requestMeasure()
+    view.dispatch({ effects: EditorView.scrollIntoView(head, { y: 'start', yMargin: Math.max(0, offset) }) })
+  }
+})
+
 let unlisten: UnlistenFn | undefined
 let dropFlush: (() => void) | undefined
 let checkTimer: ReturnType<typeof setTimeout> | undefined
@@ -769,7 +830,277 @@ function onBlur() {
   void save()
 }
 
+/**
+ * What calls back into this component: swapped in whenever a state comes
+ * from another editor, so nothing in it points at one that has gone.
+ */
+function own() {
+  return [
+    changeBars((line) => openCard(line)),
+    navigation((pos, event) => {
+      if (named()) void jumpFrom(props.path, pos, text(), { x: event.clientX, y: event.clientY })
+    }),
+    usageLenses((lens, event) =>
+      void showUsages(lens.name, props.path, lens.kind, { x: event.clientX, y: event.clientY }, lens.line)
+    ),
+    EditorView.updateListener.of(onUpdate),
+    EditorView.domEventHandlers({
+      keydown(event) {
+        if (matchesShortcut(event, 'file.save')) {
+          event.preventDefault()
+          void save()
+          return true
+        }
+        return false
+      },
+      focus(_event, editor) {
+        rememberFocus(editor)
+        return false
+      },
+      blur() {
+        void save()
+        return false
+      }
+    }),
+    ...(props.preview ? previewOnly() : [])
+  ]
+}
+
+/** What the search window's preview has that a tab's editor does not. */
+function previewOnly() {
+  return [
+    searchHits,
+    EditorView.lineWrapping,
+    findPanel({ top: true }),
+    Prec.high(
+      keymap.of([{ key: 'Mod-f', run: findHere }, ...searchKeymap.filter((one) => one.key !== 'Mod-f')])
+    ),
+    findPanelLook
+  ]
+}
+
+/** ⌘F in the preview: CodeMirror's find bar, inside the pane, on the window's query. */
+function findHere(editor: EditorView) {
+  openSearchPanel(editor)
+  const query = props.query
+  if (query?.search) {
+    editor.dispatch({ effects: setSearchQuery.of(new SearchQuery({ ...query })) })
+    editor.dom.querySelector<HTMLInputElement>('.cm-search input[name="search"]')?.select()
+  }
+  return true
+}
+
+/** The find bar in the app's colours rather than CodeMirror's. */
+const findPanelLook = EditorView.theme({
+  '.cm-panels': { backgroundColor: 'var(--bg-raised)', color: 'var(--text)' },
+  '.cm-panels-top': { borderBottom: '1px solid var(--line-soft)' },
+  '.cm-search': { fontSize: '12px', padding: '4px 8px', display: 'flex', flexWrap: 'wrap', gap: '4px', alignItems: 'center' },
+  '.cm-search input, .cm-search button': { fontSize: '12px', margin: '0' },
+  '.cm-search .cm-textfield': {
+    background: 'var(--bg)',
+    color: 'var(--text)',
+    border: '1px solid var(--line)',
+    borderRadius: 'var(--radius-sm)',
+    padding: '2px 6px'
+  },
+  '.cm-search .cm-button': {
+    background: 'var(--bg)',
+    backgroundImage: 'none',
+    color: 'var(--text)',
+    border: '1px solid var(--line)',
+    borderRadius: 'var(--radius-sm)',
+    padding: '1px 8px'
+  },
+  '.cm-search label': { color: 'var(--text-dim)' },
+  '.cm-search [name="close"]': { color: 'var(--text-dim)' }
+})
+
+/** The preview's marks: every match in the file, the one the search is on brighter. */
+function showHits() {
+  if (!view || !props.preview) return
+  view.dispatch({ effects: setHits.of({ hits: props.hits ?? [], now: props.line ?? null }) })
+}
+
+/** The preview's line in the middle of the pane, picked out; the caret stays where it is. */
+function center() {
+  if (!view || !props.preview || !props.line) return
+  const number = Math.min(Math.max(1, props.line), view.state.doc.lines)
+  const at = view.state.doc.line(number).from
+  view.dispatch({ effects: [EditorView.scrollIntoView(at, { y: 'center' }), setLanding.of(number)] })
+}
+
+/** Puts the caret on the search's line, at its first match, and the focus in the editor. */
+function focusAt(line: number | null, column = 0) {
+  if (!view) return
+  if (line) {
+    const number = Math.min(Math.max(1, line), view.state.doc.lines)
+    const at = view.state.doc.line(number)
+    const pos = at.from + Math.min(column, at.length)
+    view.dispatch({ selection: { anchor: pos }, effects: EditorView.scrollIntoView(pos, { y: 'center' }) })
+  }
+  view.focus()
+}
+
+// --- kept warm, and handed between editors (editorBuffers.ts)
+
+/** What another editor needs to carry on from here. Null when it should read the file itself. */
+function snapshot(): Held | null {
+  if (!view || lent || props.locked || deleted.value) return null
+  if (reason.value === 'missing' || reason.value === 'unreadable') return null
+  const held: Held = {
+    path: props.path,
+    state: view.state,
+    // The preview's place is the search's, not the tab's: the tab goes back
+    // to where it was.
+    scroll: props.preview ? null : view.scrollSnapshot(),
+    base: { ...base },
+    reason: reason.value,
+    editorconfig,
+    colours: version.value,
+    epoch: seenEpoch,
+    settle: null
+  }
+  // A save on its way: the hash it leaves is the one the next save names.
+  const writing = inflight
+  if (writing) {
+    held.settle = writing.then(
+      () => {
+        held.base = { ...base }
+      },
+      () => undefined
+    )
+  }
+  return held
+}
+
+/** Where this editor was when it lent its state, to go back to. */
+let lentScroll: ReturnType<EditorView['scrollSnapshot']> | null = null
+
+const holder: Holder = {
+  sticky: !!props.preview,
+  peek: () => snapshot(),
+  lend() {
+    const held = snapshot()
+    lentScroll = view?.scrollSnapshot() ?? null
+    clearTimeout(timer)
+    clearTimeout(checkTimer)
+    clearTimeout(symbolTimer)
+    closeCard()
+    lent = true
+    view?.dispatch({ effects: access.reconfigure(readOnly(true)) })
+    return held
+  },
+  reclaim(held) {
+    lent = false
+    if (!view) return
+    if (!held || held.path !== props.path) {
+      view.dispatch({ effects: access.reconfigure(readOnly(!editable.value)) })
+      return
+    }
+    // The caret where it was here, carried through the edits made meanwhile.
+    const selection = view.state.doc.eq(held.state.doc) ? view.state.selection : null
+    void adopt({ ...held, scroll: lentScroll }, true, selection)
+    lentScroll = null
+  },
+  follow(changes: ChangeSet) {
+    // Only onto the text the change was made on: a state this editor did not
+    // lend (the other one read the file itself) is not followed.
+    if (!view || !lent || changes.length !== view.state.doc.length) return
+    view.dispatch({ changes, annotations: [Transaction.addToHistory.of(false)] })
+  }
+}
+
+/**
+ * Carries on from a state another editor left: no read, no parse, no
+ * colouring. Checks the disk only when something there moved meanwhile.
+ * `back` is this editor taking back what it lent, which saves what was typed
+ * in the other one straight away.
+ */
+async function adopt(held: Held, back = false, selection: EditorSelection | null = null) {
+  // Only waited for when there is something to wait for, so the usual way
+  // back draws on the first frame.
+  if (held.settle) await held.settle
+  const pending = flushing.get(key)
+  if (pending) await pending
+  if (!alive || !host.value) return
+  base.text = held.base.text
+  base.hash = held.base.hash
+  base.shape = held.base.shape
+  reason.value = held.reason
+  editorconfig = held.editorconfig
+  const doc = held.state.doc.toString()
+  // A follower leaves the drafts and saves to the editor in charge.
+  const draft = lent ? undefined : drafts.get(key)
+  const wrote = lent ? undefined : landed.get(key)
+  if (!lent) landed.delete(key)
+  if (draft && draft.path === props.path) {
+    // Left behind and refused: the bar asks about it again on the save below.
+    drafts.delete(key)
+    base.text = draft.baseText
+    base.hash = draft.baseHash
+    base.shape = draft.shape ?? base.shape
+  } else if (wrote && wrote.text === doc) {
+    // Saved after it was put away.
+    base.text = wrote.text
+    base.hash = wrote.hash
+  }
+  loading.value = false
+  const effects = [bound.reconfigure(own()), access.reconfigure(readOnly(lent || !editable.value))]
+  if (held.colours !== version.value) effects.push(colours.reconfigure(syntaxColours()))
+  const next = held.state.update({ effects, selection: selection ?? undefined }).state
+  // The preview goes to the search's line, not to where the tab was.
+  const scroll = props.preview ? null : held.scroll
+  if (view) {
+    view.setState(next)
+    if (scroll) view.dispatch({ effects: scroll })
+  } else {
+    view = new EditorView({ parent: host.value, state: next, scrollTo: scroll ?? undefined })
+  }
+  // Put away by the preview: the tab's own caret and place.
+  const tab = props.preview ? null : tabs.state.tabs.find((one) => one.id === props.tabId)
+  if (!scroll && tab && (tab.scrollTop !== undefined || tab.caret !== undefined)) {
+    view.dispatch({ selection: { anchor: Math.min(tab.caret ?? 0, view.state.doc.length) } })
+    const top = tab.scrollTop ?? 0
+    requestAnimationFrame(() => {
+      if (view) view.scrollDOM.scrollTop = top
+    })
+  }
+  seenEpoch = held.epoch
+  workOutIndent(doc)
+  emit('scroller', view.scrollDOM)
+  emit('text', doc)
+  showFind()
+  // Following the search window's preview, which saves: nothing to do here
+  // until it hands the file over.
+  if (lent) return
+  if (draft && draft.path === props.path) {
+    if (draft.text !== doc) replaceText(draft.text, true)
+    state('unsaved')
+    void save()
+  } else if (editable.value && text() !== base.text) {
+    state('unsaved')
+    if (back) void save()
+    else schedule()
+  } else state(editable.value ? 'saved' : 'readonly')
+  const landing = tabs.state.landing
+  if (props.preview) {
+    showHits()
+    center()
+  } else if (landing && landing.tab === props.tabId) {
+    goToLine(landing.line)
+    consumeLanding(landing.seq)
+  }
+  if (isStale(held)) void checkDisk()
+}
+
 async function start() {
+  const held = props.locked ? null : acquire(repo, props.tabId, holder)
+  // Opened under the search window's preview of the same file: it follows.
+  if (!props.locked && !inCharge(repo, props.tabId, holder)) lent = true
+  if (held && held.path === props.path) {
+    await adopt(held)
+    return
+  }
   // Asked alongside the read: what .editorconfig says about indenting it.
   const configAsk = invokeAt<EditorconfigIndent | null>(repo, 'indent_config', { path: props.path }).catch(
     () => null
@@ -780,7 +1111,7 @@ async function start() {
   if (!alive) return
   let doc = ''
   const draft = drafts.get(key)
-  if (draft && draft.path === props.path && !props.locked) {
+  if (draft && draft.path === props.path && !props.locked && !lent) {
     drafts.delete(key)
     base.text = draft.baseText
     base.hash = draft.baseHash
@@ -804,6 +1135,7 @@ async function start() {
       doc = props.fallback ?? ''
     }
   }
+  seenEpoch = workTreeEpoch()
   editorconfig = await configAsk
   if (!alive || !host.value) return
   loading.value = false
@@ -817,38 +1149,13 @@ async function start() {
         basics(),
         editingBasics(),
         editorKeys([]),
-        changeBars((line) => openCard(line)),
         inlineBlame,
-        navigation((pos, event) => {
-          if (named()) void jumpFrom(props.path, pos, text(), { x: event.clientX, y: event.clientY })
-        }),
         unusedCode,
-        usageLenses((lens, event) =>
-          void showUsages(lens.name, props.path, lens.kind, { x: event.clientX, y: event.clientY }, lens.line)
-        ),
         language.of([]),
         colours.of(syntaxColours()),
-        access.of(readOnly(!editable.value)),
+        access.of(readOnly(lent || !editable.value)),
         indenting.of(indentExtensions(indent.value!)),
-        EditorView.updateListener.of(onUpdate),
-        EditorView.domEventHandlers({
-          keydown(event) {
-            if (matchesShortcut(event, 'file.save')) {
-              event.preventDefault()
-              void save()
-              return true
-            }
-            return false
-          },
-          focus(_event, editor) {
-            rememberFocus(editor)
-            return false
-          },
-          blur() {
-            void save()
-            return false
-          }
-        })
+        bound.of(own())
       ]
     })
   })
@@ -857,7 +1164,9 @@ async function start() {
   showBars()
   showBlame()
   showFind()
-  if (draft) {
+  if (lent) {
+    // Following another editor of the file, which says how it stands.
+  } else if (draft && draft.path === props.path) {
     state('unsaved')
     void save()
   } else state(editable.value ? 'saved' : 'readonly')
@@ -866,7 +1175,10 @@ async function start() {
   // left, then the first change.
   const tab = tabs.state.tabs.find((one) => one.id === props.tabId)
   const landing = tabs.state.landing
-  if (landing && landing.tab === props.tabId) {
+  if (props.preview) {
+    showHits()
+    center()
+  } else if (landing && landing.tab === props.tabId) {
     goToLine(landing.line)
     consumeLanding(landing.seq)
   } else if (tab?.scrollTop !== undefined || tab?.caret !== undefined) {
@@ -891,6 +1203,8 @@ onMounted(async () => {
   if (props.locked) return
   const off = await listen<{ work_tree: boolean }>('repo-changed', ({ payload }) => {
     if (!payload.work_tree) return
+    workTreeMoved()
+    if (lent) return
     clearTimeout(checkTimer)
     checkTimer = setTimeout(() => void checkDisk(), 120)
   }).catch(() => undefined)
@@ -900,6 +1214,7 @@ onMounted(async () => {
 
 onBeforeUnmount(() => {
   alive = false
+  dropFontKeeper()
   window.removeEventListener('blur', onBlur)
   window.removeEventListener('keydown', onCardKey, true)
   document.removeEventListener('pointerdown', onCardPointer, true)
@@ -910,12 +1225,27 @@ onBeforeUnmount(() => {
   clearTimeout(timer)
   clearTimeout(checkTimer)
   clearTimeout(symbolTimer)
-  if (!view) return
+  if (!view) {
+    release(repo, props.tabId, holder, null)
+    return
+  }
   // In this file's project, which may no longer be the one on screen.
   const tab = findTab(repo, props.tabId)
-  if (tab) {
+  if (tab && !lent) {
     tab.scrollTop = view.scrollDOM.scrollTop
     tab.caret = view.state.selection.main.head
+  }
+  // Kept warm for the tab, or handed back to the editor it was borrowed
+  // from, which then owns the edits and saves them itself.
+  const wasLent = lent
+  const held = tab ? snapshot() : null
+  const handed = release(repo, props.tabId, holder, held) === 'handed'
+  if (wasLent || handed) {
+    rememberFocus(null)
+    view.destroy()
+    view = null
+    emit('scroller', null)
+    return
   }
   // Leaving with edits not on disk: they go on saving without the editor,
   // and wait here if the save is refused.
@@ -978,11 +1308,21 @@ watch(
 watch(() => config.settings.value?.usage_counts, () => refreshSymbols(0))
 watch(() => [props.runs, props.blame], showBlame)
 watch(() => props.find, showFind, { deep: true })
+// More matches arriving while a search runs are marked where the view is: it
+// does not go back to the line under whoever is reading.
+watch(() => props.hits, showHits)
+watch(
+  () => props.line,
+  () => {
+    showHits()
+    center()
+  }
+)
 watch(version, () => view?.dispatch({ effects: colours.reconfigure(syntaxColours()) }))
 watch(
   () => tabs.state.landing,
   (landing) => {
-    if (landing && landing.tab === props.tabId && view) {
+    if (landing && landing.tab === props.tabId && view && !props.preview) {
       goToLine(landing.line)
       consumeLanding(landing.seq)
     }

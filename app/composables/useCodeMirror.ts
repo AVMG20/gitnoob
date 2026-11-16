@@ -1,4 +1,4 @@
-import { Compartment, RangeSet, StateEffect, StateField, type Extension, type Range } from '@codemirror/state'
+import { Compartment, Facet, RangeSet, StateEffect, StateField, type Extension, type Range } from '@codemirror/state'
 import {
   Decoration,
   EditorView,
@@ -24,7 +24,7 @@ import {
   type Language
 } from '@codemirror/language'
 import { tags as t, type Tag } from '@lezer/highlight'
-import { CODE_ROW, markedLines } from './useCode'
+import { markedLines } from './useCode'
 import { occurrences, type FindMarks } from './useFind'
 import { themeRules } from './useHighlight'
 import { relativeTime, type BlameRun, type DiffHunk } from './useGit'
@@ -198,12 +198,13 @@ export const chrome = EditorView.theme({
     height: '100%',
     color: 'var(--text)',
     backgroundColor: 'transparent',
-    fontSize: '12px'
+    // The code font, which ⌘+ and ⌘− over code change (useCodeFont.ts).
+    fontSize: 'var(--code-size, 12px)'
   },
   '&.cm-focused': { outline: 'none' },
   '.cm-scroller': {
     fontFamily: 'var(--mono)',
-    lineHeight: `${CODE_ROW}px`
+    lineHeight: 'var(--code-row, 18px)'
   },
   '.cm-content': { padding: '4px 0 24px', caretColor: 'var(--text)' },
   '.cm-line': { padding: '0 12px 0 6px' },
@@ -243,7 +244,7 @@ export const chrome = EditorView.theme({
     marginLeft: '24px',
     color: 'var(--text-faint)',
     fontFamily: 'var(--font)',
-    fontSize: '11px',
+    fontSize: 'calc(var(--code-size, 12px) - 1px)',
     fontStyle: 'italic',
     whiteSpace: 'nowrap'
   },
@@ -272,8 +273,8 @@ export const chrome = EditorView.theme({
   },
   '.cm-lens': {
     fontFamily: 'var(--font)',
-    fontSize: '10px',
-    lineHeight: '14px',
+    fontSize: 'calc(var(--code-size, 12px) - 2px)',
+    lineHeight: 'calc(var(--code-row, 18px) - 4px)',
     color: 'var(--text-faint)',
     paddingLeft: '6px',
     cursor: 'pointer',
@@ -854,11 +855,21 @@ const unusedField = StateField.define<DecorationSet>({
 /** Unused code, dimmed or hinted, with the badge for what is new on the branch. */
 export const unusedCode: Extension = unusedField
 
+type LensOpener = (lens: UsageLens, event: MouseEvent) => void
+
+/**
+ * What a click on a count does, looked up when it is clicked: the counts are
+ * kept in a field every editor shares, so a state handed from one editor to
+ * the next keeps them and calls the editor it is in now.
+ */
+const lensOpener = Facet.define<LensOpener, LensOpener | null>({
+  combine: (all) => all[all.length - 1] ?? null
+})
+
 class LensWidget extends WidgetType {
   constructor(
     readonly lens: UsageLens,
-    readonly indent: string,
-    readonly open: (lens: UsageLens, event: MouseEvent) => void
+    readonly indent: string
   ) {
     super()
   }
@@ -876,7 +887,7 @@ class LensWidget extends WidgetType {
     )
   }
 
-  override toDOM() {
+  override toDOM(view: EditorView) {
     const div = document.createElement('div')
     div.className = 'cm-lens'
     div.style.paddingLeft = `calc(6px + ${this.indent.length}ch)`
@@ -897,7 +908,7 @@ class LensWidget extends WidgetType {
     }
     div.addEventListener('mousedown', (event) => {
       event.preventDefault()
-      this.open(this.lens, event)
+      view.state.facet(lensOpener)?.(this.lens, event)
     })
     return div
   }
@@ -907,28 +918,30 @@ class LensWidget extends WidgetType {
   }
 }
 
-/** "3 usages" over each definition; a click on one lists them. */
-export function usageLenses(open: (lens: UsageLens, event: MouseEvent) => void): Extension {
-  return StateField.define<DecorationSet>({
-    create: () => Decoration.none,
-    update(value, tr) {
-      for (const effect of tr.effects) {
-        if (!effect.is(setLenses)) continue
-        const ranges: Range<Decoration>[] = []
-        const seen = new Set<number>()
-        for (const lens of effect.value) {
-          if (lens.line < 1 || lens.line > tr.state.doc.lines || seen.has(lens.line)) continue
-          seen.add(lens.line)
-          const line = tr.state.doc.line(lens.line)
-          const indent = /^\s*/.exec(line.text)?.[0] ?? ''
-          ranges.push(
-            Decoration.widget({ widget: new LensWidget(lens, indent, open), block: true, side: -1 }).range(line.from)
-          )
-        }
-        return Decoration.set(ranges, true)
+const lensField = StateField.define<DecorationSet>({
+  create: () => Decoration.none,
+  update(value, tr) {
+    for (const effect of tr.effects) {
+      if (!effect.is(setLenses)) continue
+      const ranges: Range<Decoration>[] = []
+      const seen = new Set<number>()
+      for (const lens of effect.value) {
+        if (lens.line < 1 || lens.line > tr.state.doc.lines || seen.has(lens.line)) continue
+        seen.add(lens.line)
+        const line = tr.state.doc.line(lens.line)
+        const indent = /^\s*/.exec(line.text)?.[0] ?? ''
+        ranges.push(
+          Decoration.widget({ widget: new LensWidget(lens, indent), block: true, side: -1 }).range(line.from)
+        )
       }
-      return tr.docChanged ? value.map(tr.changes) : value
-    },
-    provide: (field) => EditorView.decorations.from(field)
-  })
+      return Decoration.set(ranges, true)
+    }
+    return tr.docChanged ? value.map(tr.changes) : value
+  },
+  provide: (field) => EditorView.decorations.from(field)
+})
+
+/** "3 usages" over each definition; a click on one lists them. */
+export function usageLenses(open: LensOpener): Extension {
+  return [lensField, lensOpener.of(open)]
 }
