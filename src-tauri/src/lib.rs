@@ -1,6 +1,7 @@
 pub mod ai;
 pub mod avatar;
 pub mod blame;
+pub mod complete;
 pub mod config;
 pub mod conflict;
 pub mod create;
@@ -400,6 +401,89 @@ async fn dependency_definition(
 ) -> Result<Option<deps::Jump>, String> {
     let root = state.path()?;
     deps::dependency_definition(&root, &path, offset, text.as_deref())
+}
+
+/// What can follow the `->`, `::` or `.` before the caret: the receiver's
+/// members, by the editor's text rather than the disk's. On the blocking
+/// pool: it parses.
+#[tauri::command]
+async fn complete_members(
+    path: String,
+    offset: u32,
+    text: String,
+    state: Aimed,
+) -> Result<complete::MemberList, String> {
+    let root = state.path()?;
+    tauri::async_runtime::spawn_blocking(move || {
+        complete::complete_members(&root, &path, offset, &text)
+    })
+    .await
+    .map_err(|e| e.to_string())
+}
+
+/// Project classes, functions and constants for the word being typed, from
+/// the symbol index, nearest first.
+#[tauri::command]
+async fn complete_symbols(
+    prefix: String,
+    path: String,
+    limit: Option<usize>,
+    changed: Option<Vec<String>>,
+    state: Aimed,
+) -> Result<Vec<symbols::Completion>, String> {
+    let root = state.path()?;
+    tauri::async_runtime::spawn_blocking(move || {
+        complete::complete_symbols(
+            &root,
+            &prefix,
+            &path,
+            limit.unwrap_or(40),
+            &changed.unwrap_or_default(),
+        )
+    })
+    .await
+    .map_err(|e| e.to_string())
+}
+
+/// The `use` line a PHP class picked from the list needs, and where.
+#[tauri::command]
+async fn complete_import(
+    path: String,
+    text: String,
+    class_path: String,
+    name: String,
+    state: Aimed,
+) -> Result<Option<complete::Insert>, String> {
+    let root = state.path()?;
+    tauri::async_runtime::spawn_blocking(move || {
+        complete::complete_import(&root, &path, &text, &class_path, &name)
+    })
+    .await
+    .map_err(|e| e.to_string())
+}
+
+/// When ⌘-click cannot tell a method's class: the classes the file imports
+/// that have a method of that name.
+#[tauri::command]
+async fn member_candidates(
+    path: String,
+    name: String,
+    text: Option<String>,
+    state: Aimed,
+) -> Result<Vec<deps::Jump>, String> {
+    let root = state.path()?;
+    tauri::async_runtime::spawn_blocking(move || {
+        let text = match text {
+            Some(text) => text,
+            None => deps::read(&root, &path).unwrap_or_default(),
+        };
+        if !path.to_ascii_lowercase().ends_with(".php") {
+            return Vec::new();
+        }
+        deps::php_member_candidates(&root, &path, &text, &name)
+    })
+    .await
+    .map_err(|e| e.to_string())
 }
 
 /// The name at a UTF-16 offset in a file, in `text` when the editor has
@@ -2292,6 +2376,10 @@ pub fn run() {
             search_text,
             search_file,
             dependency_definition,
+            complete_members,
+            complete_symbols,
+            complete_import,
+            member_candidates,
             quit_ready,
             quit_guard,
             quit_heard,

@@ -244,7 +244,24 @@ export async function jumpFrom(
     return
   }
   if (!found.length) {
-    useToasts().info(`No definition of ${symbol.name} in this repository`)
+    if (symbol.shape !== 'member' && symbol.shape !== 'scoped') {
+      useToasts().info(`No definition of ${symbol.name} in this repository`)
+      return
+    }
+    // A method on something whose class could not be worked out. The
+    // classes the file imports that have a method of that name are offered
+    // to pick from, rather than nothing.
+    const doubt = `Couldn't work out which class ${symbol.name} belongs to`
+    const candidates = /\.php$/i.test(path)
+      ? await invoke<DependencyJump[] | null>('member_candidates', { path, name: symbol.name, text })
+          .then((all) => all ?? [])
+          .catch(() => [] as DependencyJump[])
+      : []
+    if (!candidates.length) {
+      useToasts().info(doubt)
+      return
+    }
+    showPopup(`Possible definitions of ${symbol.name}() · ${candidates.length}`, candidates, at, { note: doubt })
     return
   }
   if (found.length === 1) {

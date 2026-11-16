@@ -121,7 +121,7 @@ fn family_of(path: &str) -> Option<Family> {
 /// The text tree-sitter is given. For a `.vue` file that is the `<script>`
 /// blocks with everything else blanked out, newlines kept, so every offset
 /// in it is the same as in the file.
-fn source_for(path: &str, text: &str) -> (Lang, String) {
+pub(crate) fn source_for(path: &str, text: &str) -> (Lang, String) {
     let lang = lang_of(path).unwrap_or(Lang::Ts);
     if !path.to_ascii_lowercase().ends_with(".vue") {
         return (lang, text.to_string());
@@ -1403,6 +1403,172 @@ pub fn forget(root: &Path) {
     if let Ok(mut all) = indexes().lock() {
         all.remove(&key(root));
     }
+}
+
+// --- autocomplete --------------------------------------------------------------
+
+/// The index for a work tree if it is built, without waiting for it. What
+/// completion asks between two keystrokes cannot wait for a whole build.
+fn ready_now(root: &Path) -> Option<Arc<Shared>> {
+    let shared = indexes().lock().ok()?.get(&key(root)).cloned()?;
+    let built = shared.ready.lock().map(|ready| *ready).unwrap_or(false);
+    built.then_some(shared)
+}
+
+/// The files that declare a class, interface, trait or enum called `name`
+/// (case aside), in PHP files or in scripts. Empty while the index is being
+/// built.
+pub fn class_paths(root: &Path, name: &str, php: bool) -> Vec<String> {
+    let family = if php { Family::Php } else { Family::Script };
+    let Some(shared) = ready_now(root) else {
+        return Vec::new();
+    };
+    let Ok(index) = shared.index.read() else {
+        return Vec::new();
+    };
+    let mut found: Vec<String> = index
+        .files
+        .iter()
+        .filter(|(_, held)| held.family == family)
+        .filter(|(_, held)| {
+            held.classes
+                .iter()
+                .any(|class| class.name.eq_ignore_ascii_case(name))
+        })
+        .map(|(path, _)| path.clone())
+        .collect();
+    found.sort();
+    found
+}
+
+/// A project name the completion list offers.
+#[derive(Serialize, Clone, Debug, PartialEq)]
+pub struct Completion {
+    pub name: String,
+    /// `class`, `interface`, `trait`, `enum`, `function` or `constant`.
+    pub kind: &'static str,
+    /// The file it is defined in.
+    pub path: String,
+}
+
+/// The kinds of definition a name typed in code can mean.
+const COMPLETABLE: &[&str] = &["class", "interface", "function", "constant"];
+
+/// Class, interface, trait, enum, function and constant names from the
+/// index that start with `prefix` (case aside), then those whose capitals
+/// it is, then fuzzy matches. Within each: the file being edited first, then
+/// its folder, then the files in `changed`, then the rest; shorter names
+/// first after that. Only names in files of `path`'s language family.
+/// Nothing while the index is still being built.
+pub fn complete_symbols(
+    root: &Path,
+    prefix: &str,
+    path: &str,
+    limit: usize,
+    changed: &[String],
+) -> Vec<Completion> {
+    use nucleo_matcher::pattern::{CaseMatching, Normalization, Pattern};
+    use nucleo_matcher::{Config, Matcher, Utf32Str};
+    let prefix = prefix.trim();
+    let Some(family) = family_of(path) else {
+        return Vec::new();
+    };
+    if prefix.is_empty() {
+        return Vec::new();
+    }
+    let Some(shared) = ready_now(root) else {
+        return Vec::new();
+    };
+    let Ok(index) = shared.index.read() else {
+        return Vec::new();
+    };
+    let lower = prefix.to_lowercase();
+    let folder = path.rsplit_once('/').map(|(dir, _)| dir).unwrap_or("");
+    let changed: HashSet<&str> = changed.iter().map(String::as_str).collect();
+    let capitals = files::is_initials(prefix);
+    let mut matcher = Matcher::new(Config::DEFAULT);
+    let pattern = Pattern::parse(prefix, CaseMatching::Smart, Normalization::Smart);
+    let mut buffer = Vec::new();
+    let mut scored: Vec<((u8, u8, usize, u32), Completion)> = Vec::new();
+    for (file, held) in index.files.iter() {
+        if held.family != family {
+            continue;
+        }
+        let place = if file == path {
+            0
+        } else if file.rsplit_once('/').map(|(dir, _)| dir).unwrap_or("") == folder {
+            1
+        } else if changed.contains(file.as_str()) {
+            2
+        } else {
+            3
+        };
+        let mut names: Vec<(&str, &'static str)> = held
+            .classes
+            .iter()
+            .filter(|class| !class.name.is_empty())
+            .map(|class| {
+                (
+                    &*class.name,
+                    if class.kind.is_empty() {
+                        "class"
+                    } else {
+                        class.kind
+                    },
+                )
+            })
+            .collect();
+        for symbol in &held.symbols {
+            if symbol.definition
+                && COMPLETABLE.contains(&symbol.kind)
+                && !names.iter().any(|(name, _)| *name == symbol.name)
+            {
+                names.push((&symbol.name, symbol.kind));
+            }
+        }
+        for (name, kind) in names {
+            let tier = if name.to_lowercase().starts_with(&lower) {
+                0
+            } else if capitals && files::initials(name, prefix).is_some() {
+                1
+            } else {
+                match pattern.score(Utf32Str::new(name, &mut buffer), &mut matcher) {
+                    Some(score) => {
+                        scored.push((
+                            (2, place, name.len(), u32::MAX - score),
+                            Completion {
+                                name: name.to_string(),
+                                kind,
+                                path: file.clone(),
+                            },
+                        ));
+                        continue;
+                    }
+                    None => continue,
+                }
+            };
+            scored.push((
+                (tier, place, name.len(), 0),
+                Completion {
+                    name: name.to_string(),
+                    kind,
+                    path: file.clone(),
+                },
+            ));
+        }
+    }
+    scored.sort_by(|(a, one), (b, other)| {
+        a.cmp(b)
+            .then_with(|| one.name.cmp(&other.name))
+            .then_with(|| one.path.cmp(&other.path))
+    });
+    let mut seen: HashSet<(String, String)> = HashSet::new();
+    scored
+        .into_iter()
+        .map(|(_, found)| found)
+        .filter(|found| seen.insert((found.name.clone(), found.path.clone())))
+        .take(limit.max(1))
+        .collect()
 }
 
 // --- commands ----------------------------------------------------------------

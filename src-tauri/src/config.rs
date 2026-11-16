@@ -144,6 +144,13 @@ pub struct Global {
     /// "3 usages" over each function, method and class in the editor.
     #[serde(default = "yes")]
     pub usage_counts: bool,
+    /// Suggestions in the editor: names from the file and the project, and
+    /// what can follow `->`, `::` and `.`.
+    #[serde(default = "yes")]
+    pub autocomplete: bool,
+    /// The list opens while typing. Off, it opens only on Ctrl+Space.
+    #[serde(default = "yes")]
+    pub autocomplete_typing: bool,
     /// A small type icon (PHP, TypeScript, a folder…) before each file name.
     #[serde(default = "yes")]
     pub file_icons: bool,
@@ -436,6 +443,8 @@ impl Default for Global {
             show_avatars: true,
             check_updates: true,
             usage_counts: true,
+            autocomplete: true,
+            autocomplete_typing: true,
             file_icons: true,
             indent_style: default_indent_style(),
             indent_size: default_indent_size(),

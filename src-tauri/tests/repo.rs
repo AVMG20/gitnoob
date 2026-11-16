@@ -10,8 +10,8 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 
 use gitnoob_lib::state::AppState;
 use gitnoob_lib::{
-    conflict, create, deps, diff, edit, editorconfig, files, graph, image, journal, rebase, refs,
-    remote, search, symbols, work, worktree,
+    complete, conflict, create, deps, diff, edit, editorconfig, files, graph, image, journal,
+    rebase, refs, remote, search, symbols, work, worktree,
 };
 
 static COUNTER: AtomicUsize = AtomicUsize::new(0);
@@ -10047,4 +10047,532 @@ fn a_click_on_a_package_import_opens_its_type_declarations() {
             .unwrap()
             .is_none()
     );
+}
+
+// --- autocomplete (complete.rs) and chains (deps.rs) ---------------------------------
+
+/// A Laravel-shaped project for completion: a service with a parent and a
+/// trait, and a vendored `Http` facade whose calls chain through
+/// `PendingRequest` by their return types.
+fn complete_sandbox(tag: &str) -> Sandbox {
+    let sandbox = Sandbox::new(tag);
+    sandbox.write(".gitignore", "vendor/\nnode_modules/\n");
+    sandbox.write(
+        "composer.json",
+        "{\"autoload\": {\"psr-4\": {\"App\\\\\": \"app/\"}}}\n",
+    );
+    put(
+        &sandbox,
+        "vendor/composer/autoload_psr4.php",
+        r#"<?php
+
+$vendorDir = dirname(__DIR__);
+$baseDir = dirname($vendorDir);
+
+return array(
+    'Illuminate\\' => array($vendorDir . '/laravel/framework/src/Illuminate'),
+    'App\\' => array($baseDir . '/app'),
+);
+"#,
+    );
+    put(
+        &sandbox,
+        "vendor/laravel/framework/src/Illuminate/Support/Facades/Facade.php",
+        "<?php\n\nnamespace Illuminate\\Support\\Facades;\n\nabstract class Facade\n{\n    public static function getFacadeRoot() {}\n}\n",
+    );
+    put(
+        &sandbox,
+        "vendor/laravel/framework/src/Illuminate/Support/Facades/Http.php",
+        r#"<?php
+
+namespace Illuminate\Support\Facades;
+
+use Illuminate\Http\Client\Factory;
+use Illuminate\Http\Client\PendingRequest;
+
+/**
+ * @method static PendingRequest acceptJson()
+ * @method static \Illuminate\Http\Client\PendingRequest withToken(string $token, string $type = 'Bearer')
+ */
+class Http extends Facade
+{
+    protected static function getFacadeAccessor()
+    {
+        return Factory::class;
+    }
+}
+"#,
+    );
+    put(
+        &sandbox,
+        "vendor/laravel/framework/src/Illuminate/Http/Client/Factory.php",
+        "<?php\n\nnamespace Illuminate\\Http\\Client;\n\nclass Factory\n{\n    public function fake() {}\n}\n",
+    );
+    put(
+        &sandbox,
+        "vendor/laravel/framework/src/Illuminate/Http/Client/PendingRequest.php",
+        r#"<?php
+
+namespace Illuminate\Http\Client;
+
+class PendingRequest
+{
+    /**
+     * Adds a bearer token.
+     */
+    public function withToken($token, $type = 'Bearer'): static
+    {
+        return $this;
+    }
+
+    /**
+     * @return Response
+     */
+    public function get(string $url, $query = null)
+    {
+    }
+
+    public function asJson()
+    {
+        return $this;
+    }
+
+    protected function send() {}
+
+    private function secret() {}
+}
+"#,
+    );
+    put(
+        &sandbox,
+        "vendor/laravel/framework/src/Illuminate/Http/Client/Response.php",
+        "<?php\n\nnamespace Illuminate\\Http\\Client;\n\nclass Response\n{\n    public function json($key = null) {}\n\n    public function status(): int {}\n}\n",
+    );
+    put(
+        &sandbox,
+        "app/Support/Greets.php",
+        "<?php\n\nnamespace App\\Support;\n\ntrait Greets\n{\n    public function greet(): string {}\n\n    private function whisper() {}\n\n    protected function shout() {}\n}\n",
+    );
+    put(
+        &sandbox,
+        "app/Support/BaseService.php",
+        r#"<?php
+
+namespace App\Support;
+
+class BaseService
+{
+    public const VERSION = '1';
+
+    protected $client;
+
+    private $hidden;
+
+    public static function make(): static {}
+
+    protected function boot() {}
+
+    private function parentSecret() {}
+
+    public function name(): string {}
+}
+"#,
+    );
+    put(
+        &sandbox,
+        "app/Services/Customer.php",
+        "<?php\n\nnamespace App\\Services;\n\nclass Customer\n{\n    public function email(): string {}\n\n    private function pin() {}\n}\n",
+    );
+    put(&sandbox, "app/Services/Billing.php", BILLING);
+    sandbox.git(&["add", "--all"]);
+    sandbox.git(&["commit", "-q", "-m", "project"]);
+    sandbox
+}
+
+const BILLING: &str = r#"<?php
+
+namespace App\Services;
+
+use App\Support\BaseService;
+use App\Support\Greets;
+use Illuminate\Support\Facades\Http;
+
+class Billing extends BaseService
+{
+    use Greets;
+
+    public const RATE = 3;
+
+    public static $count = 0;
+
+    public function __construct(private Customer $owner)
+    {
+    }
+
+    public function charge(Customer $customer): Customer
+    {
+        return $customer;
+    }
+
+    private function own() {}
+
+    public static function report(): void {}
+
+    public function run(Customer $customer, $unknown)
+    {
+        $req = Http::acceptJson()->withToken('t');
+        CARET
+    }
+}
+"#;
+
+/// The list after `typed`, written where `CARET` is in the Billing service.
+fn members_after(sandbox: &Sandbox, typed: &str) -> complete::MemberList {
+    let text = BILLING.replace("CARET", typed);
+    let at = BILLING.find("CARET").unwrap() + typed.len();
+    complete::complete_members(&sandbox.root, "app/Services/Billing.php", at as u32, &text)
+}
+
+fn names(list: &complete::MemberList) -> Vec<&str> {
+    let mut names: Vec<&str> = list.items.iter().map(|one| one.name.as_str()).collect();
+    names.sort();
+    names
+}
+
+#[test]
+fn this_lists_own_and_inherited_members_by_visibility() {
+    let sandbox = complete_sandbox("complete-this");
+    let list = members_after(&sandbox, "$this->");
+    assert_eq!(list.receiver.as_deref(), Some("Billing"));
+    assert_eq!(list.access, Some("instance"));
+    assert_eq!(
+        names(&list),
+        ["boot", "charge", "client", "greet", "name", "own", "owner", "run", "shout", "whisper"]
+    );
+    let name = list.items.iter().find(|one| one.name == "name").unwrap();
+    assert!(name.inherited);
+    assert_eq!(name.class, "BaseService");
+    assert_eq!(name.signature.as_deref(), Some("(): string"));
+    let charge = list.items.iter().find(|one| one.name == "charge").unwrap();
+    assert!(!charge.inherited);
+    assert_eq!(
+        charge.signature.as_deref(),
+        Some("(Customer $customer): Customer")
+    );
+
+    // Half a name typed: the same list, for the editor to narrow down.
+    let typed = members_after(&sandbox, "$this->ch");
+    assert_eq!(names(&typed), names(&list));
+    let at = BILLING.find("CARET").unwrap() + "$this->".len();
+    assert_eq!(typed.from, at as u32);
+}
+
+#[test]
+fn a_class_name_lists_only_what_is_static() {
+    let sandbox = complete_sandbox("complete-static");
+    let list = members_after(&sandbox, "Billing::");
+    assert_eq!(list.access, Some("static"));
+    assert_eq!(
+        names(&list),
+        ["$count", "RATE", "VERSION", "class", "make", "report"]
+    );
+    // `parent::` reaches the parent's instance methods too.
+    let parent = members_after(&sandbox, "parent::");
+    assert_eq!(parent.receiver.as_deref(), Some("BaseService"));
+    assert_eq!(names(&parent), ["VERSION", "boot", "class", "make", "name"]);
+}
+
+#[test]
+fn a_typed_parameter_lists_its_class_from_outside() {
+    let sandbox = complete_sandbox("complete-param");
+    let list = members_after(&sandbox, "$customer->");
+    assert_eq!(list.receiver.as_deref(), Some("Customer"));
+    assert_eq!(names(&list), ["email"]);
+    // A promoted property, through `$this`.
+    let list = members_after(&sandbox, "$this->owner->");
+    assert_eq!(names(&list), ["email"]);
+}
+
+#[test]
+fn a_vendor_chain_resolves_through_return_types() {
+    let sandbox = complete_sandbox("complete-vendor");
+    // `@method static PendingRequest acceptJson()` on the facade.
+    let list = members_after(&sandbox, "Http::acceptJson()->");
+    assert_eq!(list.receiver.as_deref(), Some("PendingRequest"));
+    assert_eq!(names(&list), ["asJson", "get", "withToken"]);
+    let token = list
+        .items
+        .iter()
+        .find(|one| one.name == "withToken")
+        .unwrap();
+    assert_eq!(token.summary.as_deref(), Some("Adds a bearer token."));
+    // `: static` keeps the class.
+    let list = members_after(&sandbox, "Http::acceptJson()->withToken('t')->");
+    assert_eq!(names(&list), ["asJson", "get", "withToken"]);
+    // `@return Response`, short, through the vendor file's namespace.
+    let list = members_after(&sandbox, "Http::acceptJson()->get('/x')->");
+    assert_eq!(list.receiver.as_deref(), Some("Response"));
+    assert_eq!(names(&list), ["json", "status"]);
+    // A variable assigned from a chain.
+    let list = members_after(&sandbox, "$req->");
+    assert_eq!(list.receiver.as_deref(), Some("PendingRequest"));
+    // The facade itself: what its tags say, static.
+    let list = members_after(&sandbox, "Http::");
+    assert!(names(&list).contains(&"acceptJson"), "{:?}", names(&list));
+}
+
+#[test]
+fn an_unresolved_receiver_lists_nothing() {
+    let sandbox = complete_sandbox("complete-unknown");
+    for typed in [
+        "$unknown->",
+        "$nobody->",
+        // `asJson()` declares no return type: the chain stops there.
+        "Http::acceptJson()->asJson()->",
+        "Nowhere::",
+    ] {
+        let list = members_after(&sandbox, typed);
+        assert!(list.items.is_empty(), "{typed}: {:?}", names(&list));
+        assert_eq!(list.receiver, None, "{typed}");
+    }
+    // Not after an arrow at all.
+    let list = members_after(&sandbox, "cha");
+    assert!(list.items.is_empty() && list.receiver.is_none());
+}
+
+#[test]
+fn a_click_on_a_chained_method_lands_on_its_declaration() {
+    let sandbox = complete_sandbox("complete-click");
+    let pending = "vendor/laravel/framework/src/Illuminate/Http/Client/PendingRequest.php";
+    let response = "vendor/laravel/framework/src/Illuminate/Http/Client/Response.php";
+    let path = "app/Services/Billing.php";
+    let text = BILLING.replace(
+        "CARET",
+        "$req->get('/a')->json();\n        Http::acceptJson()->asJson()->send();",
+    );
+    // `withToken` in `Http::acceptJson()->withToken('t')`.
+    let jump = click(&sandbox, path, &text, "withToken", 0).unwrap();
+    assert_eq!(
+        (jump.path.as_str(), jump.line),
+        (pending, line_in(&sandbox, pending, "function withToken"))
+    );
+    assert!(jump.dependency);
+    // On a variable assigned from the chain, and one more step on.
+    let jump = click(&sandbox, path, &text, "get(", 0).unwrap();
+    assert_eq!(jump.line, line_in(&sandbox, pending, "function get"));
+    let jump = click(&sandbox, path, &text, "json()", 0).unwrap();
+    assert_eq!(
+        (jump.path.as_str(), jump.line),
+        (response, line_in(&sandbox, response, "function json"))
+    );
+    // A step that says nothing about its type: left to the index.
+    assert!(click(&sandbox, path, &text, "send()", 0).is_none());
+
+    // What a click with no class to go on can offer: the imported classes
+    // that have a method of that name.
+    let found = deps::php_member_candidates(&sandbox.root, path, &text, "withToken");
+    assert_eq!(found.len(), 1, "{found:?}");
+    assert_eq!(found[0].path, pending);
+}
+
+#[test]
+fn project_names_rank_nearest_first() {
+    let sandbox = complete_sandbox("complete-rank");
+    put(
+        &sandbox,
+        "app/Services/BillingRecord.php",
+        "<?php\n\nnamespace App\\Services;\n\nclass BillingRecord {}\n",
+    );
+    put(
+        &sandbox,
+        "app/Other/Bill.php",
+        "<?php\n\nnamespace App\\Other;\n\ntrait Bill {}\n",
+    );
+    put(
+        &sandbox,
+        "app/Support/BillingAddress.php",
+        "<?php\n\nnamespace App\\Support;\n\nenum BillingAddress {}\n",
+    );
+    put(
+        &sandbox,
+        "app/Support/BuildList.php",
+        "<?php\n\nnamespace App\\Support;\n\nclass BuildList {}\n",
+    );
+    put(
+        &sandbox,
+        "app/helpers.php",
+        "<?php\n\nfunction billable_amount() {}\n",
+    );
+    put(&sandbox, "src/bill.ts", "export class BillTs {}\n");
+    sandbox.git(&["add", "--all"]);
+    sandbox.git(&["commit", "-q", "-m", "more"]);
+    // Built before it is asked: completion never waits for the index.
+    let state = sandbox.state();
+    symbols::find_symbols(&state, "x", 1).unwrap();
+    let found = complete::complete_symbols(
+        &sandbox.root,
+        "Bil",
+        "app/Services/Billing.php",
+        20,
+        &["app/Other/Bill.php".to_string()],
+    );
+    let got: Vec<(&str, &str)> = found
+        .iter()
+        .map(|one| (one.name.as_str(), one.kind))
+        .collect();
+    assert_eq!(
+        got,
+        [
+            ("Billing", "class"),
+            ("BillingRecord", "class"),
+            ("Bill", "trait"),
+            ("BillingAddress", "enum"),
+            ("billable_amount", "function"),
+            ("BuildList", "class"),
+        ]
+    );
+    assert_eq!(found[2].path, "app/Other/Bill.php");
+    // Scripts see script names only.
+    let found = complete::complete_symbols(&sandbox.root, "Bil", "src/app.ts", 20, &[]);
+    assert_eq!(
+        found
+            .iter()
+            .map(|one| one.name.as_str())
+            .collect::<Vec<_>>(),
+        ["BillTs"]
+    );
+}
+
+fn with_import(sandbox: &Sandbox, text: &str, class_path: &str, name: &str) -> Option<String> {
+    let insert =
+        complete::complete_import(&sandbox.root, "app/Http/Pay.php", text, class_path, name)?;
+    let at = insert.offset as usize;
+    Some(format!("{}{}{}", &text[..at], insert.text, &text[at..]))
+}
+
+#[test]
+fn a_picked_php_class_gets_its_use_line_in_order() {
+    let sandbox = complete_sandbox("complete-import");
+    put(&sandbox, "app/Global.php", "<?php\n\nclass Legacy {}\n");
+    let billing = "app/Services/Billing.php";
+    // Among the use lines, sorted.
+    let text = "<?php\n\nnamespace App\\Http;\n\nuse App\\Support\\BaseService;\nuse Illuminate\\Support\\Facades\\Http;\n\nclass Pay\n{\n}\n";
+    assert_eq!(
+        with_import(&sandbox, text, billing, "Billing").unwrap(),
+        "<?php\n\nnamespace App\\Http;\n\nuse App\\Services\\Billing;\nuse App\\Support\\BaseService;\nuse Illuminate\\Support\\Facades\\Http;\n\nclass Pay\n{\n}\n"
+    );
+    // After the last one.
+    let text = "<?php\n\nnamespace App\\Http;\n\nuse App\\Aaa\\First;\n\nclass Pay\n{\n}\n";
+    assert_eq!(
+        with_import(&sandbox, text, billing, "Billing").unwrap(),
+        "<?php\n\nnamespace App\\Http;\n\nuse App\\Aaa\\First;\nuse App\\Services\\Billing;\n\nclass Pay\n{\n}\n"
+    );
+    // No use lines: after the namespace.
+    let text = "<?php\n\nnamespace App\\Http;\n\nclass Pay\n{\n}\n";
+    assert_eq!(
+        with_import(&sandbox, text, billing, "Billing").unwrap(),
+        "<?php\n\nnamespace App\\Http;\n\nuse App\\Services\\Billing;\n\nclass Pay\n{\n}\n"
+    );
+    // Nothing to add: imported, the same namespace, the global namespace,
+    // or the name already taken by another import.
+    let imported = "<?php\n\nnamespace App\\Http;\n\nuse App\\Services\\Billing;\n";
+    assert_eq!(with_import(&sandbox, imported, billing, "Billing"), None);
+    let same = "<?php\n\nnamespace App\\Services;\n\nclass Pay {}\n";
+    assert_eq!(with_import(&sandbox, same, billing, "Billing"), None);
+    let text = "<?php\n\nnamespace App\\Http;\n\nclass Pay {}\n";
+    assert_eq!(
+        with_import(&sandbox, text, "app/Global.php", "Legacy"),
+        None
+    );
+    let taken = "<?php\n\nnamespace App\\Http;\n\nuse Other\\Billing;\n";
+    assert_eq!(with_import(&sandbox, taken, billing, "Billing"), None);
+}
+
+const TS_API: &str = r#"export class Request {
+  /** Sends it off. */
+  send(): Response {
+    return new Response()
+  }
+  private secret() {}
+  static create(): Request {
+    return new Request()
+  }
+}
+
+export class Response {
+  status: number = 200
+  json(): object {
+    return {}
+  }
+}
+
+export class Client {
+  protected base = ''
+  request(url: string): Request {
+    return new Request()
+  }
+  static make(): Client {
+    return new Client()
+  }
+  private token() {}
+}
+"#;
+
+const TS_APP: &str = r#"import { Client } from './api'
+
+class App {
+  private client: Client
+  run(c: Client) {
+    const req = c.request('/a')
+    CARET
+  }
+}
+"#;
+
+fn script_members_after(sandbox: &Sandbox, typed: &str) -> complete::MemberList {
+    let text = TS_APP.replace("CARET", typed);
+    let at = TS_APP.find("CARET").unwrap() + typed.len();
+    complete::complete_members(&sandbox.root, "src/app.ts", at as u32, &text)
+}
+
+#[test]
+fn script_members_follow_types_and_return_types() {
+    let sandbox = Sandbox::new("complete-ts");
+    put(&sandbox, "src/api.ts", TS_API);
+    put(&sandbox, "src/app.ts", TS_APP);
+    sandbox.git(&["add", "--all"]);
+    sandbox.git(&["commit", "-q", "-m", "ts"]);
+    let list = script_members_after(&sandbox, "this.client.");
+    assert_eq!(list.receiver.as_deref(), Some("Client"));
+    assert_eq!(names(&list), ["request"]);
+    let list = script_members_after(&sandbox, "Client.");
+    assert_eq!(list.access, Some("static"));
+    assert_eq!(names(&list), ["make"]);
+    let list = script_members_after(&sandbox, "c.request('x').");
+    assert_eq!(names(&list), ["send"]);
+    assert_eq!(list.items[0].summary.as_deref(), Some("Sends it off."));
+    let list = script_members_after(&sandbox, "Client.make().request('/').send().");
+    assert_eq!(names(&list), ["json", "status"]);
+    let list = script_members_after(&sandbox, "req.");
+    assert_eq!(names(&list), ["send"]);
+    let list = script_members_after(&sandbox, "this.");
+    assert_eq!(names(&list), ["client", "run"]);
+    let list = script_members_after(&sandbox, "nobody.");
+    assert!(list.items.is_empty() && list.receiver.is_none());
+
+    // ⌘-click on a method at the end of a chain.
+    let text = TS_APP.replace("CARET", "c.request('x').send()");
+    let at = text.find("send()").unwrap() + 1;
+    let jump = deps::dependency_definition(&sandbox.root, "src/app.ts", at as u32, Some(&text))
+        .unwrap()
+        .unwrap();
+    assert_eq!((jump.path.as_str(), jump.line), ("src/api.ts", 3));
+}
+
+#[test]
+fn autocomplete_is_on_unless_turned_off() {
+    let global = gitnoob_lib::config::Global::default();
+    assert!(global.autocomplete && global.autocomplete_typing);
+    let read: gitnoob_lib::config::Global = serde_json::from_str("{}").unwrap();
+    assert!(read.autocomplete && read.autocomplete_typing);
 }

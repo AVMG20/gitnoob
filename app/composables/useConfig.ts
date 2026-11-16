@@ -71,6 +71,10 @@ export interface GlobalSettings {
   check_updates: boolean
   /** "3 usages" over each definition in the editor. */
   usage_counts?: boolean
+  /** Suggestions in the editor: words, project names, members after `->`, `::` and `.`. */
+  autocomplete?: boolean
+  /** The list opens while typing; off, only on Ctrl+Space. */
+  autocomplete_typing?: boolean
   /** A type icon before each file name, everywhere files are listed. */
   file_icons?: boolean
   /** How the editor indents when neither .editorconfig nor the file says. */

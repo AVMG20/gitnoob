@@ -66,6 +66,7 @@ import { aimedAt, invokeAt } from '~/composables/useInvoke'
 import { useConfig } from '~/composables/useConfig'
 import { onCodeFont } from '~/composables/useCodeFont'
 import { jumpFrom, nextSymbolRequest, showUsages } from '~/composables/useSymbols'
+import { autocomplete, listOpen } from '~/composables/useAutocomplete'
 import {
   acquire,
   follow,
@@ -616,6 +617,8 @@ function diffCard() {
 /** Esc closes it, before anything else hears the key. */
 function onCardKey(event: KeyboardEvent) {
   if (event.key !== 'Escape' || !card.value) return
+  // The completion list is on top of the card: Esc closes that first.
+  if (listOpen(view)) return
   event.preventDefault()
   event.stopImmediatePropagation()
   closeCard()
@@ -864,8 +867,34 @@ function own() {
         return false
       }
     }),
-    ...(props.preview ? previewOnly() : [])
+    ...(props.preview ? previewOnly() : []),
+    ...(config.settings.value?.autocomplete === false ? [] : [suggestions()])
   ]
+}
+
+/**
+ * The completion list (`useAutocomplete.ts`). Read-only editors, comments
+ * and strings get none; that is checked as it is asked, since a state goes
+ * from one editor to another and its access changes on the way.
+ */
+function suggestions() {
+  return autocomplete({
+    repo,
+    path: () => props.path,
+    settings: () => ({
+      on: config.settings.value?.autocomplete !== false,
+      typing: config.settings.value?.autocomplete_typing !== false
+    }),
+    changed: () => {
+      const status = git.store.status
+      if (!status) return []
+      return [
+        ...status.staged.map((one) => one.path),
+        ...status.unstaged.map((one) => one.path),
+        ...status.conflicted
+      ]
+    }
+  })
 }
 
 /** What the search window's preview has that a tab's editor does not. */
@@ -1308,6 +1337,13 @@ watch(
   { deep: true }
 )
 watch(() => config.settings.value?.usage_counts, () => refreshSymbols(0))
+// Autocomplete on or off: closing brackets and the list come and go together.
+watch(
+  () => config.settings.value?.autocomplete,
+  () => {
+    if (view && !lent) view.dispatch({ effects: bound.reconfigure(own()) })
+  }
+)
 watch(() => [props.runs, props.blame], showBlame)
 watch(() => props.find, showFind, { deep: true })
 // More matches arriving while a search runs are marked where the view is: it

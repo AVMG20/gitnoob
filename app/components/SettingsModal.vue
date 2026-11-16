@@ -1202,6 +1202,39 @@ onMounted(async () => {
             </select>
           </label>
 
+          <label class="check">
+            <input
+              type="checkbox"
+              data-setting="autocomplete"
+              :checked="config.settings.value?.autocomplete !== false"
+              @change="patchGlobal({ autocomplete: ($event.target as HTMLInputElement).checked })"
+            />
+            <span>
+              <strong>Autocomplete</strong>
+              <span class="faint block">
+                Words from the file, the project's classes and functions, and after
+                <span class="mono">-&gt;</span>, <span class="mono">::</span> or
+                <span class="mono">.</span> the members of the class it is called on, when the code
+                says which class that is. Brackets and quotes close themselves.
+              </span>
+            </span>
+          </label>
+
+          <label class="field">
+            <span class="label">Suggest</span>
+            <select
+              data-setting="autocomplete-typing"
+              :disabled="config.settings.value?.autocomplete === false"
+              :value="config.settings.value?.autocomplete_typing === false ? 'manual' : 'typing'"
+              @change="
+                patchGlobal({ autocomplete_typing: ($event.target as HTMLSelectElement).value === 'typing' })
+              "
+            >
+              <option value="typing">While typing</option>
+              <option value="manual">Only on Ctrl+Space</option>
+            </select>
+          </label>
+
           <label class="field">
             <span class="label">Editor font size</span>
             <span class="font-size">

@@ -33,6 +33,8 @@ pub struct ClassInfo {
     pub supers: Vec<Box<str>>,
     /// An artisan command's name: its `$signature` up to the first space.
     pub signature: Option<Box<str>>,
+    /// `class`, `interface`, `trait` or `enum`.
+    pub kind: &'static str,
 }
 
 /// A name the tags query does not capture, by byte offsets.
@@ -648,10 +650,17 @@ impl Walk<'_> {
             signature = named;
         }
         if !name.is_empty() {
+            let kind = match node.kind() {
+                "trait_declaration" => "trait",
+                "interface_declaration" => "interface",
+                "enum_declaration" => "enum",
+                _ => "class",
+            };
             self.found.classes.push(ClassInfo {
                 name: name.clone(),
                 supers,
                 signature,
+                kind,
             });
         }
         self.classes.push(ClassCtx {
@@ -1121,6 +1130,7 @@ impl Walk<'_> {
                 name: name.clone(),
                 supers,
                 signature: None,
+                kind: "class",
             });
         }
         self.classes.push(ClassCtx {
@@ -1189,6 +1199,7 @@ fn script_enter(walk: &mut Walk, node: Node) {
                 name,
                 supers,
                 signature: None,
+                kind: "interface",
             });
         }
         "method_definition" => {

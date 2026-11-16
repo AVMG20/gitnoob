@@ -89,8 +89,17 @@ pub fn dependency_definition(
     let byte = byte_at_utf16(&text, offset);
     let found = match ext.as_str() {
         "php" => php_jump(root, path, &text, byte),
-        "ts" | "mts" | "cts" | "tsx" | "js" | "mjs" | "cjs" | "jsx" => {
-            script_jump(root, path, &text, byte, &ext)
+        "ts" | "mts" | "cts" | "tsx" | "js" | "mjs" | "cjs" | "jsx" | "vue" => {
+            let direct = if ext == "vue" {
+                None
+            } else {
+                script_jump(root, path, &text, byte, &ext)
+            };
+            // A member on a chain, through the return types it declares.
+            direct.or_else(|| {
+                crate::complete::script_member_definition(root, path, &text, byte)
+                    .map(|(path, line, column)| (path, line, column, "method", None))
+            })
         }
         _ => None,
     };
@@ -107,7 +116,7 @@ pub fn dependency_definition(
 
 type Landing = (String, u32, u32, &'static str, Option<String>);
 
-fn byte_at_utf16(text: &str, offset: u32) -> usize {
+pub(crate) fn byte_at_utf16(text: &str, offset: u32) -> usize {
     let mut units = 0u32;
     for (at, c) in text.char_indices() {
         if units >= offset {
@@ -118,7 +127,7 @@ fn byte_at_utf16(text: &str, offset: u32) -> usize {
     text.len()
 }
 
-fn line_of(root: &Path, path: &str, line: u32) -> String {
+pub(crate) fn line_of(root: &Path, path: &str, line: u32) -> String {
     let Ok(real) = files::resolve(root, path, true) else {
         return String::new();
     };
@@ -140,7 +149,7 @@ fn named_children(node: Node) -> Vec<Node> {
 }
 
 /// A path inside the work tree, `..` worked out, or `None` if it leaves it.
-fn normal(path: &str) -> Option<String> {
+pub(crate) fn normal(path: &str) -> Option<String> {
     let mut parts: Vec<&str> = Vec::new();
     for part in path.split('/') {
         match part {
@@ -167,7 +176,7 @@ fn is_dir(root: &Path, relative: &str) -> bool {
         .unwrap_or(false)
 }
 
-fn read(root: &Path, relative: &str) -> Option<String> {
+pub(crate) fn read(root: &Path, relative: &str) -> Option<String> {
     let real = files::resolve(root, relative, true).ok()?;
     let bytes = std::fs::read(real).ok()?;
     Some(String::from_utf8_lossy(&bytes).into_owned())
@@ -175,7 +184,7 @@ fn read(root: &Path, relative: &str) -> Option<String> {
 
 // --- PHP: names -----------------------------------------------------------------
 
-fn parse_php(text: &str) -> Option<Tree> {
+pub(crate) fn parse_php(text: &str) -> Option<Tree> {
     let mut parser = Parser::new();
     parser
         .set_language(&tree_sitter_php::LANGUAGE_PHP.into())
@@ -590,7 +599,7 @@ pub fn resolve_class(root: &Path, fqn: &str) -> Option<String> {
         .find(|path| exists(root, path))
 }
 
-fn join(dir: &str, rest: &str) -> String {
+pub(crate) fn join(dir: &str, rest: &str) -> String {
     if dir.is_empty() {
         rest.to_string()
     } else {
@@ -620,6 +629,18 @@ pub struct Member {
     pub path: String,
     /// Only written in a docblock (`@method`), not declared.
     pub doc: bool,
+    /// What it takes and gives back, as written: `(int $id): User` for a
+    /// method, the type for a property. Whitespace squashed, cut short.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub signature: Option<String>,
+    /// The first line of its docblock.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub summary: Option<String>,
+    /// The class a method returns or a property holds, fully qualified, or
+    /// `static` for the class it was reached through (`static`, `self` and
+    /// `$this`). From the declared type, else `@return` or `@var`.
+    #[serde(skip)]
+    pub returns: Option<String>,
 }
 
 /// One class, interface, trait or enum as declared in a file.
@@ -745,12 +766,17 @@ fn class_decl(node: Node, source: &str, path: &str, imports: &PhpImports) -> Opt
             class: decl.fqn.clone(),
             path: path.to_string(),
             doc: false,
+            signature: None,
+            summary: None,
+            returns: None,
         };
     let mut members = Vec::new();
     let mut traits = Vec::new();
     let mut accessor = None;
     if let Some(body) = node.child_by_field_name("body") {
         for item in named_children(body) {
+            let doc = doc_before(item, source);
+            let summary = doc.and_then(doc_summary);
             match item.kind() {
                 "use_declaration" => traits.extend(names_in(item, source, imports)),
                 "const_declaration" => {
@@ -763,19 +789,35 @@ fn class_decl(node: Node, source: &str, path: &str, imports: &PhpImports) -> Opt
                             .into_iter()
                             .find(|one| one.kind() == "name")
                         {
-                            members.push(member(name, "constant", true, visibility));
+                            let mut one = member(name, "constant", true, visibility);
+                            one.summary = summary.clone();
+                            members.push(one);
                         }
                     }
                 }
                 "property_declaration" => {
                     let visibility = visibility_of(item, source);
                     let is_static = has_static(item);
+                    let declared = item.child_by_field_name("type");
+                    let returns = declared
+                        .and_then(|ty| type_class(ty, source, imports))
+                        .or_else(|| {
+                            doc.and_then(|doc| doc_tag(doc, "@var"))
+                                .and_then(|ty| doc_class(ty, imports))
+                        });
+                    let signature = declared
+                        .map(|ty| squash(text_of(ty, source)))
+                        .or_else(|| doc.and_then(|doc| doc_tag(doc, "@var")).map(squash));
                     for element in named_children(item) {
                         if element.kind() != "property_element" {
                             continue;
                         }
                         if let Some(name) = element.child_by_field_name("name") {
-                            members.push(member(name, "property", is_static, visibility));
+                            let mut one = member(name, "property", is_static, visibility);
+                            one.signature = signature.clone();
+                            one.summary = summary.clone();
+                            one.returns = returns.clone();
+                            members.push(one);
                         }
                     }
                 }
@@ -786,16 +828,60 @@ fn class_decl(node: Node, source: &str, path: &str, imports: &PhpImports) -> Opt
                     if text_of(name, source) == "getFacadeAccessor" {
                         accessor = class_constant_in(item, source, imports);
                     }
-                    members.push(member(
+                    let mut one = member(
                         name,
                         "method",
                         has_static(item),
                         visibility_of(item, source),
-                    ));
+                    );
+                    let declared = item.child_by_field_name("return_type");
+                    one.returns = declared
+                        .and_then(|ty| type_class(ty, source, imports))
+                        .or_else(|| {
+                            doc.and_then(|doc| doc_tag(doc, "@return"))
+                                .and_then(|ty| doc_class(ty, imports))
+                        });
+                    one.signature = method_signature(item, source, doc);
+                    one.summary = summary;
+                    members.push(one);
+                    // Promoted constructor parameters are properties too.
+                    if text_of(name, source).eq_ignore_ascii_case("__construct") {
+                        let parameters = item
+                            .child_by_field_name("parameters")
+                            .map(named_children)
+                            .unwrap_or_default();
+                        for parameter in parameters {
+                            if parameter.kind() != "property_promotion_parameter" {
+                                continue;
+                            }
+                            let Some(var) = parameter.child_by_field_name("name") else {
+                                continue;
+                            };
+                            let var = if var.kind() == "variable_name" {
+                                var
+                            } else {
+                                match named_children(var)
+                                    .into_iter()
+                                    .find(|one| one.kind() == "variable_name")
+                                {
+                                    Some(inner) => inner,
+                                    None => continue,
+                                }
+                            };
+                            let mut one =
+                                member(var, "property", false, visibility_of(parameter, source));
+                            let declared = parameter.child_by_field_name("type");
+                            one.returns = declared.and_then(|ty| type_class(ty, source, imports));
+                            one.signature = declared.map(|ty| squash(text_of(ty, source)));
+                            members.push(one);
+                        }
+                    }
                 }
                 "enum_case" => {
                     if let Some(name) = item.child_by_field_name("name") {
-                        members.push(member(name, "case", true, "public"));
+                        let mut one = member(name, "case", true, "public");
+                        one.summary = summary;
+                        members.push(one);
                     }
                 }
                 _ => {}
@@ -806,6 +892,7 @@ fn class_decl(node: Node, source: &str, path: &str, imports: &PhpImports) -> Opt
     if let Some((doc, first)) = &decl.doc {
         for (at, line) in doc.lines().enumerate() {
             if let Some(tag) = method_tag(line) {
+                let returns = tag.returns.as_deref().and_then(|ty| doc_class(ty, imports));
                 members.push(Member {
                     name: tag.name,
                     kind: "method",
@@ -816,6 +903,9 @@ fn class_decl(node: Node, source: &str, path: &str, imports: &PhpImports) -> Opt
                     class: decl.fqn.clone(),
                     path: path.to_string(),
                     doc: true,
+                    signature: tag.signature,
+                    summary: None,
+                    returns,
                 });
             }
         }
@@ -844,11 +934,159 @@ fn class_constant_in(method: Node, source: &str, imports: &PhpImports) -> Option
     None
 }
 
+/// The docblock right above a declaration, if there is one.
+fn doc_before<'s>(node: Node, source: &'s str) -> Option<&'s str> {
+    let before = node.prev_named_sibling()?;
+    let text = text_of(before, source);
+    (before.kind() == "comment" && text.starts_with("/**")).then_some(text)
+}
+
+/// The first line of a docblock that is prose, not a tag.
+fn doc_summary(doc: &str) -> Option<String> {
+    doc.lines()
+        .map(|line| {
+            line.trim()
+                .trim_start_matches("/**")
+                .trim_end_matches("*/")
+                .trim_start_matches('*')
+                .trim()
+        })
+        .find(|line| !line.is_empty())
+        .filter(|line| !line.starts_with('@'))
+        .map(|line| line.chars().take(160).collect())
+}
+
+/// The type a docblock tag names: `Foo|null` in `@return Foo|null the thing`.
+fn doc_tag<'d>(doc: &'d str, tag: &str) -> Option<&'d str> {
+    doc.lines().find_map(|line| {
+        let at = line.find(tag)?;
+        let rest = &line[at + tag.len()..];
+        // `@return` and not `@returns-something`.
+        if !rest.starts_with(char::is_whitespace) {
+            return None;
+        }
+        rest.split_whitespace().next()
+    })
+}
+
+/// Whitespace squashed to single spaces, and cut at 120 characters.
+fn squash(text: &str) -> String {
+    let joined = text.split_whitespace().collect::<Vec<_>>().join(" ");
+    let joined = joined.replace("( ", "(").replace(" )", ")");
+    if joined.chars().count() > 120 {
+        let cut: String = joined.chars().take(119).collect();
+        format!("{cut}…")
+    } else {
+        joined
+    }
+}
+
+/// `(int $id, ?Foo $foo = null): Bar` for a method, the return type from
+/// `@return` when none is declared.
+fn method_signature(method: Node, source: &str, doc: Option<&str>) -> Option<String> {
+    let params = squash(text_of(method.child_by_field_name("parameters")?, source));
+    let returns = method
+        .child_by_field_name("return_type")
+        .map(|ty| squash(text_of(ty, source)))
+        .or_else(|| doc.and_then(|doc| doc_tag(doc, "@return")).map(squash));
+    Some(match returns {
+        Some(returns) => format!("{params}: {returns}"),
+        None => params,
+    })
+}
+
+/// Whether a type as written means the class it is reached through.
+fn is_self_type(written: &str) -> bool {
+    let written = written.trim().trim_start_matches('?');
+    ["static", "self", "$this"]
+        .iter()
+        .any(|one| written.eq_ignore_ascii_case(one))
+}
+
+/// The class a declared type means, fully qualified: the type itself, the
+/// type in `?Foo`, the first class in a union. `static` for `static`, `self`
+/// and `$this`. `None` for a scalar, `array`, `mixed` and the like.
+fn type_class(node: Node, source: &str, imports: &PhpImports) -> Option<String> {
+    let written = text_of(node, source).trim();
+    if is_self_type(written) {
+        return Some("static".into());
+    }
+    match node.kind() {
+        "named_type" => {
+            let name = named_children(node).into_iter().next()?;
+            let written = text_of(name, source).trim();
+            if is_self_type(written) {
+                return Some("static".into());
+            }
+            if written.eq_ignore_ascii_case("parent") {
+                return None;
+            }
+            Some(imports.qualify(written))
+        }
+        "optional_type" | "union_type" | "type" => named_children(node)
+            .into_iter()
+            .filter(|one| one.kind() != "primitive_type" || is_self_type(text_of(*one, source)))
+            .find_map(|one| type_class(one, source, imports)),
+        "primitive_type" | "bottom_type" => None,
+        "name" | "qualified_name" => Some(imports.qualify(written)),
+        _ => None,
+    }
+}
+
+/// Names that are never a class in a docblock type.
+const DOC_SCALARS: &[&str] = &[
+    "int",
+    "integer",
+    "float",
+    "double",
+    "string",
+    "bool",
+    "boolean",
+    "array",
+    "mixed",
+    "object",
+    "callable",
+    "iterable",
+    "null",
+    "void",
+    "never",
+    "false",
+    "true",
+    "resource",
+    "list",
+    "class-string",
+];
+
+/// The class a docblock type names: `Foo`, `\A\Foo`, `?Foo`, the first class
+/// of `Foo|null`, `Collection` of `Collection<int, User>`. `static` for
+/// `static`, `self` and `$this`. Not `Foo[]`, which is an array.
+fn doc_class(written: &str, imports: &PhpImports) -> Option<String> {
+    let written = written.trim().trim_start_matches('?');
+    // `Collection<int, User>|null`: the generic part says what is inside.
+    let outer = written.split('<').next().unwrap_or(written);
+    outer.split('|').find_map(|part| {
+        let part = part.trim().trim_start_matches('?');
+        if part.is_empty() || part.ends_with("[]") || part.contains(['(', '{', '[']) {
+            return None;
+        }
+        if is_self_type(part) {
+            return Some("static".to_string());
+        }
+        if DOC_SCALARS.iter().any(|one| part.eq_ignore_ascii_case(one)) {
+            return None;
+        }
+        let first = part.chars().next()?;
+        (first == '\\' || first.is_alphabetic() || first == '_').then(|| imports.qualify(part))
+    })
+}
+
 struct MethodTag {
     name: String,
     is_static: bool,
     /// The type it says the method returns, as written.
     returns: Option<String>,
+    /// `(string $id): Factory`, for the completion list.
+    signature: Option<String>,
 }
 
 /// `@method static \A\B name(…)` in a docblock line.
@@ -880,10 +1118,19 @@ fn method_tag(line: &str) -> Option<MethodTag> {
     if !name.chars().all(|c| c.is_ascii_alphanumeric() || c == '_') || name.is_empty() {
         return None;
     }
+    let params = rest[paren..]
+        .find(')')
+        .map(|close| &rest[paren..=paren + close])
+        .unwrap_or(&rest[paren..]);
+    let signature = match words.first() {
+        Some(kind) => format!("{}: {kind}", squash(params)),
+        None => squash(params),
+    };
     Some(MethodTag {
         name,
         is_static,
         returns,
+        signature: Some(signature),
     })
 }
 
@@ -903,22 +1150,69 @@ fn see_tags(doc: &str) -> Vec<String> {
         .collect()
 }
 
+/// Classes parsed from a file, kept by path and the hash of the text they
+/// were read from: completion asks after every keystroke, and a vendor
+/// class's parents are the same files each time.
+type Parsed = HashMap<String, (u64, Arc<Vec<ClassDecl>>)>;
+
+fn parsed_classes() -> &'static Mutex<Parsed> {
+    static PARSED: OnceLock<Mutex<Parsed>> = OnceLock::new();
+    PARSED.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+/// [`classes_in`], from the cache when the text is the one parsed last time.
+fn classes_cached(text: &str, path: &str) -> Arc<Vec<ClassDecl>> {
+    use std::hash::{Hash, Hasher};
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    text.hash(&mut hasher);
+    let hash = hasher.finish();
+    if let Ok(cache) = parsed_classes().lock() {
+        if let Some((seen, classes)) = cache.get(path) {
+            if *seen == hash {
+                return classes.clone();
+            }
+        }
+    }
+    let classes = Arc::new(classes_in(text, path));
+    if let Ok(mut cache) = parsed_classes().lock() {
+        if cache.len() > 400 {
+            cache.clear();
+        }
+        cache.insert(path.to_string(), (hash, classes.clone()));
+    }
+    classes
+}
+
 /// A class's declaration: from `text` when it is in that file (the editor's
-/// copy, which may be ahead of the disk), else through the autoload maps.
+/// copy, which may be ahead of the disk), else through the autoload maps,
+/// else, for a project without Composer's maps, a file the symbol index
+/// says declares a class of that name.
 fn find_decl(root: &Path, fqn: &str, here: Option<(&str, &str)>) -> Option<ClassDecl> {
     let fqn = fqn.trim_start_matches('\\');
     if let Some((path, text)) = here {
-        if let Some(decl) = classes_in(text, path)
-            .into_iter()
+        if let Some(decl) = classes_cached(text, path)
+            .iter()
             .find(|decl| decl.fqn.eq_ignore_ascii_case(fqn))
         {
-            return Some(decl);
+            return Some(decl.clone());
         }
     }
-    let path = resolve_class(root, fqn)?;
-    let text = read(root, &path)?;
     let short = fqn.rsplit('\\').next().unwrap_or(fqn);
-    let all = classes_in(&text, &path);
+    let Some(path) = resolve_class(root, fqn) else {
+        // Only an exact match: the index knows short names.
+        return crate::symbols::class_paths(root, short, true)
+            .into_iter()
+            .filter(|path| here.map_or(true, |(own, _)| own != path.as_str()))
+            .find_map(|path| {
+                let text = read(root, &path)?;
+                classes_cached(&text, &path)
+                    .iter()
+                    .find(|decl| decl.fqn.eq_ignore_ascii_case(fqn))
+                    .cloned()
+            });
+    };
+    let text = read(root, &path)?;
+    let all = classes_cached(&text, &path);
     let exact = all
         .iter()
         .position(|decl| decl.fqn.eq_ignore_ascii_case(fqn));
@@ -1049,8 +1343,8 @@ fn is_facade(root: &Path, decl: &ClassDecl, here: Option<(&str, &str)>) -> bool 
 
 /// Where a facade's method really is: on the class `getFacadeAccessor`
 /// names, on the type its `@method` tag returns, or on a class its `@see`
-/// names.
-fn through_facade(root: &Path, decl: &ClassDecl, name: &str) -> Option<Member> {
+/// names. With the class it was found on.
+fn through_facade(root: &Path, decl: &ClassDecl, name: &str) -> Option<(Member, String)> {
     let mut targets: Vec<String> = Vec::new();
     if let Some(accessor) = &decl.accessor {
         targets.push(accessor.clone());
@@ -1069,7 +1363,9 @@ fn through_facade(root: &Path, decl: &ClassDecl, name: &str) -> Option<Member> {
     }
     targets.into_iter().find_map(|fqn| {
         let target = find_decl(root, &fqn, None)?;
-        find_member(root, &target, None, name, Want::Method).filter(|member| !member.doc)
+        find_member(root, &target, None, name, Want::Method)
+            .filter(|member| !member.doc)
+            .map(|member| (member, target.fqn.clone()))
     })
 }
 
@@ -1088,10 +1384,24 @@ fn php_jump(root: &Path, path: &str, text: &str, byte: usize) -> Option<Landing>
     let node = tree
         .root_node()
         .named_descendant_for_byte_range(byte, byte)?;
-    let target = php_target(node, text, &imports)?;
+    let scope = Here {
+        root,
+        path,
+        source: text,
+        imports: &imports,
+    };
+    let target = php_target(&scope, node)?;
     let here = Some((path, text));
     match target {
         Target::Class(fqn) => {
+            // A project class Composer does not map is the index's to find.
+            let mapped = resolve_class(root, &fqn).is_some()
+                || classes_cached(text, path)
+                    .iter()
+                    .any(|decl| decl.fqn.eq_ignore_ascii_case(fqn.trim_start_matches('\\')));
+            if !mapped {
+                return None;
+            }
             let decl = find_decl(root, &fqn, here)?;
             let file = decl.path.clone();
             Some((file, decl.line, decl.column, "class", None))
@@ -1104,7 +1414,7 @@ fn php_jump(root: &Path, path: &str, text: &str, byte: usize) -> Option<Landing>
                 }
             }
             if want == Want::Method && is_facade(root, &decl, here) {
-                if let Some(member) = through_facade(root, &decl, &name) {
+                if let Some((member, _)) = through_facade(root, &decl, &name) {
                     return Some((member.path, member.line, member.column, member.kind, None));
                 }
                 let short = decl
@@ -1151,7 +1461,9 @@ const CLASS_PLACES: &[&str] = &[
     "instanceof_expression",
 ];
 
-fn php_target(node: Node, source: &str, imports: &PhpImports) -> Option<Target> {
+fn php_target(scope: &Here, node: Node) -> Option<Target> {
+    let source = scope.source;
+    let imports = scope.imports;
     // A name in a `use` line: the class it imports.
     let mut up = Some(node);
     for _ in 0..4 {
@@ -1246,13 +1558,11 @@ fn php_target(node: Node, source: &str, imports: &PhpImports) -> Option<Target> 
             if parent.child_by_field_name("name") != Some(name) {
                 return None;
             }
-            // Only on `$this`: any other receiver needs its type, which the
-            // index's own search is left to guess.
+            // The receiver's class: `$this`, a typed variable or property,
+            // or a chain of calls followed through their return types. One
+            // that cannot be worked out is left to the index.
             let object = parent.child_by_field_name("object")?;
-            if text_of(object, source) != "$this" {
-                return None;
-            }
-            let class = enclosing_class(name, source, imports)?;
+            let class = php_type(scope, object, 0)?;
             let want = if parent.kind().contains("call") {
                 Want::Method
             } else {
@@ -1321,9 +1631,478 @@ fn enclosing_class(node: Node, source: &str, imports: &PhpImports) -> Option<Str
     })
 }
 
+// --- PHP: what an expression holds ------------------------------------------------
+
+/// How many steps of a chain (`a()->b()->c()`) are followed.
+const MAX_CHAIN: usize = 8;
+
+/// The file an expression is in: where to look for its classes.
+struct Here<'a> {
+    root: &'a Path,
+    path: &'a str,
+    source: &'a str,
+    imports: &'a PhpImports,
+}
+
+impl Here<'_> {
+    fn here(&self) -> Option<(&str, &str)> {
+        Some((self.path, self.source))
+    }
+}
+
+/// The class an expression holds an instance of, fully qualified: `$this`, a
+/// typed parameter, a variable assigned `new Foo` or a chain, a typed or
+/// documented property, and each call of a chain by the type its method
+/// declares it returns (`: Foo`, `?Foo`, the first class of a union,
+/// `@return Foo`, `static`, `self` and `$this` keep the class). `None` as
+/// soon as one step cannot be worked out: no guessing.
+fn php_type(scope: &Here, node: Node, depth: usize) -> Option<String> {
+    if depth > MAX_CHAIN {
+        return None;
+    }
+    let source = scope.source;
+    match node.kind() {
+        "variable_name" => {
+            let name = text_of(node, source).trim_start_matches('$');
+            if name == "this" {
+                return enclosing_class(node, source, scope.imports);
+            }
+            var_type(scope, node, name, depth)
+        }
+        "member_access_expression" | "nullsafe_member_access_expression" => {
+            let class = php_type(scope, node.child_by_field_name("object")?, depth + 1)?;
+            let name = node
+                .child_by_field_name("name")
+                .filter(|n| n.kind() == "name")?;
+            member_returns(scope, &class, text_of(name, source), Want::Property)
+        }
+        "member_call_expression" | "nullsafe_member_call_expression" => {
+            let class = php_type(scope, node.child_by_field_name("object")?, depth + 1)?;
+            let name = node
+                .child_by_field_name("name")
+                .filter(|n| n.kind() == "name")?;
+            member_returns(scope, &class, text_of(name, source), Want::Method)
+        }
+        "scoped_call_expression" => {
+            let class = scope_class(node.child_by_field_name("scope")?, source, scope.imports)?;
+            let name = node
+                .child_by_field_name("name")
+                .filter(|n| n.kind() == "name")?;
+            member_returns(scope, &class, text_of(name, source), Want::Method)
+        }
+        "object_creation_expression" => {
+            let name = named_children(node)
+                .into_iter()
+                .find(|n| matches!(n.kind(), "name" | "qualified_name"))?;
+            let written = text_of(name, source);
+            if is_self_type(written) {
+                return enclosing_class(node, source, scope.imports);
+            }
+            Some(scope.imports.qualify(written))
+        }
+        "parenthesized_expression" => named_children(node)
+            .into_iter()
+            .next()
+            .and_then(|inner| php_type(scope, inner, depth + 1)),
+        // `app(Foo::class)` and `resolve(Foo::class)`.
+        "function_call_expression" => {
+            let function = node.child_by_field_name("function")?;
+            if !matches!(text_of(function, source), "app" | "resolve") {
+                return None;
+            }
+            let arguments = node.child_by_field_name("arguments")?;
+            let first = named_children(arguments)
+                .into_iter()
+                .find(|n| n.kind() == "argument")?;
+            let value = named_children(first).into_iter().last()?;
+            let parts = named_children(value);
+            (value.kind() == "class_constant_access_expression"
+                && parts.len() == 2
+                && text_of(parts[1], source) == "class")
+                .then(|| scope_class(parts[0], source, scope.imports))
+                .flatten()
+        }
+        _ => None,
+    }
+}
+
+/// What a member of `class` gives back: a method's return type or a
+/// property's type, `static` meaning `class` itself. A facade's method that
+/// the facade only names is followed to the class it stands for.
+fn member_returns(scope: &Here, class: &str, name: &str, want: Want) -> Option<String> {
+    let here = scope.here();
+    let decl = find_decl(scope.root, class, here)?;
+    let found = find_member(scope.root, &decl, here, name, want);
+    if let Some(returns) = found.as_ref().and_then(|member| member.returns.clone()) {
+        return Some(if returns == "static" {
+            decl.fqn.clone()
+        } else {
+            returns
+        });
+    }
+    let only_documented = found.as_ref().map_or(true, |member| member.doc);
+    if want == Want::Method && only_documented && is_facade(scope.root, &decl, here) {
+        let (member, target) = through_facade(scope.root, &decl, name)?;
+        let returns = member.returns?;
+        return Some(if returns == "static" { target } else { returns });
+    }
+    None
+}
+
+/// The nearest function, method, closure or arrow function around a node.
+fn enclosing_function(node: Node) -> Option<Node> {
+    let mut at = node.parent();
+    while let Some(here) = at {
+        if matches!(
+            here.kind(),
+            "method_declaration" | "function_definition" | "anonymous_function" | "arrow_function"
+        ) {
+            return Some(here);
+        }
+        if CLASS_KINDS.contains(&here.kind()) {
+            return None;
+        }
+        at = here.parent();
+    }
+    None
+}
+
+/// `@var Foo $name` or `@var Foo` in a comment: the type and the name, if
+/// it says one.
+fn var_comment(comment: &str) -> Option<(&str, Option<&str>)> {
+    let rest = comment.split("@var").nth(1)?;
+    let mut words = rest.split_whitespace();
+    let ty = words.next()?;
+    let var = words
+        .next()
+        .and_then(|word| word.strip_prefix('$'))
+        .map(|word| word.trim_end_matches(|c: char| !c.is_alphanumeric() && c != '_'));
+    Some((ty, var))
+}
+
+/// A variable's class where it is used: the last assignment before the use
+/// in the same function (`$x = new Foo`, `$x = Http::withToken($t)`), a
+/// `@var` comment, or the parameter's type. Closures look through `use`, and
+/// arrow functions at the function around them.
+fn var_type(scope: &Here, used: Node, name: &str, depth: usize) -> Option<String> {
+    if depth > MAX_CHAIN {
+        return None;
+    }
+    let source = scope.source;
+    let function = enclosing_function(used)?;
+    let before = used.start_byte();
+    // The latest thing before the use that says what the variable is.
+    let mut best: Option<(usize, Option<String>)> = None;
+    let mut consider = |at: usize, class: Option<String>| {
+        if best.as_ref().map_or(true, |(seen, _)| at >= *seen) {
+            best = Some((at, class));
+        }
+    };
+    let mut declared_here = false;
+    if let Some(parameters) = function.child_by_field_name("parameters") {
+        for parameter in named_children(parameters) {
+            let Some(var) = parameter.child_by_field_name("name") else {
+                continue;
+            };
+            if text_of(var, source).trim_start_matches(['&', '$']) != name {
+                continue;
+            }
+            declared_here = true;
+            let class = (parameter.kind() != "variadic_parameter")
+                .then(|| parameter.child_by_field_name("type"))
+                .flatten()
+                .and_then(|ty| type_class(ty, source, scope.imports));
+            consider(function.start_byte(), class);
+        }
+    }
+    if let Some(body) = function.child_by_field_name("body") {
+        let mut stack = vec![body];
+        while let Some(node) = stack.pop() {
+            if node.start_byte() >= before {
+                continue;
+            }
+            match node.kind() {
+                "assignment_expression" if node.end_byte() <= before => {
+                    let left = node.child_by_field_name("left");
+                    let mine = left.is_some_and(|left| {
+                        left.kind() == "variable_name"
+                            && text_of(left, source).trim_start_matches('$') == name
+                    });
+                    if mine {
+                        declared_here = true;
+                        let documented = node
+                            .parent()
+                            .filter(|p| p.kind() == "expression_statement")
+                            .and_then(|statement| statement.prev_named_sibling())
+                            .filter(|comment| comment.kind() == "comment")
+                            .and_then(|comment| var_comment(text_of(comment, source)))
+                            .filter(|(_, var)| var.map_or(true, |var| var == name))
+                            .and_then(|(ty, _)| doc_class(ty, scope.imports));
+                        let class = documented.or_else(|| {
+                            node.child_by_field_name("right")
+                                .and_then(|right| php_type(scope, right, depth + 1))
+                        });
+                        consider(node.start_byte(), class);
+                        continue;
+                    }
+                }
+                "comment" => {
+                    if let Some((ty, Some(var))) = var_comment(text_of(node, source)) {
+                        if var == name {
+                            declared_here = true;
+                            consider(node.start_byte(), doc_class(ty, scope.imports));
+                        }
+                    }
+                    continue;
+                }
+                // Their own scopes.
+                "anonymous_function" | "arrow_function" | "function_definition" => continue,
+                _ => {}
+            }
+            if CLASS_KINDS.contains(&node.kind()) || node.kind() == "anonymous_class" {
+                continue;
+            }
+            stack.extend(named_children(node));
+        }
+    }
+    if let Some((_, class)) = best {
+        let class = class?;
+        return if class == "static" {
+            enclosing_class(used, source, scope.imports)
+        } else {
+            Some(class)
+        };
+    }
+    // A closure's `use ($x)` and an arrow function's whole outer scope.
+    let shared = match function.kind() {
+        "arrow_function" => true,
+        "anonymous_function" => named_children(function)
+            .into_iter()
+            .find(|n| n.kind() == "anonymous_function_use_clause")
+            .is_some_and(|clause| {
+                named_children(clause)
+                    .into_iter()
+                    .any(|var| text_of(var, source).trim_start_matches(['&', '$']) == name)
+            }),
+        _ => false,
+    };
+    if shared && !declared_here {
+        return var_type(scope, function, name, depth + 1);
+    }
+    None
+}
+
+// --- PHP: what can follow `->` and `::` -------------------------------------------
+
+/// The members a completion list offers after `->`, `?->` or `::`.
+#[derive(Serialize, Clone, Debug, Default)]
+pub struct PhpMembers {
+    /// The receiver's class, fully qualified.
+    pub class: String,
+    /// `instance` after `->`, `static` after `Foo::`, `self::` and
+    /// `static::`, `parent` after `parent::`.
+    pub access: &'static str,
+    pub members: Vec<Member>,
+}
+
+/// What is offered after the `->` or `::` that ends just before `start`
+/// (bytes), the name being typed running to `end`. Methods, properties,
+/// constants and cases of the receiver's class and everything it inherits,
+/// by how it is reached (`->` instance, `::` static and constants, `parent::`
+/// also the parent's instance methods) and by visibility from where the
+/// caret is: private only inside the class that declares it (or uses the
+/// trait that does), protected inside the hierarchy. `None` when the
+/// receiver cannot be worked out.
+pub fn php_members_at(
+    root: &Path,
+    path: &str,
+    text: &str,
+    start: usize,
+    end: usize,
+) -> Option<PhpMembers> {
+    let (start, end) = (start.min(text.len()), end.min(text.len()).max(start));
+    // A call in place of the half-typed name, so the tree has an expression
+    // to hang the receiver on.
+    let probe = format!("{}__gnc(){}", &text[..start], &text[end..]);
+    let tree = parse_php(&probe)?;
+    let imports = imports_in(tree.root_node(), &probe);
+    let scope = Here {
+        root,
+        path,
+        source: &probe,
+        imports: &imports,
+    };
+    let name = tree
+        .root_node()
+        .named_descendant_for_byte_range(start, start)?;
+    let call = name.parent()?;
+    if call.child_by_field_name("name") != Some(name) {
+        return None;
+    }
+    let (class, access) = match call.kind() {
+        "member_call_expression" | "nullsafe_member_call_expression" => (
+            php_type(&scope, call.child_by_field_name("object")?, 0)?,
+            "instance",
+        ),
+        "scoped_call_expression" => {
+            let target = call.child_by_field_name("scope")?;
+            let access = if text_of(target, &probe).eq_ignore_ascii_case("parent") {
+                "parent"
+            } else {
+                "static"
+            };
+            let class = match target.kind() {
+                "variable_name" => php_type(&scope, target, 0)?,
+                _ => scope_class(target, &probe, &imports)?,
+            };
+            (class, access)
+        }
+        _ => return None,
+    };
+    let here = scope.here();
+    let decl = find_decl(root, &class, here)?;
+    // Where the caret is, for what is visible from there.
+    let inside = enclosing_class(name, &probe, &imports);
+    let mut own: HashSet<String> = HashSet::new();
+    let mut lineage: HashSet<String> = HashSet::new();
+    if let Some(inside) = &inside {
+        if let Some(decl) = find_decl(root, inside, here) {
+            own_scope(root, &decl, here, &mut own, 0);
+            walk(root, &decl, here, &mut HashSet::new(), 0, &mut |one| {
+                lineage.insert(one.fqn.to_ascii_lowercase());
+                false
+            });
+        }
+    }
+    let mut related = lineage.contains(&decl.fqn.to_ascii_lowercase());
+    if !related {
+        if let Some(inside) = &inside {
+            let inside = inside.to_ascii_lowercase();
+            walk(root, &decl, here, &mut HashSet::new(), 0, &mut |one| {
+                related = one.fqn.eq_ignore_ascii_case(&inside);
+                related
+            });
+        }
+    }
+    let mut members: Vec<Member> = Vec::new();
+    let mut names: HashSet<(bool, String)> = HashSet::new();
+    walk(root, &decl, here, &mut HashSet::new(), 0, &mut |one| {
+        for member in &one.members {
+            let method = member.kind == "method";
+            let key = if method {
+                member.name.to_ascii_lowercase()
+            } else {
+                member.name.clone()
+            };
+            if names.insert((method, key)) {
+                members.push(member.clone());
+            }
+        }
+        false
+    });
+    members.retain(|member| {
+        let fits = match access {
+            "instance" => {
+                matches!(member.kind, "method" | "property")
+                    && !member.is_static
+                    && !member.name.starts_with("__")
+            }
+            "parent" => member.kind != "property" || member.is_static,
+            _ => member.is_static && !(member.kind == "method" && member.name.starts_with("__")),
+        };
+        let visible = match member.visibility {
+            "private" => own.contains(&member.class.to_ascii_lowercase()),
+            "protected" => related,
+            _ => true,
+        };
+        fits && visible
+    });
+    if access != "instance" {
+        members.push(Member {
+            name: "class".into(),
+            kind: "constant",
+            is_static: true,
+            visibility: "public",
+            line: decl.line,
+            column: decl.column,
+            class: decl.fqn.clone(),
+            path: decl.path.clone(),
+            doc: false,
+            signature: Some("string".into()),
+            summary: Some("The fully qualified class name".into()),
+            returns: None,
+        });
+    }
+    Some(PhpMembers {
+        class: decl.fqn.clone(),
+        access,
+        members,
+    })
+}
+
+/// A class and the traits it uses, theirs too: where its private members
+/// can be seen from.
+fn own_scope(
+    root: &Path,
+    decl: &ClassDecl,
+    here: Option<(&str, &str)>,
+    into: &mut HashSet<String>,
+    depth: usize,
+) {
+    if depth > MAX_DEPTH || !into.insert(decl.fqn.to_ascii_lowercase()) {
+        return;
+    }
+    for used in &decl.traits {
+        if let Some(found) = find_decl(root, used, here) {
+            own_scope(root, &found, here, into, depth + 1);
+        }
+    }
+}
+
+/// When a method's class cannot be worked out: the classes the file imports
+/// that have a method of that name (facades followed), for a list to pick
+/// from. At most twenty.
+pub fn php_member_candidates(root: &Path, path: &str, text: &str, name: &str) -> Vec<Jump> {
+    let imports = php_imports(text);
+    let here = Some((path, text));
+    let mut fqns: Vec<&String> = imports.classes.values().collect();
+    fqns.sort();
+    let mut out: Vec<Jump> = Vec::new();
+    let mut seen: HashSet<(String, u32)> = HashSet::new();
+    for fqn in fqns {
+        let Some(decl) = find_decl(root, fqn, here) else {
+            continue;
+        };
+        let found = find_member(root, &decl, here, name, Want::Method)
+            .filter(|member| !member.doc)
+            .or_else(|| {
+                is_facade(root, &decl, here)
+                    .then(|| through_facade(root, &decl, name).map(|(member, _)| member))
+                    .flatten()
+            });
+        let Some(member) = found else { continue };
+        if !seen.insert((member.path.clone(), member.line)) {
+            continue;
+        }
+        out.push(Jump {
+            text: line_of(root, &member.path, member.line),
+            dependency: is_dependency(root, &member.path),
+            path: member.path,
+            line: member.line,
+            column: member.column,
+            kind: member.kind,
+            note: None,
+        });
+        if out.len() >= 20 {
+            break;
+        }
+    }
+    out
+}
+
 // --- TypeScript and JavaScript --------------------------------------------------
 
-fn parse_script(text: &str, ext: &str) -> Option<Tree> {
+pub(crate) fn parse_script(text: &str, ext: &str) -> Option<Tree> {
     let language = if matches!(ext, "tsx" | "jsx") {
         tree_sitter_typescript::LANGUAGE_TSX
     } else {
@@ -1334,7 +2113,7 @@ fn parse_script(text: &str, ext: &str) -> Option<Tree> {
     parser.parse(text, None)
 }
 
-fn ext_of(path: &str) -> String {
+pub(crate) fn ext_of(path: &str) -> String {
     path.rsplit('/')
         .next()
         .and_then(|name| name.rsplit_once('.'))
@@ -1342,7 +2121,7 @@ fn ext_of(path: &str) -> String {
         .unwrap_or_default()
 }
 
-fn string_value(node: Node, source: &str) -> String {
+pub(crate) fn string_value(node: Node, source: &str) -> String {
     text_of(node, source)
         .trim_matches(|c| c == '\'' || c == '"' || c == '`')
         .to_string()
@@ -1350,7 +2129,7 @@ fn string_value(node: Node, source: &str) -> String {
 
 /// Names imported from packages: local name to (specifier, exported name;
 /// `default` and `*` for those).
-fn package_imports(root: Node, source: &str) -> HashMap<String, (String, String)> {
+pub(crate) fn package_imports(root: Node, source: &str) -> HashMap<String, (String, String)> {
     let mut out = HashMap::new();
     for statement in named_children(root) {
         if statement.kind() != "import_statement" {
@@ -1558,7 +2337,7 @@ fn condition(value: &serde_json::Value) -> Option<String> {
 
 /// A module path as an import writes it, to a file that is there: the
 /// declaration file beside a script first.
-fn module_file(root: &Path, base: &str) -> Option<String> {
+pub(crate) fn module_file(root: &Path, base: &str) -> Option<String> {
     let mut tries: Vec<String> = Vec::new();
     for (script, types) in [(".js", ".d.ts"), (".mjs", ".d.mts"), (".cjs", ".d.cts")] {
         if let Some(stem) = base.strip_suffix(script) {
@@ -1577,7 +2356,12 @@ fn module_file(root: &Path, base: &str) -> Option<String> {
 
 /// Where a file declares the name it exports as `name`, following one
 /// `export … from` or `export * from` to another file.
-fn find_export(root: &Path, path: &str, name: &str, depth: usize) -> Option<(String, u32, u32)> {
+pub(crate) fn find_export(
+    root: &Path,
+    path: &str,
+    name: &str,
+    depth: usize,
+) -> Option<(String, u32, u32)> {
     let text = read(root, path)?;
     let ext = ext_of(path);
     let tree = parse_script(&text, &ext)?;
