@@ -119,6 +119,12 @@ pub trait Provider: Send + Sync {
         Vec::new()
     }
 
+    /// How many [`Provider::extra_references`] there are, when that is all
+    /// that is wanted (the usage counts, on every keystroke's refresh).
+    fn extra_reference_count(&self, root: &Path, fqn: &str) -> usize {
+        self.extra_references(root, fqn).len()
+    }
+
     /// What the group of [`Provider::extra_references`] is called.
     fn references_label(&self) -> &'static str {
         "Config"
@@ -257,6 +263,12 @@ pub fn extra_references(state: &AppState, fqn: &str) -> Option<(&'static str, Ve
         provider.references_label(),
         provider.extra_references(&root, fqn),
     ))
+}
+
+/// How many config files name the class `fqn`; `None` without a framework.
+pub fn extra_reference_count(state: &AppState, fqn: &str) -> Option<usize> {
+    let (root, provider) = active(state)?;
+    Some(provider.extra_reference_count(&root, fqn))
 }
 
 /// Where a class is, for the wiring view's rows.

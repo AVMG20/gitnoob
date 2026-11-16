@@ -561,7 +561,8 @@ async fn member_candidates(
             Some(text) => text,
             None => deps::read(&root, &path).unwrap_or_default(),
         };
-        if !path.to_ascii_lowercase().ends_with(".php") {
+        let lower = path.to_ascii_lowercase();
+        if !lower.ends_with(".php") && !lower.ends_with(".phtml") {
             return Vec::new();
         }
         deps::php_member_candidates(&root, &path, &text, &name)

@@ -102,7 +102,9 @@ pub fn lang_of(path: &str) -> Option<Lang> {
     }
     let ext = name.rsplit_once('.').map(|(_, ext)| ext)?;
     Some(match ext {
-        "php" => Lang::Php,
+        // A `.phtml` template is PHP inside HTML, which the PHP grammar reads
+        // as it is: what a template calls on its block counts as a usage.
+        "php" | "phtml" => Lang::Php,
         "js" | "mjs" | "cjs" | "jsx" => Lang::Js,
         "ts" | "mts" | "cts" => Lang::Ts,
         "tsx" => Lang::Tsx,
@@ -2281,6 +2283,14 @@ fn config_references(
     Some((label.to_string(), found))
 }
 
+/// How many places in framework config name a PHP class.
+fn config_reference_count(state: &AppState, path: &str, text: &str, name: &str) -> usize {
+    if lang_of(path) != Some(Lang::Php) {
+        return 0;
+    }
+    crate::frameworks::extra_reference_count(state, &php_fqn(text, name)).unwrap_or(0)
+}
+
 /// Every usage of a definition, in files of the same family as `from`.
 /// `kind` and `line` pick the definition in `from`; its class decides which
 /// calls are its. Without them, every reference to the name, as written.
@@ -2436,7 +2446,7 @@ pub fn usage_counts(state: &AppState, path: &str, text: Option<&str>) -> Result<
             .count();
         let possible = judged.found.len() - count;
         let config = if matches!(def.kind, "class" | "interface") {
-            config_references(state, path, &text, &def.name).map_or(0, |(_, found)| found.len())
+            config_reference_count(state, path, &text, &def.name)
         } else {
             0
         };
@@ -2779,10 +2789,7 @@ pub fn unused_in(
         let wired = symbols
             .iter()
             .filter(|s| s.definition && s.kind == "class")
-            .any(|class| {
-                config_references(state, path, &text, &class.name)
-                    .is_some_and(|(_, found)| !found.is_empty())
-            });
+            .any(|class| config_reference_count(state, path, &text, &class.name) > 0);
         if wired {
             marks.retain(|mark| mark.level != "hint");
         }

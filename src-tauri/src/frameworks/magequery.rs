@@ -26,6 +26,8 @@ pub const PINNED: &str = "0.24.1";
 
 const TIMEOUT: Duration = Duration::from_secs(10);
 const MAX_OUTPUT: usize = 8 * 1024 * 1024;
+/// No class name is this long; one that is, is not passed on.
+const MAX_CLASS: usize = 512;
 
 /// The target triple this build is for, from build.rs.
 const TARGET: &str = env!("GITNOOB_TARGET");
@@ -113,9 +115,10 @@ pub fn status(state: &AppState) -> Status {
 /// starting with a digit. Never a flag.
 pub fn valid_class(name: &str) -> bool {
     let mut chars = name.chars();
-    chars
-        .next()
-        .is_some_and(|c| c.is_ascii_alphabetic() || c == '_' || c == '\\')
+    name.len() <= MAX_CLASS
+        && chars
+            .next()
+            .is_some_and(|c| c.is_ascii_alphabetic() || c == '_' || c == '\\')
         && chars.all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '\\')
 }
 
@@ -216,9 +219,16 @@ pub struct Wiring {
     pub sections: Vec<Section>,
 }
 
-/// A path magequery printed (absolute) as one in the work tree.
+/// A path magequery printed as one in the work tree: absolute under the
+/// root it was given, or relative to it. `None` for anything outside.
 fn relative(root: &Path, path: &str) -> Option<String> {
     let path = Path::new(path);
+    if path.is_relative() {
+        let inner = crate::files::slashed(path);
+        return crate::files::resolve(root, &inner, true)
+            .is_ok()
+            .then_some(inner);
+    }
     let root = root.canonicalize().unwrap_or_else(|_| root.to_path_buf());
     let inner = path
         .strip_prefix(&root)
@@ -239,58 +249,61 @@ fn text(value: &Value, key: &str) -> Option<String> {
     }
 }
 
-/// A row from one of magequery's entries, whatever its shape: the first
-/// name-like field as the label, a few others as the detail, its `source`
-/// as the place.
+fn short(fqn: &str) -> &str {
+    fqn.rsplit('\\').next().unwrap_or(fqn)
+}
+
+/// The strings of an array field.
+fn strings(value: &Value, key: &str) -> Vec<String> {
+    value[key]
+        .as_array()
+        .map(|all| {
+            all.iter()
+                .filter_map(|one| one.as_str())
+                .filter(|one| !one.is_empty())
+                .map(str::to_string)
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+/// A row from one entry and its `source` (`{module, file, line, area}`).
+/// The source's area is added to the detail when it is not the global one
+/// and the detail does not say it already; line 0 is magequery's "known
+/// file, unknown line".
 fn row(
     root: &Path,
     item: &Value,
-    label_keys: &[&str],
-    detail_keys: &[&str],
-    class_key: Option<&str>,
+    label: String,
+    mut detail: Vec<String>,
+    class: Option<String>,
 ) -> Row {
-    let label = label_keys
-        .iter()
-        .find_map(|key| text(item, key))
-        .unwrap_or_else(|| "(unnamed)".to_string());
-    let detail: Vec<String> = detail_keys
-        .iter()
-        .filter_map(|key| {
-            let value = text(item, key)?;
-            Some(match *key {
-                "sort_order" => format!("sort {value}"),
-                "area" => value,
-                _ => value,
-            })
-        })
-        .collect();
     let source = &item["source"];
-    let mut detail = detail;
     if let Some(area) = text(source, "area") {
-        detail.push(area);
+        if area != "global" && !detail.contains(&area) {
+            detail.push(area);
+        }
     }
     Row {
         label,
         detail: (!detail.is_empty()).then(|| detail.join(" · ")),
-        class: class_key.and_then(|key| text(item, key)),
+        class,
         path: text(source, "file").and_then(|file| relative(root, &file)),
-        line: source["line"].as_u64().map(|line| line as u32),
+        line: source["line"]
+            .as_u64()
+            .filter(|line| *line > 0)
+            .map(|line| line as u32),
     }
 }
 
-fn section(
-    root: &Path,
-    title: &str,
-    items: &Value,
-    label_keys: &[&str],
-    detail_keys: &[&str],
-    class_key: Option<&str>,
-) -> Option<Section> {
+/// A section from an array field, one row per object in it that `make`
+/// can name.
+fn section(title: &str, items: &Value, make: impl Fn(&Value) -> Option<Row>) -> Option<Section> {
     let rows: Vec<Row> = items
         .as_array()?
         .iter()
         .filter(|item| item.is_object())
-        .map(|item| row(root, item, label_keys, detail_keys, class_key))
+        .filter_map(make)
         .collect();
     (!rows.is_empty()).then(|| Section {
         title: title.to_string(),
@@ -298,153 +311,213 @@ fn section(
     })
 }
 
-/// The wiring view from `whatis --json` and `plugins --json`.
+/// Rows that are only class names (`parents`, `interfaces`).
+fn classes(title: &str, names: Vec<String>) -> Option<Section> {
+    (!names.is_empty()).then(|| Section {
+        title: title.to_string(),
+        rows: names
+            .into_iter()
+            .map(|name| Row {
+                label: name.clone(),
+                class: Some(name),
+                ..Row::default()
+            })
+            .collect(),
+    })
+}
+
+/// One plugin of `plugins --json` (magequery's `Plugin`): `name`, `class`,
+/// `sort_order`, `methods` (`{kind, target, plugin_method}`), `declared_on`,
+/// `disabled`, `source` and `areas`.
+fn plugin_row(root: &Path, asked: &str, item: &Value) -> Option<Row> {
+    let mut label = text(item, "name")?;
+    if item["disabled"].as_bool() == Some(true) {
+        label.push_str(" (disabled)");
+    }
+    let class = text(item, "class");
+    let mut detail: Vec<String> = Vec::new();
+    detail.extend(class.clone());
+    if let Some(order) = text(item, "sort_order") {
+        detail.push(format!("sort {order}"));
+    }
+    // Declared on an interface or a parent: the case people miss.
+    if let Some(on) = text(item, "declared_on") {
+        if !on.eq_ignore_ascii_case(asked) {
+            detail.push(format!("on {}", short(&on)));
+        }
+    }
+    let areas = strings(item, "areas");
+    if !areas.is_empty() && areas != ["global"] {
+        detail.push(areas.join(", "));
+    }
+    let methods: Vec<String> = item["methods"]
+        .as_array()
+        .map(|methods| {
+            methods
+                .iter()
+                .filter_map(|method| {
+                    Some(format!(
+                        "{} {}",
+                        method["kind"].as_str()?,
+                        method["target"].as_str()?
+                    ))
+                })
+                .collect()
+        })
+        .unwrap_or_default();
+    if !methods.is_empty() {
+        detail.push(methods.join(", "));
+    }
+    Some(row(root, item, label, detail, class))
+}
+
+/// The wiring view from `whatis --json` and `plugins --json`, as magequery
+/// 0.24 prints them (its `Whatis` and `Vec<Plugin>`, serialised by serde
+/// with the field names as written in its source). Every field is read on
+/// its own and a missing one is skipped.
 pub fn read_wiring(root: &Path, fqn: &str, whatis: &Value, plugins: Option<&Value>) -> Wiring {
+    let asked = fqn.trim().trim_start_matches('\\');
+    let class = text(whatis, "class").unwrap_or_else(|| asked.to_string());
+    let mut kind: Vec<String> = text(whatis, "kind").into_iter().collect();
+    if whatis["is_virtual_type"].as_bool() == Some(true) {
+        kind.push("virtual type".to_string());
+    }
     let mut wiring = Wiring {
-        class: text(whatis, "class").unwrap_or_else(|| fqn.to_string()),
-        kind: text(whatis, "kind"),
+        kind: (!kind.is_empty()).then(|| kind.join(" · ")),
         module: text(whatis, "module"),
         path: text(whatis, "file").and_then(|file| relative(root, &file)),
         preference: text(whatis, "resolves_to"),
         sections: Vec::new(),
+        class,
     };
     let mut push = |found: Option<Section>| {
         if let Some(found) = found {
             wiring.sections.push(found);
         }
     };
-    if let Some(plugins) = plugins {
-        // Each plugin with the methods it wraps.
-        let rows: Vec<Row> = plugins
-            .as_array()
-            .map(|all| {
-                all.iter()
-                    .filter(|item| item.is_object())
-                    .map(|item| {
-                        let mut found = row(
-                            root,
-                            item,
-                            &["name"],
-                            &["class", "sort_order"],
-                            Some("class"),
-                        );
-                        let methods: Vec<String> = item["methods"]
-                            .as_array()
-                            .map(|methods| {
-                                methods
-                                    .iter()
-                                    .filter_map(|method| {
-                                        Some(format!(
-                                            "{} {}",
-                                            method["kind"].as_str()?,
-                                            method["target"].as_str()?
-                                        ))
-                                    })
-                                    .collect()
-                            })
-                            .unwrap_or_default();
-                        if !methods.is_empty() {
-                            let detail = found.detail.take().unwrap_or_default();
-                            found.detail = Some(format!("{detail} · {}", methods.join(", ")));
-                        }
-                        if item["disabled"].as_bool() == Some(true) {
-                            found.label.push_str(" (disabled)");
-                        }
-                        found
-                    })
-                    .collect()
-            })
-            .unwrap_or_default();
-        if !rows.is_empty() {
-            push(Some(Section {
-                title: "Plugins".to_string(),
-                rows,
-            }));
-        }
+    // A virtual type: the real class it is made of.
+    push(classes(
+        "Instantiates",
+        text(whatis, "instantiates").into_iter().collect(),
+    ));
+    let listed = plugins
+        .and_then(|plugins| section("Plugins", plugins, |item| plugin_row(root, asked, item)));
+    let counted = whatis["plugin_count"].as_u64().unwrap_or(0);
+    match listed {
+        Some(found) => push(Some(found)),
+        // `whatis` counted plugins that `plugins` did not list (it failed).
+        None if counted > 0 => push(Some(Section {
+            title: "Plugins".to_string(),
+            rows: vec![Row {
+                label: format!("{counted} (magequery could not list them)"),
+                ..Row::default()
+            }],
+        })),
+        None => {}
     }
     let uses = &whatis["uses"];
-    push(section(
-        root,
-        "Preference for",
-        &uses["preferred_for"],
-        &["name"],
-        &[],
-        Some("name"),
-    ));
-    push(section(
-        root,
-        "Virtual types",
-        &uses["virtual_types"],
-        &["name", "virtual_type"],
-        &[],
-        None,
-    ));
-    push(section(
-        root,
-        "Injected into",
-        &uses["injections"],
-        &["consumer"],
-        &["argument"],
-        Some("consumer"),
-    ));
-    push(section(
-        root,
-        "Observes",
-        &whatis["observes"],
-        &["event"],
-        &["name"],
-        None,
-    ));
-    push(section(
-        root,
-        "Cron jobs",
-        &whatis["cron_jobs"],
-        &["name"],
-        &["group", "method", "schedule"],
-        None,
-    ));
-    push(section(
-        root,
-        "Web API",
-        &whatis["webapi"],
-        &["url"],
-        &["method", "service_method"],
-        None,
-    ));
-    push(section(
-        root,
-        "Message queue",
-        &whatis["mq"],
-        &["topic", "name", "consumer"],
-        &["queue"],
-        None,
-    ));
-    push(section(
-        root,
-        "GraphQL",
-        &whatis["graphql"],
-        &["type", "name", "field"],
-        &["field"],
-        None,
-    ));
-    push(section(
-        root,
-        "URLs",
-        &whatis["action_urls"],
-        &["url", "path", "route"],
-        &["area"],
-        None,
-    ));
-    if whatis["command"].is_object() {
-        push(section(
+    let named = |item: &Value| {
+        let name = text(item, "name")?;
+        Some(row(root, item, name.clone(), Vec::new(), Some(name)))
+    };
+    push(section("Preference for", &uses["preferred_for"], named));
+    push(section("Virtual types", &uses["virtual_types"], |item| {
+        // A virtual type has no file of its own: the row opens its declaration.
+        Some(row(root, item, text(item, "name")?, Vec::new(), None))
+    }));
+    push(section("Injected into", &uses["injections"], |item| {
+        let consumer = text(item, "consumer")?;
+        let mut detail: Vec<String> = Vec::new();
+        if let Some(argument) = text(item, "argument") {
+            let keys: String = strings(item, "item_path")
+                .iter()
+                .map(|key| format!("[{key}]"))
+                .collect();
+            detail.push(format!("${argument}{keys}"));
+        }
+        if let Some(declared) = text(item, "declared") {
+            if !declared.eq_ignore_ascii_case(asked) {
+                detail.push(format!("as {}", short(&declared)));
+            }
+        }
+        if item["as_string"].as_bool() == Some(true) {
+            detail.push("by name".to_string());
+        }
+        let is_virtual = item["consumer_is_virtual"].as_bool() == Some(true);
+        if is_virtual {
+            detail.push("virtual type".to_string());
+        }
+        let class = (!is_virtual).then(|| consumer.clone());
+        Some(row(root, item, consumer, detail, class))
+    }));
+    push(section("Observes", &whatis["observes"], |item| {
+        let mut label = text(item, "event")?;
+        if item["disabled"].as_bool() == Some(true) {
+            label.push_str(" (disabled)");
+        }
+        Some(row(
             root,
-            "Console command",
-            &Value::Array(vec![whatis["command"].clone()]),
-            &["name", "command"],
-            &[],
+            item,
+            label,
+            text(item, "name").into_iter().collect(),
             None,
-        ));
+        ))
+    }));
+    push(section("Cron jobs", &whatis["cron_jobs"], |item| {
+        let detail = [
+            text(item, "group"),
+            text(item, "method"),
+            text(item, "schedule").or_else(|| text(item, "config_path")),
+        ];
+        Some(row(
+            root,
+            item,
+            text(item, "name")?,
+            detail.into_iter().flatten().collect(),
+            None,
+        ))
+    }));
+    push(section("Web API", &whatis["webapi"], |item| {
+        let mut detail: Vec<String> = [text(item, "method"), text(item, "service_method")]
+            .into_iter()
+            .flatten()
+            .collect();
+        let resources = strings(item, "resources");
+        if !resources.is_empty() {
+            detail.push(resources.join(", "));
+        }
+        Some(row(root, item, text(item, "url")?, detail, None))
+    }));
+    // `mq` and `graphql` are magequery's `ClassRef`: a `role` sentence
+    // ("@resolver of Query.products") and a source.
+    let role = |item: &Value| Some(row(root, item, text(item, "role")?, Vec::new(), None));
+    push(section("Message queue", &whatis["mq"], role));
+    push(section("GraphQL", &whatis["graphql"], role));
+    push(section("URLs", &whatis["action_urls"], |item| {
+        Some(row(
+            root,
+            item,
+            text(item, "url")?,
+            text(item, "area").into_iter().collect(),
+            None,
+        ))
+    }));
+    if whatis["command"].is_object() {
+        let commands = Value::Array(vec![whatis["command"].clone()]);
+        push(section("Console command", &commands, |item| {
+            // `name` is null when the class builds it at run time.
+            let label = text(item, "name").or_else(|| text(item, "item_key"))?;
+            Some(row(
+                root,
+                item,
+                label,
+                text(item, "description").into_iter().collect(),
+                None,
+            ))
+        }));
     }
+    push(classes("Extends", strings(whatis, "parents")));
+    push(classes("Implements", strings(whatis, "interfaces")));
     wiring
 }
 
@@ -455,18 +528,21 @@ pub fn wiring(binary: &Path, root: &Path, fqn: &str) -> Result<Wiring, String> {
         return Err(format!("{fqn} is not a class name"));
     }
     let root_arg = root.to_string_lossy().into_owned();
-    let args = |command: &str| -> Vec<String> {
-        vec![
-            command.to_string(),
+    let args = |command: &[&str]| -> Vec<String> {
+        let mut args: Vec<String> = command.iter().map(|part| part.to_string()).collect();
+        args.extend([
             "--json".to_string(),
             "-r".to_string(),
             root_arg.clone(),
             "--".to_string(),
             fqn.trim_start_matches('\\').to_string(),
-        ]
+        ]);
+        args
     };
-    let whatis_args = args("whatis");
-    let plugins_args = args("plugins");
+    let whatis_args = args(&["whatis"]);
+    // Every area: a plugin declared in `etc/frontend/di.xml` or
+    // `etc/adminhtml/di.xml` is not in the global list.
+    let plugins_args = args(&["plugins", "--all-areas"]);
     let binary_for_plugins = binary.to_path_buf();
     // Both at once: each reads the whole installation.
     let plugins = std::thread::spawn(move || run(&binary_for_plugins, &plugins_args));
@@ -494,6 +570,7 @@ mod tests {
         assert!(!valid_class("Foo Bar"));
         assert!(!valid_class("Foo;rm"));
         assert!(!valid_class(""));
+        assert!(!valid_class(&"A".repeat(513)));
     }
 
     #[test]

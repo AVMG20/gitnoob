@@ -79,6 +79,9 @@ impl<'a> Doc<'a> {
     }
 }
 
+/// How many open elements up an end tag is matched against.
+const CLOSE_REACH: usize = 256;
+
 fn is_name(byte: u8) -> bool {
     byte.is_ascii_alphanumeric() || matches!(byte, b'_' | b'-' | b'.' | b':') || byte >= 0x80
 }
@@ -114,8 +117,16 @@ pub fn parse(text: &str) -> Doc<'_> {
             continue;
         }
         let parent = stack.last().copied();
-        pending.extend(trimmed(text, text_from, at, parent));
         let rest = &text[at..];
+        // A `<` that starts nothing (`a < b` in text) is text itself: the
+        // run it is in goes on to the next real tag.
+        let markup = rest.len() > 1
+            && (is_name(bytes[at + 1]) || matches!(bytes[at + 1], b'!' | b'?' | b'/'));
+        if !markup {
+            at += 1;
+            continue;
+        }
+        pending.extend(trimmed(text, text_from, at, parent));
         if rest.starts_with("<!--") {
             at = rest.find("-->").map_or(bytes.len(), |end| at + end + 3);
             text_from = at;
@@ -140,11 +151,14 @@ pub fn parse(text: &str) -> Doc<'_> {
                 end += 1;
             }
             let name = &text[at + 2..end];
-            if let Some(depth) = stack
+            // Only so far up: a file of tags that never close and end tags
+            // that match nothing would otherwise walk the whole stack each time.
+            let floor = stack.len().saturating_sub(CLOSE_REACH);
+            if let Some(depth) = stack[floor..]
                 .iter()
                 .rposition(|open| doc.elements[*open].name == name)
             {
-                stack.truncate(depth);
+                stack.truncate(floor + depth);
             }
             at = text[end..]
                 .find('>')
@@ -157,10 +171,6 @@ pub fn parse(text: &str) -> Doc<'_> {
         let mut i = at + 1;
         while i < bytes.len() && is_name(bytes[i]) {
             i += 1;
-        }
-        if i == at + 1 {
-            at += 1;
-            continue;
         }
         let name = &text[at + 1..i];
         let mut attrs = Vec::new();
@@ -254,6 +264,38 @@ pub fn parse(text: &str) -> Doc<'_> {
     doc
 }
 
+/// Where the lines of a text start, so many offsets in one file cost one
+/// pass over it and a binary search each, not a pass each.
+pub struct Lines<'a> {
+    text: &'a str,
+    starts: Vec<usize>,
+}
+
+impl<'a> Lines<'a> {
+    pub fn new(text: &'a str) -> Self {
+        let mut starts = vec![0];
+        starts.extend(
+            text.bytes()
+                .enumerate()
+                .filter(|(_, byte)| *byte == b'\n')
+                .map(|(at, _)| at + 1),
+        );
+        Lines { text, starts }
+    }
+
+    /// Line (from 1) and column (UTF-16, from 1) of a byte offset.
+    pub fn line_col(&self, byte: usize) -> (u32, u32) {
+        let byte = byte.min(self.text.len());
+        let line = self.starts.partition_point(|start| *start <= byte) - 1;
+        let column = self
+            .text
+            .get(self.starts[line]..byte)
+            .map_or(0, |before| before.encode_utf16().count()) as u32
+            + 1;
+        (line as u32 + 1, column)
+    }
+}
+
 /// Line (from 1) and column (UTF-16, from 1) of a byte offset.
 pub fn line_col(text: &str, byte: usize) -> (u32, u32) {
     let byte = byte.min(text.len());
@@ -302,5 +344,48 @@ mod tests {
     #[test]
     fn line_and_column_count_from_one() {
         assert_eq!(line_col("ab\ncd", 4), (2, 2));
+        let text = "ab\ncd\n\nxé y";
+        let lines = Lines::new(text);
+        for at in [0, 1, 2, 3, 4, 5, 6, 7, 8, 11, text.len()] {
+            assert_eq!(lines.line_col(at), line_col(text, at), "at {at}");
+        }
+    }
+
+    #[test]
+    fn a_stray_angle_bracket_is_text_read_once() {
+        let doc = parse("<a>1 < 2 < 3</a><b>x</b>");
+        let texts: Vec<&str> = doc.texts.iter().map(|t| t.value).collect();
+        assert_eq!(texts, vec!["1 < 2 < 3", "x"]);
+    }
+
+    /// A 5 MB layout file reads in one pass: no quadratic walk over the
+    /// nesting, the text or the line numbers.
+    #[test]
+    fn a_huge_file_reads_in_linear_time() {
+        let mut source = String::from("<page>\n");
+        while source.len() < 5 * 1024 * 1024 {
+            source.push_str(
+                "  <block class=\"Foo\\Bar\\Baz\" name=\"a.b\" template=\"A_B::c.phtml\">1 < 2</block>\n",
+            );
+        }
+        // Tags that never close with end tags that match nothing.
+        for _ in 0..100_000 {
+            source.push_str("<a></b>");
+        }
+        // Never closed, and a comment that never ends.
+        source.push_str("<container name=\"open\"><!-- no end");
+        let started = std::time::Instant::now();
+        let doc = parse(&source);
+        let lines = Lines::new(&source);
+        let mut last = 0;
+        for element in &doc.elements {
+            last = lines.line_col(element.start).0;
+        }
+        assert!(doc.elements.len() > 50_000 && last > 50_000);
+        assert!(
+            started.elapsed() < std::time::Duration::from_secs(5),
+            "{:?}",
+            started.elapsed()
+        );
     }
 }

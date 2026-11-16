@@ -12,7 +12,8 @@
  * src-tauri/binaries/magequery-<target triple>[.exe] at build time.
  *
  * Every download is checked against the sha256 written below and refused on a
- * mismatch. To move to a new version: change VERSION, then copy the hashes
+ * mismatch, before anything is unpacked; a mismatch fails the run even with
+ * --optional. To move to a new version: change VERSION, then copy the hashes
  * from that release's sha256.sum and source.tar.gz.sha256 into ASSETS and
  * SOURCE, and PINNED in src-tauri/src/frameworks/magequery.rs.
  *
@@ -93,11 +94,35 @@ export function sha256(buffer) {
   return createHash('sha256').update(buffer).digest('hex')
 }
 
+/**
+ * A download that is not what was pinned, or an archive that is not shaped
+ * like one. Never passed over, `--optional` or not: being offline is a
+ * reason to go on without magequery, a file that is not the pinned one is not.
+ */
+export class Untrusted extends Error {}
+
 /** Refuses a download whose hash is not the pinned one. */
 export function verify(buffer, expected, name) {
   const actual = sha256(buffer)
   if (actual !== expected.toLowerCase()) {
-    throw new Error(`${name} does not match its pinned sha256 (expected ${expected}, got ${actual}). Not using it.`)
+    throw new Untrusted(`${name} does not match its pinned sha256 (expected ${expected}, got ${actual}). Not using it.`)
+  }
+  return true
+}
+
+/**
+ * Refuses an archive with an entry that would land outside the folder it is
+ * unpacked into: an absolute path, a drive letter, or a `..` on the way.
+ * The archives are hash-pinned, so this only ever fires on one that was
+ * pinned wrongly; it is here so that unpacking never depends on which tar
+ * a machine has and what that one does with such names.
+ */
+export function checkEntries(names, archive = 'The archive') {
+  for (const name of names) {
+    const parts = name.split(/[\\/]/)
+    if (name.startsWith('/') || name.startsWith('\\') || /^[A-Za-z]:/.test(name) || parts.includes('..')) {
+      throw new Untrusted(`${archive} has an entry that leaves its folder (${name}). Not unpacking it.`)
+    }
   }
   return true
 }
@@ -144,7 +169,8 @@ function run(command, args, options = {}) {
 async function download(file, expected) {
   const url = `${BASE}/${file}`
   console.log(`magequery: downloading ${url}`)
-  const response = await fetch(url, { redirect: 'follow' })
+  // Ten minutes at most: a stalled connection fails the step, not hangs it.
+  const response = await fetch(url, { redirect: 'follow', signal: AbortSignal.timeout(600_000) })
   if (!response.ok) throw new Error(`Could not download ${url}: ${response.status} ${response.statusText}`)
   const buffer = Buffer.from(await response.arrayBuffer())
   verify(buffer, expected, file)
@@ -178,6 +204,11 @@ function unpack(buffer, file, work) {
   writeFileSync(archive, buffer)
   const into = join(work, 'unpacked')
   mkdirSync(into, { recursive: true })
+  const listing = spawnSync(tarCommand(), ['-tf', archive], { encoding: 'utf8', maxBuffer: 64 * 1024 * 1024 })
+  if (listing.error || listing.status !== 0) {
+    throw new Error(`Could not list ${file}: ${listing.error?.message ?? listing.stderr?.trim() ?? listing.status}`)
+  }
+  checkEntries(listing.stdout.split(/\r?\n/).filter(Boolean), file)
   run(tarCommand(), ['-xf', archive, '-C', into])
   return into
 }
@@ -271,7 +302,7 @@ async function main(args) {
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
   const args = process.argv.slice(2)
   main(args).catch((error) => {
-    if (args.includes('--optional')) {
+    if (args.includes('--optional') && !(error instanceof Untrusted)) {
       console.warn(`magequery: ${error.message}\nmagequery: going on without it; the Magento wiring view will say so.`)
       return
     }

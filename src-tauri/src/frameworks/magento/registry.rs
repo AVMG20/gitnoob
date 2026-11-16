@@ -56,6 +56,9 @@ pub struct Place {
     pub column: u32,
     /// For a virtual type, the type it is made from.
     pub base: Option<String>,
+    /// For a config reference counted for the class a generated name is
+    /// made from (`FooFactory` for `Foo`): the name as written.
+    pub written: Option<String>,
 }
 
 /// One observer of an event.
@@ -93,8 +96,27 @@ pub struct Registry {
 
 // --- reading the work tree, always through the path guard ---------------------
 
+/// The most of a config file that is read. Magento's own largest are well
+/// under a megabyte; something far past that is not config anyone wrote.
+const MAX_CONFIG: u64 = 8 * 1024 * 1024;
+/// `registration.php` and `theme.xml` are a few lines.
+const MAX_SMALL: u64 = 256 * 1024;
+/// `vendor/composer/installed.json` of a large shop is a few megabytes.
+const MAX_INSTALLED: u64 = 64 * 1024 * 1024;
+
+/// A file's text when it is inside the work tree and no larger than `max`.
+pub fn read_capped(root: &Path, relative: &str, max: u64) -> Option<String> {
+    let real = crate::files::resolve(root, relative, true).ok()?;
+    let meta = std::fs::metadata(&real).ok()?;
+    if !meta.is_file() || meta.len() > max {
+        return None;
+    }
+    let bytes = std::fs::read(real).ok()?;
+    Some(String::from_utf8_lossy(&bytes).into_owned())
+}
+
 fn read(root: &Path, relative: &str) -> Option<String> {
-    deps::read(root, relative)
+    read_capped(root, relative, MAX_CONFIG)
 }
 
 fn is_file(root: &Path, relative: &str) -> bool {
@@ -180,7 +202,7 @@ fn theme_parent(text: &str) -> Option<String> {
 
 impl Registry {
     fn add(&mut self, root: &Path, registration: &str, vendor: bool) {
-        let Some(text) = read(root, registration) else {
+        let Some(text) = read_capped(root, registration, MAX_SMALL) else {
             return;
         };
         let dir = registration
@@ -203,7 +225,7 @@ impl Registry {
             if self.themes.iter().any(|known| known.key == name) {
                 continue;
             }
-            let parent = read(root, &join(&dir, "theme.xml"))
+            let parent = read_capped(root, &join(&dir, "theme.xml"), MAX_SMALL)
                 .and_then(|text| theme_parent(&text))
                 .map(|parent| format!("{area}/{parent}"));
             self.themes.push(Theme {
@@ -371,11 +393,12 @@ impl Registry {
                     continue;
                 }
                 let doc = xml::parse(&text);
+                let lines = xml::Lines::new(&text);
                 for element in doc.elements.iter().filter(|e| e.name == "virtualType") {
                     let Some(name) = element.attr("name") else {
                         continue;
                     };
-                    let (line, column) = xml::line_col(&text, name.start);
+                    let (line, column) = lines.line_col(name.start);
                     out.entry(name.value.trim_start_matches('\\').to_string())
                         .or_default()
                         .push(Place {
@@ -385,6 +408,7 @@ impl Registry {
                             base: element
                                 .attr("type")
                                 .map(|base| base.value.trim_start_matches('\\').to_string()),
+                            written: None,
                         });
                 }
             }
@@ -401,6 +425,7 @@ impl Registry {
                     continue;
                 };
                 let doc = xml::parse(&text);
+                let lines = xml::Lines::new(&text);
                 for element in doc.elements.iter().filter(|e| e.name == "observer") {
                     let Some(event) = doc
                         .parent_of(element)
@@ -411,8 +436,7 @@ impl Registry {
                     };
                     let instance = element.attr("instance").map_or("", |a| a.value);
                     let at = element.attr("instance").or(element.attr("name"));
-                    let (line, column) =
-                        xml::line_col(&text, at.map_or(element.start, |a| a.start));
+                    let (line, column) = lines.line_col(at.map_or(element.start, |a| a.start));
                     out.entry(event.value.to_string())
                         .or_default()
                         .push(Observer {
@@ -485,6 +509,7 @@ impl Registry {
                     continue;
                 };
                 let doc = xml::parse(&text);
+                let lines = xml::Lines::new(&text);
                 for element in doc
                     .elements
                     .iter()
@@ -493,12 +518,13 @@ impl Registry {
                     let Some(name) = element.attr("name") else {
                         continue;
                     };
-                    let (line, column) = xml::line_col(&text, name.start);
+                    let (line, column) = lines.line_col(name.start);
                     out.entry(name.value.to_string()).or_default().push(Place {
                         path: file.path.clone(),
                         line,
                         column,
                         base: None,
+                        written: None,
                     });
                 }
             }
@@ -566,6 +592,7 @@ impl Registry {
                     continue;
                 }
                 let doc = xml::parse(&text);
+                let lines = xml::Lines::new(&text);
                 let mut found: Vec<(&str, usize)> = Vec::new();
                 for element in &doc.elements {
                     for attr in &element.attrs {
@@ -579,22 +606,32 @@ impl Registry {
                     let Some(class) = super::class_token(value) else {
                         continue;
                     };
-                    let (line, column) = xml::line_col(&text, at);
+                    let (line, column) = lines.line_col(at);
                     let place = Place {
                         path: path.clone(),
                         line,
                         column,
                         base: None,
+                        written: None,
                     };
-                    let mut keys = vec![class.to_ascii_lowercase()];
-                    for (source, _) in super::generated_sources(class) {
-                        keys.push(source.to_ascii_lowercase());
+                    let mut keys = vec![(class.to_ascii_lowercase(), place.clone())];
+                    for source in super::generated_chain(class) {
+                        // Whether `class` is really generated, or a class of
+                        // its own that happens to end in `Factory`, is asked
+                        // when the reference is counted.
+                        let via = Place {
+                            written: Some(class.to_string()),
+                            ..place.clone()
+                        };
+                        keys.push((source.to_ascii_lowercase(), via));
                     }
-                    keys.dedup();
-                    for key in keys {
+                    for (key, place) in keys {
                         let list = out.entry(key).or_default();
-                        if !list.contains(&place) {
-                            list.push(place.clone());
+                        if !list.iter().any(|known| {
+                            (known.line, known.column) == (place.line, place.column)
+                                && known.path == place.path
+                        }) {
+                            list.push(place);
                         }
                     }
                 }
@@ -606,7 +643,7 @@ impl Registry {
 
 /// The `registration.php` of every Magento package Composer installed.
 fn installed(root: &Path) -> Vec<String> {
-    let Some(text) = read(root, "vendor/composer/installed.json") else {
+    let Some(text) = read_capped(root, "vendor/composer/installed.json", MAX_INSTALLED) else {
         return Vec::new();
     };
     let Ok(json) = serde_json::from_str::<serde_json::Value>(&text) else {
@@ -627,10 +664,18 @@ fn installed(root: &Path) -> Vec<String> {
         let Some(name) = package["name"].as_str() else {
             continue;
         };
-        let dir = package["install-path"]
-            .as_str()
-            .and_then(|path| deps::normal(&join("vendor/composer", path)))
-            .unwrap_or_else(|| format!("vendor/{name}"));
+        // Composer writes the path relative to `vendor/composer/`. One that
+        // climbs out of the work tree, or is absolute, is not followed.
+        let dir = match package["install-path"].as_str() {
+            Some(path) if path.starts_with('/') || path.contains('\\') || path.contains(':') => {
+                continue
+            }
+            Some(path) => deps::normal(&join("vendor/composer", path)),
+            None => deps::normal(&format!("vendor/{name}")),
+        };
+        let Some(dir) = dir.filter(|dir| !dir.is_empty()) else {
+            continue;
+        };
         let mut files: Vec<String> = package["autoload"]["files"]
             .as_array()
             .map(|files| {

@@ -83,7 +83,7 @@ fn short(name: &str) -> &str {
 /// `text`, the editor's copy).
 pub fn complete_members(root: &Path, path: &str, offset: u32, text: &str) -> MemberList {
     let byte = deps::byte_at_utf16(text, offset);
-    let php = path.to_ascii_lowercase().ends_with(".php");
+    let php = symbols::lang_of(path) == Some(symbols::Lang::Php);
     let script = symbols::lang_of(path).is_some_and(|_| !php);
     if !php && !script {
         return MemberList::default();

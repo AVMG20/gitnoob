@@ -88,7 +88,7 @@ pub fn dependency_definition(
     };
     let byte = byte_at_utf16(&text, offset);
     let found = match ext.as_str() {
-        "php" => php_jump(root, path, &text, byte),
+        "php" | "phtml" => php_jump(root, path, &text, byte),
         "ts" | "mts" | "cts" | "tsx" | "js" | "mjs" | "cjs" | "jsx" | "vue" => {
             let direct = if ext == "vue" {
                 None

@@ -74,13 +74,16 @@ pub fn version(root: &Path) -> Option<String> {
         let mut rest = lock.as_str();
         while let Some(at) = rest.find("\"name\"") {
             let after = &rest[at + 6..];
-            let value = after
-                .trim_start()
-                .strip_prefix(':')?
-                .trim_start()
-                .strip_prefix('"')?;
-            let name = &value[..value.find('"')?];
             rest = after;
+            // `"name"` can also be a word in a list of keywords: not a key then.
+            let Some(value) = after
+                .trim_start()
+                .strip_prefix(':')
+                .and_then(|value| value.trim_start().strip_prefix('"'))
+            else {
+                continue;
+            };
+            let name = &value[..value.find('"')?];
             if !name.starts_with(name_starts) {
                 continue;
             }
@@ -146,7 +149,10 @@ pub fn generated_sources(fqn: &str) -> Vec<(String, &'static str)> {
     } else if let Some(base) = fqn.strip_suffix("ExtensionInterface") {
         out.push((format!("{base}Interface"), "extension interface"));
     } else if let Some(base) = fqn.strip_suffix("Extension") {
-        out.push((format!("{base}Interface"), "extension"));
+        // `Foo\Extension` is a class called Extension, not one made from `Foo\`.
+        if !base.is_empty() && !base.ends_with('\\') {
+            out.push((format!("{base}Interface"), "extension"));
+        }
     } else if fqn.ends_with("SearchResults") {
         out.push((format!("{fqn}Interface"), "search results"));
     } else if let Some(base) = fqn.strip_suffix("Factory") {
@@ -154,6 +160,33 @@ pub fn generated_sources(fqn: &str) -> Vec<(String, &'static str)> {
     }
     out.retain(|(base, _)| !base.is_empty() && !base.ends_with('\\'));
     out
+}
+
+/// Every class a generated name leads back to, nearest first:
+/// `Foo\BarInterfaceFactory` gives `Foo\BarInterface`,
+/// `Foo\BarExtensionInterfaceFactory` gives `Foo\BarExtensionInterface`
+/// and then `Foo\BarInterface`, `Foo\Bar\ProxyFactory` gives `Foo\Bar\Proxy`
+/// and then `Foo\Bar`.
+pub fn generated_chain(fqn: &str) -> Vec<String> {
+    let mut out: Vec<String> = Vec::new();
+    let mut name = fqn.to_string();
+    for _ in 0..3 {
+        let Some((source, _)) = generated_sources(&name).into_iter().next() else {
+            break;
+        };
+        out.push(source.clone());
+        name = source;
+    }
+    out
+}
+
+/// A plain identifier: a virtual type can be named like one (`orderGrid`).
+fn identifier(value: &str) -> bool {
+    let mut chars = value.chars();
+    chars
+        .next()
+        .is_some_and(|c| c.is_ascii_alphabetic() || c == '_')
+        && chars.all(|c| c.is_ascii_alphanumeric() || c == '_')
 }
 
 fn short(fqn: &str) -> &str {
@@ -221,6 +254,15 @@ fn module_prefix(value: &str) -> Option<(&str, &str, bool)> {
         .then_some((module, rest, template))
 }
 
+/// Whether a value is shaped like a template or an asset: `x.phtml`,
+/// `Vendor_Module::path`, `Vendor_Module/path`, with or without RequireJS's
+/// `text!` before it.
+fn view_shaped(value: &str) -> bool {
+    let value = value.trim();
+    let value = value.strip_prefix("text!").unwrap_or(value);
+    value.ends_with(".phtml") || module_prefix(value).is_some()
+}
+
 /// The quoted string around `byte` on its line, and where its inside is.
 fn string_at(text: &str, byte: usize) -> Option<(&str, usize, usize)> {
     let byte = byte.min(text.len());
@@ -248,6 +290,23 @@ fn string_at(text: &str, byte: usize) -> Option<(&str, usize, usize)> {
             _ => {}
         }
         i += 1;
+    }
+    // Pairing quotes from the start of the line goes wrong after a lone
+    // apostrophe (`Don't` in a template's HTML). The nearest quote on either
+    // side of the caret, with no space or quote between, is still a string.
+    for quote in ['\'', '"'] {
+        let Some(open) = line[..at].rfind(quote) else {
+            continue;
+        };
+        let Some(close) = line[at..].find(quote).map(|close| at + close) else {
+            continue;
+        };
+        let inside = &line[open + 1..close];
+        if !inside.is_empty()
+            && !inside.contains(|c: char| c.is_whitespace() || c == '\'' || c == '"')
+        {
+            return Some((inside, line_start + open + 1, line_start + close));
+        }
     }
     None
 }
@@ -291,19 +350,15 @@ impl Provider for Magento {
 
     fn extra_references(&self, root: &Path, fqn: &str) -> Vec<Target> {
         let registry = registry(root);
-        let key = fqn.trim_start_matches('\\').to_ascii_lowercase();
-        registry
-            .config_refs(root)
-            .get(&key)
-            .map(|places| {
-                places
-                    .iter()
-                    .map(|place| {
-                        target(root, &place.path, place.line, place.column, "config", None)
-                    })
-                    .collect()
-            })
-            .unwrap_or_default()
+        config_places(root, &registry, fqn)
+            .into_iter()
+            .map(|place| target(root, &place.path, place.line, place.column, "config", None))
+            .collect()
+    }
+
+    /// Only the number, for the usage counts: no file is read for its lines.
+    fn extra_reference_count(&self, root: &Path, fqn: &str) -> usize {
+        config_places(root, &registry(root), fqn).len()
     }
 
     fn references_label(&self) -> &'static str {
@@ -315,13 +370,13 @@ impl Provider for Magento {
             return None;
         }
         let doc = xml::parse(text);
-        let (start, end) = match doc.at(byte)? {
+        let start = match doc.at(byte)? {
             At::Attr(element, attr) => {
                 let named = attr.name == "name" && matches!(element.name, "type" | "virtualType");
                 if !CLASS_ATTRS.contains(&attr.name) && !named {
                     return None;
                 }
-                (attr.start, attr.end)
+                attr.start
             }
             At::Text(Some(element), text) => {
                 let object = element
@@ -330,11 +385,10 @@ impl Provider for Magento {
                 if !object && !CLASS_ELEMENTS.contains(&element.local()) {
                     return None;
                 }
-                (text.start, text.end)
+                text.start
             }
             At::Text(None, _) => return None,
         };
-        let _ = end;
         let typed = &text[start..byte.max(start)];
         let skip = typed.len() - typed.trim_start_matches(['\\', ' ']).len();
         let typed = &typed[skip..];
@@ -393,8 +447,30 @@ fn locate_method(root: &Path, registry: &Registry, fqn: &str, method: &str) -> O
     Some(target(root, &path, line, column, "method", None))
 }
 
-/// A ⌘-click on a class name in config: the class, else a virtual type of
-/// that name, else the class a generated name is made from.
+/// The places config names a class, without the ones that name a class of
+/// its own that only looks generated (`Foo\BarFactory` written by hand is
+/// no reference to `Foo\Bar`).
+fn config_places(root: &Path, registry: &Registry, fqn: &str) -> Vec<registry::Place> {
+    let key = fqn.trim_start_matches('\\').to_ascii_lowercase();
+    let Some(places) = registry.config_refs(root).get(&key) else {
+        return Vec::new();
+    };
+    let mut real: std::collections::HashMap<&str, bool> = std::collections::HashMap::new();
+    places
+        .iter()
+        .filter(|place| match place.written.as_deref() {
+            Some(written) => !*real
+                .entry(written)
+                .or_insert_with(|| locate_class(root, registry, written).is_some()),
+            None => true,
+        })
+        .cloned()
+        .collect()
+}
+
+/// A ⌘-click on a class name in config: the class, a virtual type of that
+/// name (both, when a virtual type is named like a class), else the class a
+/// generated name is made from. `Foo\Bar::baz` is that method.
 fn class_link(
     root: &Path,
     registry: &Registry,
@@ -402,7 +478,27 @@ fn class_link(
     from: usize,
     to: usize,
 ) -> Option<Links> {
-    let fqn = class_like(value)?;
+    let written = value.trim().trim_start_matches('\\');
+    if let Some((class, method)) = written.split_once("::") {
+        if class_token(class).is_some() && identifier(method) {
+            return method_link(root, registry, class, method, from, to);
+        }
+    }
+    // A virtual type can be any name; a class is `Foo\Bar` or a capitalised word.
+    let fqn = match class_like(written) {
+        Some(fqn) => fqn,
+        None if identifier(written) => {
+            let places = registry.virtual_types(root).get(written)?;
+            return Some(Links {
+                from: from as u32,
+                to: to as u32,
+                title: format!("Virtual type {written}"),
+                targets: virtual_targets(root, places, None),
+                ..Links::default()
+            });
+        }
+        None => return None,
+    };
     let mut links = Links {
         from: from as u32,
         to: to as u32,
@@ -410,33 +506,40 @@ fn class_link(
         class: Some(fqn.to_string()),
         ..Links::default()
     };
-    if let Some(found) = locate_class(root, registry, fqn) {
-        links.targets.push(found);
-        return Some(links);
+    let class = locate_class(root, registry, fqn);
+    let virtual_types = registry.virtual_types(root).get(fqn);
+    match (class, virtual_types) {
+        (Some(mut found), Some(places)) => {
+            // The object manager hands out the virtual type for this name.
+            links.targets = virtual_targets(root, places, Some("virtual type"));
+            found.label = Some("class".to_string());
+            links.targets.push(found);
+            links.title = format!("{fqn} · {}", links.targets.len());
+            links.note = Some(format!(
+                "{} is a class and also declared as a virtual type",
+                short(fqn)
+            ));
+            return Some(links);
+        }
+        (Some(found), None) => {
+            links.targets.push(found);
+            return Some(links);
+        }
+        (None, Some(places)) => {
+            links.title = format!("Virtual type {fqn}");
+            links.class = None;
+            links.targets = virtual_targets(root, places, None);
+            return Some(links);
+        }
+        (None, None) => {}
     }
-    if let Some(places) = registry.virtual_types(root).get(fqn) {
-        links.title = format!("Virtual type {fqn}");
-        links.class = None;
-        links.targets = places
-            .iter()
-            .map(|place| {
-                target(
-                    root,
-                    &place.path,
-                    place.line,
-                    place.column,
-                    "virtualType",
-                    None,
-                )
-            })
-            .collect();
-        return Some(links);
-    }
-    for (source, kind) in generated_sources(fqn) {
+    let kind = generated_sources(fqn).first().map(|(_, kind)| *kind);
+    for source in generated_chain(fqn) {
         if let Some(found) = locate_class(root, registry, &source) {
             links.note = Some(format!(
-                "{} is generated ({kind}); opened {}",
+                "{} is generated ({}); opened {}",
                 short(fqn),
+                kind.unwrap_or("generated"),
                 short(&source)
             ));
             links.class = Some(source);
@@ -450,6 +553,22 @@ fn class_link(
     }
     links.note = Some(format!("No class {fqn} in the project or its dependencies"));
     Some(links)
+}
+
+fn virtual_targets(root: &Path, places: &[registry::Place], label: Option<&str>) -> Vec<Target> {
+    places
+        .iter()
+        .map(|place| {
+            target(
+                root,
+                &place.path,
+                place.line,
+                place.column,
+                "virtualType",
+                label.map(str::to_string),
+            )
+        })
+        .collect()
 }
 
 fn method_link(
@@ -496,7 +615,20 @@ fn view_link(
     to: usize,
 ) -> Option<Links> {
     let value = value.trim();
+    // RequireJS's text plugin: `text!Vendor_Module/template/x.html`.
+    let (value, from) = match value.strip_prefix("text!") {
+        Some(rest) => (rest, from + 5),
+        None => (value, from),
+    };
+    let extension = |rest: &str| {
+        rest.rsplit('/')
+            .next()
+            .is_some_and(|last| last.contains('.'))
+    };
     let (module_name, rest, folder) = match module_prefix(value) {
+        // `Vendor_Module::something` with no file extension is an ACL
+        // resource or a menu id, not a file.
+        Some((_, rest, true)) if !extension(rest) => return None,
         Some((module, rest, true)) => (
             module.to_string(),
             rest,
@@ -515,14 +647,21 @@ fn view_link(
         None => return None,
     };
     let module = registry.module(&module_name);
-    let areas: Vec<&str> = match area_of(from_path) {
+    // A file in a theme is of that theme's area, whatever its path says
+    // (`vendor/magento/theme-frontend-luma/…` has no `/frontend/` in it).
+    let theme_area = registry
+        .theme_of(from_path)
+        .map(|theme| theme.area.as_str());
+    let areas: Vec<&str> = match theme_area.or(area_of(from_path)) {
         Some(area) => vec![area],
         None => AREAS.to_vec(),
     };
-    let names: Vec<String> = if folder == "web" && !rest.contains('.') {
+    let names: Vec<String> = if folder == "web" && !extension(rest) {
         vec![
             format!("{rest}.js"),
             format!("{rest}.html"),
+            // A Knockout template: `Vendor_Module/path` is `web/template/path.html`.
+            format!("template/{rest}.html"),
             rest.to_string(),
         ]
     } else {
@@ -699,53 +838,72 @@ const DISPATCH_FILES: usize = 60_000;
 const DISPATCH_HITS: usize = 100;
 const DISPATCH_TIME: Duration = Duration::from_secs(6);
 
+/// The largest PHP file a dispatch search reads.
+const DISPATCH_FILE_SIZE: u64 = 2 * 1024 * 1024;
+
 /// Where an event is dispatched by name: `'event'` or `"event"` on a line
 /// with `dispatch`, in the project's PHP and in every vendor module's.
+/// Listing the files, reading them and the hits all stop at their limits;
+/// the second value says whether one of them was reached.
 pub fn dispatch_sites(root: &Path, registry: &Registry, event: &str) -> (Vec<Target>, bool) {
     let needles = [format!("'{event}'"), format!("\"{event}\"")];
     let started = Instant::now();
-    let mut paths: Vec<String> = crate::files::all_files(root)
-        .map(|all| {
-            all.iter()
-                .filter(|path| path.ends_with(".php") || path.ends_with(".phtml"))
-                .cloned()
-                .collect()
-        })
-        .unwrap_or_default();
-    for module in registry.modules.iter().filter(|module| module.vendor) {
-        let Ok(real) = crate::files::resolve(root, &module.dir, true) else {
+    let late = || started.elapsed() > DISPATCH_TIME;
+    let mut cut = false;
+    let mut seen: HashSet<String> = HashSet::new();
+    let mut paths: Vec<String> = Vec::new();
+    if let Ok(all) = crate::files::all_files(root) {
+        for path in all.iter() {
+            if paths.len() >= DISPATCH_FILES {
+                cut = true;
+                break;
+            }
+            if (path.ends_with(".php") || path.ends_with(".phtml")) && seen.insert(path.clone()) {
+                paths.push(path.clone());
+            }
+        }
+    }
+    let base = root.canonicalize().ok();
+    'modules: for module in registry.modules.iter().filter(|module| module.vendor) {
+        // A vendor module is a folder under vendor/, never the work tree itself.
+        if module.dir.is_empty() {
             continue;
-        };
-        let Ok(base) = root.canonicalize() else {
+        }
+        let (Ok(real), Some(base)) = (crate::files::resolve(root, &module.dir, true), &base) else {
             continue;
         };
         let walk = ignore::WalkBuilder::new(&real)
             .standard_filters(false)
             .follow_links(false)
+            .max_depth(Some(24))
             .build();
         for entry in walk.flatten() {
-            if paths.len() >= DISPATCH_FILES {
-                break;
+            if paths.len() >= DISPATCH_FILES || late() {
+                cut = true;
+                break 'modules;
             }
             let path = entry.path();
             if path
                 .extension()
                 .is_some_and(|ext| ext == "php" || ext == "phtml")
             {
-                if let Ok(inner) = path.strip_prefix(&base) {
-                    paths.push(crate::files::slashed(inner));
+                if let Ok(inner) = path.strip_prefix(base) {
+                    let inner = crate::files::slashed(inner);
+                    // Already listed when vendor/ is not ignored.
+                    if seen.insert(inner.clone()) {
+                        paths.push(inner);
+                    }
                 }
             }
         }
     }
     let mut out = Vec::new();
-    let mut cut = false;
-    for path in paths.iter().take(DISPATCH_FILES) {
-        if out.len() >= DISPATCH_HITS || started.elapsed() > DISPATCH_TIME {
+    'files: for path in &paths {
+        if late() {
             cut = true;
             break;
         }
-        let Some(text) = deps::read(root, path) else {
+        let Some(text) = registry::read_capped(root, path, DISPATCH_FILE_SIZE) else {
             continue;
         };
         if !needles.iter().any(|needle| text.contains(needle.as_str())) {
@@ -755,6 +913,10 @@ pub fn dispatch_sites(root: &Path, registry: &Registry, event: &str) -> (Vec<Tar
             if line.contains("dispatch")
                 && needles.iter().any(|needle| line.contains(needle.as_str()))
             {
+                if out.len() >= DISPATCH_HITS {
+                    cut = true;
+                    break 'files;
+                }
                 let column = line.find("dispatch").map_or(1, |c| c as u32 + 1);
                 out.push(target(root, path, at as u32 + 1, column, "dispatch", None));
             }
@@ -819,11 +981,13 @@ fn xml_links(
                 "name" if local == "virtualType" => {
                     let base = element.attr("type")?.value;
                     let mut links = class_link(root, registry, base, from, to)?;
-                    links.note = Some(format!(
-                        "{} is a virtual type of {}",
-                        short(value),
-                        short(base)
-                    ));
+                    if !links.targets.is_empty() {
+                        links.note = Some(format!(
+                            "{} is a virtual type of {}",
+                            short(value),
+                            short(base)
+                        ));
+                    }
                     Some(links)
                 }
                 "name" if local == "type" => class_link(root, registry, value, from, to),
@@ -859,7 +1023,7 @@ fn loose(
     from: usize,
     to: usize,
 ) -> Option<Links> {
-    if value.ends_with(".phtml") || module_prefix(value).is_some() {
+    if view_shaped(value) {
         return view_link(root, registry, path, value, from, to);
     }
     class_token(value)?;
@@ -880,7 +1044,7 @@ fn string_links(
     if before.ends_with("dispatch(") || before.ends_with("dispatch (") {
         return Some(observers_link(root, registry, value, from, to));
     }
-    if value.ends_with(".phtml") || module_prefix(value).is_some() {
+    if view_shaped(value) {
         return view_link(root, registry, path, value, from, to);
     }
     None

@@ -5,8 +5,10 @@ import { describe, expect, it } from 'vitest'
 import {
   ASSETS,
   SOURCE,
+  Untrusted,
   VERSION,
   binaryName,
+  checkEntries,
   hostTriple,
   plan,
   sha256,
@@ -30,6 +32,26 @@ describe('scripts/magequery.mjs', () => {
     const bytes = Buffer.from('magequery fixture')
     const other = sha256(Buffer.from('something else'))
     expect(() => verify(bytes, other, 'magequery-x.tar.gz')).toThrow(/does not match its pinned sha256/)
+  })
+
+  it('marks a mismatch as one --optional does not pass over', () => {
+    const bytes = Buffer.from('magequery fixture')
+    let thrown: unknown
+    try {
+      verify(bytes, sha256(Buffer.from('tampered')), 'fixture')
+    } catch (error) {
+      thrown = error
+    }
+    expect(thrown).toBeInstanceOf(Untrusted)
+  })
+
+  it('refuses an archive whose entries leave the folder it is unpacked into', () => {
+    expect(checkEntries(['magequery-aarch64-apple-darwin/', 'magequery-aarch64-apple-darwin/magequery', './LICENSE'])).toBe(true)
+    for (const name of ['../evil', 'a/../../evil', '/etc/passwd', 'C:\\Windows\\x', 'a\\..\\..\\x', '\\\\host\\x']) {
+      expect(() => checkEntries([name], 'x.tar.gz'), name).toThrow(Untrusted)
+    }
+    // Two dots inside a name are a name.
+    expect(checkEntries(['a/b..c/d', 'notes..txt'])).toBe(true)
   })
 
   it('hashes the way sha256sum does', () => {
