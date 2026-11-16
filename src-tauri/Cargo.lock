@@ -1504,7 +1504,7 @@ dependencies = [
 
 [[package]]
 name = "gitnoob"
-version = "0.9.5"
+version = "1.0.0"
 dependencies = [
  "base64 0.22.1",
  "block2",
