@@ -10488,6 +10488,145 @@ fn a_picked_php_class_gets_its_use_line_in_order() {
     assert_eq!(with_import(&sandbox, taken, billing, "Billing"), None);
 }
 
+#[test]
+fn the_use_line_never_lands_where_it_breaks_the_file() {
+    let sandbox = complete_sandbox("complete-import-places");
+    let billing = "app/Services/Billing.php";
+    let line = "use App\\Services\\Billing;";
+    // `declare(strict_types=1)` and no namespace: after the declare.
+    let text = "<?php\n\ndeclare(strict_types=1);\n\n$pay = 1;\n";
+    assert_eq!(
+        with_import(&sandbox, text, billing, "Billing").unwrap(),
+        format!("<?php\n\ndeclare(strict_types=1);\n\n{line}\n\n$pay = 1;\n")
+    );
+    // A docblock between the tag and the namespace: after the namespace.
+    let text = "<?php\n\n/**\n * Pays.\n */\n\ndeclare(strict_types=1);\n\nnamespace App\\Http;\n\nclass Pay\n{\n    use Greets;\n}\n";
+    assert_eq!(
+        with_import(&sandbox, text, billing, "Billing").unwrap(),
+        format!("<?php\n\n/**\n * Pays.\n */\n\ndeclare(strict_types=1);\n\nnamespace App\\Http;\n\n{line}\n\nclass Pay\n{{\n    use Greets;\n}}\n")
+    );
+    // Grouped, function and const uses: among the class uses, in order.
+    let text = "<?php\n\nnamespace App\\Http;\n\nuse App\\Models\\{Order, User};\nuse Illuminate\\Support\\Str;\nuse function App\\helper;\nuse const App\\LIMIT;\n\nclass Pay {}\n";
+    assert_eq!(
+        with_import(&sandbox, text, billing, "Billing").unwrap(),
+        format!("<?php\n\nnamespace App\\Http;\n\nuse App\\Models\\{{Order, User}};\n{line}\nuse Illuminate\\Support\\Str;\nuse function App\\helper;\nuse const App\\LIMIT;\n\nclass Pay {{}}\n")
+    );
+    // Only function uses: its own block after the namespace.
+    let text = "<?php\n\nnamespace App\\Http;\n\nuse function App\\helper;\n\nclass Pay {}\n";
+    assert_eq!(
+        with_import(&sandbox, text, billing, "Billing").unwrap(),
+        format!("<?php\n\nnamespace App\\Http;\n\n{line}\n\nuse function App\\helper;\n\nclass Pay {{}}\n")
+    );
+    // A use on the tag's own line: before the statement, not before the tag.
+    let text = "<?php use Zed\\Last;\n\n$pay = 1;\n";
+    assert_eq!(
+        with_import(&sandbox, text, billing, "Billing").unwrap(),
+        format!("<?php {line}\nuse Zed\\Last;\n\n$pay = 1;\n")
+    );
+    // Indented use lines keep their indentation.
+    let text = "<?php\n  use Zed\\Last;\n";
+    assert_eq!(
+        with_import(&sandbox, text, billing, "Billing").unwrap(),
+        format!("<?php\n  {line}\n  use Zed\\Last;\n")
+    );
+    // A file with Windows line endings gets them.
+    let text = "<?php\r\n\r\nnamespace App\\Http;\r\n\r\nuse App\\Aaa\\First;\r\nuse Zed\\Last;\r\n\r\nclass Pay {}\r\n";
+    assert_eq!(
+        with_import(&sandbox, text, billing, "Billing").unwrap(),
+        format!("<?php\r\n\r\nnamespace App\\Http;\r\n\r\nuse App\\Aaa\\First;\r\n{line}\r\nuse Zed\\Last;\r\n\r\nclass Pay {{}}\r\n")
+    );
+    let text = "<?php\r\n\r\nnamespace App\\Http;\r\n\r\nclass Pay {}\r\n";
+    assert_eq!(
+        with_import(&sandbox, text, billing, "Billing").unwrap(),
+        format!("<?php\r\n\r\nnamespace App\\Http;\r\n\r\n{line}\r\n\r\nclass Pay {{}}\r\n")
+    );
+    // Imported under another name: nothing is added.
+    let aliased =
+        "<?php\n\nnamespace App\\Http;\n\nuse App\\Services\\Billing as Bills;\n\nclass Pay {}\n";
+    assert_eq!(with_import(&sandbox, aliased, billing, "Billing"), None);
+    let grouped = "<?php\n\nnamespace App\\Http;\n\nuse App\\Services\\{Billing, Customer};\n\nclass Pay {}\n";
+    assert_eq!(with_import(&sandbox, grouped, billing, "Billing"), None);
+    // Two namespaces in one file: which one the name is in is not known.
+    let two = "<?php\n\nnamespace App\\One;\n\nuse App\\Aaa\\First;\n\nclass A {}\n\nnamespace App\\Two;\n\nclass B {}\n";
+    assert_eq!(with_import(&sandbox, two, billing, "Billing"), None);
+    let blocks = "<?php\n\nnamespace App\\One {\n    class A {}\n}\n";
+    assert_eq!(with_import(&sandbox, blocks, billing, "Billing"), None);
+    // The file declares a class of that name itself.
+    let own = "<?php\n\nnamespace App\\Http;\n\nclass Billing {}\n";
+    assert_eq!(with_import(&sandbox, own, billing, "Billing"), None);
+    // A template that never opens a statement block.
+    let template = "<p><?= $total ?></p>\n";
+    assert_eq!(with_import(&sandbox, template, billing, "Billing"), None);
+    // Nothing to hang it on, or text that is half typed: no panic.
+    assert_eq!(with_import(&sandbox, "", billing, "Billing"), None);
+    let _ = with_import(
+        &sandbox,
+        "<?php\n\nnamespace ;;; {{{ use",
+        billing,
+        "Billing",
+    );
+    let _ = with_import(&sandbox, "<?php\n\nuse App\\{é, ", billing, "Billing");
+}
+
+#[test]
+fn self_is_the_declaring_class_and_static_the_one_called_on() {
+    let sandbox = complete_sandbox("complete-self");
+    put(
+        &sandbox,
+        "app/Support/Root.php",
+        "<?php\n\nnamespace App\\Support;\n\nclass Root\n{\n    public static function fresh(): self {}\n\n    public static function late(): static {}\n\n    /** @return self */\n    public function again() {}\n\n    public function rootOnly() {}\n}\n",
+    );
+    put(
+        &sandbox,
+        "app/Support/Leaf.php",
+        "<?php\n\nnamespace App\\Support;\n\nclass Leaf extends Root\n{\n    public function leafOnly() {}\n}\n",
+    );
+    let list = members_after(&sandbox, "\\App\\Support\\Leaf::fresh()->");
+    assert_eq!(list.receiver.as_deref(), Some("Root"));
+    assert_eq!(names(&list), ["again", "rootOnly"]);
+    let list = members_after(&sandbox, "\\App\\Support\\Leaf::late()->again()->");
+    assert_eq!(list.receiver.as_deref(), Some("Root"));
+    let list = members_after(&sandbox, "\\App\\Support\\Leaf::late()->");
+    assert_eq!(list.receiver.as_deref(), Some("Leaf"));
+    assert_eq!(names(&list), ["again", "leafOnly", "rootOnly"]);
+}
+
+#[test]
+fn classes_that_extend_each_other_in_a_circle_still_answer() {
+    let sandbox = complete_sandbox("complete-circle");
+    put(
+        &sandbox,
+        "app/Support/Ping.php",
+        "<?php\n\nnamespace App\\Support;\n\nclass Ping extends Pong\n{\n    use Loops;\n\n    public function ping(): Pong {}\n}\n",
+    );
+    put(
+        &sandbox,
+        "app/Support/Pong.php",
+        "<?php\n\nnamespace App\\Support;\n\nclass Pong extends Ping\n{\n    public function pong(): Ping {}\n}\n",
+    );
+    put(
+        &sandbox,
+        "app/Support/Loops.php",
+        "<?php\n\nnamespace App\\Support;\n\ntrait Loops\n{\n    use Loops;\n\n    public function loop(): static {}\n}\n",
+    );
+    let list = members_after(&sandbox, "(new \\App\\Support\\Ping)->");
+    assert_eq!(names(&list), ["loop", "ping", "pong"]);
+    // A chain longer than is followed gives no list rather than a wrong one.
+    let long = format!(
+        "(new \\App\\Support\\Ping){}->",
+        "->ping()->pong()".repeat(6)
+    );
+    assert_eq!(members_after(&sandbox, &long).items.len(), 0);
+    let short = format!(
+        "(new \\App\\Support\\Ping){}->",
+        "->ping()->pong()".repeat(2)
+    );
+    assert_eq!(
+        names(&members_after(&sandbox, &short)),
+        ["loop", "ping", "pong"]
+    );
+}
+
 const TS_API: &str = r#"export class Request {
   /** Sends it off. */
   send(): Response {

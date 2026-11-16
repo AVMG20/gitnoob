@@ -66,7 +66,7 @@ import { aimedAt, invokeAt } from '~/composables/useInvoke'
 import { useConfig } from '~/composables/useConfig'
 import { onCodeFont } from '~/composables/useCodeFont'
 import { jumpFrom, nextSymbolRequest, showUsages } from '~/composables/useSymbols'
-import { autocomplete, listOpen } from '~/composables/useAutocomplete'
+import { autocomplete, closeList, listOpen } from '~/composables/useAutocomplete'
 import {
   acquire,
   follow,
@@ -978,6 +978,9 @@ function focusAt(line: number | null, column = 0) {
 function snapshot(): Held | null {
   if (!view || lent || props.locked || deleted.value) return null
   if (reason.value === 'missing' || reason.value === 'unreadable') return null
+  // An open completion list is not part of what is handed over: it would
+  // come back open with the tab, or stay open in an editor that only follows.
+  closeList(view)
   const held: Held = {
     path: props.path,
     state: view.state,

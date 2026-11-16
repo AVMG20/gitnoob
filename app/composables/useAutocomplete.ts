@@ -16,8 +16,9 @@ import {
   type CompletionResult,
   type CompletionSource
 } from '@codemirror/autocomplete'
-import { syntaxTree } from '@codemirror/language'
-import { Prec, type EditorState, type Extension } from '@codemirror/state'
+import { history } from '@codemirror/commands'
+import { language, syntaxTree } from '@codemirror/language'
+import { Annotation, Prec, Transaction, type EditorState, type Extension } from '@codemirror/state'
 import { EditorView, keymap, type Command } from '@codemirror/view'
 import { invokeAt } from './useInvoke'
 
@@ -87,6 +88,7 @@ const MEMBER_TYPES: Record<string, string> = {
 }
 
 const PHP = /\.php$/i
+const BLADE = /\.blade\.php$/i
 const SCRIPT = /\.(m|c)?(j|t)sx?$|\.vue$/i
 /** The languages the backend knows members in. */
 const MEMBERS = /\.(php|m?[jt]sx?|c[jt]s|vue)$/i
@@ -127,7 +129,50 @@ export function memberAccess(path: string, before: string): string | null {
 
 /** Whether a class picked from the list may need a `use` line. */
 function importable(path: string, item: SymbolItem) {
+  if (BLADE.test(path)) return false
   return PHP.test(path) && PHP.test(item.path) && item.kind !== 'function' && item.kind !== 'constant'
+}
+
+/**
+ * Whether a class name written at `from` is one a `use` line would serve.
+ * Not a qualified name (`\App\Models\User` says where it is itself), and not
+ * the name in a `namespace` or a file-level `use` line, which would import
+ * the class it is already importing. A trait's `use` inside a class does
+ * need one.
+ */
+export function wantsImport(state: EditorState, from: number): boolean {
+  const lead = state.sliceDoc(state.doc.lineAt(from).from, from)
+  if (/\\\s*$/.test(lead)) return false
+  if (/^\s*namespace\b/.test(lead)) return false
+  if (!/^\s*use\b/.test(lead)) return true
+  type Found = ReturnType<ReturnType<typeof syntaxTree>['resolveInner']>
+  for (let node: Found | null = syntaxTree(state).resolveInner(from, -1); node; node = node.parent) {
+    if (node.type.name === 'DeclarationList' || node.type.name === 'EnumBody') return true
+  }
+  return false
+}
+
+/** Marks the `use` line's transaction as part of the undo step of the name it is for. */
+const withName = Annotation.define<boolean>()
+
+/**
+ * What PHP itself has, since `@codemirror/lang-php` offers nothing: the
+ * words of the language that are typed all day. Not its functions.
+ */
+export const PHP_KEYWORDS = [
+  'abstract', 'array', 'as', 'bool', 'break', 'callable', 'case', 'catch', 'class', 'clone', 'const',
+  'continue', 'declare', 'default', 'do', 'echo', 'else', 'elseif', 'empty', 'enum', 'extends', 'false',
+  'final', 'finally', 'float', 'fn', 'for', 'foreach', 'function', 'global', 'if', 'implements',
+  'include', 'include_once', 'instanceof', 'insteadof', 'int', 'interface', 'isset', 'iterable', 'list',
+  'match', 'mixed', 'namespace', 'never', 'new', 'null', 'object', 'parent', 'print', 'private',
+  'protected', 'public', 'readonly', 'require', 'require_once', 'return', 'self', 'static', 'string',
+  'switch', 'throw', 'trait', 'true', 'try', 'unset', 'use', 'void', 'while', 'yield'
+].map((label): Completion => ({ label, type: 'keyword' }))
+
+/** Whether the code at `pos` is PHP, rather than the HTML around it in a template. */
+function inPhp(state: EditorState, pos: number) {
+  const top = state.facet(language)
+  return !!top && top.name === 'php' && top.isActiveAt(state, pos)
 }
 
 function folder(path: string) {
@@ -198,9 +243,7 @@ export function autocomplete(options: AutocompleteOptions): Extension {
   /** Project names from the symbol index, nearest first. */
   async function fromProject(context: CompletionContext, word: string): Promise<CompletionResult | null> {
     const path = options.path()
-    if (!MEMBERS.test(path) || (PHP.test(path) && context.state.sliceDoc(context.pos - word.length - 1, context.pos - word.length) === '$')) {
-      return null
-    }
+    if (!MEMBERS.test(path)) return null
     if (!(await settle(context))) return null
     const mine = ++latestNames
     const found = await invokeAt<SymbolItem[]>(options.repo, 'complete_symbols', {
@@ -221,21 +264,29 @@ export function autocomplete(options: AutocompleteOptions): Extension {
           // The backend's order among names that match as well.
           boost: Math.max(1, 40 - rank),
           apply: (view, completion, from, to) => {
+            const needs = importable(path, item) && wantsImport(view.state, from)
+            const at = Date.now()
             view.dispatch({
               ...insertCompletionText(view.state, item.name, from, to),
               annotations: pickedCompletion.of(completion),
               userEvent: 'input.complete'
             })
-            if (importable(path, item)) void addImport(view, path, item)
+            if (needs) void addImport(view, path, item, at)
           }
         })
       )
     }
   }
 
-  /** The `use` line a picked PHP class needs, added once the backend says where. */
-  async function addImport(view: EditorView, path: string, item: SymbolItem, tries = 2): Promise<void> {
+  /**
+   * The `use` line a picked PHP class needs, added once the backend says
+   * where. When nothing was typed since the name went in, the line joins the
+   * name's undo step, so one ⌘Z takes both back; after more typing it is a
+   * step of its own.
+   */
+  async function addImport(view: EditorView, path: string, item: SymbolItem, picked: number, tries = 2): Promise<void> {
     const doc = view.state.doc
+    const first = tries === 2
     const insert = await invokeAt<{ offset: number; text: string } | null>(options.repo, 'complete_import', {
       path,
       text: doc.toString(),
@@ -243,12 +294,20 @@ export function autocomplete(options: AutocompleteOptions): Extension {
       name: item.name
     }).catch(() => null)
     if (!insert || !view.dom.isConnected) return
+    // Lent to another editor of the file, or locked, meanwhile: this one
+    // only follows now, and an edit made here would be in nobody's file.
+    if (!view.state.facet(EditorView.editable) || view.state.readOnly) return
     // Typed into meanwhile: the offset is for a text that is gone.
     if (view.state.doc !== doc) {
-      if (tries > 0) await addImport(view, path, item, tries - 1)
+      if (tries > 0) await addImport(view, path, item, picked, tries - 1)
       return
     }
-    view.dispatch({ changes: { from: insert.offset, insert: insert.text }, userEvent: 'input.complete' })
+    if (insert.offset < 0 || insert.offset > doc.length) return
+    view.dispatch({
+      changes: { from: insert.offset, insert: insert.text },
+      annotations: first ? [withName.of(true), Transaction.time.of(picked)] : [],
+      userEvent: first ? undefined : 'input.complete'
+    })
   }
 
   /** A word being typed: the language's, the file's words and the project's names, one list. */
@@ -257,33 +316,55 @@ export function autocomplete(options: AutocompleteOptions): Extension {
     const before = context.state.sliceDoc(Math.max(0, context.pos - 200), context.pos)
     // After `->`, `::` and `.` only the receiver's members are offered.
     if (memberAccess(options.path(), before)) return null
+    const path = options.path()
+    // With its `$`s: in PHP and JavaScript they are part of the name, and
+    // the file's own words come with them. A list that starts after the `$`
+    // would put `$total` behind the one already typed.
     const word = /[\w$]*$/.exec(before)?.[0] ?? ''
-    const plain = word.replace(/^\$/, '')
+    const plain = word.replace(/\$/g, '')
     if (!context.explicit && plain.length < 2) {
       return null
     }
+    const from = context.pos - word.length
+    const php = PHP.test(path) && inPhp(context.state, context.pos)
+    // A PHP variable is only ever one of the file's own words.
+    const variable = PHP.test(path) && word.includes('$')
     const [language, project, local] = await Promise.all([
-      fromLanguage(context),
-      plain.length ? fromProject(context, plain) : Promise.resolve(null),
+      variable ? Promise.resolve(null) : fromLanguage(context),
+      plain.length && !variable ? fromProject(context, word) : Promise.resolve(null),
       Promise.resolve(completeAnyWord(context))
     ])
     if (context.aborted) return null
-    const from = context.pos - plain.length
     // A language list that starts elsewhere (after `<` in HTML) is its own.
     if (language && language.from !== from) return language
     const seen = new Set<string>()
     const merged: Completion[] = []
-    for (const one of [...(project?.options ?? []), ...(language?.options ?? [])]) {
+    // Two classes of one name in different folders are two rows.
+    const rows = new Set<string>()
+    for (const one of project?.options ?? []) {
+      const row = `${one.label}\u0001${one.detail ?? ''}`
+      if (rows.has(row)) continue
+      rows.add(row)
+      seen.add(one.label)
+      merged.push(one)
+    }
+    for (const one of [...(language?.options ?? []), ...(php && !variable ? PHP_KEYWORDS : [])]) {
       if (seen.has(one.label)) continue
       seen.add(one.label)
       merged.push(one)
     }
-    for (const one of local?.options ?? []) {
-      if (seen.has(one.label) || one.label === plain) continue
+    // The file's words, where they start at the same place as the rest.
+    const words = local && local.from === from ? local.options : []
+    for (const one of words) {
+      if (seen.has(one.label) || one.label === word) continue
       seen.add(one.label)
       merged.push({ ...one, boost: -10 })
     }
-    if (!merged.length) return null
+    if (!merged.length) {
+      // Only words that start elsewhere (a language that does not count `$`
+      // as part of one): theirs is the list, from where they start.
+      return local && local.options.length ? local : null
+    }
     return {
       from,
       options: merged,
@@ -301,6 +382,9 @@ export function autocomplete(options: AutocompleteOptions): Extension {
       tooltipClass: () => 'gn-complete'
     }),
     completionKeys,
+    // Added to the editor's history rather than replacing it: the `use` line
+    // of a picked class joins the step that put the name in.
+    history({ joinToEvent: (tr) => tr.annotation(withName) === true }),
     keymap.of([
       { key: 'Ctrl-Space', run: startCompletion },
       { mac: 'Alt-`', run: startCompletion },
@@ -331,6 +415,8 @@ const completionKeys = Prec.highest(
   EditorView.domEventHandlers({
     keydown(event, view) {
       if (event.altKey || event.ctrlKey || event.metaKey || event.shiftKey) return false
+      // An input method's ↵ picks its own candidate, not ours.
+      if (event.isComposing || event.keyCode === 229) return false
       const command = LIST_KEYS[event.key]
       if (!command || completionStatus(view.state) !== 'active') return false
       if (!command(view)) return false
@@ -340,6 +426,15 @@ const completionKeys = Prec.highest(
     }
   })
 )
+
+/**
+ * Closes the list and drops what is still being asked. For a state on its
+ * way to another editor or to the warm cache: the list was for this view's
+ * caret and focus, and would come back open with the tab.
+ */
+export function closeList(view: EditorView | null): void {
+  if (view) closeCompletion(view)
+}
 
 /** Whether a list is open in the editor, for the window's own key handlers. */
 export function listOpen(view: EditorView | null): boolean {

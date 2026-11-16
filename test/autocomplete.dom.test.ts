@@ -4,13 +4,18 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { invoke } from '@tauri-apps/api/core'
 import { EditorView } from '@codemirror/view'
 import { completionStatus, currentCompletions, startCompletion } from '@codemirror/autocomplete'
+import { undo } from '@codemirror/commands'
+import { EditorState } from '@codemirror/state'
+import { php } from '@codemirror/lang-php'
 import FileEditor from '~/components/FileEditor.vue'
 import { useGit } from '~/composables/useGit'
 import { openTab, resetTabs, switchTabs, tabId } from '~/composables/useTabs'
 import { resetEdits } from '~/composables/useFileEdit'
 import { aimAt } from '~/composables/useInvoke'
 import { useConfig } from '~/composables/useConfig'
-import { memberAccess } from '~/composables/useAutocomplete'
+import { memberAccess, wantsImport } from '~/composables/useAutocomplete'
+import { slots } from '~/composables/editorBuffers'
+import { readOnly } from '~/composables/useCodeMirror'
 
 vi.mock('@tauri-apps/api/core', () => ({ invoke: vi.fn() }))
 vi.mock('@tauri-apps/plugin-dialog', () => ({ ask: vi.fn(async () => true) }))
@@ -29,6 +34,8 @@ let disk = PHP
 let readExtra: Record<string, unknown> = {}
 let calls: { cmd: string; args: Record<string, unknown> }[] = []
 let settings: Record<string, unknown> = {}
+/** Holds `complete_import` back until a test lets it go. */
+let importGate: Promise<void> | null = null
 let wrapper: ReturnType<typeof mount> | null = null
 
 const MEMBERS = {
@@ -52,6 +59,7 @@ beforeEach(async () => {
   readExtra = {}
   calls = []
   settings = {}
+  importGate = null
   aimAt(null)
   asked.mockReset()
   asked.mockImplementation(async (cmd: string, args?: Record<string, unknown>) => {
@@ -68,11 +76,21 @@ beforeEach(async () => {
       return { ...MEMBERS, from }
     }
     if (cmd === 'complete_symbols') {
+      if (String(args?.prefix).startsWith('Dup')) {
+        return [
+          { name: 'Duplicate', kind: 'class', path: 'app/Models/Duplicate.php' },
+          { name: 'Duplicate', kind: 'class', path: 'app/Admin/Duplicate.php' }
+        ]
+      }
       return String(args?.prefix).startsWith('Bil')
         ? [{ name: 'Billing', kind: 'class', path: 'app/Services/Billing.php' }]
         : []
     }
-    if (cmd === 'complete_import') return { offset: PHP.indexOf('\n\nclass Tax'), text: '\n\nuse App\\Services\\Billing;' }
+    if (cmd === 'complete_import') {
+      if (importGate) await importGate
+      return { offset: PHP.indexOf('\n\nclass Tax'), text: '\n\nuse App\\Services\\Billing;' }
+    }
+    if (cmd === 'write_file') return 'h2'
     if (cmd === 'config_get') return { global: { usage_counts: false, ...settings }, profiles: [] }
     if (cmd === 'unused_in' || cmd === 'usage_counts') return []
     return null
@@ -293,5 +311,126 @@ describe('⌘-click on a method whose class cannot be worked out', () => {
     expect(popup.title).toBe('Possible definitions of withToken() · 1')
     expect(popup.note).toBe("Couldn't work out which class withToken belongs to")
     expect(popup.items[0]).toMatchObject({ path: place.path, line: 9 })
+  })
+})
+
+describe('what accepting a suggestion does to the text', () => {
+  it('completes a PHP variable over its own $, not after it', async () => {
+    disk = PHP.replace('        \n', '        $total = 1;\n        \n')
+    const view = editorOf(await show())
+    const at = disk.indexOf('        \n') + 8
+    typeAt(view, '$to', at)
+    await settle()
+    expect(labels(view)).toEqual(['$total'])
+    // A variable is never a project name or a keyword.
+    expect(calls.some((one) => one.cmd === 'complete_symbols')).toBe(false)
+    press(view, 'Enter')
+    await flushPromises()
+    expect(view.state.doc.toString()).toContain('$total = 1;\n        $total\n')
+  })
+
+  it('offers the PHP keywords, which the language package does not have', async () => {
+    const view = editorOf(await show())
+    typeAt(view, 'ret', INSIDE)
+    await settle()
+    expect(labels(view)).toContain('return')
+    press(view, 'Enter')
+    await flushPromises()
+    expect(view.state.doc.toString()).toContain('        return\n')
+  })
+
+  it('lists two classes of one name as two rows', async () => {
+    const view = editorOf(await show())
+    typeAt(view, 'new Dup', INSIDE)
+    await settle()
+    const rows = currentCompletions(view.state).filter((one) => one.label === 'Duplicate')
+    expect(rows.map((one) => one.detail).sort()).toEqual(['app/Admin', 'app/Models'])
+  })
+
+  it('takes the name and its use line back in one undo', async () => {
+    const view = editorOf(await show())
+    typeAt(view, 'new Bil', INSIDE)
+    await settle()
+    press(view, 'Enter')
+    await flushPromises()
+    await wait(10)
+    expect(view.state.doc.toString()).toContain('use App\\Services\\Billing;')
+    undo(view)
+    expect(view.state.doc.toString()).toBe(PHP.replace('        \n', '        new Bil\n'))
+  })
+
+  it('adds no use line for a name in a use line, a namespace or a qualified name', async () => {
+    const view = editorOf(await show())
+    typeAt(view, 'use Bil', PHP.indexOf('class Tax'))
+    await settle()
+    expect(labels(view)).toContain('Billing')
+    press(view, 'Enter')
+    await flushPromises()
+    await wait(10)
+    expect(view.state.doc.toString()).toContain('use Billingclass Tax')
+    expect(calls.some((one) => one.cmd === 'complete_import')).toBe(false)
+    expect(view.state.doc.toString()).not.toContain('App\\Services\\Billing')
+  })
+
+  it('knows which names a use line would serve', () => {
+    const at = (text: string) => {
+      const state = EditorState.create({ doc: text.replace('|', ''), extensions: [php()] })
+      return wantsImport(state, text.indexOf('|'))
+    }
+    expect(at('<?php\nnew |Bil')).toBe(true)
+    expect(at('<?php\nfunction pay(|Bil $b) {}')).toBe(true)
+    expect(at('<?php\nuse |Bil')).toBe(false)
+    expect(at('<?php\nuse App\\Services\\|Bil')).toBe(false)
+    expect(at('<?php\nnamespace |Bil')).toBe(false)
+    expect(at('<?php\nnew \\App\\Services\\|Bil')).toBe(false)
+    // A trait used in a class is a name like any other.
+    expect(at('<?php\nclass A\n{\n    use |Bil\n}\n')).toBe(true)
+  })
+
+  it('leaves the file alone when the editor went read-only before the use line came', async () => {
+    let open: () => void = () => undefined
+    importGate = new Promise<void>((done) => (open = done))
+    const view = editorOf(await show())
+    typeAt(view, 'new Bil', INSIDE)
+    await settle()
+    press(view, 'Enter')
+    await flushPromises()
+    expect(view.state.doc.toString()).toContain('new Billing')
+    // Lent to the search window's preview meanwhile: this one only follows.
+    view.dispatch({ effects: slots.access.reconfigure(readOnly(true)) })
+    open()
+    await flushPromises()
+    await wait(10)
+    expect(view.state.doc.toString()).not.toContain('use App\\Services\\Billing;')
+  })
+})
+
+describe('the list and the rest of the editor', () => {
+  it('leaves an input method’s ↵ to the input method', async () => {
+    const view = editorOf(await show())
+    typeAt(view, '$this->', INSIDE)
+    await settle()
+    expect(completionStatus(view.state)).toBe('active')
+    const event = new KeyboardEvent('keydown', { key: 'Enter', bubbles: true, cancelable: true, isComposing: true })
+    view.contentDOM.dispatchEvent(event)
+    expect(view.state.doc.toString()).not.toMatch(/->(rate|total|save)/)
+  })
+
+  it('does not come back open with the tab', async () => {
+    aimAt('/repos/shop')
+    const first = await show()
+    const view = editorOf(first)
+    typeAt(view, '$this->', INSIDE)
+    await settle()
+    expect(completionStatus(view.state)).toBe('active')
+    first.unmount()
+    wrapper = null
+    await flushPromises()
+    const reads = calls.filter((one) => one.cmd === 'read_file').length
+    const again = editorOf(await show())
+    // The same state, kept warm: the text typed is there, the list is not.
+    expect(calls.filter((one) => one.cmd === 'read_file').length).toBe(reads)
+    expect(again.state.doc.toString()).toContain('$this->')
+    expect(completionStatus(again.state)).toBe(null)
   })
 })

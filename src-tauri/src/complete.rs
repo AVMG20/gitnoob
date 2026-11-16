@@ -170,7 +170,8 @@ pub fn complete_symbols(
     limit: usize,
     changed: &[String],
 ) -> Vec<symbols::Completion> {
-    symbols::complete_symbols(root, prefix, path, limit, changed)
+    // Asked for over IPC: never more than a list can show.
+    symbols::complete_symbols(root, prefix, path, limit.min(200), changed)
 }
 
 // --- the `use` line a PHP class needs ------------------------------------------------
@@ -187,8 +188,8 @@ pub struct Insert {
 /// already there, or after the `namespace` line, or after `<?php` when the
 /// file has neither. `None` when nothing is needed or it would not be safe:
 /// the class is in the global namespace or the file's own, it is imported
-/// already, another import has the name, or the file uses `namespace X { }`
-/// blocks.
+/// already, another import or the file's own class has the name, or the
+/// file has `namespace X { }` blocks or more than one namespace.
 pub fn complete_import(
     root: &Path,
     path: &str,
@@ -220,6 +221,9 @@ pub fn complete_import(
     }
     let tree = deps::parse_php(text)?;
     let program = tree.root_node();
+    // The editor's text has `\n` only; a caller with the file's own text
+    // gets the line ending it already uses.
+    let eol = if text.contains("\r\n") { "\r\n" } else { "\n" };
     let line = format!("use {fqn};");
     let mut uses: Vec<Node> = Vec::new();
     let mut namespace_node: Option<Node> = None;
@@ -228,9 +232,12 @@ pub fn complete_import(
     for statement in named_children(program) {
         match statement.kind() {
             "php_tag" => opening = opening.or(Some(statement)),
-            "declare_statement" => declare = Some(statement),
+            "declare_statement" => declare = declare.or(Some(statement)),
             "namespace_definition" => {
-                if statement.child_by_field_name("body").is_some() {
+                // `namespace X { }` blocks, or a second `namespace Y;`: which
+                // one the name was typed in is not known here, and a line in
+                // the wrong one imports nothing.
+                if statement.child_by_field_name("body").is_some() || namespace_node.is_some() {
                     return None;
                 }
                 namespace_node = Some(statement);
@@ -242,6 +249,20 @@ pub fn complete_import(
                     .trim_start();
                 if !after.starts_with("function ") && !after.starts_with("const ") {
                     uses.push(statement);
+                }
+            }
+            // The file's own class of that name: a `use` beside it is a
+            // fatal "name is already in use".
+            "class_declaration"
+            | "interface_declaration"
+            | "trait_declaration"
+            | "enum_declaration" => {
+                let own = statement
+                    .child_by_field_name("name")
+                    .map(|node| text_of(node, text))
+                    .unwrap_or("");
+                if own.eq_ignore_ascii_case(name) {
+                    return None;
                 }
             }
             _ => {}
@@ -264,21 +285,34 @@ pub fn complete_import(
                 .rfind('\n')
                 .map(|at| at + 1)
                 .unwrap_or(0);
+            let lead = &text[line_start..after.start_byte()];
+            // Something else is on that line before it (`<?php use A;`): the
+            // new line goes right before the statement, not before the tag.
+            if !lead.trim().is_empty() {
+                return Some(Insert {
+                    offset: utf16_at(text, after.start_byte()),
+                    text: format!("{line}{eol}"),
+                });
+            }
             return Some(Insert {
                 offset: utf16_at(text, line_start),
-                text: format!("{line}\n"),
+                text: format!("{lead}{line}{eol}"),
             });
         }
         let last = uses.last()?;
         return Some(Insert {
             offset: utf16_at(text, last.end_byte()),
-            text: format!("\n{line}"),
+            text: format!("{eol}{line}"),
         });
     }
     let anchor = namespace_node.or(declare).or(opening)?;
+    // `<?=` and the like open an expression, not a place for statements.
+    if anchor.kind() == "php_tag" && !text_of(anchor, text).eq_ignore_ascii_case("<?php") {
+        return None;
+    }
     Some(Insert {
         offset: utf16_at(text, anchor.end_byte()),
-        text: format!("\n\n{line}"),
+        text: format!("{eol}{eol}{line}"),
     })
 }
 

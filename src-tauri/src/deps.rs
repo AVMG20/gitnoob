@@ -637,8 +637,9 @@ pub struct Member {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub summary: Option<String>,
     /// The class a method returns or a property holds, fully qualified, or
-    /// `static` for the class it was reached through (`static`, `self` and
-    /// `$this`). From the declared type, else `@return` or `@var`.
+    /// `static` for the class it was reached through (`static` and `$this`;
+    /// `self` is the declaring class). From the declared type, else
+    /// `@return` or `@var`.
     #[serde(skip)]
     pub returns: Option<String>,
 }
@@ -910,6 +911,19 @@ fn class_decl(node: Node, source: &str, path: &str, imports: &PhpImports) -> Opt
             }
         }
     }
+    // `self` is the class that declares the member, whatever class it is
+    // reached through. In a trait that is the class using it, known only at
+    // the call: left to mean the receiver, as `static` does.
+    let own = if node.kind() == "trait_declaration" {
+        "static".to_string()
+    } else {
+        decl.fqn.clone()
+    };
+    for member in &mut members {
+        if member.returns.as_deref() == Some("self") {
+            member.returns = Some(own.clone());
+        }
+    }
     decl.members = members;
     decl.traits = traits;
     decl.accessor = accessor;
@@ -1003,20 +1017,31 @@ fn is_self_type(written: &str) -> bool {
         .any(|one| written.eq_ignore_ascii_case(one))
 }
 
+/// `self` for `self`, which is the class that declares the member; `static`
+/// for `static` and `$this`, the class it is reached through.
+fn self_marker(written: &str) -> &'static str {
+    let written = written.trim().trim_start_matches('?');
+    if written.eq_ignore_ascii_case("self") {
+        "self"
+    } else {
+        "static"
+    }
+}
+
 /// The class a declared type means, fully qualified: the type itself, the
-/// type in `?Foo`, the first class in a union. `static` for `static`, `self`
-/// and `$this`. `None` for a scalar, `array`, `mixed` and the like.
+/// type in `?Foo`, the first class in a union. `static` for `static` and
+/// `$this`, `self` for `self` (see [`self_marker`]). `None` for a scalar, `array`, `mixed` and the like.
 fn type_class(node: Node, source: &str, imports: &PhpImports) -> Option<String> {
     let written = text_of(node, source).trim();
     if is_self_type(written) {
-        return Some("static".into());
+        return Some(self_marker(written).into());
     }
     match node.kind() {
         "named_type" => {
             let name = named_children(node).into_iter().next()?;
             let written = text_of(name, source).trim();
             if is_self_type(written) {
-                return Some("static".into());
+                return Some(self_marker(written).into());
             }
             if written.eq_ignore_ascii_case("parent") {
                 return None;
@@ -1059,7 +1084,7 @@ const DOC_SCALARS: &[&str] = &[
 
 /// The class a docblock type names: `Foo`, `\A\Foo`, `?Foo`, the first class
 /// of `Foo|null`, `Collection` of `Collection<int, User>`. `static` for
-/// `static`, `self` and `$this`. Not `Foo[]`, which is an array.
+/// `static` and `$this`, `self` for `self`. Not `Foo[]`, which is an array.
 fn doc_class(written: &str, imports: &PhpImports) -> Option<String> {
     let written = written.trim().trim_start_matches('?');
     // `Collection<int, User>|null`: the generic part says what is inside.
@@ -1070,7 +1095,7 @@ fn doc_class(written: &str, imports: &PhpImports) -> Option<String> {
             return None;
         }
         if is_self_type(part) {
-            return Some("static".to_string());
+            return Some(self_marker(part).to_string());
         }
         if DOC_SCALARS.iter().any(|one| part.eq_ignore_ascii_case(one)) {
             return None;
@@ -1867,7 +1892,7 @@ fn var_type(scope: &Here, used: Node, name: &str, depth: usize) -> Option<String
     }
     if let Some((_, class)) = best {
         let class = class?;
-        return if class == "static" {
+        return if class == "static" || class == "self" {
             enclosing_class(used, source, scope.imports)
         } else {
             Some(class)
