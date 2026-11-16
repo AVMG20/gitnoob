@@ -33,6 +33,7 @@ import {
   type DirEntry,
   type FoundFile
 } from '~/composables/useFileTree'
+import { speedMatch, type SpeedMatch } from '~/composables/speedSearch'
 
 /**
  * The repository as folders and files, in the sidebar beside the branches.
@@ -230,9 +231,11 @@ watch(
 )
 
 /** A name with the characters the filter matched picked out. */
-function pieces(row: Row) {
-  if (!row.hits?.length) return [{ text: row.name, hit: false }]
-  const hit = new Set(row.hits)
+function pieces(row: Row, at = -1) {
+  const speed = speedHits.value.get(at)?.indices
+  const hits = speed ?? row.hits
+  if (!hits?.length) return [{ text: row.name, hit: false }]
+  const hit = new Set(hits)
   const out: { text: string; hit: boolean }[] = []
   for (const [at, char] of [...row.name].entries()) {
     const on = hit.has(at)
@@ -298,6 +301,229 @@ function scrollTo(index: number) {
   }
 }
 
+/** Keeps a row on screen with as little scrolling as it takes. */
+function keepInView(index: number) {
+  const box = list.value
+  if (!box || index < 0) return
+  const y = index * ROW
+  const view = box.clientHeight || height.value
+  if (y < box.scrollTop) box.scrollTop = y
+  else if (view && y + ROW > box.scrollTop + view) box.scrollTop = y + ROW - view
+  top.value = box.scrollTop
+}
+
+// --- the keyboard
+//
+// The tree takes the focus like a list in an IDE: a selected row of its own
+// (ringed, and not the open file's highlight), the arrows to walk and fold,
+// ↵ to open or fold, Space for a preview tab. Typing a name with the tree
+// focused is a speed search over the rows on screen: the letters are marked
+// where they match and the selection goes to the best match, without asking
+// the backend anything. The filter box over the tree is something else: it
+// asks the backend to narrow the whole tree.
+
+/** The row the keyboard is on, by its key, so it survives folding above it. */
+const selected = ref<string | null>(null)
+const focused = ref(false)
+
+const selectedAt = computed(() => {
+  const key = selected.value
+  if (key === null) return -1
+  return rows.value.findIndex((row) => row.key === key)
+})
+
+function select(index: number) {
+  const row = rows.value[index]
+  if (!row) return
+  selected.value = row.key
+  if (filtering.value) cursor.value = index
+  keepInView(index)
+}
+
+/** Where the keyboard starts: where it was, else the open file, else the top. */
+function startAt() {
+  if (selectedAt.value >= 0) return selectedAt.value
+  const open = rows.value.findIndex((row) => row.path === current.value && !row.dir)
+  return open >= 0 ? open : 0
+}
+
+const query = ref('')
+/** The last character typed matched nothing: the overlay says so in red. */
+const missed = ref(false)
+let idleTimer: ReturnType<typeof setTimeout> | undefined
+
+/** Every row the speed search matches, by index. */
+const speedHits = computed(() => {
+  const out = new Map<number, SpeedMatch>()
+  if (!query.value) return out
+  rows.value.forEach((row, at) => {
+    if (row.loading) return
+    const match = speedMatch(row.name, query.value)
+    if (match) out.set(at, match)
+  })
+  return out
+})
+
+function endQuery() {
+  clearTimeout(idleTimer)
+  query.value = ''
+  missed.value = false
+}
+
+function touchQuery() {
+  clearTimeout(idleTimer)
+  idleTimer = setTimeout(endQuery, 5000)
+}
+
+/** The query changed: to the best match at or after the selection, wrapping. */
+function jumpToMatch(next: string) {
+  const from = Math.max(0, startAt())
+  let best: { at: number; tier: number; distance: number } | null = null
+  const count = rows.value.length
+  rows.value.forEach((row, at) => {
+    if (row.loading) return
+    const match = speedMatch(row.name, next)
+    if (!match) return
+    const distance = (at - from + count) % count
+    if (!best || match.tier > best.tier || (match.tier === best.tier && distance < best.distance)) {
+      best = { at, tier: match.tier, distance }
+    }
+  })
+  const found = best as { at: number } | null
+  if (!found) {
+    // Nothing has it: the letter stays, in red, and the selection stays put.
+    query.value = next
+    missed.value = true
+    touchQuery()
+    return
+  }
+  query.value = next
+  missed.value = false
+  select(found.at)
+  touchQuery()
+}
+
+/** ↑ and ↓ during a speed search: the matches only, round and round. */
+function stepMatch(by: 1 | -1) {
+  const hits = [...speedHits.value.keys()]
+  if (!hits.length) return
+  const from = selectedAt.value
+  const ahead = by > 0 ? hits.find((at) => at > from) ?? hits[0]! : [...hits].reverse().find((at) => at < from) ?? hits[hits.length - 1]!
+  select(ahead)
+  touchQuery()
+}
+
+function parentOf(path: string) {
+  return path.includes('/') ? path.slice(0, path.lastIndexOf('/')) : ''
+}
+
+function onTreeKey(event: KeyboardEvent) {
+  // Keys in the filter box, or anything else that takes text, are its own.
+  if (event.target !== list.value) return
+  if (event.metaKey || event.ctrlKey || event.altKey) return
+  const count = rows.value.length
+  if (!count) return
+  const at = startAt()
+  const row = rows.value[at]
+  let handled = true
+  switch (event.key) {
+    case 'ArrowDown':
+      if (query.value) stepMatch(1)
+      else select(selectedAt.value < 0 ? at : Math.min(count - 1, at + 1))
+      break
+    case 'ArrowUp':
+      if (query.value) stepMatch(-1)
+      else select(selectedAt.value < 0 ? at : Math.max(0, at - 1))
+      break
+    case 'ArrowRight':
+      endQuery()
+      if (row?.dir && !row.open) void toggle(row)
+      else if (row?.dir) select(at + 1 < count && rows.value[at + 1]!.depth > row.depth ? at + 1 : at)
+      else select(at)
+      break
+    case 'ArrowLeft': {
+      endQuery()
+      if (row?.dir && row.open) {
+        void toggle(row)
+        select(at)
+        break
+      }
+      const parent = row ? parentOf(row.path) : ''
+      const up = parent ? rows.value.findIndex((one) => one.dir && one.path === parent) : -1
+      select(up >= 0 ? up : at)
+      break
+    }
+    case 'Home':
+      endQuery()
+      select(0)
+      break
+    case 'End':
+      endQuery()
+      select(count - 1)
+      break
+    case 'PageDown':
+    case 'PageUp': {
+      endQuery()
+      const page = Math.max(1, Math.floor((list.value?.clientHeight || height.value || 800) / ROW) - 1)
+      select(Math.min(count - 1, Math.max(0, at + (event.key === 'PageDown' ? page : -page))))
+      break
+    }
+    case 'Enter':
+      endQuery()
+      if (row) {
+        select(at)
+        if (row.dir) void toggle(row)
+        else open(row, false)
+      }
+      break
+    case 'Escape':
+      // The first Esc ends the speed search; the next is the window's.
+      if (!query.value) {
+        handled = false
+        break
+      }
+      endQuery()
+      break
+    case 'Backspace':
+      if (!query.value) {
+        handled = false
+        break
+      }
+      if (query.value.length > 1) jumpToMatch(query.value.slice(0, -1))
+      else endQuery()
+      break
+    case ' ':
+      if (query.value) {
+        jumpToMatch(query.value + ' ')
+        break
+      }
+      if (row) {
+        select(at)
+        if (row.dir) void toggle(row)
+        else open(row, true)
+      }
+      break
+    default:
+      if (event.key.length === 1) jumpToMatch(query.value + event.key)
+      else handled = false
+  }
+  if (handled) {
+    event.preventDefault()
+    // Nothing else hears it: not the viewer's ↑ ↓ and Esc, not a shortcut.
+    event.stopPropagation()
+  }
+}
+
+function onTreeFocus() {
+  focused.value = true
+  if (selectedAt.value < 0 && rows.value.length) selected.value = rows.value[startAt()]!.key
+}
+
+function onTreeBlur() {
+  focused.value = false
+  endQuery()
+}
+
 // --- opening things
 
 /** The file on screen, when it is one from the work tree. */
@@ -347,6 +573,9 @@ function sideOf(mark: Mark | undefined): 'staged' | 'unstaged' {
  * second toggle: that opened it and shut it again.
  */
 function onClick(event: MouseEvent, row: Row) {
+  endQuery()
+  selected.value = row.key
+  list.value?.focus({ preventScroll: true })
   if (row.dir && event.detail > 1) return
   open(row, true)
 }
@@ -554,6 +783,7 @@ onBeforeUnmount(() => {
   unlisten?.()
   clearTimeout(filterTimer)
   clearTimeout(reloadTimer)
+  clearTimeout(idleTimer)
 })
 
 function markOf(row: Row) {
@@ -591,7 +821,24 @@ const DOT_TITLE: Record<string, string> = {
       />
     </div>
 
-    <div ref="list" class="list" role="tree" @scroll.passive="onScroll">
+    <div class="list-wrap">
+    <!-- The speed search: what has been typed, over the rows, moving none. -->
+    <div v-if="query" class="speed" :class="{ missed }" role="status" aria-live="polite">
+      <Search :size="11" />
+      <span class="typed">{{ query }}</span>
+    </div>
+    <div
+      ref="list"
+      class="list"
+      role="tree"
+      tabindex="0"
+      aria-label="Files"
+      :aria-activedescendant="selected !== null ? `tree-row-${selectedAt}` : undefined"
+      @scroll.passive="onScroll"
+      @keydown="onTreeKey"
+      @focus="onTreeFocus"
+      @blur="onTreeBlur"
+    >
       <div class="space" :style="{ height: `${rows.length * ROW}px` }">
         <div
           v-for="{ row, at } in visible"
@@ -606,10 +853,13 @@ const DOT_TITLE: Record<string, string> = {
               gone: row.gone,
               loading: row.loading,
               on: !row.dir && row.path === current,
-              cursor: filtering && at === cursor
+              cursor: filtering && at === cursor,
+              selected: at === selectedAt,
+              matched: speedHits.has(at)
             }
           ]"
           :style="{ top: `${at * ROW}px`, paddingLeft: `${8 + row.depth * 14}px` }"
+          :id="`tree-row-${at}`"
           :data-path="row.path"
           :title="row.folder !== undefined ? row.path : undefined"
           :aria-level="row.depth + 1"
@@ -624,8 +874,9 @@ const DOT_TITLE: Record<string, string> = {
           <FileIcon v-if="!row.loading" :path="row.path" :folder="row.dir" :open="row.open" />
           <span v-else class="icon-space" />
           <span class="name">
-            <template v-for="(piece, index) in pieces(row)" :key="index">
-              <b v-if="piece.hit">{{ piece.text }}</b>
+            <template v-for="(piece, index) in pieces(row, at)" :key="index">
+              <mark v-if="piece.hit && query" class="speed-hit">{{ piece.text }}</mark>
+              <b v-else-if="piece.hit">{{ piece.text }}</b>
               <template v-else>{{ piece.text }}</template>
             </template>
           </span>
@@ -648,6 +899,7 @@ const DOT_TITLE: Record<string, string> = {
         <button class="again" @click="loadDir('')">Try again</button>
       </p>
       <p v-else-if="!filtering && !rows.length" class="empty">No files here yet.</p>
+    </div>
     </div>
 
     <AppModal
@@ -701,11 +953,64 @@ const DOT_TITLE: Record<string, string> = {
   font-size: 12.5px;
 }
 
+.list-wrap {
+  position: relative;
+  display: grid;
+  grid-template-rows: minmax(0, 1fr);
+  min-height: 0;
+}
+
 .list {
   position: relative;
   min-height: 0;
   overflow: auto;
   padding-bottom: 10px;
+  outline: none;
+}
+
+/* The row the keyboard is on: a ring, while the tree has the focus, so it is
+   not taken for the open file's highlight. */
+.list:focus .row.selected {
+  box-shadow: inset 0 0 0 1px var(--ring);
+}
+
+/* The speed search's query, small, over the top of the rows. */
+.speed {
+  position: absolute;
+  z-index: 2;
+  top: 2px;
+  left: 8px;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  max-width: calc(100% - 16px);
+  height: 20px;
+  padding: 0 6px;
+  font-size: 11.5px;
+  color: var(--text);
+  background: var(--bg);
+  border: 1px solid var(--ring);
+  border-radius: var(--radius-sm);
+  box-shadow: var(--shadow-pop);
+  pointer-events: none;
+}
+
+.speed .typed {
+  overflow: hidden;
+  white-space: pre;
+  text-overflow: ellipsis;
+}
+
+.speed.missed {
+  color: var(--danger);
+  border-color: var(--danger);
+}
+
+/* The search window's mark, on the letters the speed search matched. */
+.name mark.speed-hit {
+  background: var(--warning-bg);
+  color: inherit;
+  border-radius: 2px;
 }
 
 .space {
