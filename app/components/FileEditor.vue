@@ -725,7 +725,9 @@ function refreshSymbols(delay = 300) {
 }
 
 async function loadSymbols() {
-  if (lent || !view || !named() || props.locked || props.preview) return
+  // A dependency is not counted, and nothing in it is dimmed: what uses it is
+  // mostly outside this repository.
+  if (lent || !view || !named() || props.locked || props.preview || reason.value === 'dependency') return
   const mine = ++symbolSeq
   const asked = text()
   const counts = config.settings.value?.usage_counts !== false

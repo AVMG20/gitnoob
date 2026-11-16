@@ -1,0 +1,1758 @@
+//! Definitions in dependencies: ⌘-click from the project into `vendor/` and
+//! `node_modules/`, worked out when it is asked for.
+//!
+//! Dependencies stay out of the symbol index (`symbols.rs`): they would swamp
+//! the usage counts and the dimming of unused code, and walking them at every
+//! open would cost more than the whole project. Instead a name is resolved
+//! the way the language itself does it, one file at a time:
+//!
+//! - PHP: the file's namespace and `use` imports give the fully qualified
+//!   name ([`php_imports`]), Composer's own autoload maps give the file
+//!   ([`resolve_class`]), and tree-sitter finds the class and its members in
+//!   it, walking up `extends`, traits and interfaces ([`class_members`]).
+//!   Laravel facades are followed to the class they stand for where the
+//!   facade says which it is.
+//! - TypeScript and JavaScript: a bare import goes through `node_modules`,
+//!   the package's `types`, `exports` or `main`, and the exported name is
+//!   found in that file, one `export … from` deep.
+//! - Rust: the crates are in cargo's registry, outside the work tree, so they
+//!   are not followed.
+//!
+//! Every path is checked by [`files::resolve`], so a link that leads out of
+//! the work tree (a Composer path repository, a pnpm store elsewhere) is
+//! refused rather than followed.
+//!
+//! The autoload maps are read on the first ⌘-click and kept per work tree
+//! until a file in `vendor/composer/` or `composer.json` changes.
+
+use std::collections::{HashMap, HashSet};
+use std::path::{Component, Path, PathBuf};
+use std::sync::{Arc, Mutex, OnceLock};
+use std::time::SystemTime;
+
+use serde::Serialize;
+use tree_sitter::{Node, Parser, Tree};
+
+use crate::files;
+
+/// How far up `extends`, traits and interfaces a member is looked for.
+const MAX_DEPTH: usize = 10;
+
+/// The Laravel class every facade extends.
+const FACADE: &str = "Illuminate\\Support\\Facades\\Facade";
+
+// --- where a ⌘-click lands ----------------------------------------------------
+
+/// A definition found outside the index.
+#[derive(Serialize, Clone, Debug, PartialEq)]
+pub struct Jump {
+    pub path: String,
+    /// From 1.
+    pub line: u32,
+    pub column: u32,
+    pub kind: &'static str,
+    /// The line, trimmed, as the usages list shows one.
+    pub text: String,
+    /// In `vendor/` or `node_modules/`: opened read-only.
+    pub dependency: bool,
+    /// Something to say about where it landed, such as a facade whose method
+    /// lives elsewhere.
+    pub note: Option<String>,
+}
+
+/// Whether a path is a dependency: inside a `vendor` or `node_modules`
+/// folder that git ignores. Read-only in the editor, never counted.
+pub fn is_dependency(root: &Path, relative: &str) -> bool {
+    let inside = relative
+        .split('/')
+        .any(|part| part == "vendor" || part == "node_modules");
+    inside && files::path_ignored_at(root, relative).unwrap_or(false)
+}
+
+/// Where the name at `offset` (UTF-16, in `text` or the file on disk) is
+/// defined, when that is in a dependency or the language's own rules say
+/// exactly which file. `None` leaves it to the index.
+pub fn dependency_definition(
+    root: &Path,
+    path: &str,
+    offset: u32,
+    text: Option<&str>,
+) -> Result<Option<Jump>, String> {
+    let ext = path.rsplit('.').next().unwrap_or("").to_ascii_lowercase();
+    let text = match text {
+        Some(text) => text.to_string(),
+        None => {
+            let real = files::resolve(root, path, true)?;
+            String::from_utf8_lossy(&std::fs::read(&real).map_err(|e| e.to_string())?).into_owned()
+        }
+    };
+    let byte = byte_at_utf16(&text, offset);
+    let found = match ext.as_str() {
+        "php" => php_jump(root, path, &text, byte),
+        "ts" | "mts" | "cts" | "tsx" | "js" | "mjs" | "cjs" | "jsx" => {
+            script_jump(root, path, &text, byte, &ext)
+        }
+        _ => None,
+    };
+    Ok(found.map(|(path, line, column, kind, note)| Jump {
+        text: line_of(root, &path, line),
+        dependency: is_dependency(root, &path),
+        path,
+        line,
+        column,
+        kind,
+        note,
+    }))
+}
+
+type Landing = (String, u32, u32, &'static str, Option<String>);
+
+fn byte_at_utf16(text: &str, offset: u32) -> usize {
+    let mut units = 0u32;
+    for (at, c) in text.char_indices() {
+        if units >= offset {
+            return at;
+        }
+        units += c.len_utf16() as u32;
+    }
+    text.len()
+}
+
+fn line_of(root: &Path, path: &str, line: u32) -> String {
+    let Ok(real) = files::resolve(root, path, true) else {
+        return String::new();
+    };
+    let text = std::fs::read(real).unwrap_or_default();
+    String::from_utf8_lossy(&text)
+        .lines()
+        .nth(line.saturating_sub(1) as usize)
+        .map(|one| one.trim().chars().take(200).collect())
+        .unwrap_or_default()
+}
+
+fn text_of<'a>(node: Node, source: &'a str) -> &'a str {
+    source.get(node.byte_range()).unwrap_or("")
+}
+
+fn named_children(node: Node) -> Vec<Node> {
+    let mut cursor = node.walk();
+    node.named_children(&mut cursor).collect()
+}
+
+/// A path inside the work tree, `..` worked out, or `None` if it leaves it.
+fn normal(path: &str) -> Option<String> {
+    let mut parts: Vec<&str> = Vec::new();
+    for part in path.split('/') {
+        match part {
+            "" | "." => {}
+            ".." => {
+                parts.pop()?;
+            }
+            other => parts.push(other),
+        }
+    }
+    Some(parts.join("/"))
+}
+
+/// A file that is there and, once links are followed, inside the work tree.
+fn exists(root: &Path, relative: &str) -> bool {
+    files::resolve(root, relative, true)
+        .map(|real| real.is_file())
+        .unwrap_or(false)
+}
+
+fn is_dir(root: &Path, relative: &str) -> bool {
+    files::resolve(root, relative, true)
+        .map(|real| real.is_dir())
+        .unwrap_or(false)
+}
+
+fn read(root: &Path, relative: &str) -> Option<String> {
+    let real = files::resolve(root, relative, true).ok()?;
+    let bytes = std::fs::read(real).ok()?;
+    Some(String::from_utf8_lossy(&bytes).into_owned())
+}
+
+// --- PHP: names -----------------------------------------------------------------
+
+fn parse_php(text: &str) -> Option<Tree> {
+    let mut parser = Parser::new();
+    parser
+        .set_language(&tree_sitter_php::LANGUAGE_PHP.into())
+        .ok()?;
+    parser.parse(text, None)
+}
+
+/// A PHP file's namespace and the classes it imports.
+#[derive(Serialize, Clone, Debug, Default, PartialEq)]
+pub struct PhpImports {
+    pub namespace: String,
+    /// The fully qualified name of each imported class, by the name the file
+    /// uses for it: its alias, or the last part of the name.
+    pub classes: HashMap<String, String>,
+}
+
+impl PhpImports {
+    /// The fully qualified name of a class as written in this file: `\A\B` as
+    /// it is, an imported name or alias through its `use`, anything else in
+    /// the file's namespace.
+    pub fn qualify(&self, written: &str) -> String {
+        let written = written.trim();
+        if let Some(absolute) = written.strip_prefix('\\') {
+            return absolute.to_string();
+        }
+        let (first, rest) = match written.split_once('\\') {
+            Some((first, rest)) => (first, Some(rest)),
+            None => (written, None),
+        };
+        // Class names are not case-sensitive in PHP; an exact match first.
+        let imported = self.classes.get(first).or_else(|| {
+            self.classes
+                .iter()
+                .find(|(alias, _)| alias.eq_ignore_ascii_case(first))
+                .map(|(_, fqn)| fqn)
+        });
+        if let Some(fqn) = imported {
+            return match rest {
+                Some(rest) => format!("{fqn}\\{rest}"),
+                None => fqn.clone(),
+            };
+        }
+        if self.namespace.is_empty() {
+            written.to_string()
+        } else {
+            format!("{}\\{written}", self.namespace)
+        }
+    }
+}
+
+/// The namespace and class imports of a PHP file: plain, aliased and grouped
+/// `use`, but not `use function` or `use const`.
+pub fn php_imports(text: &str) -> PhpImports {
+    match parse_php(text) {
+        Some(tree) => imports_in(tree.root_node(), text),
+        None => PhpImports::default(),
+    }
+}
+
+fn imports_in(root: Node, source: &str) -> PhpImports {
+    let mut found = PhpImports::default();
+    let mut statements = named_children(root);
+    let mut at = 0;
+    while at < statements.len() {
+        let node = statements[at];
+        at += 1;
+        match node.kind() {
+            "namespace_definition" => {
+                if let Some(name) = node.child_by_field_name("name") {
+                    found.namespace = text_of(name, source).trim_start_matches('\\').to_string();
+                }
+                // `namespace A { … }`: what is inside counts too.
+                if let Some(body) = node.child_by_field_name("body") {
+                    statements.extend(named_children(body));
+                }
+            }
+            "namespace_use_declaration" => {
+                for (alias, fqn) in use_clauses(node, source) {
+                    found.classes.insert(alias, fqn);
+                }
+            }
+            _ => {}
+        }
+    }
+    found
+}
+
+/// Each class a `use` declaration imports, as (the name it goes by, the fully
+/// qualified name). Nothing for `use function` and `use const`.
+fn use_clauses(node: Node, source: &str) -> Vec<(String, String)> {
+    let after = text_of(node, source)
+        .trim_start()
+        .trim_start_matches("use")
+        .trim_start();
+    if after.starts_with("function ") || after.starts_with("const ") {
+        return Vec::new();
+    }
+    let prefix = named_children(node)
+        .into_iter()
+        .find(|child| child.kind() == "namespace_name")
+        .map(|child| text_of(child, source).trim_start_matches('\\').to_string());
+    let mut clauses: Vec<Node> = Vec::new();
+    for child in named_children(node) {
+        match child.kind() {
+            "namespace_use_clause" => clauses.push(child),
+            "namespace_use_group" => clauses.extend(
+                named_children(child)
+                    .into_iter()
+                    .filter(|one| one.kind() == "namespace_use_clause"),
+            ),
+            _ => {}
+        }
+    }
+    clauses
+        .into_iter()
+        .filter_map(|clause| clause_import(clause, prefix.as_deref(), source))
+        .collect()
+}
+
+fn clause_import(clause: Node, prefix: Option<&str>, source: &str) -> Option<(String, String)> {
+    let alias = clause.child_by_field_name("alias");
+    let name = named_children(clause)
+        .into_iter()
+        .find(|child| matches!(child.kind(), "qualified_name" | "name") && Some(*child) != alias)?;
+    let written = text_of(name, source).trim_start_matches('\\');
+    let fqn = match prefix {
+        Some(prefix) => format!("{prefix}\\{written}"),
+        None => written.to_string(),
+    };
+    let goes_by = match alias {
+        Some(alias) => text_of(alias, source).to_string(),
+        None => fqn.rsplit('\\').next().unwrap_or(&fqn).to_string(),
+    };
+    Some((goes_by, fqn))
+}
+
+// --- PHP: Composer's autoload maps -----------------------------------------------
+
+#[derive(Default, Debug)]
+struct Autoload {
+    /// Class to file.
+    classmap: HashMap<String, String>,
+    /// Namespace prefix (with its trailing `\`) to folders, longest first.
+    psr4: Vec<(String, Vec<String>)>,
+    psr0: Vec<(String, Vec<String>)>,
+}
+
+const AUTOLOAD_FILES: [&str; 4] = [
+    "vendor/composer/autoload_classmap.php",
+    "vendor/composer/autoload_psr4.php",
+    "vendor/composer/autoload_psr0.php",
+    "composer.json",
+];
+
+type Stamp = Vec<Option<SystemTime>>;
+
+type Loaded = HashMap<PathBuf, (Stamp, Arc<Autoload>)>;
+
+fn maps() -> &'static Mutex<Loaded> {
+    static MAPS: OnceLock<Mutex<Loaded>> = OnceLock::new();
+    MAPS.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+fn stamp_of(root: &Path) -> Stamp {
+    AUTOLOAD_FILES
+        .iter()
+        .map(|file| {
+            std::fs::metadata(root.join(file))
+                .and_then(|meta| meta.modified())
+                .ok()
+        })
+        .collect()
+}
+
+/// The autoload maps of a work tree: read once, and again when Composer
+/// rewrote them.
+fn autoload(root: &Path) -> Arc<Autoload> {
+    let key = root.canonicalize().unwrap_or_else(|_| root.to_path_buf());
+    let stamp = stamp_of(&key);
+    if let Ok(cached) = maps().lock() {
+        if let Some((seen, loaded)) = cached.get(&key) {
+            if *seen == stamp {
+                return loaded.clone();
+            }
+        }
+    }
+    let loaded = Arc::new(load_autoload(&key));
+    if let Ok(mut cached) = maps().lock() {
+        cached.insert(key, (stamp, loaded.clone()));
+    }
+    loaded
+}
+
+/// Forgets a work tree's autoload maps, for the watcher and for tests.
+pub fn forget(root: &Path) {
+    let key = root.canonicalize().unwrap_or_else(|_| root.to_path_buf());
+    if let Ok(mut cached) = maps().lock() {
+        cached.remove(&key);
+    }
+}
+
+fn load_autoload(root: &Path) -> Autoload {
+    let mut loaded = Autoload::default();
+    let read_map = |file: &str| {
+        std::fs::read_to_string(root.join(file))
+            .map(|text| php_array(&text, root))
+            .unwrap_or_default()
+    };
+    for (class, mut paths) in read_map(AUTOLOAD_FILES[0]) {
+        if let Some(path) = paths.pop() {
+            loaded.classmap.insert(class, path);
+        }
+    }
+    loaded.psr4 = read_map(AUTOLOAD_FILES[1]);
+    loaded.psr0 = read_map(AUTOLOAD_FILES[2]);
+    // Without `vendor/` installed, the project's own namespaces from
+    // composer.json still say where its classes are.
+    if let Some(json) = std::fs::read_to_string(root.join("composer.json"))
+        .ok()
+        .and_then(|text| serde_json::from_str::<serde_json::Value>(&text).ok())
+    {
+        for section in ["autoload", "autoload-dev"] {
+            let Some(map) = json[section]["psr-4"].as_object() else {
+                continue;
+            };
+            for (prefix, dirs) in map {
+                if loaded.psr4.iter().any(|(known, _)| known == prefix) {
+                    continue;
+                }
+                let dirs: Vec<String> = match dirs {
+                    serde_json::Value::String(one) => vec![one.clone()],
+                    serde_json::Value::Array(many) => many
+                        .iter()
+                        .filter_map(|one| one.as_str().map(str::to_string))
+                        .collect(),
+                    _ => Vec::new(),
+                };
+                let dirs = dirs.iter().filter_map(|dir| normal(dir)).collect();
+                loaded.psr4.push((prefix.clone(), dirs));
+            }
+        }
+    }
+    loaded
+        .psr4
+        .sort_by_key(|one| std::cmp::Reverse(one.0.len()));
+    loaded
+        .psr0
+        .sort_by_key(|one| std::cmp::Reverse(one.0.len()));
+    loaded
+}
+
+/// One of Composer's generated `return array(…)` files, as its keys and the
+/// paths each maps to, relative to the work tree. A path that leads out of
+/// the work tree is left out.
+fn php_array(text: &str, root: &Path) -> Vec<(String, Vec<String>)> {
+    let mut out = Vec::new();
+    for line in text.lines() {
+        let line = line.trim();
+        if !line.starts_with('\'') {
+            continue;
+        }
+        let Some((key, rest)) = quoted(line) else {
+            continue;
+        };
+        let Some(rhs) = rest.trim_start().strip_prefix("=>") else {
+            continue;
+        };
+        let paths = values(rhs)
+            .into_iter()
+            .filter_map(|(base, tail)| place(base, &tail, root))
+            .collect();
+        out.push((key, paths));
+    }
+    out
+}
+
+/// A single-quoted PHP string at the start of `text`, unescaped, and what
+/// follows it.
+fn quoted(text: &str) -> Option<(String, &str)> {
+    let body = text.strip_prefix('\'')?;
+    let mut out = String::new();
+    let mut chars = body.char_indices();
+    while let Some((at, c)) = chars.next() {
+        match c {
+            '\\' => match chars.next() {
+                Some((_, next @ ('\\' | '\''))) => out.push(next),
+                Some((_, next)) => {
+                    out.push('\\');
+                    out.push(next);
+                }
+                None => out.push('\\'),
+            },
+            '\'' => return Some((out, &body[at + 1..])),
+            other => out.push(other),
+        }
+    }
+    None
+}
+
+#[derive(Clone, Copy, PartialEq)]
+enum Base {
+    Vendor,
+    Root,
+    Absolute,
+}
+
+/// The values on the right of `=>`: `$vendorDir . '/a'`, `array($baseDir .
+/// '/b', …)`, or a plain string.
+fn values(rhs: &str) -> Vec<(Base, String)> {
+    let mut out = Vec::new();
+    let mut base: Option<Base> = None;
+    let mut tail = String::new();
+    let mut seen = false;
+    let mut rest = rhs;
+    while let Some(c) = rest.chars().next() {
+        if c == '\'' {
+            match quoted(rest) {
+                Some((part, after)) => {
+                    tail.push_str(&part);
+                    seen = true;
+                    rest = after;
+                }
+                None => break,
+            }
+            continue;
+        }
+        if c == '$' {
+            let name: String = rest[1..]
+                .chars()
+                .take_while(|c| c.is_ascii_alphanumeric() || *c == '_')
+                .collect();
+            base = match name.as_str() {
+                "vendorDir" => Some(Base::Vendor),
+                "baseDir" => Some(Base::Root),
+                _ => base,
+            };
+            seen = true;
+            rest = &rest[1 + name.len()..];
+            continue;
+        }
+        if c == ',' || c == ')' {
+            if seen {
+                out.push((base.unwrap_or(Base::Absolute), std::mem::take(&mut tail)));
+            }
+            base = None;
+            seen = false;
+        }
+        rest = &rest[c.len_utf8()..];
+    }
+    if seen {
+        out.push((base.unwrap_or(Base::Absolute), tail));
+    }
+    out
+}
+
+fn place(base: Base, tail: &str, root: &Path) -> Option<String> {
+    match base {
+        Base::Vendor => normal(&format!("vendor/{tail}")),
+        Base::Root => normal(tail),
+        Base::Absolute => {
+            let inner = Path::new(tail).strip_prefix(root).ok()?;
+            if inner
+                .components()
+                .any(|part| matches!(part, Component::ParentDir))
+            {
+                return None;
+            }
+            Some(files::slashed(inner))
+        }
+    }
+}
+
+/// The file a class is in, relative to the work tree, by Composer's rules:
+/// the class map, then PSR-4, then PSR-0. `None` when none of them has a
+/// file that is there, or the file is reached through a link out of the work
+/// tree.
+pub fn resolve_class(root: &Path, fqn: &str) -> Option<String> {
+    let fqn = fqn.trim_start_matches('\\');
+    if fqn.is_empty() {
+        return None;
+    }
+    let maps = autoload(root);
+    let mut candidates: Vec<String> = Vec::new();
+    if let Some(path) = maps.classmap.get(fqn) {
+        candidates.push(path.clone());
+    }
+    for (prefix, dirs) in &maps.psr4 {
+        if let Some(rest) = fqn.strip_prefix(prefix.as_str()) {
+            let rest = rest.replace('\\', "/");
+            for dir in dirs {
+                candidates.push(join(dir, &format!("{rest}.php")));
+            }
+        }
+    }
+    for (prefix, dirs) in &maps.psr0 {
+        if !fqn.starts_with(prefix.as_str()) {
+            continue;
+        }
+        let (space, class) = fqn.rsplit_once('\\').unwrap_or(("", fqn));
+        let mut path = space.replace('\\', "/");
+        if !path.is_empty() {
+            path.push('/');
+        }
+        path.push_str(&class.replace('_', "/"));
+        for dir in dirs {
+            candidates.push(join(dir, &format!("{path}.php")));
+        }
+    }
+    candidates
+        .into_iter()
+        .filter_map(|path| normal(&path))
+        .find(|path| exists(root, path))
+}
+
+fn join(dir: &str, rest: &str) -> String {
+    if dir.is_empty() {
+        rest.to_string()
+    } else {
+        format!("{}/{rest}", dir.trim_end_matches('/'))
+    }
+}
+
+// --- PHP: classes and their members ---------------------------------------------
+
+/// A method, constant, property or enum case a class has, its own or one it
+/// gets from a parent, a trait or an interface.
+#[derive(Serialize, Clone, Debug, PartialEq)]
+pub struct Member {
+    pub name: String,
+    /// `method`, `constant`, `property` or `case`.
+    pub kind: &'static str,
+    #[serde(rename = "static")]
+    pub is_static: bool,
+    /// `public`, `protected` or `private`.
+    pub visibility: &'static str,
+    /// From 1.
+    pub line: u32,
+    pub column: u32,
+    /// The class it is declared in, fully qualified.
+    pub class: String,
+    /// The file that class is in.
+    pub path: String,
+    /// Only written in a docblock (`@method`), not declared.
+    pub doc: bool,
+}
+
+/// One class, interface, trait or enum as declared in a file.
+#[derive(Clone, Debug)]
+struct ClassDecl {
+    fqn: String,
+    /// The file it is declared in.
+    path: String,
+    line: u32,
+    column: u32,
+    extends: Vec<String>,
+    interfaces: Vec<String>,
+    traits: Vec<String>,
+    members: Vec<Member>,
+    doc: Option<(String, u32)>,
+    /// What a facade's `getFacadeAccessor` returns, when it is `X::class`.
+    accessor: Option<String>,
+    imports: PhpImports,
+}
+
+fn visibility_of(node: Node, source: &str) -> &'static str {
+    named_children(node)
+        .into_iter()
+        .find(|child| child.kind() == "visibility_modifier")
+        .map(|child| match text_of(child, source) {
+            "private" => "private",
+            "protected" => "protected",
+            _ => "public",
+        })
+        .unwrap_or("public")
+}
+
+fn has_static(node: Node) -> bool {
+    named_children(node)
+        .into_iter()
+        .any(|child| child.kind() == "static_modifier")
+}
+
+fn names_in(node: Node, source: &str, imports: &PhpImports) -> Vec<String> {
+    named_children(node)
+        .into_iter()
+        .filter(|child| matches!(child.kind(), "name" | "qualified_name"))
+        .map(|child| imports.qualify(text_of(child, source)))
+        .collect()
+}
+
+const CLASS_KINDS: [&str; 4] = [
+    "class_declaration",
+    "interface_declaration",
+    "trait_declaration",
+    "enum_declaration",
+];
+
+/// Every class-like declaration in a PHP file.
+fn classes_in(text: &str, path: &str) -> Vec<ClassDecl> {
+    let Some(tree) = parse_php(text) else {
+        return Vec::new();
+    };
+    let root = tree.root_node();
+    let imports = imports_in(root, text);
+    let mut out = Vec::new();
+    let mut stack = vec![root];
+    while let Some(node) = stack.pop() {
+        if CLASS_KINDS.contains(&node.kind()) {
+            if let Some(decl) = class_decl(node, text, path, &imports) {
+                out.push(decl);
+            }
+            continue;
+        }
+        if matches!(
+            node.kind(),
+            "program" | "namespace_definition" | "compound_statement"
+        ) {
+            stack.extend(named_children(node));
+        }
+    }
+    out
+}
+
+fn class_decl(node: Node, source: &str, path: &str, imports: &PhpImports) -> Option<ClassDecl> {
+    let name = node.child_by_field_name("name")?;
+    let short = text_of(name, source);
+    let mut decl = ClassDecl {
+        fqn: String::new(),
+        path: path.to_string(),
+        line: name.start_position().row as u32 + 1,
+        column: name.start_position().column as u32,
+        extends: Vec::new(),
+        interfaces: Vec::new(),
+        traits: Vec::new(),
+        members: Vec::new(),
+        doc: None,
+        accessor: None,
+        imports: imports.clone(),
+    };
+    // `namespace\Name` is the class itself, wherever the file's namespace is.
+    decl.fqn = if imports.namespace.is_empty() {
+        short.to_string()
+    } else {
+        format!("{}\\{short}", imports.namespace)
+    };
+    if let Some(doc) = node.prev_named_sibling() {
+        let text = text_of(doc, source);
+        if doc.kind() == "comment" && text.starts_with("/**") {
+            decl.doc = Some((text.to_string(), doc.start_position().row as u32 + 1));
+        }
+    }
+    for child in named_children(node) {
+        match child.kind() {
+            "base_clause" => decl.extends = names_in(child, source, imports),
+            "class_interface_clause" => decl.interfaces = names_in(child, source, imports),
+            _ => {}
+        }
+    }
+    let member =
+        |name: Node, kind: &'static str, is_static: bool, visibility: &'static str| Member {
+            name: text_of(name, source).trim_start_matches('$').to_string(),
+            kind,
+            is_static,
+            visibility,
+            line: name.start_position().row as u32 + 1,
+            column: name.start_position().column as u32,
+            class: decl.fqn.clone(),
+            path: path.to_string(),
+            doc: false,
+        };
+    let mut members = Vec::new();
+    let mut traits = Vec::new();
+    let mut accessor = None;
+    if let Some(body) = node.child_by_field_name("body") {
+        for item in named_children(body) {
+            match item.kind() {
+                "use_declaration" => traits.extend(names_in(item, source, imports)),
+                "const_declaration" => {
+                    let visibility = visibility_of(item, source);
+                    for element in named_children(item) {
+                        if element.kind() != "const_element" {
+                            continue;
+                        }
+                        if let Some(name) = named_children(element)
+                            .into_iter()
+                            .find(|one| one.kind() == "name")
+                        {
+                            members.push(member(name, "constant", true, visibility));
+                        }
+                    }
+                }
+                "property_declaration" => {
+                    let visibility = visibility_of(item, source);
+                    let is_static = has_static(item);
+                    for element in named_children(item) {
+                        if element.kind() != "property_element" {
+                            continue;
+                        }
+                        if let Some(name) = element.child_by_field_name("name") {
+                            members.push(member(name, "property", is_static, visibility));
+                        }
+                    }
+                }
+                "method_declaration" => {
+                    let Some(name) = item.child_by_field_name("name") else {
+                        continue;
+                    };
+                    if text_of(name, source) == "getFacadeAccessor" {
+                        accessor = class_constant_in(item, source, imports);
+                    }
+                    members.push(member(
+                        name,
+                        "method",
+                        has_static(item),
+                        visibility_of(item, source),
+                    ));
+                }
+                "enum_case" => {
+                    if let Some(name) = item.child_by_field_name("name") {
+                        members.push(member(name, "case", true, "public"));
+                    }
+                }
+                _ => {}
+            }
+        }
+    }
+    // `@method` tags: what a class says it answers to without declaring it.
+    if let Some((doc, first)) = &decl.doc {
+        for (at, line) in doc.lines().enumerate() {
+            if let Some(tag) = method_tag(line) {
+                members.push(Member {
+                    name: tag.name,
+                    kind: "method",
+                    is_static: tag.is_static,
+                    visibility: "public",
+                    line: first + at as u32,
+                    column: 0,
+                    class: decl.fqn.clone(),
+                    path: path.to_string(),
+                    doc: true,
+                });
+            }
+        }
+    }
+    decl.members = members;
+    decl.traits = traits;
+    decl.accessor = accessor;
+    Some(decl)
+}
+
+/// The first `X::class` in a method, as a fully qualified name.
+fn class_constant_in(method: Node, source: &str, imports: &PhpImports) -> Option<String> {
+    let mut stack = vec![method];
+    while let Some(node) = stack.pop() {
+        if node.kind() == "class_constant_access_expression" {
+            let parts = named_children(node);
+            if parts.len() == 2
+                && text_of(parts[1], source) == "class"
+                && matches!(parts[0].kind(), "name" | "qualified_name")
+            {
+                return Some(imports.qualify(text_of(parts[0], source)));
+            }
+        }
+        stack.extend(named_children(node));
+    }
+    None
+}
+
+struct MethodTag {
+    name: String,
+    is_static: bool,
+    /// The type it says the method returns, as written.
+    returns: Option<String>,
+}
+
+/// `@method static \A\B name(…)` in a docblock line.
+fn method_tag(line: &str) -> Option<MethodTag> {
+    let at = line.find("@method")?;
+    let rest = line[at + "@method".len()..].trim_start();
+    let paren = rest.find('(')?;
+    let head = rest[..paren].trim();
+    let mut words: Vec<&str> = head.split_whitespace().collect();
+    let name = words.pop()?.to_string();
+    let is_static = words.first() == Some(&"static");
+    if is_static {
+        words.remove(0);
+    }
+    let returns = words
+        .first()
+        .map(|kind| {
+            kind.split('|')
+                .next()
+                .unwrap_or(kind)
+                .trim_end_matches("[]")
+                .to_string()
+        })
+        .filter(|kind| {
+            kind.chars()
+                .next()
+                .is_some_and(|c| c == '\\' || c.is_ascii_uppercase())
+        });
+    if !name.chars().all(|c| c.is_ascii_alphanumeric() || c == '_') || name.is_empty() {
+        return None;
+    }
+    Some(MethodTag {
+        name,
+        is_static,
+        returns,
+    })
+}
+
+/// The classes a docblock names with `@see`, as written.
+fn see_tags(doc: &str) -> Vec<String> {
+    doc.lines()
+        .filter_map(|line| {
+            let at = line.find("@see")?;
+            let target = line[at + 4..].split_whitespace().next()?;
+            let class = target.split("::").next()?;
+            class
+                .chars()
+                .next()
+                .is_some_and(|c| c == '\\' || c.is_ascii_uppercase())
+                .then(|| class.to_string())
+        })
+        .collect()
+}
+
+/// A class's declaration: from `text` when it is in that file (the editor's
+/// copy, which may be ahead of the disk), else through the autoload maps.
+fn find_decl(root: &Path, fqn: &str, here: Option<(&str, &str)>) -> Option<ClassDecl> {
+    let fqn = fqn.trim_start_matches('\\');
+    if let Some((path, text)) = here {
+        if let Some(decl) = classes_in(text, path)
+            .into_iter()
+            .find(|decl| decl.fqn.eq_ignore_ascii_case(fqn))
+        {
+            return Some(decl);
+        }
+    }
+    let path = resolve_class(root, fqn)?;
+    let text = read(root, &path)?;
+    let short = fqn.rsplit('\\').next().unwrap_or(fqn);
+    let all = classes_in(&text, &path);
+    let exact = all
+        .iter()
+        .position(|decl| decl.fqn.eq_ignore_ascii_case(fqn));
+    let by_name = all.iter().position(|decl| {
+        decl.fqn
+            .rsplit('\\')
+            .next()
+            .is_some_and(|name| name.eq_ignore_ascii_case(short))
+    });
+    exact.or(by_name).map(|at| all[at].clone())
+}
+
+/// Walks a class and what it inherits, nearest first: its own members, its
+/// traits, its parent and theirs, then its interfaces. `visit` stops the walk
+/// by returning true.
+fn walk(
+    root: &Path,
+    decl: &ClassDecl,
+    here: Option<(&str, &str)>,
+    seen: &mut HashSet<String>,
+    depth: usize,
+    visit: &mut dyn FnMut(&ClassDecl) -> bool,
+) -> bool {
+    if depth > MAX_DEPTH || !seen.insert(decl.fqn.to_ascii_lowercase()) {
+        return false;
+    }
+    if visit(decl) {
+        return true;
+    }
+    let next = decl
+        .traits
+        .iter()
+        .chain(&decl.extends)
+        .chain(&decl.interfaces);
+    for fqn in next {
+        if let Some(parent) = find_decl(root, fqn, here) {
+            if walk(root, &parent, here, seen, depth + 1, visit) {
+                return true;
+            }
+        }
+    }
+    false
+}
+
+/// Every member of a class, its own and what it inherits from parents,
+/// traits and interfaces (up to ten levels), nearest first and each name
+/// once. `path` is the file the class is in; `fqn` its fully qualified name.
+pub fn class_members(root: &Path, path: &str, fqn: &str) -> Vec<Member> {
+    let here = read(root, path);
+    let here = here.as_deref().map(|text| (path, text));
+    let Some(decl) = find_decl(root, fqn, here) else {
+        return Vec::new();
+    };
+    let mut out: Vec<Member> = Vec::new();
+    let mut names: HashSet<(bool, String)> = HashSet::new();
+    walk(root, &decl, here, &mut HashSet::new(), 0, &mut |decl| {
+        for member in &decl.members {
+            // Methods are not case-sensitive; properties and constants are.
+            let method = member.kind == "method";
+            let name = if method {
+                member.name.to_ascii_lowercase()
+            } else {
+                member.name.clone()
+            };
+            if names.insert((method, name)) {
+                out.push(member.clone());
+            }
+        }
+        false
+    });
+    out
+}
+
+#[derive(Clone, Copy, PartialEq)]
+enum Want {
+    Method,
+    Constant,
+    Property,
+}
+
+fn wanted(member: &Member, name: &str, want: Want) -> bool {
+    match want {
+        Want::Method => member.kind == "method" && member.name.eq_ignore_ascii_case(name),
+        Want::Constant => matches!(member.kind, "constant" | "case") && member.name == name,
+        Want::Property => member.kind == "property" && member.name == name,
+    }
+}
+
+/// A member by name, declared before documented: a real method wins over a
+/// `@method` tag anywhere up the hierarchy.
+fn find_member(
+    root: &Path,
+    decl: &ClassDecl,
+    here: Option<(&str, &str)>,
+    name: &str,
+    want: Want,
+) -> Option<Member> {
+    for doc in [false, true] {
+        let mut found = None;
+        walk(root, decl, here, &mut HashSet::new(), 0, &mut |decl| {
+            found = decl
+                .members
+                .iter()
+                .find(|member| member.doc == doc && wanted(member, name, want))
+                .cloned();
+            found.is_some()
+        });
+        if found.is_some() {
+            return found;
+        }
+    }
+    None
+}
+
+/// Whether a class is a Laravel facade: it, or something it extends, is
+/// `Illuminate\Support\Facades\Facade`.
+fn is_facade(root: &Path, decl: &ClassDecl, here: Option<(&str, &str)>) -> bool {
+    let mut facade = false;
+    walk(root, decl, here, &mut HashSet::new(), 0, &mut |decl| {
+        facade = decl
+            .extends
+            .iter()
+            .any(|one| one.eq_ignore_ascii_case(FACADE));
+        facade
+    });
+    facade
+}
+
+/// Where a facade's method really is: on the class `getFacadeAccessor`
+/// names, on the type its `@method` tag returns, or on a class its `@see`
+/// names.
+fn through_facade(root: &Path, decl: &ClassDecl, name: &str) -> Option<Member> {
+    let mut targets: Vec<String> = Vec::new();
+    if let Some(accessor) = &decl.accessor {
+        targets.push(accessor.clone());
+    }
+    if let Some((doc, _)) = &decl.doc {
+        for line in doc.lines() {
+            if let Some(tag) = method_tag(line) {
+                if tag.name.eq_ignore_ascii_case(name) {
+                    if let Some(kind) = tag.returns {
+                        targets.push(decl.imports.qualify(&kind));
+                    }
+                }
+            }
+        }
+        targets.extend(see_tags(doc).iter().map(|one| decl.imports.qualify(one)));
+    }
+    targets.into_iter().find_map(|fqn| {
+        let target = find_decl(root, &fqn, None)?;
+        find_member(root, &target, None, name, Want::Method).filter(|member| !member.doc)
+    })
+}
+
+enum Target {
+    Class(String),
+    Member {
+        class: String,
+        name: String,
+        want: Want,
+    },
+}
+
+fn php_jump(root: &Path, path: &str, text: &str, byte: usize) -> Option<Landing> {
+    let tree = parse_php(text)?;
+    let imports = imports_in(tree.root_node(), text);
+    let node = tree
+        .root_node()
+        .named_descendant_for_byte_range(byte, byte)?;
+    let target = php_target(node, text, &imports)?;
+    let here = Some((path, text));
+    match target {
+        Target::Class(fqn) => {
+            let decl = find_decl(root, &fqn, here)?;
+            let file = decl.path.clone();
+            Some((file, decl.line, decl.column, "class", None))
+        }
+        Target::Member { class, name, want } => {
+            let decl = find_decl(root, &class, here)?;
+            if let Some(member) = find_member(root, &decl, here, &name, want) {
+                if !member.doc {
+                    return Some((member.path, member.line, member.column, member.kind, None));
+                }
+            }
+            if want == Want::Method && is_facade(root, &decl, here) {
+                if let Some(member) = through_facade(root, &decl, &name) {
+                    return Some((member.path, member.line, member.column, member.kind, None));
+                }
+                let short = decl
+                    .fqn
+                    .rsplit('\\')
+                    .next()
+                    .unwrap_or(&decl.fqn)
+                    .to_string();
+                let file = decl.path.clone();
+                return Some((
+                    file,
+                    decl.line,
+                    decl.column,
+                    "class",
+                    Some(format!(
+                        "{short} is a facade; the method lives on the class it resolves to"
+                    )),
+                ));
+            }
+            // Only written in a docblock: that is where it can be read about.
+            find_member(root, &decl, here, &name, want)
+                .map(|member| (member.path, member.line, member.column, member.kind, None))
+        }
+    }
+}
+
+/// Where a class is meant by a bare name in these places.
+const CLASS_PLACES: &[&str] = &[
+    "base_clause",
+    "class_interface_clause",
+    "object_creation_expression",
+    "use_declaration",
+    "named_type",
+    "optional_type",
+    "union_type",
+    "intersection_type",
+    "type_list",
+    "catch_clause",
+    "binary_expression",
+    "attribute",
+    "scoped_call_expression",
+    "class_constant_access_expression",
+    "scoped_property_access_expression",
+    "instanceof_expression",
+];
+
+fn php_target(node: Node, source: &str, imports: &PhpImports) -> Option<Target> {
+    // A name in a `use` line: the class it imports.
+    let mut up = Some(node);
+    for _ in 0..4 {
+        let Some(at) = up else { break };
+        if at.kind() == "namespace_use_clause" {
+            let declaration = at.parent().and_then(|parent| {
+                if parent.kind() == "namespace_use_group" {
+                    parent.parent()
+                } else {
+                    Some(parent)
+                }
+            })?;
+            let prefix = named_children(declaration)
+                .into_iter()
+                .find(|child| child.kind() == "namespace_name")
+                .map(|child| text_of(child, source).trim_start_matches('\\').to_string());
+            let after = text_of(declaration, source)
+                .trim_start()
+                .trim_start_matches("use")
+                .trim_start();
+            if after.starts_with("function ") || after.starts_with("const ") {
+                return None;
+            }
+            let (_, fqn) = clause_import(at, prefix.as_deref(), source)?;
+            return Some(Target::Class(fqn));
+        }
+        up = at.parent();
+    }
+
+    // `X::$name`: the name sits inside a variable_name.
+    if node.kind() == "name" {
+        if let Some(variable) = node.parent().filter(|p| p.kind() == "variable_name") {
+            let access = variable.parent()?;
+            if access.kind() == "scoped_property_access_expression"
+                && access.child_by_field_name("name") == Some(variable)
+            {
+                let class = scope_class(access.child_by_field_name("scope")?, source, imports)?;
+                return Some(Target::Member {
+                    class,
+                    name: text_of(node, source).to_string(),
+                    want: Want::Property,
+                });
+            }
+            return None;
+        }
+    }
+    if !matches!(node.kind(), "name" | "qualified_name" | "namespace_name") {
+        return None;
+    }
+    // The whole of `A\B\C`, wherever in it the click was.
+    let mut name = node;
+    while let Some(parent) = name.parent() {
+        if matches!(parent.kind(), "qualified_name" | "namespace_name") {
+            name = parent;
+        } else {
+            break;
+        }
+    }
+    let parent = name.parent()?;
+    let written = text_of(name, source);
+    match parent.kind() {
+        "scoped_call_expression" => {
+            if parent.child_by_field_name("name") == Some(name) {
+                let class = scope_class(parent.child_by_field_name("scope")?, source, imports)?;
+                return Some(Target::Member {
+                    class,
+                    name: written.to_string(),
+                    want: Want::Method,
+                });
+            }
+            return scope_class(name, source, imports).map(Target::Class);
+        }
+        "class_constant_access_expression" => {
+            let parts = named_children(parent);
+            if parts.len() == 2 && parts[1] == name {
+                let class = scope_class(parts[0], source, imports)?;
+                if written == "class" {
+                    return Some(Target::Class(class));
+                }
+                return Some(Target::Member {
+                    class,
+                    name: written.to_string(),
+                    want: Want::Constant,
+                });
+            }
+            return scope_class(name, source, imports).map(Target::Class);
+        }
+        "member_call_expression"
+        | "nullsafe_member_call_expression"
+        | "member_access_expression"
+        | "nullsafe_member_access_expression" => {
+            if parent.child_by_field_name("name") != Some(name) {
+                return None;
+            }
+            // Only on `$this`: any other receiver needs its type, which the
+            // index's own search is left to guess.
+            let object = parent.child_by_field_name("object")?;
+            if text_of(object, source) != "$this" {
+                return None;
+            }
+            let class = enclosing_class(name, source, imports)?;
+            let want = if parent.kind().contains("call") {
+                Want::Method
+            } else {
+                Want::Property
+            };
+            return Some(Target::Member {
+                class,
+                name: written.to_string(),
+                want,
+            });
+        }
+        "function_call_expression" | "method_declaration" | "function_definition" => return None,
+        _ => {}
+    }
+    if CLASS_KINDS.contains(&parent.kind()) {
+        return None;
+    }
+    let looks_like_class = written
+        .trim_start_matches('\\')
+        .chars()
+        .next()
+        .is_some_and(|c| c.is_ascii_uppercase());
+    if CLASS_PLACES.contains(&parent.kind()) || (looks_like_class && written.contains('\\')) {
+        return Some(Target::Class(imports.qualify(written)));
+    }
+    None
+}
+
+/// The class a `X::` scope means: a name, or `self`, `static` and `parent`.
+fn scope_class(scope: Node, source: &str, imports: &PhpImports) -> Option<String> {
+    match scope.kind() {
+        "name" | "qualified_name" => Some(imports.qualify(text_of(scope, source))),
+        "relative_scope" => {
+            let class = enclosing_class(scope, source, imports)?;
+            if text_of(scope, source).eq_ignore_ascii_case("parent") {
+                let decl = enclosing_decl(scope)?;
+                let base = named_children(decl)
+                    .into_iter()
+                    .find(|child| child.kind() == "base_clause")?;
+                return names_in(base, source, imports).into_iter().next();
+            }
+            Some(class)
+        }
+        _ => None,
+    }
+}
+
+fn enclosing_decl(node: Node) -> Option<Node> {
+    let mut at = node.parent();
+    while let Some(here) = at {
+        if CLASS_KINDS.contains(&here.kind()) {
+            return Some(here);
+        }
+        at = here.parent();
+    }
+    None
+}
+
+fn enclosing_class(node: Node, source: &str, imports: &PhpImports) -> Option<String> {
+    let decl = enclosing_decl(node)?;
+    let name = text_of(decl.child_by_field_name("name")?, source);
+    Some(if imports.namespace.is_empty() {
+        name.to_string()
+    } else {
+        format!("{}\\{name}", imports.namespace)
+    })
+}
+
+// --- TypeScript and JavaScript --------------------------------------------------
+
+fn parse_script(text: &str, ext: &str) -> Option<Tree> {
+    let language = if matches!(ext, "tsx" | "jsx") {
+        tree_sitter_typescript::LANGUAGE_TSX
+    } else {
+        tree_sitter_typescript::LANGUAGE_TYPESCRIPT
+    };
+    let mut parser = Parser::new();
+    parser.set_language(&language.into()).ok()?;
+    parser.parse(text, None)
+}
+
+fn ext_of(path: &str) -> String {
+    path.rsplit('/')
+        .next()
+        .and_then(|name| name.rsplit_once('.'))
+        .map(|(_, ext)| ext.to_ascii_lowercase())
+        .unwrap_or_default()
+}
+
+fn string_value(node: Node, source: &str) -> String {
+    text_of(node, source)
+        .trim_matches(|c| c == '\'' || c == '"' || c == '`')
+        .to_string()
+}
+
+/// Names imported from packages: local name to (specifier, exported name;
+/// `default` and `*` for those).
+fn package_imports(root: Node, source: &str) -> HashMap<String, (String, String)> {
+    let mut out = HashMap::new();
+    for statement in named_children(root) {
+        if statement.kind() != "import_statement" {
+            continue;
+        }
+        let Some(from) = statement.child_by_field_name("source") else {
+            continue;
+        };
+        let spec = string_value(from, source);
+        if spec.starts_with('.') || spec.starts_with('/') || spec.is_empty() {
+            continue;
+        }
+        for clause in named_children(statement) {
+            if clause.kind() != "import_clause" {
+                continue;
+            }
+            for part in named_children(clause) {
+                match part.kind() {
+                    "identifier" => {
+                        out.insert(
+                            text_of(part, source).to_string(),
+                            (spec.clone(), "default".into()),
+                        );
+                    }
+                    "namespace_import" => {
+                        if let Some(name) = named_children(part)
+                            .into_iter()
+                            .find(|n| n.kind() == "identifier")
+                        {
+                            out.insert(
+                                text_of(name, source).to_string(),
+                                (spec.clone(), "*".into()),
+                            );
+                        }
+                    }
+                    "named_imports" => {
+                        for specifier in named_children(part) {
+                            let Some(name) = specifier.child_by_field_name("name") else {
+                                continue;
+                            };
+                            let local = specifier.child_by_field_name("alias").unwrap_or(name);
+                            out.insert(
+                                text_of(local, source).to_string(),
+                                (spec.clone(), text_of(name, source).to_string()),
+                            );
+                        }
+                    }
+                    _ => {}
+                }
+            }
+        }
+    }
+    out
+}
+
+fn script_jump(root: &Path, path: &str, text: &str, byte: usize, ext: &str) -> Option<Landing> {
+    let tree = parse_script(text, ext)?;
+    let imports = package_imports(tree.root_node(), text);
+    if imports.is_empty() {
+        return None;
+    }
+    let node = tree
+        .root_node()
+        .named_descendant_for_byte_range(byte, byte)?;
+    if !matches!(
+        node.kind(),
+        "identifier" | "type_identifier" | "property_identifier" | "nested_type_identifier"
+    ) {
+        return None;
+    }
+    let name = text_of(node, text);
+    // `ns.member` and `ns.Type` on a namespace import.
+    let through = node.parent().filter(|parent| {
+        matches!(
+            parent.kind(),
+            "member_expression" | "nested_type_identifier"
+        ) && Some(node) != parent.named_child(0)
+    });
+    let (spec, export) = if let Some(parent) = through {
+        let object = text_of(parent.named_child(0)?, text);
+        let (spec, what) = imports.get(object)?;
+        if what != "*" {
+            return None;
+        }
+        (spec.clone(), name.to_string())
+    } else {
+        imports.get(name).cloned()?
+    };
+    let file = resolve_package(root, path, &spec)?;
+    let (file, line, column) = if export == "*" {
+        (file, 1, 0)
+    } else {
+        find_export(root, &file, &export, 0).unwrap_or((file, 1, 0))
+    };
+    Some((file, line, column, "export", None))
+}
+
+/// The file a bare import specifier means, from the importing file's folder
+/// up to the work tree's root, the way Node and TypeScript look: the
+/// package's `types`, then its `exports`, then `main`, a `.d.ts` beside a
+/// `.js` preferred, and `@types/` when the package has no types of its own.
+pub fn resolve_package(root: &Path, from: &str, spec: &str) -> Option<String> {
+    let mut parts = spec.splitn(if spec.starts_with('@') { 3 } else { 2 }, '/');
+    let package = if spec.starts_with('@') {
+        format!("{}/{}", parts.next()?, parts.next()?)
+    } else {
+        parts.next()?.to_string()
+    };
+    let sub = parts
+        .next()
+        .filter(|one| !one.is_empty())
+        .map(str::to_string);
+    let mut dir = Path::new(from)
+        .parent()
+        .map(files::slashed)
+        .unwrap_or_default();
+    loop {
+        let candidate = join(&dir, &format!("node_modules/{package}"));
+        if is_dir(root, &candidate) {
+            if let Some(found) = package_entry(root, &candidate, sub.as_deref()) {
+                if found.ends_with(".d.ts")
+                    || found.ends_with(".d.mts")
+                    || found.ends_with(".d.cts")
+                {
+                    return Some(found);
+                }
+                let typed = types_package(root, &dir, &package, sub.as_deref());
+                return Some(typed.unwrap_or(found));
+            }
+        }
+        let types = types_package(root, &dir, &package, sub.as_deref());
+        if types.is_some() {
+            return types;
+        }
+        if dir.is_empty() {
+            return None;
+        }
+        dir = dir
+            .rsplit_once('/')
+            .map(|(up, _)| up.to_string())
+            .unwrap_or_default();
+    }
+}
+
+/// `@types/a__b` for `@a/b`.
+fn types_package(root: &Path, dir: &str, package: &str, sub: Option<&str>) -> Option<String> {
+    let mangled = package.trim_start_matches('@').replace('/', "__");
+    let candidate = join(dir, &format!("node_modules/@types/{mangled}"));
+    if !is_dir(root, &candidate) {
+        return None;
+    }
+    package_entry(root, &candidate, sub)
+}
+
+fn package_entry(root: &Path, dir: &str, sub: Option<&str>) -> Option<String> {
+    let json = read(root, &format!("{dir}/package.json"))
+        .and_then(|text| serde_json::from_str::<serde_json::Value>(&text).ok())
+        .unwrap_or(serde_json::Value::Null);
+    let mut tries: Vec<String> = Vec::new();
+    match sub {
+        None => {
+            for key in ["types", "typings"] {
+                if let Some(one) = json[key].as_str() {
+                    tries.push(one.to_string());
+                }
+            }
+            let exports = &json["exports"];
+            let dot = if exports.is_object() && exports.get(".").is_some() {
+                &exports["."]
+            } else {
+                exports
+            };
+            if let Some(one) = condition(dot) {
+                tries.push(one);
+            }
+            if let Some(one) = json["main"].as_str() {
+                tries.push(one.to_string());
+            }
+            tries.push("index".into());
+        }
+        Some(sub) => {
+            if let Some(one) = condition(&json["exports"][format!("./{sub}")]) {
+                tries.push(one);
+            }
+            tries.push(sub.to_string());
+        }
+    }
+    tries
+        .into_iter()
+        .filter_map(|one| normal(&join(dir, &one)))
+        .find_map(|base| module_file(root, &base))
+}
+
+/// The file an `exports` entry points at, types first.
+fn condition(value: &serde_json::Value) -> Option<String> {
+    match value {
+        serde_json::Value::String(one) => Some(one.clone()),
+        serde_json::Value::Object(map) => ["types", "import", "default", "require", "node"]
+            .iter()
+            .find_map(|key| map.get(*key).and_then(condition)),
+        serde_json::Value::Array(many) => many.iter().find_map(condition),
+        _ => None,
+    }
+}
+
+/// A module path as an import writes it, to a file that is there: the
+/// declaration file beside a script first.
+fn module_file(root: &Path, base: &str) -> Option<String> {
+    let mut tries: Vec<String> = Vec::new();
+    for (script, types) in [(".js", ".d.ts"), (".mjs", ".d.mts"), (".cjs", ".d.cts")] {
+        if let Some(stem) = base.strip_suffix(script) {
+            tries.push(format!("{stem}{types}"));
+        }
+    }
+    tries.push(base.to_string());
+    for ext in [".d.ts", ".ts", ".tsx", ".js", ".mjs", ".cjs"] {
+        tries.push(format!("{base}{ext}"));
+    }
+    for index in ["index.d.ts", "index.ts", "index.js"] {
+        tries.push(format!("{base}/{index}"));
+    }
+    tries.into_iter().find(|one| exists(root, one))
+}
+
+/// Where a file declares the name it exports as `name`, following one
+/// `export … from` or `export * from` to another file.
+fn find_export(root: &Path, path: &str, name: &str, depth: usize) -> Option<(String, u32, u32)> {
+    let text = read(root, path)?;
+    let ext = ext_of(path);
+    let tree = parse_script(&text, &ext)?;
+    let program = tree.root_node();
+    let at = |node: Node| {
+        (
+            path.to_string(),
+            node.start_position().row as u32 + 1,
+            node.start_position().column as u32,
+        )
+    };
+    let mut stars: Vec<String> = Vec::new();
+    let mut follow: Vec<(String, String)> = Vec::new();
+    for statement in named_children(program) {
+        if statement.kind() != "export_statement" {
+            continue;
+        }
+        let source = statement
+            .child_by_field_name("source")
+            .map(|one| string_value(one, &text));
+        if let Some(declaration) = statement.child_by_field_name("declaration") {
+            if let Some(found) = declared(declaration, &text, name) {
+                return Some(at(found));
+            }
+            if name == "default" && text_of(statement, &text).contains("export default") {
+                return Some(at(declaration));
+            }
+        }
+        if name == "default" {
+            if let Some(value) = statement.child_by_field_name("value") {
+                let local = text_of(value, &text);
+                return local_declaration(program, &text, local)
+                    .map(at)
+                    .or(Some(at(value)));
+            }
+        }
+        let clause = named_children(statement)
+            .into_iter()
+            .find(|child| child.kind() == "export_clause");
+        match (clause, source) {
+            (Some(clause), source) => {
+                for specifier in named_children(clause) {
+                    let Some(local) = specifier.child_by_field_name("name") else {
+                        continue;
+                    };
+                    let exported = specifier.child_by_field_name("alias").unwrap_or(local);
+                    if text_of(exported, &text) != name {
+                        continue;
+                    }
+                    let local = text_of(local, &text).to_string();
+                    match source {
+                        Some(ref from) => follow.push((from.clone(), local)),
+                        None => {
+                            return local_declaration(program, &text, &local)
+                                .map(at)
+                                .or(Some(at(specifier)));
+                        }
+                    }
+                }
+            }
+            (None, Some(from)) => stars.push(from),
+            _ => {}
+        }
+    }
+    if depth >= 1 {
+        return None;
+    }
+    let dir = path.rsplit_once('/').map(|(dir, _)| dir).unwrap_or("");
+    let relative = |from: &str| -> Option<String> {
+        if !from.starts_with('.') {
+            return None;
+        }
+        module_file(root, &normal(&join(dir, from))?)
+    };
+    for (from, local) in follow {
+        if let Some(file) = relative(&from) {
+            if let Some(found) = find_export(root, &file, &local, depth + 1) {
+                return Some(found);
+            }
+        }
+    }
+    for from in stars {
+        if let Some(file) = relative(&from) {
+            if let Some(found) = find_export(root, &file, name, depth + 1) {
+                return Some(found);
+            }
+        }
+    }
+    None
+}
+
+/// The name node of a declaration called `name`, looking through `declare`.
+fn declared<'a>(declaration: Node<'a>, source: &str, name: &str) -> Option<Node<'a>> {
+    match declaration.kind() {
+        "lexical_declaration" | "variable_declaration" => named_children(declaration)
+            .into_iter()
+            .filter(|one| one.kind() == "variable_declarator")
+            .filter_map(|one| one.child_by_field_name("name"))
+            .find(|one| text_of(*one, source) == name),
+        "ambient_declaration" => named_children(declaration)
+            .into_iter()
+            .find_map(|inner| declared(inner, source, name)),
+        _ => declaration
+            .child_by_field_name("name")
+            .filter(|one| text_of(*one, source) == name),
+    }
+}
+
+/// A declaration of `name` at the top of a file, exported or not.
+fn local_declaration<'a>(program: Node<'a>, source: &str, name: &str) -> Option<Node<'a>> {
+    named_children(program).into_iter().find_map(|statement| {
+        let inner = if statement.kind() == "export_statement" {
+            statement.child_by_field_name("declaration")?
+        } else {
+            statement
+        };
+        declared(inner, source, name)
+    })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn reads_composer_autoload_arrays() {
+        let root = Path::new("/work/shop");
+        let text = r#"<?php
+
+// autoload_psr4.php @generated by Composer
+
+$vendorDir = dirname(__DIR__);
+$baseDir = dirname($vendorDir);
+
+return array(
+    'Revolution\\Google\\Sheets\\' => array($vendorDir . '/revolution/laravel-google-sheets/src'),
+    'App\\' => array($baseDir . '/app', $baseDir . '/src'),
+    'Out\\' => array($baseDir . '/../elsewhere'),
+);
+"#;
+        let read = php_array(text, root);
+        assert_eq!(
+            read[0],
+            (
+                "Revolution\\Google\\Sheets\\".to_string(),
+                vec!["vendor/revolution/laravel-google-sheets/src".to_string()]
+            )
+        );
+        assert_eq!(read[1].1, vec!["app".to_string(), "src".to_string()]);
+        // Out of the work tree: dropped.
+        assert!(read[2].1.is_empty());
+    }
+
+    #[test]
+    fn qualifies_names_through_the_imports() {
+        let imports = php_imports(
+            "<?php\nnamespace App\\Jobs;\nuse Foo\\Bar as Baz, Qux\\Quux;\nuse Acme\\{One, Two as Deux, Sub\\Three};\nuse function Acme\\helper;\n",
+        );
+        assert_eq!(imports.namespace, "App\\Jobs");
+        assert_eq!(imports.qualify("Baz"), "Foo\\Bar");
+        assert_eq!(imports.qualify("Quux"), "Qux\\Quux");
+        assert_eq!(imports.qualify("Deux"), "Acme\\Two");
+        assert_eq!(imports.qualify("Three"), "Acme\\Sub\\Three");
+        assert_eq!(imports.qualify("Local"), "App\\Jobs\\Local");
+        assert_eq!(imports.qualify("\\Root\\Thing"), "Root\\Thing");
+        assert_eq!(imports.qualify("Baz\\Inner"), "Foo\\Bar\\Inner");
+        assert!(!imports.classes.contains_key("helper"));
+    }
+
+    #[test]
+    fn reads_method_tags() {
+        let tag = method_tag(" * @method static \\X\\Factory spreadsheet(string $id)").unwrap();
+        assert_eq!(tag.name, "spreadsheet");
+        assert!(tag.is_static);
+        assert_eq!(tag.returns.as_deref(), Some("\\X\\Factory"));
+        assert!(method_tag(" * @return void").is_none());
+    }
+}

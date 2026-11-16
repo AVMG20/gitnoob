@@ -4,6 +4,7 @@ pub mod blame;
 pub mod config;
 pub mod conflict;
 pub mod create;
+pub mod deps;
 pub mod diff;
 pub mod edit;
 pub mod editorconfig;
@@ -333,6 +334,7 @@ async fn find_files(
     limit: Option<usize>,
     request: Option<u64>,
     also: Option<Vec<String>>,
+    dependencies: Option<bool>,
     state: Aimed,
 ) -> Result<Vec<files::Found>, String> {
     files::find_files(
@@ -341,6 +343,7 @@ async fn find_files(
         limit.unwrap_or(200),
         request.unwrap_or(0),
         &also.unwrap_or_default(),
+        dependencies.unwrap_or(false),
     )
 }
 
@@ -383,6 +386,20 @@ async fn search_file(
 ) -> Result<Vec<search::LineHit>, String> {
     let root = state.path()?;
     search::search_file(&root, &path, &query, &options)
+}
+
+/// Where the name under a ⌘-click is defined when that is in a dependency
+/// (`vendor/`, `node_modules/`) or Composer's autoload says exactly which
+/// file: worked out on demand, outside the index.
+#[tauri::command]
+async fn dependency_definition(
+    path: String,
+    offset: u32,
+    text: Option<String>,
+    state: Aimed,
+) -> Result<Option<deps::Jump>, String> {
+    let root = state.path()?;
+    deps::dependency_definition(&root, &path, offset, text.as_deref())
 }
 
 /// The name at a UTF-16 offset in a file, in `text` when the editor has
@@ -2274,6 +2291,7 @@ pub fn run() {
             find_files,
             search_text,
             search_file,
+            dependency_definition,
             quit_ready,
             quit_guard,
             quit_heard,

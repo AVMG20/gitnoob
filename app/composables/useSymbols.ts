@@ -86,6 +86,17 @@ export function stateOf(path: string): UsageState {
 
 let lastRequest = 0
 
+/** The files `dependency_definition` reads names in: PHP, TypeScript, JavaScript. */
+const RESOLVED = /\.(php|[cm]?[jt]sx?)$/i
+
+/** Where `dependency_definition` lands: a place, maybe in a dependency. */
+export interface DependencyJump extends CodeLocation {
+  /** In vendor/ or node_modules/: it opens read-only. */
+  dependency: boolean
+  /** Something to say about it, such as a facade's method living elsewhere. */
+  note: string | null
+}
+
 /**
  * The next `unused_in` request number: from the clock, and shared by every
  * editor, so the backend's "a newer one came in" is right across files and
@@ -204,13 +215,26 @@ export async function jumpFrom(
   try {
     symbol = await invoke<SymbolAt | null>('symbol_at', { path, offset, text })
   } catch {
-    return
+    symbol = null
   }
-  if (!symbol) return
-  if (symbol.definition) {
+  if (symbol?.definition) {
     await showUsages(symbol.name, path, symbol.kind, at, symbol.line, 'one')
     return
   }
+  // PHP through the imports and Composer's autoload, scripts through
+  // node_modules: one file, worked out the way the language does, and the
+  // only way into a dependency, which the index leaves out.
+  if (RESOLVED.test(path)) {
+    const jump = await invoke<DependencyJump | null>('dependency_definition', { path, offset, text }).catch(
+      () => null
+    )
+    if (jump) {
+      openLocation(jump)
+      if (jump.note) useToasts().info(jump.note)
+      return
+    }
+  }
+  if (!symbol) return
   let found: CodeLocation[]
   try {
     found =

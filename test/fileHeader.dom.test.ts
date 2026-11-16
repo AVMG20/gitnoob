@@ -22,6 +22,7 @@ const asked = vi.mocked(invoke);
 const git = useGit();
 let calls: string[] = [];
 let ignoredAnswer = false;
+let readonlyAnswer: string | null = null;
 let open: ReturnType<typeof mount> | null = null;
 
 beforeEach(() => {
@@ -30,6 +31,7 @@ beforeEach(() => {
   switchTabs("/repo");
   calls = [];
   ignoredAnswer = false;
+  readonlyAnswer = null;
   deletingFiles.value = null;
   asked.mockReset();
   asked.mockImplementation(async (cmd: string) => {
@@ -41,7 +43,7 @@ beforeEach(() => {
         hash: "h1",
         eol: "lf",
         bom: false,
-        readonly: null,
+        readonly: readonlyAnswer,
         missing: false,
       };
     }
@@ -171,6 +173,27 @@ describe("the bar over an open file", () => {
     expect(labels(wrapper).some((one) => /Stage|Discard|Add/.test(one))).toBe(
       false,
     );
+  });
+
+  it("opens a dependency read-only, marked vendor, with nothing for git", async () => {
+    git.store.status = { staged: [], unstaged: [], conflicted: [] } as never;
+    git.store.viewer = { path: "vendor/acme/kit/src/Helper.php", side: "unstaged" } as never;
+    ignoredAnswer = true;
+    readonlyAnswer = "dependency";
+    const wrapper = await show();
+    await flushPromises();
+    const badge = wrapper.find(".badge.ignored");
+    expect(badge.text()).toBe("vendor");
+    expect(badge.attributes("title")).toMatch(/dependency.*read-only/i);
+    expect(wrapper.findAll(".badge").map((one) => one.text())).not.toContain("ignored");
+    expect(labels(wrapper).some((one) => /Stage|Discard|Add|Delete/.test(one))).toBe(false);
+    const view = EditorView.findFromDOM(wrapper.find(".cm-editor").element as HTMLElement)!;
+    expect(view.state.facet(EditorView.editable)).toBe(false);
+    // Nothing typed can reach the disk.
+    view.dispatch({ changes: { from: 0, insert: "x" } });
+    await new Promise((done) => setTimeout(done, 900));
+    await flushPromises();
+    expect(calls).not.toContain("write_file");
   });
 
   it("turns to the git buttons once typing shows up in the status", async () => {

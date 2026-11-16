@@ -550,6 +550,25 @@ describe("finding symbols and shaped file names", () => {
     expect(tab.mode).toBe("file");
   });
 
+  it("looks through vendor and node_modules only with Include dependencies on, and groups them last", async () => {
+    found = [
+      { path: "app/Sheets.php", score: 9, indices: [] },
+      { path: "vendor/revolution/sheets/src/Sheets.php", score: 8, indices: [] },
+    ];
+    const w = await show("files");
+    expect(w.find('[data-option="deps"]').attributes("aria-pressed")).toBe("false");
+    await w.find('.search input[type="text"]').setValue("sheets");
+    await wait(80);
+    await flushPromises();
+    const asks = () => asked.mock.calls.filter(([cmd]) => cmd === "find_files");
+    expect((asks().at(-1)![1] as { dependencies: boolean }).dependencies).toBe(false);
+    await w.find('[data-option="deps"]').trigger("click");
+    await wait(80);
+    await flushPromises();
+    expect((asks().at(-1)![1] as { dependencies: boolean }).dependencies).toBe(true);
+    expect(w.findAll(".group.plain").map((one) => one.text())).toEqual(["Files", "Dependencies"]);
+  });
+
   it("marks the letters a folder/name query matched in the folder and in the name", async () => {
     const path = "app/Console/Commands/Exact/MakeExactConnectionCommand.php";
     const exact = path.indexOf("Exact/");

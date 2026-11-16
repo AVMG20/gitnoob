@@ -46,7 +46,8 @@ export const search = reactive({
   open: false,
   mode: 'text' as SearchMode,
   text: { query: '', case: false, word: false, regex: false, changedOnly: false, glob: '' },
-  files: { query: '' },
+  /** `deps`: the file names in vendor/ and node_modules/ too, after the project's. */
+  files: { query: '', deps: false },
   symbols: { query: '' },
   /** What the text search found, as it arrives. */
   found: [] as FileHits[],
@@ -227,7 +228,7 @@ export function splitLine(query: string): { query: string; line: number | null }
 export interface FoundName {
   path: string
   indices: number[]
-  group: 'recent' | 'changed' | 'files'
+  group: 'recent' | 'changed' | 'files' | 'deps'
 }
 
 /**
@@ -235,6 +236,9 @@ export interface FoundName {
  * working tree panel lists as changed, then everything else by how well it
  * matched. An empty query lists the recent files and then the changed ones.
  */
+/** A path inside what Composer or npm installed. */
+const DEPENDENCY = /^(vendor|node_modules)\//
+
 export async function findNames(query: string, limit = 60): Promise<FoundName[] | null> {
   const git = useGit()
   const recent = useTabs().state.recent
@@ -261,20 +265,22 @@ export async function findNames(query: string, limit = 60): Promise<FoundName[] 
       query,
       limit,
       request,
-      also: [...recent, ...changed]
+      also: [...recent, ...changed],
+      dependencies: search.files.deps
     })
   } catch {
     return null
   }
   if (request !== lastRequest) return null
-  const rank = (path: string) => (recent.includes(path) ? 0 : changed.includes(path) ? 1 : 2)
+  const rank = (path: string) =>
+    recent.includes(path) ? 0 : changed.includes(path) ? 1 : DEPENDENCY.test(path) ? 3 : 2
   return found
     .map((one, order) => ({ one, order, rank: rank(one.path) }))
     .sort((a, b) => a.rank - b.rank || a.order - b.order)
     .map(({ one, rank }) => ({
       path: one.path,
       indices: one.indices,
-      group: (['recent', 'changed', 'files'] as const)[rank]!
+      group: (['recent', 'changed', 'files', 'deps'] as const)[rank]!
     }))
 }
 
@@ -302,7 +308,7 @@ export function resetSearch() {
   search.open = false
   search.mode = 'text'
   search.text = { query: '', case: false, word: false, regex: false, changedOnly: false, glob: '' }
-  search.files = { query: '' }
+  search.files = { query: '', deps: false }
   search.symbols = { query: '' }
   search.found = []
   search.done = null

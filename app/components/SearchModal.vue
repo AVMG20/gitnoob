@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
-import { CaseSensitive, ChevronRight, Funnel, GitCompare, Regex, Search, TriangleAlert, WholeWord } from 'lucide-vue-next'
+import { CaseSensitive, ChevronRight, Funnel, GitCompare, Package, Regex, Search, TriangleAlert, WholeWord } from 'lucide-vue-next'
 import { copyText, useGit } from '~/composables/useGit'
 import CodePreview from '~/components/CodePreview.vue'
 import FileIcon from '~/components/FileIcon.vue'
@@ -207,7 +207,7 @@ const firstOf = computed(() => {
   return out
 })
 
-const GROUPS: Record<string, string> = { recent: 'Recent', changed: 'Changed', files: 'Files' }
+const GROUPS: Record<string, string> = { recent: 'Recent', changed: 'Changed', files: 'Files', deps: 'Dependencies' }
 
 const hitCounts = computed(() => new Map(search.found.map((one) => [one.path, one.hits.length])))
 
@@ -403,6 +403,7 @@ watch(
     search.text.changedOnly,
     search.text.glob,
     search.files.query,
+    search.files.deps,
     search.symbols.query
   ],
   schedule
@@ -649,6 +650,17 @@ const hint = computed(
               />
             </span>
           </template>
+          <button
+            v-else-if="search.mode === 'files'"
+            class="opt"
+            data-option="deps"
+            :class="{ on: search.files.deps }"
+            :aria-pressed="search.files.deps"
+            title="Include dependencies: vendor/ and node_modules/, after the project's files"
+            @click="search.files.deps = !search.files.deps"
+          >
+            <Package :size="14" />
+          </button>
         </div>
         <div class="modes" role="tablist">
           <button

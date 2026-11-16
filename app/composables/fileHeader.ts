@@ -12,6 +12,7 @@
  * - A new file gets Add and Delete; the tab and tree already mark it as new.
  * - An ignored file is "ignored", and git has nothing to do with it.
  * - A file the editor will not write to says "read-only" and why.
+ * - A dependency (vendor/, node_modules/) says "vendor", and has no buttons.
  * - A commit's copy says which commit, and offers the file as it is now.
  * - A file gone from disk and git has the missing-file page's own buttons.
  */
@@ -72,7 +73,8 @@ export const READONLY_REASONS: Record<string, string> = {
   encoding: 'Not UTF-8: shown read-only so a save cannot mangle it.',
   endings: 'Mixed line endings: shown read-only so a save cannot change lines you did not touch.',
   large: 'Over 2 MB: shown read-only.',
-  locked: 'A committed copy: it cannot be changed.'
+  locked: 'A committed copy: it cannot be changed.',
+  dependency: 'A dependency, installed by Composer or npm: read-only, and git does not track it.'
 }
 
 export function headerState(file: HeaderFile, status: HeaderStatus, tab: HeaderTab): HeaderState {
@@ -97,6 +99,18 @@ export function headerState(file: HeaderFile, status: HeaderStatus, tab: HeaderT
 
   if (file.missing && !staged && !unstaged) {
     return { kind: 'missing', badges: [], counts: false, modes: false, actions: [], commit: null }
+  }
+
+  // In vendor/ or node_modules/: read, never edited, and nothing for git.
+  if (readonly === 'dependency' && !staged && !unstaged) {
+    return {
+      kind: 'ignored',
+      badges: [{ text: 'vendor', tone: 'ignored', title: READONLY_REASONS.dependency }],
+      counts: false,
+      modes: false,
+      actions: [],
+      commit: null
+    }
   }
 
   if (unstaged?.kind === 'untracked' && !staged) {

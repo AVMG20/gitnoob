@@ -203,6 +203,22 @@ Graying out is careful on purpose, because a wrong gray tells someone to delete 
 
 Commit tabs still use the read-only `FileView`, not CodeMirror, so ⌘-click and the counts are only in working-tree files.
 
+### Definitions in dependencies
+
+`vendor/` and `node_modules/` stay out of the index, the counts and the dimming. ⌘-click reaches them anyway, through `deps.rs`, which works a name out on demand the way the language does. `jumpFrom` asks `dependency_definition(path, offset, text)` first in PHP, TypeScript and JavaScript files, and falls back to the index when it says nothing.
+
+The PHP side is meant to be reused, by autocomplete among others:
+
+- `deps::php_imports(text) -> PhpImports`: the file's namespace and its class imports (plain, aliased, grouped; not `use function` or `use const`). `PhpImports::qualify(written)` turns a class name as written into its fully qualified name.
+- `deps::resolve_class(root, fqn) -> Option<String>`: the file a class is in, relative to the work tree. Composer's `vendor/composer/autoload_classmap.php`, then `autoload_psr4.php` and `autoload_psr0.php`, read as PHP arrays, then `composer.json`'s own `psr-4` for a checkout with nothing installed. The maps are read on the first call and kept per work tree until one of those files changes.
+- `deps::class_members(root, path, fqn) -> Vec<Member>`: a class's methods, constants, properties and enum cases, `{ name, kind, static, visibility, line, column, class, path, doc }`, its own first and then what it gets from traits, its parent and its interfaces, up to ten levels, each name once. `doc` marks a `@method` docblock tag rather than a declaration.
+
+A member called on a Laravel facade that the facade does not declare is followed to the class `getFacadeAccessor` names as `X::class`, then the type its `@method` tag returns, then its `@see`. If none of those has it, the click lands on the facade and a notice says the method is on the class it resolves to. Only `$this->`, `self::`, `static::`, `parent::` and `Foo::` receivers are resolved here; any other receiver is left to the index.
+
+In scripts, a name imported from a bare specifier goes through `node_modules` (from the file's folder up to the root): the package's `types` or `typings`, its `exports` (`types`, then `import`, `default`, `require`), then `main`, with a `.d.ts` beside a `.js` preferred and `@types/` used when the package has no types. The export is found in that file, following one `export … from` or `export * from`. Rust crates are in cargo's registry outside the work tree and are not followed.
+
+Every path goes through `files::resolve`, so a dependency linked out of the work tree is refused. A link that stays inside, such as a Composer path repository, is followed. `read_file` marks a file in a git-ignored `vendor` or `node_modules` folder `readonly: "dependency"`, and `write_file` refuses it. The header shows a "vendor" badge and no git buttons. The Names mode of the search window has an "Include dependencies" toggle: `find_files(…, dependencies)` then walks those two folders as well (`files::dependency_files`, on first use only) and ranks them after every project file, within the same limit.
+
 ### Keys that moved in 0.10
 
 Fetch is ⌘⌥F (was ⌘⇧F, now search inside files). Next and previous changed file are ⌘⌥↓ / ⌘⌥↑ (were ⌘] / ⌘[, now back and forward). Next match in the find bar is ↵ and ⇧↵ in the box (⌘G goes to a line now). A key someone rebound keeps their binding. The release notes are written by hand on the release page, so these have to be copied there.

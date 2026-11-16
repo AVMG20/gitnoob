@@ -260,7 +260,35 @@ describe('⌘-click on a reference', () => {
   it('does nothing on something that is not a name', async () => {
     symbol = null
     await jumpFrom(SERVICE, 3, null)
-    expect(asked.mock.calls.map(([cmd]) => cmd)).toEqual(['symbol_at'])
+    // Only the way into a dependency is asked as well, and it found nothing.
+    expect(asked.mock.calls.map(([cmd]) => cmd)).toEqual(['symbol_at', 'dependency_definition'])
     expect(usagesPopup.open).toBe(false)
+  })
+
+  it('opens a definition in a dependency in its own tab, and says what it has to', async () => {
+    symbol = { name: 'spreadsheet', kind: 'call', definition: false, shape: 'scoped', line: 14, from: 1, to: 12 }
+    const facade = 'vendor/revolution/laravel-google-sheets/src/Facades/Sheets.php'
+    asked.mockImplementation(async (cmd: string) => {
+      if (cmd === 'symbol_at') return symbol
+      if (cmd === 'dependency_definition') {
+        return {
+          path: facade,
+          line: 9,
+          column: 6,
+          kind: 'class',
+          text: 'class Sheets extends Facade',
+          dependency: true,
+          note: 'Sheets is a facade; the method lives on the class it resolves to'
+        }
+      }
+      if (cmd === 'definitions') return []
+      return null
+    })
+    await jumpFrom(SERVICE, 3, 'the text')
+    expect(asked).toHaveBeenCalledWith('dependency_definition', { path: SERVICE, offset: 3, text: 'the text' })
+    // The index is not asked: the dependency is not in it.
+    expect(asked.mock.calls.map(([cmd]) => cmd)).not.toContain('definitions')
+    expect(tabs.activeTab()).toMatchObject({ path: facade, mode: 'file', preview: false, line: 9 })
+    expect(toasts.items.value.at(-1)?.title).toBe('Sheets is a facade; the method lives on the class it resolves to')
   })
 })

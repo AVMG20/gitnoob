@@ -298,6 +298,9 @@ pub fn forget(root: &Path) {
     if let Ok(mut cached) = cache().lock() {
         cached.remove(&key);
     }
+    if let Ok(mut cached) = dependency_cache().lock() {
+        cached.remove(&key);
+    }
 }
 
 /// Whether the cached list for a work tree has this (absolute) path. False
@@ -385,6 +388,71 @@ pub fn all_files(root: &Path) -> Result<Arc<Vec<String>>, String> {
     Ok(paths)
 }
 
+/// The folders whose files the finder lists only when asked: what Composer
+/// and npm install. Git ignores them, so `all_files` never walks them.
+pub const DEPENDENCY_DIRS: [&str; 2] = ["vendor", "node_modules"];
+
+/// At most this many dependency files are listed: `node_modules` can hold
+/// more than anyone would scroll through.
+const MAX_DEPENDENCY_FILES: usize = 300_000;
+
+fn dependency_cache() -> &'static Mutex<HashMap<PathBuf, Listed>> {
+    static CACHE: OnceLock<Mutex<HashMap<PathBuf, Listed>>> = OnceLock::new();
+    CACHE.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+/// Every file in `vendor/` and `node_modules/` at the root of the work tree,
+/// relative and sorted, for the finder's "Include dependencies". Walked the
+/// first time it is asked for, never at open, and kept like `all_files`.
+/// Links are not followed, so nothing outside the work tree is listed.
+pub fn dependency_files(root: &Path) -> Result<Arc<Vec<String>>, String> {
+    let key = root
+        .canonicalize()
+        .map_err(|e| format!("Could not read the work tree: {e}"))?;
+    if let Ok(cached) = dependency_cache().lock() {
+        if let Some(found) = cached.get(&key) {
+            if found.at.elapsed() < STALE {
+                return Ok(found.paths.clone());
+            }
+        }
+    }
+    let mut paths = Vec::new();
+    for dir in DEPENDENCY_DIRS {
+        let top = key.join(dir);
+        if !top.is_dir() {
+            continue;
+        }
+        let walk = WalkBuilder::new(&top)
+            .standard_filters(false)
+            .follow_links(false)
+            .filter_entry(|entry| entry.file_name() != ".git")
+            .build();
+        for entry in walk.filter_map(Result::ok) {
+            if paths.len() >= MAX_DEPENDENCY_FILES {
+                break;
+            }
+            if !entry.file_type().is_some_and(|kind| kind.is_file()) {
+                continue;
+            }
+            if let Ok(inner) = entry.path().strip_prefix(&key) {
+                paths.push(slashed(inner));
+            }
+        }
+    }
+    paths.sort();
+    let paths = Arc::new(paths);
+    if let Ok(mut cached) = dependency_cache().lock() {
+        cached.insert(
+            key,
+            Listed {
+                at: Instant::now(),
+                paths: paths.clone(),
+            },
+        );
+    }
+    Ok(paths)
+}
+
 /// The newest finder request per work tree. An older one still scoring
 /// stops early: its answer would only be thrown away.
 fn latest(root: &Path) -> Arc<AtomicU64> {
@@ -408,9 +476,10 @@ pub fn find_files(
     limit: usize,
     request: u64,
     also: &[String],
+    dependencies: bool,
 ) -> Result<Vec<Found>, String> {
     let root = state.path()?;
-    find_files_at(&root, query, limit, request, also)
+    find_files_with(&root, query, limit, request, also, dependencies)
 }
 
 /// `also` are paths kept in the answer whenever they match, however far down
@@ -421,6 +490,20 @@ pub fn find_files_at(
     limit: usize,
     request: u64,
     also: &[String],
+) -> Result<Vec<Found>, String> {
+    find_files_with(root, query, limit, request, also, false)
+}
+
+/// The same, and with `dependencies` the files in `vendor/` and
+/// `node_modules/` too, after every project file that matched and within the
+/// same limit.
+pub fn find_files_with(
+    root: &Path,
+    query: &str,
+    limit: usize,
+    request: u64,
+    also: &[String],
+    dependencies: bool,
 ) -> Result<Vec<Found>, String> {
     let newest = latest(root);
     newest.fetch_max(request, Ordering::SeqCst);
@@ -433,7 +516,23 @@ pub fn find_files_at(
     if superseded() {
         return Err("superseded".into());
     }
+    let mut found = rank(&paths, query, limit, also, &superseded)?;
+    let wanted = limit.max(1);
+    if dependencies && found.len() < wanted {
+        let extra = dependency_files(root)?;
+        found.extend(rank(&extra, query, wanted - found.len(), &[], &superseded)?);
+    }
+    Ok(found)
+}
 
+/// The paths that match, best first, `limit` of them and any of `also`.
+fn rank(
+    paths: &[String],
+    query: &str,
+    limit: usize,
+    also: &[String],
+    superseded: &dyn Fn() -> bool,
+) -> Result<Vec<Found>, String> {
     let mut matcher = Matcher::new(Config::DEFAULT.match_paths());
     let pattern = Pattern::parse(query, CaseMatching::Smart, Normalization::Smart);
     let shaped = Shaped::of(query);

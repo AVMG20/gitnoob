@@ -163,6 +163,11 @@ pub fn read_file_at(root: &Path, relative: &str) -> Result<FileRead, String> {
     if mixed && readonly.is_none() {
         readonly = Some("endings".into());
     }
+    // A dependency is read, never written: the next `composer install` or
+    // `npm install` would put it back anyway.
+    if readonly.is_none() && crate::deps::is_dependency(root, relative) {
+        readonly = Some("dependency".into());
+    }
     // Always `\n` for the editor, whatever is kept on disk.
     let text = text.replace("\r\n", "\n").replace('\r', "\n");
     Ok(FileRead {
@@ -234,6 +239,9 @@ pub fn write_file_at(
     new_shape: Option<(bool, bool)>,
 ) -> Result<String, String> {
     let real = files::resolve(root, relative, false)?;
+    if crate::deps::is_dependency(root, relative) {
+        return Err(format!("{relative} is a dependency, and read-only"));
+    }
     let current = match std::fs::read(&real) {
         Ok(bytes) => Some(bytes),
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => None,
