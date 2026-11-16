@@ -41,6 +41,7 @@ import { useGit } from '~/composables/useGit'
 import { describeKey, useSsh } from '~/composables/useSsh'
 import { SYSTEM_PAIR, useTheme } from '~/composables/useTheme'
 import {
+  keysHere,
   SHORTCUTS,
   SHORTCUT_GROUPS,
   clashFor,
@@ -320,6 +321,10 @@ async function save() {
     }
     await forge.refreshStatus()
     editing.value = null
+  } catch (error) {
+    // A keychain that would not open, most often: the form stays open with
+    // the token still in it, and says why.
+    git.note(`Save profile: ${String(error)}`, 'error')
   } finally {
     saving.value = false
   }
@@ -388,16 +393,14 @@ async function saveKey() {
 }
 
 async function pickModel(id: string) {
-  const settings = config.settings.value
-  if (!settings) return
-  await config.saveGlobal({ ...settings, ai: { ...settings.ai, model: id } })
+  if (!config.settings.value) return
+  await config.updateGlobal((settings) => ({ ...settings, ai: { ...settings.ai, model: id } }))
   await ai.refreshStatus()
 }
 
 async function patchGlobal(patch: Record<string, unknown>) {
-  const settings = config.settings.value
-  if (!settings) return
-  await config.saveGlobal({ ...settings, ...patch })
+  if (!config.settings.value) return
+  await config.updateGlobal((settings) => ({ ...settings, ...patch }))
 }
 
 /**
@@ -449,9 +452,8 @@ async function saveMaxTokens(event: Event) {
 }
 
 async function patchAi(patch: Record<string, unknown>) {
-  const settings = config.settings.value
-  if (!settings) return
-  await config.saveGlobal({ ...settings, ai: { ...settings.ai, ...patch } })
+  if (!config.settings.value) return
+  await config.updateGlobal((settings) => ({ ...settings, ai: { ...settings.ai, ...patch } }))
   await ai.refreshStatus()
 }
 
@@ -984,7 +986,7 @@ onMounted(async () => {
               @click="setContrast(one.id)"
             >
               {{ one.name }}
-              <span class="faint small block">{{ one.note }}</span>
+              <span class="faint small block">{{ keysHere(one.note) }}</span>
             </button>
           </div>
 
@@ -1058,7 +1060,7 @@ onMounted(async () => {
               }}</kbd>
               <span class="keys-what">
                 {{ row.label }}
-                <span v-if="row.note" class="faint small block">{{ row.note }}</span>
+                <span v-if="row.note" class="faint small block">{{ keysHere(row.note) }}</span>
                 <span v-if="(capturing === row.id || noted === row.id) && captureNote" class="small block capture-note">
                   {{ captureNote }}
                 </span>
@@ -1306,7 +1308,7 @@ onMounted(async () => {
           <h2>Frameworks</h2>
           <p class="dim intro">
             What a framework wires together through config files and strings. Magento for now:
-            ⌘-click on a class in XML, a template, a layout handle or an event name, config files
+            {{ keysHere('⌘-click') }} on a class in XML, a template, a layout handle or an event name, config files
             counted in a class's usages, and a chip by the project's name.
           </p>
 
@@ -1320,7 +1322,7 @@ onMounted(async () => {
             <span>
               <strong>Framework support</strong>
               <span class="faint block">
-                Off, ⌘-click and the usage counts only read the language, and nothing is detected.
+                Off, {{ keysHere('⌘-click') }} and the usage counts only read the language, and nothing is detected.
               </span>
             </span>
           </label>

@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed, onMounted, onUnmounted, ref } from 'vue'
-import { Users } from 'lucide-vue-next'
-import { relativeTime, useGit, type BlameRun, type FileDiff } from '~/composables/useGit'
+import { relativeTime, type BlameRun, type FileDiff } from '~/composables/useGit'
+import { blameMenu, blameTooltip, openBlamePopup } from '~/composables/blame'
 import { highlightWhole, languageFor } from '~/composables/useHighlight'
 import { codeRow, markedLines, wasRuns, windowOf, type Line } from '~/composables/useCode'
 import { useContextMenu } from '~/composables/useContextMenu'
@@ -30,7 +30,6 @@ const props = defineProps<{
 
 const emit = defineEmits<{ (event: 'toggle-blame'): void }>()
 
-const git = useGit()
 const menu = useContextMenu()
 
 const language = computed(() => (props.diff ? languageFor(props.diff.path) : null))
@@ -245,33 +244,21 @@ function when(run: BlameRun | undefined) {
 }
 
 function title(run: BlameRun | undefined) {
-  if (!run) return ''
-  if (run.uncommitted) return 'Not committed yet — this line is your own working copy.'
-  return [
-    run.summary,
-    `${run.author} <${run.email}>`,
-    relativeTime(run.time),
-    run.oid,
-    'Click to open this commit.'
-  ].join('\n')
+  return run ? blameTooltip(run) : ''
 }
 
-/** A chip is a way into the commit that put the line there. */
-function openCommit(run: BlameRun | undefined) {
-  if (!run || run.uncommitted) return
-  git.revealCommit(run.oid)
+/** A chip opens the commit that put the line there, beside the chip. */
+function openCommit(run: BlameRun | undefined, event: MouseEvent) {
+  const chip = event.currentTarget as HTMLElement | null
+  openBlamePopup(run, props.diff?.path ?? '', chip, chip)
 }
 
-/** The numbers answer for the column beside them: right-click turns it on. */
-function onNumbers(event: MouseEvent) {
-  menu.show(event, [
-    {
-      label: props.blame ? 'Hide blame' : 'Show blame',
-      icon: Users,
-      hint: 'Who last touched each line',
-      action: () => emit('toggle-blame')
-    }
-  ])
+/**
+ * The numbers answer for the column beside them: right-click turns it on or
+ * off. On the column itself the menu also has the commit's hash.
+ */
+function onNumbers(event: MouseEvent, run?: BlameRun) {
+  menu.show(event, blameMenu(!!props.blame, () => emit('toggle-blame'), run))
 }
 
 </script>
@@ -322,15 +309,21 @@ function onNumbers(event: MouseEvent) {
             :style="chipStyle(runAt(line.number))"
             :title="title(runAt(line.number))"
             :disabled="runAt(line.number)?.uncommitted"
-            @click="openCommit(runAt(line.number))"
+            @click="openCommit(runAt(line.number), $event)"
+            @contextmenu="onNumbers($event, runAt(line.number))"
           >
             <span class="face" :style="faceStyle(runAt(line.number))" />
             <span class="who truncate">{{
-              runAt(line.number)?.uncommitted ? 'Uncommitted' : runAt(line.number)?.author
+              runAt(line.number)?.uncommitted ? 'Not committed yet' : runAt(line.number)?.author
             }}</span>
             <span class="ago">{{ when(runAt(line.number)) }}</span>
           </button>
-          <span v-else class="chip rule" />
+          <span
+            v-else
+            class="chip rule"
+            :title="title(runAt(line.number))"
+            @contextmenu="onNumbers($event, runAt(line.number))"
+          />
         </template>
         <span class="no" @contextmenu="onNumbers">{{ line.number }}</span>
         <!-- The bar an editor draws between the numbers and the code: solid

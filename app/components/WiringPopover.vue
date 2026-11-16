@@ -108,10 +108,11 @@ onMounted(async () => {
             <button
               v-if="row.path"
               class="source link"
-              :title="`${row.path}:${row.line ?? 1}`"
+              :title="row.line ? `${row.path}:${row.line}` : row.path"
               @click="openSource(row)"
             >
-              {{ base(row.path) }}:{{ row.line ?? 1 }}
+              <!-- No line when magequery knows the file but not where in it. -->
+              {{ base(row.path) }}{{ row.line ? `:${row.line}` : '' }}
             </button>
           </div>
         </section>

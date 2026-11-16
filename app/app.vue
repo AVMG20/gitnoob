@@ -18,9 +18,11 @@ import { useNavButtons } from '~/composables/useNavButtons'
 import { openSearch, search } from '~/composables/useSearch'
 import { usagesPopup } from '~/composables/useSymbols'
 import { loadFramework, wiring } from '~/composables/useFramework'
+import { blamePopup } from '~/composables/blame'
 import { workTreeMoved } from '~/composables/editorBuffers'
 import { unwatchQuit, watchQuit } from '~/composables/useQuit'
 import { runHomeAct, type HomeAct } from '~/composables/useForgeNudges'
+import { installExternalLinks } from '~/composables/externalLinks'
 
 const git = useGit()
 const store = git.store
@@ -268,7 +270,7 @@ async function openProject(path: string, replace?: string) {
     if (!(await git.openRepo(path, true, replace))) return
     await config.reload()
   } finally {
-    config.endOpen()
+    config.endOpen(path)
   }
   await afterOpen()
   // Fetch straight away so the ahead/behind counts on screen are true rather
@@ -365,7 +367,11 @@ watch(
   }
 )
 
+/** Web links go to the browser; the webview has nowhere to open them. */
+let uninstallLinks: (() => void) | null = null
+
 onMounted(async () => {
+  uninstallLinks = installExternalLinks()
   // First, so a quit pressed while a repository is still opening is heard:
   // edits are saved, or asked about, before the window goes (useQuit.ts).
   await watchQuit()
@@ -438,6 +444,7 @@ function onFocus() {
 }
 
 onUnmounted(() => {
+  uninstallLinks?.()
   if (fetchTimer) window.clearInterval(fetchTimer)
   unlisten?.()
   unlistenCommand?.()
@@ -529,6 +536,7 @@ onUnmounted(() => {
     <SearchModal v-if="search.open && store.repo" />
     <UsagesPopup v-if="usagesPopup.open && store.repo" />
     <WiringPopover v-if="wiring.open && store.repo" />
+    <BlamePopover v-if="blamePopup.open && store.repo" />
     <ContextMenu />
   </div>
 </template>

@@ -67,6 +67,9 @@ const store = reactive({
   progress: null as RebaseProgress | null
 })
 
+/** The plan's commits in the order git listed them, for "reset". */
+let listed: string[] = []
+
 export function useRebase() {
   const git = useGit()
 
@@ -115,6 +118,7 @@ export function useRebase() {
     try {
       const found = await invoke<Candidate[]>('rebase_plan', { onto })
       store.rows = found.map((one) => ({ ...one, action: 'pick' as RebaseAction }))
+      listed = found.map((one) => one.oid)
     } catch (error) {
       git.note(`Rebase: ${String(error)}`, 'error')
       close()
@@ -144,7 +148,11 @@ export function useRebase() {
 
   /** Puts every row back to being kept, in the order git listed them. */
   function reset() {
-    store.rows.sort((a, b) => a.time - b.time)
+    // By where git put them, not by date: a cherry-picked commit keeps the
+    // author date of the original, and sorting by it replayed it out of
+    // order.
+    const at = new Map(listed.map((oid, index) => [oid, index]))
+    store.rows.sort((a, b) => (at.get(a.oid) ?? 0) - (at.get(b.oid) ?? 0))
     for (const row of store.rows) row.action = 'pick'
   }
 

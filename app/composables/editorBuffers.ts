@@ -168,6 +168,10 @@ export function release(
   }
   if (held && repo === project && held.state.doc.length <= WARM_LIMIT) {
     slot.parked = held
+    // Most recently left last: the one used all afternoon is not the first
+    // to go just because it was the first opened.
+    all.delete(key)
+    all.set(key, slot)
     trim()
     return 'kept'
   }

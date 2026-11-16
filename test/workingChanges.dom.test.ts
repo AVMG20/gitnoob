@@ -209,6 +209,11 @@ describe('the working tree panel', () => {
 
     await discard!.trigger('click')
     await flushPromises()
+    // A whole folder is asked about first, as the key does.
+    expect(calls.some((call) => call.cmd === 'discard')).toBe(false)
+    expect(wrapper.text()).toContain('Discard these changes?')
+    await wrapper.findAll('button').find((one) => one.text() === 'Discard')!.trigger('click')
+    await flushPromises()
     expect(calls.find((call) => call.cmd === 'discard')?.args.paths).toEqual([
       'app/pages/shop/cart.vue'
     ])

@@ -127,4 +127,23 @@ describe('the fetch nobody asked for', () => {
     expect(git.store.log[0]?.text).toMatch(/could not reach origin/)
     expect(calls.some((c) => c.cmd === 'fetch')).toBe(false)
   })
+
+  it('lets a pull asked for meanwhile wait for it rather than race it', async () => {
+    let finish: (value: unknown) => void = () => {}
+    asked.mockImplementation(async (cmd: string, args?: Record<string, unknown>) => {
+      calls.push({ cmd, args: args ?? {} })
+      if (cmd === 'fetch_primary') return new Promise((resolve) => (finish = resolve))
+      if (cmd === 'pull') return { ok: true, message: 'Up to date', conflicts: [] }
+      return null
+    })
+    const running = git.fetchQuietly()
+    await flushPromises()
+    const pulling = git.pull(false)
+    await flushPromises()
+    expect(calls.some((c) => c.cmd === 'pull')).toBe(false)
+    finish({ argv: [], ok: true, code: 0, stdout: '', stderr: '' })
+    await running
+    await pulling
+    expect(calls.some((c) => c.cmd === 'pull')).toBe(true)
+  })
 })

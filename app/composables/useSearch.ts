@@ -1,4 +1,4 @@
-import { reactive } from 'vue'
+import { markRaw, reactive } from 'vue'
 import { listen, type UnlistenFn } from '@tauri-apps/api/event'
 import { invoke } from './useInvoke'
 import { useGit } from './useGit'
@@ -37,6 +37,8 @@ export interface SearchDone {
   matches: number
   files: number
   more: number
+  /** Stopped at the cap with files left unread; `more` is then a floor. */
+  capped?: boolean
   searched: number
   cancelled: boolean
   error: string | null
@@ -49,7 +51,10 @@ export const search = reactive({
   /** `deps`: the file names in vendor/ and node_modules/ too, after the project's. */
   files: { query: '', deps: false },
   symbols: { query: '' },
-  /** What the text search found, as it arrives. */
+  /**
+   * What the text search found, as it arrives: a frame's worth at a time,
+   * each file raw, so two thousand hits are not two thousand proxies.
+   */
   found: [] as FileHits[],
   done: null as SearchDone | null,
   running: false,
@@ -72,6 +77,7 @@ export async function runTextSearch() {
   search.request = request
   search.found = []
   search.done = null
+  pending = []
   if (!query) {
     search.running = false
     cancelRunning(request)
@@ -125,18 +131,44 @@ export async function refreshFile(path: string) {
   if (!hits || search.request !== request || search.text.query !== query) return
   const at = search.found.findIndex((one) => one.path === path)
   if (at < 0) return
-  if (hits.length) search.found.splice(at, 1, { request, path, hits })
+  if (hits.length) search.found.splice(at, 1, markRaw({ request, path, hits }))
   else search.found.splice(at, 1)
 }
 
-/** Hands one event's worth of results to the window, if it is still wanted. */
+/** Hits that arrived since the last frame, not handed to the window yet. */
+let pending: FileHits[] = []
+let frame: number | null = null
+
+/**
+ * Hands one event's worth of results to the window, if it is still wanted.
+ * Kept until the next frame: a search sends an event per file, hundreds of
+ * them in a burst, and one update a frame is all anyone can see.
+ */
 export function takeHits(payload: FileHits) {
   if (payload.request !== search.request) return
-  search.found.push(payload)
+  pending.push(markRaw(payload))
+  if (frame === null) frame = nextFrame(flushHits)
 }
+
+/** Puts the hits waiting for a frame into the list now. */
+export function flushHits() {
+  if (frame !== null) cancelFrame(frame)
+  frame = null
+  const batch = pending.filter((one) => one.request === search.request)
+  pending = []
+  if (batch.length) search.found.push(...batch)
+}
+
+const nextFrame = (run: () => void): number =>
+  typeof requestAnimationFrame === 'function' ? requestAnimationFrame(run) : (setTimeout(run, 16) as unknown as number)
+
+const cancelFrame = (handle: number) =>
+  typeof cancelAnimationFrame === 'function' ? cancelAnimationFrame(handle) : clearTimeout(handle)
 
 export function takeDone(payload: SearchDone) {
   if (payload.request !== search.request) return
+  // Every hit was sent before the end: they all go in with it.
+  flushHits()
   search.done = payload
   search.running = false
 }
@@ -229,12 +261,15 @@ export interface FoundName {
   path: string
   indices: number[]
   group: 'recent' | 'changed' | 'files' | 'deps'
+  /** A folder, which is shown in the Files tree rather than opened. */
+  dir: boolean
 }
 
 /**
- * Files whose name matches, ranked: recently opened first, then the ones the
- * working tree panel lists as changed, then everything else by how well it
- * matched. An empty query lists the recent files and then the changed ones.
+ * Files and folders whose name matches, ranked: recently opened files first,
+ * then the ones the working tree panel lists as changed, then everything
+ * else, folders among the files, by how well it matched. An empty query
+ * lists the recent files and then the changed ones.
  */
 /** A path inside what Composer or npm installed. */
 const DEPENDENCY = /^(vendor|node_modules)\//
@@ -252,35 +287,45 @@ export async function findNames(query: string, limit = 60): Promise<FoundName[] 
   if (!query.trim()) {
     const seen = new Set(recent)
     return [
-      ...recent.map((path) => ({ path, indices: [], group: 'recent' as const })),
+      ...recent.map((path) => ({ path, indices: [], group: 'recent' as const, dir: false })),
       ...changed
         .filter((path) => !seen.has(path))
-        .map((path) => ({ path, indices: [], group: 'changed' as const }))
+        .map((path) => ({ path, indices: [], group: 'changed' as const, dir: false }))
     ].slice(0, limit)
   }
   const request = nextRequest()
-  let found: { path: string; score: number; indices: number[] }[]
+  type Found = { path: string; score: number; indices: number[]; dir?: boolean }
+  let found: Found[]
   try {
-    found = await invoke<{ path: string; score: number; indices: number[] }[]>('find_files', {
+    found = await invoke<Found[]>('find_files', {
       query,
       limit,
       request,
       also: [...recent, ...changed],
-      dependencies: search.files.deps
+      dependencies: search.files.deps,
+      folders: true
     })
   } catch {
     return null
   }
   if (request !== lastRequest) return null
-  const rank = (path: string) =>
-    recent.includes(path) ? 0 : changed.includes(path) ? 1 : DEPENDENCY.test(path) ? 3 : 2
+  // Recent and changed are files: a folder goes with the rest, by score.
+  const rank = (one: Found) =>
+    !one.dir && recent.includes(one.path)
+      ? 0
+      : !one.dir && changed.includes(one.path)
+        ? 1
+        : DEPENDENCY.test(one.path)
+          ? 3
+          : 2
   return found
-    .map((one, order) => ({ one, order, rank: rank(one.path) }))
+    .map((one, order) => ({ one, order, rank: rank(one) }))
     .sort((a, b) => a.rank - b.rank || a.order - b.order)
     .map(({ one, rank }) => ({
       path: one.path,
       indices: one.indices,
-      group: (['recent', 'changed', 'files', 'deps'] as const)[rank]!
+      group: (['recent', 'changed', 'files', 'deps'] as const)[rank]!,
+      dir: !!one.dir
     }))
 }
 
@@ -314,5 +359,8 @@ export function resetSearch() {
   search.done = null
   search.running = false
   search.request = 0
+  pending = []
+  if (frame !== null) cancelFrame(frame)
+  frame = null
   listening = null
 }

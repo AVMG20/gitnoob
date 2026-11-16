@@ -1,4 +1,18 @@
-import { Compartment, Facet, RangeSet, StateEffect, StateField, type EditorState, type Extension, type Range } from '@codemirror/state'
+import {
+  Compartment,
+  Facet,
+  Prec,
+  RangeSet,
+  RangeSetBuilder,
+  RangeValue,
+  StateEffect,
+  StateField,
+  type EditorState,
+  type Extension,
+  type Range,
+  type Text,
+  type Transaction
+} from '@codemirror/state'
 import {
   Decoration,
   EditorView,
@@ -27,7 +41,9 @@ import { tags as t, type Tag } from '@lezer/highlight'
 import { markedLines } from './useCode'
 import { occurrences, type FindMarks } from './useFind'
 import { themeRules } from './useHighlight'
-import { relativeTime, type BlameRun, type DiffHunk } from './useGit'
+import { type BlameRun, type DiffHunk } from './useGit'
+import { blameDate, blameTooltip } from './blame'
+import { tint } from './useAvatars'
 
 /**
  * The pieces every CodeMirror view in the app is built from: the File mode
@@ -44,8 +60,8 @@ type Loader = () => Promise<Extension>
 
 const LANGUAGES: Record<string, Loader> = {
   php: async () => (await import('@codemirror/lang-php')).php(),
-  // A Magento template: HTML with PHP in it, which is what lang-php does by default.
-  phtml: async () => (await import('@codemirror/lang-php')).php(),
+  // A Magento template: HTML with PHP in it, lang-php's mixed mode.
+  phtml: async () => (await import('@codemirror/lang-php')).php({ plain: false }),
   xml: async () => (await import('@codemirror/lang-xml')).xml(),
   xsd: async () => (await import('@codemirror/lang-xml')).xml(),
   xsl: async () => (await import('@codemirror/lang-xml')).xml(),
@@ -79,7 +95,9 @@ export async function editorLanguage(path: string): Promise<Extension | null> {
   const name = path.slice(path.lastIndexOf('/') + 1).toLowerCase()
   // `.blade.php` is PHP enough to colour.
   const extension = name.includes('.') ? name.slice(name.lastIndexOf('.') + 1) : ''
-  const load = LANGUAGES[extension]
+  // Own keys only: `notes.constructor` or `x.toString` would otherwise find
+  // Object's own methods and hand the editor something that is no language.
+  const load = Object.prototype.hasOwnProperty.call(LANGUAGES, extension) ? LANGUAGES[extension] : undefined
   if (!load) return null
   try {
     return await load()
@@ -222,9 +240,19 @@ export const chrome = EditorView.theme({
   '.cm-activeLine': { backgroundColor: 'color-mix(in srgb, var(--hover) 55%, transparent)' },
   '.cm-activeLineGutter': { backgroundColor: 'transparent', color: 'var(--text-dim)' },
   '&.cm-focused .cm-cursor': { borderLeftColor: 'var(--text)' },
-  '.cm-selectionBackground, &.cm-focused .cm-selectionBackground, .cm-content ::selection': {
-    backgroundColor: 'var(--primary-bg) !important'
+  // The accent, mixed strong enough to see on every theme's ground (light and
+  // dark: at least 1.5:1 against --bg focused), and weaker when the editor is
+  // not focused. --primary-bg, the tint of a selected row, nearly vanished on
+  // dark themes. CodeMirror's own rules are more specific, hence !important.
+  '.cm-selectionBackground': {
+    backgroundColor: 'color-mix(in srgb, var(--accent) 20%, transparent) !important'
   },
+  '&.cm-focused .cm-selectionBackground': {
+    backgroundColor: 'color-mix(in srgb, var(--accent) 35%, transparent) !important'
+  },
+  // The active line is painted over the selection layer: its tint would wash
+  // a selection on that line out, so it steps aside while text is selected.
+  '&.cm-hasSelection .cm-activeLine': { backgroundColor: 'transparent' },
   '.cm-matchingBracket': {
     backgroundColor: 'var(--active)',
     outline: '1px solid var(--line)'
@@ -245,14 +273,51 @@ export const chrome = EditorView.theme({
     borderLeft: '6px solid var(--danger)',
     backgroundColor: 'transparent'
   },
-  '.cm-blame': {
-    marginLeft: '24px',
-    color: 'var(--text-faint)',
+  // The blame column: there only while it is on, a fixed width that grows
+  // with the code font, and quiet enough that the code stays what is read.
+  // CodeMirror's own `.cm-gutter { display: flex !important }` wins over a
+  // `display: none`, so the column is closed by giving it no width instead.
+  '.cm-blameGutter': {
+    width: '0',
+    overflow: 'hidden',
     fontFamily: 'var(--font)',
-    fontSize: 'calc(var(--code-size, 12px) - 1px)',
-    fontStyle: 'italic',
-    whiteSpace: 'nowrap'
+    fontSize: 'calc(var(--code-size, 12px) - 1px)'
   },
+  '&.cm-blame-on .cm-blameGutter': {
+    width: 'calc(var(--code-size, 12px) * 17)',
+    borderRight: '1px solid var(--line-soft)'
+  },
+  '.cm-blameGutter .cm-gutterElement': { padding: '0' },
+  // A bar in the author's colour down each run and a wash of it behind, both
+  // faded with age: the newest work in the file stands out, the oldest sinks
+  // into the page. Mixed into transparent, so it reads on light and dark.
+  '.cm-blame-entry': {
+    display: 'flex',
+    alignItems: 'center',
+    gap: '8px',
+    height: '100%',
+    padding: '0 8px 0 9px',
+    color: 'var(--text-dim)',
+    whiteSpace: 'nowrap',
+    overflow: 'hidden',
+    cursor: 'pointer',
+    boxShadow: 'inset 3px 0 0 var(--blame-tint, transparent)',
+    backgroundColor: 'color-mix(in srgb, var(--blame-tint, transparent) 9%, transparent)',
+    opacity: 'calc(0.45 + var(--blame-age, 1) * 0.55)'
+  },
+  '.cm-blame-entry.head': {
+    boxShadow: 'inset 3px 0 0 var(--blame-tint, transparent), inset 0 1px 0 var(--line-soft)'
+  },
+  '.cm-blame-entry:hover': { color: 'var(--text)' },
+  '.cm-blame-entry.fresh': {
+    cursor: 'default',
+    color: 'var(--text-faint)',
+    fontStyle: 'italic',
+    boxShadow: 'inset 3px 0 0 var(--line)',
+    backgroundColor: 'transparent'
+  },
+  '.cm-blame-date': { flex: 'none', fontVariantNumeric: 'tabular-nums', color: 'var(--text-faint)' },
+  '.cm-blame-who': { flex: '1', minWidth: '0', overflow: 'hidden', textOverflow: 'ellipsis' },
   'mark.find-hit': {
     backgroundColor: 'var(--warning-bg)',
     color: 'inherit',
@@ -392,59 +457,293 @@ export function changeBars(open: (line: number) => void): Extension {
   ]
 }
 
-// --- who wrote the line the caret is on --------------------------------------------
+// --- who last touched each line, in a column left of the numbers ---------------------
 
-export const setBlame = StateEffect.define<BlameRun[] | null>()
+/**
+ * The runs to annotate the file with, null to close the column.
+ *
+ * `text` is the file the runs were read from (the copy on disk). When the
+ * document has moved on from it by the time they arrive, the lines that differ
+ * are not committed whatever the runs say, and are marked so.
+ */
+export const setBlame = StateEffect.define<{ runs: BlameRun[]; text?: string | null } | null>()
 
-class BlameWidget extends WidgetType {
-  constructor(readonly text: string) {
+/** One line's answer: the run it came in with, or null for a line typed since. */
+class LineBlame extends RangeValue {
+  override point = true
+  constructor(readonly run: BlameRun | null) {
+    super()
+  }
+  override eq(other: LineBlame) {
+    return other.run === this.run
+  }
+}
+
+const TYPED = new LineBlame(null)
+
+interface BlameState {
+  /** One value per line, at the line's start, so it moves with the text. */
+  lines: RangeSet<LineBlame>
+  oldest: number
+  span: number
+}
+
+/** The run each line of `text` belongs to, by line number. */
+function linesOf(runs: BlameRun[]) {
+  const out: BlameRun[] = []
+  for (const run of runs) for (let at = 0; at < run.lines; at++) out[run.start - 1 + at] = run
+  return out
+}
+
+function buildBlame(doc: Text, runs: BlameRun[], text: string | null | undefined): BlameState {
+  const byLine = linesOf(runs)
+  // The document against the text the runs describe: the lines they share at
+  // the top and the bottom keep their answer, the ones between were typed.
+  // A run, null for a line typed since, undefined for a line with no answer.
+  let map = (line: number): BlameRun | null | undefined => byLine[line - 1]
+  if (text != null && text !== doc.toString()) {
+    const old = text.split('\n')
+    let top = 0
+    while (top < old.length && top < doc.lines && old[top] === doc.line(top + 1).text) top++
+    let bottom = 0
+    while (
+      bottom < old.length - top &&
+      bottom < doc.lines - top &&
+      old[old.length - 1 - bottom] === doc.line(doc.lines - bottom).text
+    ) {
+      bottom++
+    }
+    const shift = old.length - doc.lines
+    map = (line) => {
+      if (line <= top) return byLine[line - 1]
+      if (line > doc.lines - bottom) return byLine[line - 1 + shift]
+      return null
+    }
+  }
+  const builder = new RangeSetBuilder<LineBlame>()
+  for (let number = 1; number <= doc.lines; number++) {
+    const run = map(number)
+    const line = doc.line(number)
+    // No answer for the empty line after a file's last newline is no mark: it
+    // is not a line git counts. Any other line without one is newer than the
+    // answer (lines added since it was read), so it is not committed yet
+    // rather than a blank in the column.
+    if (run === undefined && number === doc.lines && !line.length) continue
+    builder.add(line.from, line.from, run ? new LineBlame(run) : TYPED)
+  }
+  const times = runs.filter((run) => !run.uncommitted).map((run) => run.time)
+  const newest = times.length ? Math.max(...times) : 0
+  const oldest = times.length ? Math.min(...times) : 0
+  return { lines: builder.finish(), oldest, span: newest - oldest }
+}
+
+/** The answer for the line starting at `from`. */
+function blameAt(set: RangeSet<LineBlame>, from: number): LineBlame | null {
+  let found: LineBlame | null = null
+  set.between(from, from, (start, _to, value) => {
+    if (start !== from) return
+    found = value
+    return false
+  })
+  return found
+}
+
+/**
+ * The answers carried through an edit.
+ *
+ * Lines outside what changed keep theirs, moved with the text. Inside it, a
+ * line still reading as the line it was at either edge of the change (Enter at
+ * the end of a line, a line pasted above another) keeps its answer, and every
+ * other line is new work, not committed yet: no line ever shows the author of
+ * the line that used to be there.
+ */
+function mapBlame(value: BlameState, tr: Transaction): BlameState {
+  const before = tr.startState.doc
+  const after = tr.state.doc
+  let lines = value.lines.map(tr.changes)
+  tr.changes.iterChangedRanges((fromA, toA, fromB, toB) => {
+    const a1 = before.lineAt(fromA).number
+    const a2 = before.lineAt(toA).number
+    const b1 = after.lineAt(fromB).number
+    const b2 = after.lineAt(toB).number
+    const was = (line: number) => blameAt(value.lines, before.line(line).from)
+    const kept = new Map<number, LineBlame | null>()
+    let lo = b1
+    let hi = b2
+    let oldLo = a1
+    let oldHi = a2
+    while (lo <= hi && oldLo <= oldHi && after.line(lo).text === before.line(oldLo).text) {
+      kept.set(lo++, was(oldLo++))
+    }
+    while (hi >= lo && oldHi >= oldLo && after.line(hi).text === before.line(oldHi).text) {
+      kept.set(hi--, was(oldHi--))
+    }
+    const from = after.line(b1).from
+    const to = after.line(b2).to
+    const add: Range<LineBlame>[] = []
+    for (let number = b1; number <= b2; number++) {
+      const mark = kept.has(number) ? kept.get(number) : TYPED
+      if (mark) add.push(mark.range(after.line(number).from))
+    }
+    lines = lines.update({
+      filterFrom: from,
+      filterTo: to,
+      filter: (start) => start < from || start > to,
+      add
+    })
+  })
+  return { ...value, lines }
+}
+
+/** The lines git counts in a text: none for an empty one, no line after the last newline. */
+function countedLines(text: string) {
+  if (!text) return 0
+  return text.split('\n').length - (text.endsWith('\n') ? 1 : 0)
+}
+
+/**
+ * Whether the runs can be the answer for `text`. Blame is read in the
+ * background and the file is saved as it is typed, so an answer can arrive
+ * for a copy of the file that has been saved over since: one with another
+ * number of lines is that, and laid over this text it would put every line
+ * under the change down to the wrong commit.
+ */
+function answers(runs: BlameRun[], text: string) {
+  return runs.reduce((sum, run) => sum + run.lines, 0) === countedLines(text)
+}
+
+const blameField = StateField.define<BlameState | null>({
+  create: () => null,
+  update(value, tr) {
+    for (const effect of tr.effects) {
+      if (effect.is(setBlame)) {
+        const asked = effect.value
+        if (!asked) return null
+        if (asked.text != null && !answers(asked.runs, asked.text)) {
+          // The column there is has followed every edit since: it stays until
+          // the answer for the file as saved comes in. With none yet, the runs
+          // are laid over the lines as they stand.
+          return value ? (tr.docChanged ? mapBlame(value, tr) : value) : buildBlame(tr.state.doc, asked.runs, null)
+        }
+        return buildBlame(tr.state.doc, asked.runs, asked.text)
+      }
+    }
+    return value && tr.docChanged ? mapBlame(value, tr) : value
+  }
+})
+
+/** The run a line was blamed on, null for none or one typed since. */
+export function blameOfLine(state: EditorState, line: number): BlameRun | null {
+  const field = state.field(blameField, false)
+  if (!field || line < 1 || line > state.doc.lines) return null
+  return blameAt(field.lines, state.doc.line(line).from)?.run ?? null
+}
+
+/** Whether the column is open. */
+export function blameShown(state: EditorState) {
+  return !!state.field(blameField, false)
+}
+
+/** Lines typed since and lines blame calls uncommitted read as one change. */
+const groupOf = (blame: LineBlame | null) => {
+  if (!blame) return null
+  return !blame.run || blame.run.uncommitted ? 'new' : blame.run
+}
+
+class BlameMarker extends GutterMarker {
+  constructor(
+    readonly run: BlameRun | null,
+    readonly head: boolean,
+    readonly age: number
+  ) {
     super()
   }
 
-  override eq(other: BlameWidget) {
-    return other.text === this.text
+  override eq(other: BlameMarker) {
+    return other.run === this.run && other.head === this.head && other.age === this.age
   }
 
   override toDOM() {
-    const span = document.createElement('span')
-    span.className = 'cm-blame'
-    span.textContent = this.text
-    return span
+    const element = document.createElement('div')
+    const fresh = !this.run || this.run.uncommitted
+    element.className = `cm-blame-entry${this.head ? ' head' : ''}${fresh ? ' fresh' : ''}`
+    element.title = blameTooltip(this.run)
+    if (!fresh) {
+      element.style.setProperty('--blame-tint', tint(this.run!.email || this.run!.author))
+      element.style.setProperty('--blame-age', String(this.age))
+    }
+    if (this.head) {
+      if (fresh) {
+        const note = document.createElement('span')
+        note.className = 'cm-blame-who'
+        note.textContent = 'Not committed yet'
+        element.append(note)
+      } else {
+        const date = document.createElement('span')
+        date.className = 'cm-blame-date'
+        date.textContent = blameDate(this.run!.time)
+        const who = document.createElement('span')
+        who.className = 'cm-blame-who'
+        who.textContent = this.run!.author
+        element.append(date, who)
+      }
+    }
+    return element
   }
 }
 
-function blameText(run: BlameRun) {
-  if (run.uncommitted) return 'Not committed yet · you'
-  return `${run.author}, ${relativeTime(run.time)} · ${run.summary}`
+const blameOn = EditorView.editorAttributes.compute([blameField], (state): Record<string, string> =>
+  state.field(blameField) ? { class: 'cm-blame-on' } : {}
+)
+
+/**
+ * The blame column, the way an IDE annotates a file: the date and the author
+ * on the first line of each run of lines from one commit, a bar in the
+ * author's colour down the run, and newer commits shaded stronger than old
+ * ones. Markers are made for the lines on screen only, read off a range set
+ * that moves with the text, so a file of twenty thousand lines costs a
+ * screenful of them.
+ *
+ * `open` is called with the run of a clicked entry and the entry's element,
+ * which the popover it opens hangs from. A line not committed yet has no
+ * commit to open, and a click on it does nothing.
+ */
+export function blameGutter(open: (run: BlameRun, entry: HTMLElement | null) => void): Extension {
+  return [
+    blameField,
+    blameOn,
+    Prec.high(
+      gutter({
+        class: 'cm-blameGutter',
+        lineMarker(view, line) {
+          const field = view.state.field(blameField)
+          if (!field) return null
+          const here = blameAt(field.lines, line.from)
+          if (!here) return null
+          const number = view.state.doc.lineAt(line.from).number
+          const above = number > 1 ? blameAt(field.lines, view.state.doc.line(number - 1).from) : null
+          const head = number === 1 || groupOf(above) !== groupOf(here)
+          const run = here.run
+          const age =
+            run && !run.uncommitted && field.span > 0 ? (run.time - field.oldest) / field.span : 1
+          return new BlameMarker(run, head, Math.round(age * 20) / 20)
+        },
+        lineMarkerChange: (update) =>
+          update.startState.field(blameField) !== update.state.field(blameField),
+        domEventHandlers: {
+          mousedown(view, line, event) {
+            if ((event as MouseEvent).button !== 0) return false
+            const run = blameAt(view.state.field(blameField)?.lines ?? RangeSet.empty, line.from)?.run
+            if (!run || run.uncommitted) return false
+            const target = event.target as Element | null
+            open(run, (target?.closest?.('.cm-gutterElement') as HTMLElement | null) ?? null)
+            return true
+          }
+        }
+      })
+    )
+  ]
 }
-
-const blameRuns = StateField.define<BlameRun[] | null>({
-  create: () => null,
-  update(value, tr) {
-    for (const effect of tr.effects) if (effect.is(setBlame)) return effect.value
-    // The runs count lines of the file as it was last saved. Typed in, a
-    // line number means another line, and the blame would be somebody
-    // else's; it comes back with the next read.
-    return tr.docChanged ? null : value
-  }
-})
-
-const blameLine = StateField.define<DecorationSet>({
-  create: () => Decoration.none,
-  update(_value, tr) {
-    const runs = tr.state.field(blameRuns)
-    if (!runs?.length) return Decoration.none
-    const line = tr.state.doc.lineAt(tr.state.selection.main.head)
-    const run = runs.find((one) => line.number >= one.start && line.number < one.start + one.lines)
-    if (!run) return Decoration.none
-    return Decoration.set([
-      Decoration.widget({ widget: new BlameWidget(blameText(run)), side: 1 }).range(line.to)
-    ])
-  },
-  provide: (field) => EditorView.decorations.from(field)
-})
-
-export const inlineBlame: Extension = [blameRuns, blameLine]
 
 // --- the find box's matches ---------------------------------------------------------
 
@@ -603,6 +902,11 @@ export function editorKeys(own: KeyBinding[]): Extension {
   return keymap.of([...own, indentWithTab, ...historyKeymap, ...kept])
 }
 
+/** `cm-hasSelection` on the editor while any text is selected. */
+const hasSelection = EditorView.editorAttributes.compute(['selection'], (state): Record<string, string> =>
+  state.selection.ranges.some((range) => !range.empty) ? { class: 'cm-hasSelection' } : {}
+)
+
 /** Everything a view starts with apart from its document, language and keys. */
 export function basics(): Extension {
   return [
@@ -610,6 +914,7 @@ export function basics(): Extension {
     highlightActiveLineGutter(),
     highlightActiveLine(),
     drawSelection(),
+    hasSelection,
     bracketMatching(),
     chrome,
     findHighlight,

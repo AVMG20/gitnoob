@@ -309,28 +309,46 @@ fn grammar(lang: Lang) -> Option<&'static Grammar> {
 
 /// Byte offsets to lines and to UTF-16 offsets, which is how the editor
 /// counts.
+///
+/// A minified bundle is one line of a megabyte with tens of thousands of
+/// names on it, and counting from the start of the line for each of them
+/// was quadratic. An ASCII line needs no counting, and on any other line the
+/// count carries on from the last position asked for, since the parsers ask
+/// in order.
 struct Lines<'a> {
     text: &'a str,
     starts: Vec<usize>,
     utf16: Vec<u32>,
+    /// Whether each line is plain ASCII, where bytes and UTF-16 units agree.
+    ascii: Vec<bool>,
+    /// The last position counted: `(line, byte, column)`.
+    last: std::cell::Cell<(usize, usize, u32)>,
 }
 
 impl<'a> Lines<'a> {
     fn new(text: &'a str) -> Self {
         let mut starts = vec![0];
         let mut utf16 = vec![0u32];
+        let mut ascii = Vec::new();
+        let mut plain = true;
         let mut units = 0u32;
         for (at, ch) in text.char_indices() {
             units += ch.len_utf16() as u32;
+            plain &= ch.is_ascii();
             if ch == '\n' {
                 starts.push(at + 1);
                 utf16.push(units);
+                ascii.push(plain);
+                plain = true;
             }
         }
+        ascii.push(plain);
         Lines {
             text,
             starts,
             utf16,
+            ascii,
+            last: std::cell::Cell::new((usize::MAX, 0, 0)),
         }
     }
 
@@ -338,11 +356,24 @@ impl<'a> Lines<'a> {
     fn at(&self, byte: usize) -> (u32, u32, u32) {
         let line = self.starts.partition_point(|start| *start <= byte) - 1;
         let start = self.starts[line];
-        let column = self
-            .text
-            .get(start..byte)
-            .map(|part| part.encode_utf16().count() as u32)
-            .unwrap_or(0);
+        let column = if self.ascii[line] {
+            byte.min(self.text.len()).saturating_sub(start) as u32
+        } else {
+            let (last_line, last_byte, last_column) = self.last.get();
+            let (from, base) = if last_line == line && last_byte <= byte {
+                (last_byte, last_column)
+            } else {
+                (start, 0)
+            };
+            match self.text.get(from..byte) {
+                Some(part) => {
+                    let column = base + part.encode_utf16().count() as u32;
+                    self.last.set((line, byte, column));
+                    column
+                }
+                None => 0,
+            }
+        };
         (line as u32 + 1, column, self.utf16[line] + column)
     }
 }
@@ -1134,7 +1165,14 @@ fn index_many(root: &Path, paths: &[String]) -> Vec<(String, Indexed)> {
                     loop {
                         let at = next.fetch_add(1, Ordering::Relaxed);
                         let Some(path) = paths.get(at) else { break };
-                        done.push((path.clone(), index_file(root, path)));
+                        // One file a parser trips over is left out of the
+                        // index; it does not take the rest of this worker's
+                        // files with it.
+                        let read = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                            index_file(root, path)
+                        }))
+                        .unwrap_or((None, None));
+                        done.push((path.clone(), read));
                     }
                     done
                 })
@@ -1178,7 +1216,23 @@ fn named_paths(root: &Path) -> Vec<String> {
 }
 
 fn build_into(root: &Path, shared: &Shared) {
+    /// Says the index is ready however the build ends: a panic part-way
+    /// left every caller of `ready()` waiting for good.
+    struct Opens<'a>(&'a Shared);
+    impl Drop for Opens<'_> {
+        fn drop(&mut self) {
+            let mut ready = self
+                .0
+                .ready
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            *ready = true;
+            drop(ready);
+            self.0.done.notify_all();
+        }
+    }
     let root = key(root);
+    let opens = Opens(shared);
     let paths = named_paths(&root);
     let built = index_many(&root, &paths);
     if let Ok(mut index) = shared.index.write() {
@@ -1186,10 +1240,7 @@ fn build_into(root: &Path, shared: &Shared) {
         index.stamps.clear();
         apply(&mut index, built, None);
     }
-    if let Ok(mut ready) = shared.ready.lock() {
-        *ready = true;
-    }
-    shared.done.notify_all();
+    drop(opens);
     // A save that landed while this was reading was not heard by anyone.
     while shared.missed.swap(false, Ordering::SeqCst) {
         catch_up(&root, shared);
@@ -1319,9 +1370,15 @@ fn ready(root: &Path) -> Result<Arc<Shared>, String> {
     if mine {
         build_into(&root, &shared);
     }
-    let mut done = shared.ready.lock().map_err(|e| e.to_string())?;
+    let mut done = shared
+        .ready
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
     while !*done {
-        done = shared.done.wait(done).map_err(|e| e.to_string())?;
+        done = shared
+            .done
+            .wait(done)
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
     }
     drop(done);
     Ok(shared)
@@ -1333,19 +1390,6 @@ fn ready(root: &Path) -> Result<Arc<Shared>, String> {
 pub fn touched(root: &Path, paths: &HashSet<PathBuf>) {
     let given = root.to_path_buf();
     let root = key(root);
-    let shared = match indexes().lock() {
-        Ok(all) => all.get(&root).cloned(),
-        Err(_) => None,
-    };
-    let Some(shared) = shared else { return };
-    if !shared.ready.lock().map(|ready| *ready).unwrap_or(false) {
-        // Still being built: said first and checked again after, so the
-        // build either sees the note or has already finished.
-        shared.missed.store(true, Ordering::SeqCst);
-        if !shared.ready.lock().map(|ready| *ready).unwrap_or(false) {
-            return;
-        }
-    }
     let mut relatives: Vec<String> = Vec::new();
     for path in paths {
         // A deleted file cannot be resolved, but its folder can: events come
@@ -1366,18 +1410,33 @@ pub fn touched(root: &Path, paths: &HashSet<PathBuf>) {
         else {
             continue;
         };
-        let relative = inner
-            .components()
-            .map(|part| part.as_os_str().to_string_lossy().into_owned())
-            .collect::<Vec<_>>()
-            .join("/");
-        if lang_of(&relative).is_some() && !generated(&relative) {
-            relatives.push(relative);
-        }
+        relatives.push(
+            inner
+                .components()
+                .map(|part| part.as_os_str().to_string_lossy().into_owned())
+                .collect::<Vec<_>>()
+                .join("/"),
+        );
     }
+    // Any file can spell a name, in any language.
+    forget_seen(&root, &relatives);
+    relatives.retain(|relative| lang_of(relative).is_some() && !generated(relative));
     // Most bursts are the index, a lock file, a log: nothing to read.
     if relatives.is_empty() {
         return;
+    }
+    let shared = match indexes().lock() {
+        Ok(all) => all.get(&root).cloned(),
+        Err(_) => None,
+    };
+    let Some(shared) = shared else { return };
+    if !shared.ready.lock().map(|ready| *ready).unwrap_or(false) {
+        // Still being built: said first and checked again after, so the
+        // build either sees the note or has already finished.
+        shared.missed.store(true, Ordering::SeqCst);
+        if !shared.ready.lock().map(|ready| *ready).unwrap_or(false) {
+            return;
+        }
     }
     let listed = match files::all_files(&root) {
         Ok(all) => all,
@@ -1404,6 +1463,62 @@ pub fn touched(root: &Path, paths: &HashSet<PathBuf>) {
 pub fn forget(root: &Path) {
     if let Ok(mut all) = indexes().lock() {
         all.remove(&key(root));
+    }
+    if let Ok(mut all) = seen_cache().lock() {
+        all.remove(&key(root));
+    }
+}
+
+/// How long a text search's answer for `unused_in` is trusted when the
+/// watcher has said nothing, for the filesystems it cannot watch.
+const SEEN_STALE: std::time::Duration = std::time::Duration::from_secs(60);
+
+/// The last text search `unused_in` made per file: the names it looked for,
+/// which of them other files spell, and when. Saving a file with an unused
+/// method in it searched the whole tree again on every save, and only a
+/// change to some other file can change the answer.
+struct Seen {
+    at: std::time::Instant,
+    names: Vec<String>,
+    found: HashSet<String>,
+}
+
+type SeenCache = Mutex<HashMap<PathBuf, HashMap<String, Seen>>>;
+
+fn seen_cache() -> &'static SeenCache {
+    static CACHE: OnceLock<SeenCache> = OnceLock::new();
+    CACHE.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+/// Drops the remembered searches that a change to `changed` could answer
+/// differently: every one but the file's own.
+fn forget_seen(root: &Path, changed: &[String]) {
+    if changed.is_empty() {
+        return;
+    }
+    if let Ok(mut all) = seen_cache().lock() {
+        if let Some(files) = all.get_mut(root) {
+            files.retain(|path, _| changed.iter().all(|other| other == path));
+        }
+    }
+}
+
+fn seen_before(root: &Path, path: &str, names: &[String]) -> Option<HashSet<String>> {
+    let all = seen_cache().lock().ok()?;
+    let seen = all.get(root)?.get(path)?;
+    (seen.names == names && seen.at.elapsed() < SEEN_STALE).then(|| seen.found.clone())
+}
+
+fn remember_seen(root: &Path, path: &str, names: Vec<String>, found: &HashSet<String>) {
+    if let Ok(mut all) = seen_cache().lock() {
+        all.entry(root.to_path_buf()).or_default().insert(
+            path.to_string(),
+            Seen {
+                at: std::time::Instant::now(),
+                names,
+                found: found.clone(),
+            },
+        );
     }
 }
 
@@ -1804,7 +1919,10 @@ pub fn find_symbols_at(root: &Path, query: &str, limit: usize) -> Result<Vec<Fou
     let pattern = Pattern::parse(query, CaseMatching::Smart, Normalization::Smart);
     let capitals = files::is_initials(query);
     let mut buffer = Vec::new();
-    let mut scored: Vec<(u32, FoundSymbol)> = Vec::new();
+    // Scored by reference first; names and paths are copied, and the matched
+    // letters worked out, only for the few that are kept. A one-letter query
+    // matches most of an index of hundreds of thousands of names.
+    let mut scored: Vec<(u32, &String, &Symbol, Option<Vec<u32>>)> = Vec::new();
     for (path, held) in index.files.iter() {
         for symbol in &held.symbols {
             if !symbol.definition || !FINDABLE.contains(&symbol.kind) {
@@ -1821,31 +1939,7 @@ pub fn find_symbols_at(root: &Path, query: &str, limit: usize) -> Result<Vec<Fou
                 (None, Some(score)) => score.min(99_999),
                 (None, None) => continue,
             };
-            let indices = match shaped {
-                Some((_, indices)) => indices,
-                None => {
-                    let mut indices = Vec::new();
-                    pattern.indices(
-                        Utf32Str::new(&symbol.name, &mut buffer),
-                        &mut matcher,
-                        &mut indices,
-                    );
-                    indices.sort_unstable();
-                    indices.dedup();
-                    indices
-                }
-            };
-            scored.push((
-                score,
-                FoundSymbol {
-                    name: symbol.name.clone(),
-                    kind: symbol.kind,
-                    path: path.clone(),
-                    line: symbol.line,
-                    column: symbol.column,
-                    indices,
-                },
-            ));
+            scored.push((score, path, symbol, shaped.map(|(_, indices)| indices)));
         }
     }
     // Best first; between equals the shorter name, then a type before what is
@@ -1855,16 +1949,46 @@ pub fn find_symbols_at(root: &Path, query: &str, limit: usize) -> Result<Vec<Fou
         "function" | "macro" => 1,
         _ => 2,
     };
-    scored.sort_by(|(a_score, a), (b_score, b)| {
-        b_score
-            .cmp(a_score)
-            .then_with(|| a.name.len().cmp(&b.name.len()))
-            .then_with(|| rank(a.kind).cmp(&rank(b.kind)))
-            .then_with(|| a.path.cmp(&b.path))
-            .then_with(|| a.line.cmp(&b.line))
-    });
-    scored.truncate(limit.max(1));
-    Ok(scored.into_iter().map(|(_, found)| found).collect())
+    let order =
+        |(a_score, a_path, a, _): &(u32, &String, &Symbol, Option<Vec<u32>>),
+         (b_score, b_path, b, _): &(u32, &String, &Symbol, Option<Vec<u32>>)| {
+            b_score
+                .cmp(a_score)
+                .then_with(|| a.name.len().cmp(&b.name.len()))
+                .then_with(|| rank(a.kind).cmp(&rank(b.kind)))
+                .then_with(|| a_path.cmp(b_path))
+                .then_with(|| a.line.cmp(&b.line))
+        };
+    let keep = limit.max(1);
+    if scored.len() > keep {
+        scored.select_nth_unstable_by(keep - 1, order);
+        scored.truncate(keep);
+    }
+    scored.sort_by(order);
+    Ok(scored
+        .into_iter()
+        .map(|(_, path, symbol, shaped)| {
+            let indices = shaped.unwrap_or_else(|| {
+                let mut indices = Vec::new();
+                pattern.indices(
+                    Utf32Str::new(&symbol.name, &mut buffer),
+                    &mut matcher,
+                    &mut indices,
+                );
+                indices.sort_unstable();
+                indices.dedup();
+                indices
+            });
+            FoundSymbol {
+                name: symbol.name.clone(),
+                kind: symbol.kind,
+                path: path.clone(),
+                line: symbol.line,
+                column: symbol.column,
+                indices,
+            }
+        })
+        .collect())
 }
 
 /// How sure a usage is: the receiver is the class or one in its hierarchy,
@@ -2301,11 +2425,24 @@ pub fn usages(
     kind: Option<&str>,
     line: Option<u32>,
 ) -> Result<UsageList, String> {
+    usages_in(state, name, from, kind, line, None)
+}
+
+/// [`usages`] with the editor's text for `from`, which may be ahead of the
+/// disk: `line` counts in that text, and the definition is picked by it.
+pub fn usages_in(
+    state: &AppState,
+    name: &str,
+    from: Option<&str>,
+    kind: Option<&str>,
+    line: Option<u32>,
+    text: Option<&str>,
+) -> Result<UsageList, String> {
     let root = key(&state.path()?);
     let shared = ready(&root)?;
     let family = from.and_then(family_of);
     let parsed = match (from, family) {
-        (Some(from), Some(_)) => current_text(&root, from, None)
+        (Some(from), Some(_)) => current_text(&root, from, text)
             .ok()
             .map(|text| symbols_in(from, &text)),
         _ => None,
@@ -2418,12 +2555,21 @@ pub struct Lens {
 
 /// How many usages each function, method and class in a file has, counted
 /// in the index for other files and in `text` for this one.
+/// Past what the editor will edit, a file is generated or data: no marks or
+/// counts, the same as the index leaves out files past [`MAX_FILE`].
+fn too_big_to_mark(text: &str) -> bool {
+    text.len() > crate::edit::MAX_EDIT
+}
+
 pub fn usage_counts(state: &AppState, path: &str, text: Option<&str>) -> Result<Vec<Lens>, String> {
     let root = key(&state.path()?);
     let Some(family) = family_of(path) else {
         return Ok(Vec::new());
     };
     let text = current_text(&root, path, text)?;
+    if too_big_to_mark(&text) {
+        return Ok(Vec::new());
+    }
     let parsed = symbols_in(path, &text);
     let shared = ready(&root)?;
     let index = shared.index.read().map_err(|e| e.to_string())?;
@@ -2492,6 +2638,9 @@ fn ident_char(c: char) -> bool {
 
 /// Whole-word occurrences of `word` in `text`. A word starting with `$` (a PHP
 /// variable) may follow anything but another `$`.
+/// Functions longer than this are not checked for unused locals.
+const MAX_LOCALS_BODY: usize = 64 * 1024;
+
 fn count_words(text: &str, word: &str, case: bool) -> usize {
     if word.is_empty() {
         return 0;
@@ -2588,6 +2737,11 @@ fn unused_locals(lang: Lang, tree: &Tree, source: &str, text: &str, lines: &Line
         // The function as written, template and all: blanked parts of a
         // `.vue` file are never inside a function.
         let body = text.get(scope.byte_range()).unwrap_or("");
+        // A function this big is generated or bundled, and each of its
+        // declarations would scan all of it again.
+        if body.len() > MAX_LOCALS_BODY {
+            continue;
+        }
         if risky.iter().any(|word| body.contains(word)) {
             continue;
         }
@@ -2702,7 +2856,11 @@ pub fn unused_in(
     if lang_of(path).is_none() || skipped(path) {
         return Ok(Vec::new());
     }
+    let edited = text.is_some();
     let text = current_text(&root, path, text)?;
+    if too_big_to_mark(&text) {
+        return Ok(Vec::new());
+    }
     let Parsed {
         lang,
         source,
@@ -2722,11 +2880,24 @@ pub fn unused_in(
     // `this[`on${evt}`]()`) is spelled nowhere in full, so the text search
     // cannot vouch for it. In a file that calls that way, no method is marked.
     let dynamic = calls_by_built_name(lang, &text);
+    let lowered = if case {
+        String::new()
+    } else {
+        text.to_lowercase()
+    };
     let candidates: Vec<&Symbol> = symbols
         .iter()
         .filter(|s| s.callable() && !s.entry && !s.name.contains('$'))
         .filter(|s| !(dynamic && s.kind == "method"))
-        .filter(|s| count_words(&text, &s.name, case) == 1)
+        .filter(|s| {
+            // PHP names ignore case: lowered once for the file, not once
+            // for each name in it.
+            if case {
+                count_words(&text, &s.name, true) == 1
+            } else {
+                count_words(&lowered, &s.name.to_lowercase(), true) == 1
+            }
+        })
         .collect();
     if !candidates.is_empty() {
         let shared = ready(&root)?;
@@ -2754,10 +2925,25 @@ pub fn unused_in(
         if !survivors.is_empty() {
             // The last word: the text search, over every file git does not
             // ignore, in any language. All the names in one pass.
-            let names: Vec<String> = survivors.iter().map(|s| s.name.clone()).collect();
-            let Some(seen) = search::words_found(&root, &names, case, Some(path), &superseded)?
-            else {
+            let mut names: Vec<String> = survivors.iter().map(|s| s.name.clone()).collect();
+            names.sort();
+            names.dedup();
+            // An older request than the newest gives up either way: the
+            // window drops its answer.
+            if superseded() {
                 return Ok(Vec::new());
+            }
+            let seen = match seen_before(&root, path, &names) {
+                Some(seen) => seen,
+                None => {
+                    let Some(seen) =
+                        search::words_found(&root, &names, case, Some(path), &superseded)?
+                    else {
+                        return Ok(Vec::new());
+                    };
+                    remember_seen(&root, path, names, &seen);
+                    seen
+                }
             };
             for symbol in survivors {
                 let name = if case {
@@ -2796,7 +2982,14 @@ pub fn unused_in(
     }
     marks.extend(unused_locals(lang, &tree, &source, &text, &lines));
 
-    if !marks.is_empty() {
+    // Which lines are new comes from the disk; with unsaved edits the lines
+    // are counted in another text, and a mark would land on the wrong one.
+    let same_as_disk = !edited
+        || current_text(&root, path, None).is_ok_and(|disk| {
+            // The editor has `\n` and no byte order mark, whatever the disk has.
+            disk.trim_start_matches('\u{feff}').replace("\r\n", "\n") == text.replace("\r\n", "\n")
+        });
+    if !marks.is_empty() && same_as_disk {
         let added = crate::diff::branch_added_lines(state, path).unwrap_or_default();
         for mark in marks.iter_mut() {
             mark.new = added.contains(&mark.line);
@@ -2887,5 +3080,44 @@ mod tests {
         assert_eq!(lines.at(6), (1, 3, 3));
         assert_eq!(lines.at(8), (2, 0, 5));
         assert_eq!(byte_at_utf16("é😀x", 3), 6);
+    }
+
+    #[test]
+    fn offsets_agree_with_counting_in_any_order() {
+        let text = "ab\né😀 one 😀 two é three\nplain line\n😀";
+        let lines = Lines::new(text);
+        let naive = |byte: usize| {
+            let line = text[..byte].matches('\n').count();
+            let start = text[..byte].rfind('\n').map_or(0, |at| at + 1);
+            let column = text[start..byte].encode_utf16().count() as u32;
+            let offset = text[..byte].encode_utf16().count() as u32;
+            (line as u32 + 1, column, offset)
+        };
+        let mut bytes: Vec<usize> = (0..=text.len())
+            .filter(|&at| text.is_char_boundary(at))
+            .collect();
+        // Forward, then backward, then forward again: the carried count must
+        // not leak from one position to an earlier one.
+        let forward = bytes.clone();
+        bytes.reverse();
+        for &at in forward.iter().chain(&bytes).chain(&forward) {
+            assert_eq!(lines.at(at), naive(at), "at byte {at}");
+        }
+    }
+
+    #[test]
+    fn a_minified_line_is_not_quadratic() {
+        let mut text = String::from("é");
+        for at in 0..60_000 {
+            text.push_str(&format!("function f{at}(){{}};"));
+        }
+        let lines = Lines::new(&text);
+        let started = std::time::Instant::now();
+        let mut last = 0;
+        for (at, _) in text.match_indices("function") {
+            last = lines.at(at).1;
+        }
+        assert!(last > 0);
+        assert!(started.elapsed() < std::time::Duration::from_secs(5));
     }
 }

@@ -50,6 +50,7 @@ const letters = (text: string, tone: string, label: string) => icon('letters', t
 const GENERIC = icon('file', 'plain', 'File')
 
 const PHP = letters('P', 'php', 'PHP')
+const PHTML = letters('P', 'php', 'PHP template')
 const BLADE = letters('B', 'blade', 'Blade template')
 const JS = letters('JS', 'js', 'JavaScript')
 const TS = letters('TS', 'ts', 'TypeScript')
@@ -69,7 +70,7 @@ const GIT = icon('git', 'git', 'Git')
 /** By extension, lowercase, without the dot. */
 const BY_EXT: Record<string, FileIconSpec> = {
   php: PHP,
-  phtml: PHP,
+  phtml: PHTML,
   js: JS,
   mjs: JS,
   cjs: JS,

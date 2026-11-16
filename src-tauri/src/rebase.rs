@@ -1121,9 +1121,14 @@ pub fn abort(state: &AppState) -> Result<String, String> {
     crate::rewrite::clear_for_abort(state);
     let out = git_cmd::run(&root, &["rebase", "--abort"])?;
     journal::finish_pending(state, waiting);
-    clear_marks(&git_dir);
-    // Nothing was moved: git only moves the stacked branches at the very end.
-    let _ = std::fs::remove_file(git_dir.join(CARRIED));
+    // Only once the rebase is really gone: an abort that failed (a stale
+    // `index.lock`) leaves it in progress, and the next continue still needs
+    // to know which stops are rewords and which branches ride along.
+    if !still_rebasing(&git_dir) {
+        clear_marks(&git_dir);
+        // Nothing was moved: git only moves the stacked branches at the very end.
+        let _ = std::fs::remove_file(git_dir.join(CARRIED));
+    }
     if out.ok {
         let mut said = "Rebase abandoned; the branch is as it was".to_string();
         if let Some(kept) = kept {

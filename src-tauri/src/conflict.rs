@@ -473,6 +473,25 @@ pub fn resolve(state: &AppState, path: &str, choices: &[Resolution]) -> Result<S
 /// it, so that is what happens.
 pub fn resolve_whole(state: &AppState, path: &str, side: &str) -> Result<String, String> {
     let root = state.path()?;
+    // The copy on disk is replaced, and it may hold edits made by hand that
+    // are in no stage of the index: saved first, so undo has them.
+    crate::work::throw_away_saved(
+        state,
+        &root,
+        &[path.to_string()],
+        "discard",
+        format!("Take {side} for {path}"),
+        || take_side(state, &root, path, side),
+    )
+}
+
+/// [`resolve_whole`] without saving the file first.
+fn take_side(
+    state: &AppState,
+    root: &std::path::Path,
+    path: &str,
+    side: &str,
+) -> Result<String, String> {
     let found = stages(state, path)?;
     let (kept, flag) = match side {
         "ours" => (found.ours, "--ours"),
@@ -482,15 +501,14 @@ pub fn resolve_whole(state: &AppState, path: &str, side: &str) -> Result<String,
 
     if !kept {
         // `-f` because the working tree holds the other side's content, which
-        // git would otherwise refuse to throw away. That content is still in
-        // the index stage it came from until the conflict is finished.
-        git_cmd::run_checked(&root, &["rm", "-f", "--", &literal(path)])?;
+        // git would otherwise refuse to throw away.
+        git_cmd::run_checked(root, &["rm", "-f", "--", &literal(path)])?;
         return Ok(format!("Deleted {path}, which is what {side} did to it"));
     }
 
-    git_cmd::run_checked(&root, &["checkout", flag, "--", &literal(path)])?;
-    git_cmd::run_checked(&root, &["add", "--", &literal(path)])?;
-    remember_resolution(state, &root);
+    git_cmd::run_checked(root, &["checkout", flag, "--", &literal(path)])?;
+    git_cmd::run_checked(root, &["add", "--", &literal(path)])?;
+    remember_resolution(state, root);
     Ok(format!("Resolved {path} using {side}"))
 }
 
@@ -505,9 +523,20 @@ pub fn resolve_all(state: &AppState, side: &str) -> Result<String, String> {
     if paths.is_empty() {
         return Ok("Nothing was conflicted".to_string());
     }
-    for path in &paths {
-        resolve_whole(state, path, side)?;
-    }
+    let root = state.path()?;
+    // One step in the undo history for the lot, not one per file.
+    crate::work::throw_away_saved(
+        state,
+        &root,
+        &paths,
+        "discard",
+        format!("Take {side} for {} conflicted files", paths.len()),
+        || {
+            paths
+                .iter()
+                .try_for_each(|path| take_side(state, &root, path, side).map(|_| ()))
+        },
+    )?;
     Ok(format!(
         "Resolved {} {} using {side}",
         paths.len(),
@@ -702,6 +731,24 @@ pub fn discard(state: &AppState, paths: &[String]) -> Result<String, String> {
         return Err("Nothing to throw away".to_string());
     }
     let root = state.path()?;
+    // The copies on disk may hold hand edits that are in no stage of the
+    // index; saved first, so the undo history can bring them back.
+    let label = match paths {
+        [one] => format!("Throw away the conflict in {one}"),
+        many => format!("Throw away {} conflicted files", many.len()),
+    };
+    crate::work::throw_away_saved(state, &root, paths, "discard", label, || {
+        discard_each(&root, paths)
+    })?;
+    Ok(format!(
+        "Threw away {} conflicted {}",
+        paths.len(),
+        if paths.len() == 1 { "file" } else { "files" }
+    ))
+}
+
+fn discard_each(root: &std::path::Path, paths: &[String]) -> Result<(), String> {
+    let root = root.to_path_buf();
     for path in paths {
         // A pathspec after `--` still wildmatches, so a file called `a*.txt`
         // would take others with it. The literal form names the one file.
@@ -726,11 +773,7 @@ pub fn discard(state: &AppState, paths: &[String]) -> Result<String, String> {
             git_cmd::run_checked(&root, &["rm", "-f", "--", &spec])?;
         }
     }
-    Ok(format!(
-        "Threw away {} conflicted {}",
-        paths.len(),
-        if paths.len() == 1 { "file" } else { "files" }
-    ))
+    Ok(())
 }
 
 /// Whether the commit that is checked out has this path in it.

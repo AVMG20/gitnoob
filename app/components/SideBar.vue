@@ -786,6 +786,13 @@ function onRemoteScroll(event: Event) {
 async function onDropOnBranch(event: MouseEvent, target: string, targetIsRemote: boolean) {
   const payload = drag.take(['branch', 'commit', 'stash'])
   if (!payload) return
+  // One git write at a time: a second merge dropped while the first is still
+  // stashing and switching would work on a repository halfway between two
+  // branches.
+  if (store.busy) {
+    git.note('Wait for the git command that is running to finish, then drop again', 'error')
+    return
+  }
 
   if (payload.kind === 'commit') {
     menu.show(
@@ -796,6 +803,7 @@ async function onDropOnBranch(event: MouseEvent, target: string, targetIsRemote:
           icon: GitBranch,
           hint: target === head.value ? '' : 'checks out first',
           action: async () => {
+            if (store.busy) return
             if (target !== head.value) {
               await git.checkout(target)
               // A switch that was refused has already said why; picking onto
@@ -821,7 +829,14 @@ async function onDropOnBranch(event: MouseEvent, target: string, targetIsRemote:
           label: `Apply this stash on ${target}`,
           icon: Archive,
           action: async () => {
-            if (target !== head.value) await git.checkout(target)
+            if (store.busy) return
+            if (target !== head.value) {
+              await git.checkout(target)
+              // A refused switch has said why; applying the stash to the
+              // branch still checked out would put it on the wrong one.
+              const local = targetIsRemote ? target.slice(target.indexOf('/') + 1) : target
+              if (store.repo?.head !== local) return
+            }
             await git.stashApply(payload.index)
           }
         }
@@ -886,6 +901,7 @@ async function onDropOnBranch(event: MouseEvent, target: string, targetIsRemote:
             ? `${conflicted} to resolve`
             : '',
         action: async () => {
+          if (store.busy) return
           const outcome = await git.mergeInto(source, target, fastForward)
           if (outcome?.conflicts.length) store.resolving = outcome.conflicts[0] ?? null
         }
@@ -898,7 +914,7 @@ async function onDropOnBranch(event: MouseEvent, target: string, targetIsRemote:
               label: `Fast-forward ${target} to ${source}`,
               icon: GitMerge,
               hint: 'no merge commit',
-              action: () => git.mergeInto(source, target, false)
+              action: () => (store.busy ? undefined : git.mergeInto(source, target, false))
             }
           ]
         : []),
@@ -912,6 +928,7 @@ async function onDropOnBranch(event: MouseEvent, target: string, targetIsRemote:
               hint: `${behind} rewritten`,
               danger: true,
               action: async () => {
+                if (store.busy) return
                 const outcome = await git.rebaseBranch(target, source)
                 if (outcome?.conflicts.length) store.resolving = outcome.conflicts[0] ?? null
               }
@@ -1743,7 +1760,7 @@ function submoduleMenu(event: MouseEvent, one: Submodule) {
             label: 'Type the path to confirm',
             confirm: 'Remove it',
             danger: true,
-            hint: 'Out of the folder, out of the index and out of .gitmodules. Commit afterwards to record it.',
+            hint: 'Out of the folder, out of the index and out of .gitmodules. Git refuses if it holds uncommitted work. Commit afterwards to record it.',
             run: (value) => {
               if (value === one.path) void removeSubmodule(one)
               else git.note('Path did not match; nothing was removed', 'error')

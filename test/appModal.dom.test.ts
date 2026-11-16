@@ -1,5 +1,5 @@
 // @vitest-environment happy-dom
-import { mount } from '@vue/test-utils'
+import { flushPromises, mount } from '@vue/test-utils'
 import { describe, expect, it } from 'vitest'
 import AppModal from '~/components/AppModal.vue'
 
@@ -45,5 +45,32 @@ describe('the modal scrim', () => {
     window.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape' }))
     expect(wrapper.emitted('close')).toHaveLength(2)
     wrapper.unmount()
+  })
+})
+
+describe('focus and the modal', () => {
+  it('moves into the box, keeps Tab inside it, and goes back where it was on closing', async () => {
+    const trigger = document.createElement('button')
+    document.body.appendChild(trigger)
+    trigger.focus()
+    const wrapper = mount(AppModal, {
+      attachTo: document.body,
+      props: { title: 'Delete branch?' },
+      slots: { footer: '<button class="cancel">Cancel</button><button class="go">Delete</button>' }
+    })
+    await flushPromises()
+    const box = wrapper.find('.modal').element as HTMLElement
+    expect(document.activeElement).toBe(box)
+
+    // From the last button, Tab comes round to the first, not to the window.
+    const go = wrapper.find('.go').element as HTMLElement
+    go.focus()
+    go.dispatchEvent(new KeyboardEvent('keydown', { key: 'Tab', bubbles: true, cancelable: true }))
+    expect(box.contains(document.activeElement)).toBe(true)
+    expect(document.activeElement).not.toBe(go)
+
+    wrapper.unmount()
+    expect(document.activeElement).toBe(trigger)
+    trigger.remove()
   })
 })

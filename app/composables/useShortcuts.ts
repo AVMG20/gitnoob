@@ -84,6 +84,7 @@ export const SHORTCUTS: Shortcut[] = [
 
   // Changes and diffs
   { id: 'diff.mode', keys: 'Tab', label: 'Show the whole file, or only the lines that changed', where: 'An open file', group: 'Changes and diffs', note: 'Blame is a column of the file view, on the line numbers’ right-click menu.' },
+  { id: 'viewer.blame', keys: 'right-click', label: 'Annotate with Git Blame', where: 'The line numbers of an open file', group: 'Changes and diffs', note: 'Who last changed each line and when. Click an entry to open its commit; right-click it to copy the hash.' },
   { id: 'viewer.move', keys: 'ArrowUp/ArrowDown', label: 'Move to the file before or after this one', where: 'An open file', group: 'Changes and diffs', note: 'Walks the panel beside it, in the order it lists them.' },
   { id: 'viewer.search', keys: 'mod+f', label: 'Find text in the file', where: 'An open file', group: 'Changes and diffs', note: 'Searches whichever view is on screen. ↑, ↓ and ↵ in the box step through the matches.', editor: true },
   // No key of their own since 0.10: ↵ and ⇧↵ in the find box step, and ⌘G is
@@ -124,7 +125,7 @@ export const SHORTCUTS: Shortcut[] = [
 
   // Files and editing
   { id: 'search.text', keys: 'mod+shift+f', label: 'Search inside files', where: ANYWHERE, group: 'Files and editing', note: 'Starts from the text selected in the editor. Press it again in the window to switch.', editor: true },
-  { id: 'search.files', keys: 'mod+shift+n', label: 'Find a file by name', where: ANYWHERE, group: 'Files and editing', note: 'Fuzzy, on the whole path. Add :42 to open at line 42.', editor: true },
+  { id: 'search.files', keys: 'mod+shift+n', label: 'Find a file by name', where: ANYWHERE, group: 'Files and editing', note: 'Fuzzy, on the whole path. Folders too: one named what you typed comes first, and picking it shows it in the Files tree. Add :42 to open at line 42.', editor: true },
   { id: 'search.symbols', keys: 'mod+alt+o', label: 'Find a class, function or method', where: ANYWHERE, group: 'Files and editing', note: 'Fuzzy on the name; capitals match capitals, so MECC finds MakeExactConnectionCommand. Opens at the definition.', editor: true },
   { id: 'files.recent', keys: 'mod+e', label: 'Recent files', where: ANYWHERE, group: 'Files and editing', editor: true },
   { id: 'file.line', keys: 'mod+g', label: 'Go to line', where: 'An open file', group: 'Files and editing', editor: true },
@@ -265,6 +266,21 @@ export const SHORTCUT_GROUPS: ShortcutGroup[] = [
   'Files and editing',
   'Projects and windows'
 ]
+
+/**
+ * A sentence written with Mac key glyphs, as this keyboard reads it: on
+ * Windows and Linux `⌘G` is `Ctrl+G`, `⇧⌘G` is `Shift+Ctrl+G` and `⌘-click`
+ * is `Ctrl-click`. Tooltips and notes are written once, the Mac way.
+ */
+export function keysHere(text: string, mac = isMac): string {
+  if (mac) return text.replace(/\bmod\+click\b/g, '⌘-click')
+  return text
+    .replace(/\bmod\+click\b/g, 'Ctrl-click')
+    .replace(/⌘-/g, 'Ctrl-')
+    .replace(/⌘/g, 'Ctrl+')
+    .replace(/⇧/g, 'Shift+')
+    .replace(/⌥/g, 'Alt+')
+}
 
 /** What each part of a chord is drawn as, so the page reads like the keyboard. */
 const GLYPHS: Record<string, string> = {

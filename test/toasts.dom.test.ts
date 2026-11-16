@@ -1,6 +1,6 @@
 // @vitest-environment happy-dom
 import { mount } from '@vue/test-utils'
-import { afterEach, beforeEach, describe, expect, it } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import Toasts from '~/components/Toasts.vue'
 import { useToasts } from '~/composables/useToasts'
 
@@ -42,5 +42,22 @@ describe('the toast stack', () => {
     await wrapper.vm.$nextTick()
     await wrapper.find('.clear').trigger('click')
     expect(toasts.items.value).toHaveLength(0)
+  })
+
+  it('lets the others go again once the notice that was opened up is closed', async () => {
+    vi.useFakeTimers()
+    try {
+      toasts.fail('Checkout: error: would be overwritten by checkout:\n\tapp/app.vue')
+      toasts.fail('Push: rejected (fetch first)')
+      const wrapper = mount(Toasts)
+      await wrapper.findAll('.more .link')[0]!.trigger('click')
+      await wrapper.findAll('.close')[0]!.trigger('click')
+      await wrapper.vm.$nextTick()
+      expect(toasts.items.value).toHaveLength(1)
+      vi.advanceTimersByTime(60_000)
+      expect(toasts.items.value).toHaveLength(0)
+    } finally {
+      vi.useRealTimers()
+    }
   })
 })

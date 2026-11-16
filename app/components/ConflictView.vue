@@ -81,6 +81,8 @@ const thinking = ref<number | null>(null)
 
 /** How far a run of the model over every file has got, while one is running. */
 const sweeping = ref<{ file: string; at: number; of: number } | null>(null)
+/** Set to end the sweep after the answer it is waiting on. */
+let sweepStopped = false
 
 /** Set while the confirmation for that run is on screen. */
 const askingSweep = ref(false)
@@ -788,10 +790,16 @@ async function stageEvery() {
  */
 async function aiEveryFile() {
   askingSweep.value = false
+  sweepStopped = false
   const targets = [...files.value]
   let done = 0
+  let skipped = 0
   for (const [at, name] of targets.entries()) {
+    if (sweepStopped) break
     sweeping.value = { file: name, at: at + 1, of: targets.length }
+    // What the file's picks were before asking: edits made by hand while the
+    // model was thinking are kept, not written over by its answer.
+    const before = JSON.stringify(name === path.value ? picks.value : kept.get(name)?.picks ?? null)
     const read = await git.conflictRead(name)
     const blocks = (read?.blocks ?? []).filter(
       (block): block is Conflict => block.kind === 'conflict'
@@ -799,6 +807,7 @@ async function aiEveryFile() {
     if (!read || !blocks.length) continue
     const answered: Pick[] = []
     for (const block of blocks) {
+      if (sweepStopped) break
       const lines = await ai.resolveConflict(name, block.index).catch((error) => {
         git.note(`AI resolve: ${String(error)}`, 'error')
         return null
@@ -808,6 +817,11 @@ async function aiEveryFile() {
       answered.push({ ...freshPick(block), custom: lines, touched: true })
     }
     if (answered.length < blocks.length) break
+    const now = JSON.stringify(name === path.value ? picks.value : kept.get(name)?.picks ?? null)
+    if (now !== before) {
+      skipped += 1
+      continue
+    }
     if (name === path.value) {
       picks.value = answered
       asked.value = null
@@ -824,9 +838,14 @@ async function aiEveryFile() {
     done += 1
   }
   sweeping.value = null
+  const left = skipped ? ` ${skipped} edited meanwhile ${skipped === 1 ? 'was' : 'were'} left as you had ${skipped === 1 ? 'it' : 'them'}.` : ''
   git.note(
-    `The model answered ${done} of ${targets.length} files. Nothing is staged — read each one and mark it resolved.`
+    `The model answered ${done} of ${targets.length} files.${left} Nothing is staged — read each one and mark it resolved.`
   )
+}
+
+function stopSweep() {
+  sweepStopped = true
 }
 
 /** The files resolved so far, read again whenever the list of open ones moves. */
@@ -915,10 +934,19 @@ function onKey(event: KeyboardEvent) {
   } else if (event.key === 'ArrowUp') {
     event.preventDefault()
     step(-1)
-  } else if (event.key === 'Tab') {
+  } else if (event.key === 'Tab' && !event.shiftKey && !onControl(event)) {
+    // Only from the page itself: on a button or a checkbox, Tab is how a
+    // keyboard reaches the next one, and Shift+Tab always goes back.
     event.preventDefault()
     nextOpen()
   }
+}
+
+function onControl(event: KeyboardEvent) {
+  const element = event.target
+  return (
+    element instanceof HTMLElement && element !== document.body && element !== document.documentElement
+  )
 }
 
 const cellOf = (row: GridRow, side: Side) =>
@@ -994,6 +1022,8 @@ onMounted(() => {
 })
 
 onBeforeUnmount(() => {
+  // Closing the resolver ends the sweep: nobody is there to read its answers.
+  sweepStopped = true
   for (const box of bodies.values()) box.removeEventListener('scroll', onPaneScroll)
   sizer?.disconnect()
 })
@@ -1088,6 +1118,13 @@ onUnmounted(() => window.removeEventListener('keydown', onKey))
           <span v-if="sweeping" class="chip busy">
             <Spinner :size="11" />
             asking the model — file {{ sweeping.at }} of {{ sweeping.of }}
+            <button
+              class="btn btn-ghost stop-sweep"
+              title="Stop after the answer it is waiting on"
+              @click="stopSweep"
+            >
+              Stop
+            </button>
           </span>
           <span class="spacer" />
           <!-- Only where the panes cannot answer it. A file with regions is

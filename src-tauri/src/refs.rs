@@ -437,10 +437,18 @@ pub fn status_counted(state: &AppState) -> Result<WorkingStatus, String> {
 
     let mut opts = count_options();
     // Without the content flag an untracked file is in the diff with no lines
-    // at all, and a new file would read as an empty one.
+    // at all, and a new file would read as an empty one. Past a few hundred
+    // untracked files, which is a missing `.gitignore` rather than work in
+    // progress, they are listed without being read: every save asked for the
+    // status, and every status read all of them again.
+    let untracked = out
+        .unstaged
+        .iter()
+        .filter(|entry| entry.kind == "untracked")
+        .count();
     opts.include_untracked(true)
         .recurse_untracked_dirs(true)
-        .show_untracked_content(true);
+        .show_untracked_content(untracked <= MAX_COUNTED_UNTRACKED);
     let unstaged = repo
         .diff_index_to_workdir(None, Some(&mut opts))
         .map_err(err)?;
@@ -448,6 +456,9 @@ pub fn status_counted(state: &AppState) -> Result<WorkingStatus, String> {
 
     Ok(out)
 }
+
+/// More untracked files than this and their lines are not counted.
+pub const MAX_COUNTED_UNTRACKED: usize = 500;
 
 /// Past this a file is counted as binary, which is to say not counted. Reading
 /// a 300MB log the user forgot to ignore on every save is what would make the

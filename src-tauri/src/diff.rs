@@ -308,9 +308,16 @@ fn commit_diff<'r>(
     Ok(diff)
 }
 
+/// Past this a file is diffed as binary, which libgit2 decides from the size
+/// without reading it. A forgotten 1.5 GB dump clicked in the changes list was
+/// read whole, and then whole again.
+const MAX_DIFF_BYTES: i64 = 64 * 1024 * 1024;
+
 fn base_options() -> DiffOptions {
     let mut opts = DiffOptions::new();
-    opts.context_lines(3).indent_heuristic(true);
+    opts.context_lines(3)
+        .indent_heuristic(true)
+        .max_size(MAX_DIFF_BYTES);
     opts
 }
 
@@ -533,6 +540,11 @@ pub fn file_text(
             .ok_or_else(|| format!("{path} is not staged"))?,
         None => {
             let file = state.path()?.join(path);
+            // Asked before reading, not after: the cap is there so a huge
+            // file is never held in memory at all.
+            if std::fs::metadata(&file).is_ok_and(|meta| meta.len() > MAX_FILE_BYTES as u64) {
+                return Err(format!("{path} is too large to show whole"));
+            }
             match std::fs::read(&file) {
                 Ok(bytes) => bytes,
                 // Deleted in the working tree: the file the view is asking

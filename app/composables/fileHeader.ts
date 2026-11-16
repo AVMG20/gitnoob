@@ -12,7 +12,8 @@
  * - A new file gets Add and Delete; the tab and tree already mark it as new.
  * - An ignored file is "ignored", and git has nothing to do with it.
  * - A file the editor will not write to says "read-only" and why.
- * - A dependency (vendor/, node_modules/) says "vendor", and has no buttons.
+ * - A dependency (vendor/, node_modules/) says "vendor" in amber, and has no
+ *   buttons; the bar, the tab and the page are tinted amber too.
  * - A commit's copy says which commit, and offers the file as it is now.
  * - A file gone from disk and git has the missing-file page's own buttons.
  */
@@ -23,7 +24,7 @@ export type HeaderAction = 'discard' | 'stage' | 'unstage' | 'add' | 'delete' | 
 
 export interface HeaderBadge {
   text: string
-  tone: 'new' | 'ignored' | 'readonly' | 'deleted' | 'conflict'
+  tone: 'new' | 'ignored' | 'readonly' | 'deleted' | 'conflict' | 'dependency'
   title?: string
 }
 
@@ -77,6 +78,15 @@ export const READONLY_REASONS: Record<string, string> = {
   dependency: 'A dependency, installed by Composer or npm: read-only, and git does not track it.'
 }
 
+/**
+ * Whether a path sits in a `vendor/` or `node_modules/` folder. The backend
+ * also asks git whether the folder is ignored; this is the cheap guess the
+ * tab strip uses, where nothing has been read yet.
+ */
+export function isDependencyPath(path: string): boolean {
+  return /(^|\/)(vendor|node_modules)\//.test(path)
+}
+
 export function headerState(file: HeaderFile, status: HeaderStatus, tab: HeaderTab): HeaderState {
   const readonly = file.readonly ?? null
   const readonlyBadge: HeaderBadge[] = readonly
@@ -105,7 +115,7 @@ export function headerState(file: HeaderFile, status: HeaderStatus, tab: HeaderT
   if (readonly === 'dependency' && !staged && !unstaged) {
     return {
       kind: 'ignored',
-      badges: [{ text: 'vendor', tone: 'ignored', title: READONLY_REASONS.dependency }],
+      badges: [{ text: 'vendor', tone: 'dependency', title: READONLY_REASONS.dependency }],
       counts: false,
       modes: false,
       actions: [],

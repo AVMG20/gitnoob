@@ -127,4 +127,35 @@ describe('keeping branches in step, from the sidebar', () => {
     // Read-only: nothing but the relation was asked.
     expect(calls.map((c) => c.cmd)).not.toContain('merge_into')
   })
+
+  it('does not apply a dropped stash when the switch to its branch was refused', async () => {
+    // The checkout answers with an error, so the head stays on feature.
+    asked.mockImplementation(async (cmd: string, args?: Record<string, unknown>) => {
+      calls.push({ cmd, args: args ?? {} })
+      if (cmd === 'checkout') throw new Error('Your local changes would be overwritten')
+      return answers[cmd] ?? null
+    })
+    const wrapper = show()
+    await flushPromises()
+    useDragDrop().state.payload = { kind: 'stash', index: 0, message: 'WIP' } as never
+    await row(wrapper, 'main').trigger('drop')
+    await flushPromises()
+    const item = wrapper.findAll('.menu .item').find((one) => one.text().includes('Apply this stash on main'))!
+    await item.trigger('click')
+    await flushPromises()
+    expect(calls.map((c) => c.cmd)).toContain('checkout')
+    expect(calls.map((c) => c.cmd)).not.toContain('stash_apply')
+  })
+
+  it('offers nothing for a drop while another git command is still running', async () => {
+    const wrapper = show()
+    await flushPromises()
+    git.store.pending = 1
+    useDragDrop().state.payload = { kind: 'branch', name: 'feature', remote: false } as never
+    await row(wrapper, 'main').trigger('drop')
+    await flushPromises()
+    git.store.pending = 0
+    expect(wrapper.find('.menu').exists()).toBe(false)
+    expect(calls.map((c) => c.cmd)).not.toContain('branch_relation')
+  })
 })

@@ -6,7 +6,7 @@ import { Decoration, EditorView, type DecorationSet } from '@codemirror/view'
 import { editorLanguage, readOnly, syntaxColours, chrome } from '~/composables/useCodeMirror'
 import { version } from '~/composables/useHighlight'
 import { wordChanges, type Change } from '~/composables/changeCard'
-import { keyLabel, keysFor } from '~/composables/useShortcuts'
+import { keyLabel, keysFor, keysHere } from '~/composables/useShortcuts'
 
 /**
  * What was there before one change, in a card under it: the bar in the
@@ -128,7 +128,7 @@ const previousKey = keyLabel(keysFor('file.previousChange'))
         <button
           class="act"
           data-act="revert"
-          title="Put the old lines back in the editor (⌘Z takes it back)"
+          :title="keysHere('Put the old lines back in the editor (⌘Z takes it back)')"
           @click="emit('revert')"
         >
           <Undo2 :size="13" /> Revert

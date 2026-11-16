@@ -73,11 +73,63 @@ function press(w: ReturnType<typeof mount>, key: string) {
   w.find('.usages').element.dispatchEvent(new KeyboardEvent('keydown', { key, bubbles: true, cancelable: true }))
 }
 
+describe('a lookup that answers late', () => {
+  it('does not open its list after a newer one has, or after the list was closed', async () => {
+    const answers: ((value: unknown) => void)[] = []
+    asked.mockImplementation(
+      (cmd: string) =>
+        new Promise((resolve) => {
+          if (cmd === 'usages') answers.push(resolve)
+          else resolve(null)
+        }) as never
+    )
+    const first = showUsages('total', SERVICE, 'method')
+    const second = showUsages('other', SERVICE, 'method')
+    answers[1]!({ definite: found, possible: [], framework: false, owner: null })
+    await second
+    expect(usagesPopup.title).toContain('other')
+    answers[0]!({ definite: found, possible: [], framework: false, owner: null })
+    await first
+    expect(usagesPopup.title).toContain('other')
+
+    closeUsages()
+    const third = showUsages('total', SERVICE, 'method')
+    closeUsages()
+    answers[2]!({ definite: found, possible: [], framework: false, owner: null })
+    await third
+    expect(usagesPopup.open).toBe(false)
+  })
+
+  it('does nothing once another project is in front', async () => {
+    let answer: (value: unknown) => void = () => {}
+    asked.mockImplementation(
+      (cmd: string) =>
+        new Promise((resolve) => {
+          if (cmd === 'symbol_at') answer = resolve
+          else resolve(null)
+        }) as never
+    )
+    const jumping = jumpFrom(SERVICE, 122, null)
+    await flushPromises()
+    git.store.repo = { path: '/repos/blog', name: 'blog', head: 'main' } as never
+    answer(symbol)
+    await jumping
+    expect(asked).not.toHaveBeenCalledWith('usages', expect.anything())
+    expect(usagesPopup.open).toBe(false)
+  })
+})
+
 describe('⌘-click on a definition', () => {
   it('lists the usages, the ones in changed files first and marked', async () => {
     await jumpFrom(SERVICE, 122, 'the text', { x: 100, y: 200 })
     expect(asked).toHaveBeenCalledWith('symbol_at', { path: SERVICE, offset: 122, text: 'the text' })
-    expect(asked).toHaveBeenCalledWith('usages', { name: 'total', path: SERVICE, kind: 'method', line: 9 })
+    expect(asked).toHaveBeenCalledWith('usages', {
+      name: 'total',
+      path: SERVICE,
+      kind: 'method',
+      line: 9,
+      text: 'the text'
+    })
     expect(usagesPopup.open).toBe(true)
     const w = await show()
     expect(w.find('.title').text()).toBe('Usages of total() · 3 in 3 files')

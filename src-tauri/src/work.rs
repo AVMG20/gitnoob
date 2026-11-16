@@ -219,7 +219,7 @@ pub fn discard(state: &AppState, paths: &[String]) -> Result<String, String> {
 /// step: undoing it writes the saved bytes back, as long as nothing has
 /// touched those files since. Recorded even when `act` fails, since a command
 /// that stopped half-way may still have thrown some of them away.
-fn throw_away_saved<T>(
+pub(crate) fn throw_away_saved<T>(
     state: &AppState,
     root: &Path,
     paths: &[String],
@@ -1074,6 +1074,16 @@ pub fn stash_rename(state: &AppState, index: usize, message: &str) -> Result<Str
         .trim()
         .to_string();
     let logs = root.join(logs);
+    // Git has no command for this, so the reflog is rewritten here. Git's own
+    // lock on the stash ref is held while it is, so a `git stash push` in a
+    // terminal waits for it (or fails) instead of landing in between and
+    // being written over.
+    let lock = git_cmd::run_checked(&root, &["rev-parse", "--git-path", "refs/stash.lock"])?
+        .trim()
+        .to_string();
+    let _held = LockFile::take(root.join(lock)).map_err(|_| {
+        "Another git command is using the stash right now. Try again in a moment.".to_string()
+    })?;
     let text =
         fs::read_to_string(&logs).map_err(|e| format!("Could not read the stash log: {e}"))?;
 
@@ -1091,8 +1101,34 @@ pub fn stash_rename(state: &AppState, index: usize, message: &str) -> Result<Str
 
     let mut out = lines.join("\n");
     out.push('\n');
-    fs::write(&logs, out).map_err(|e| format!("Could not write the stash log: {e}"))?;
+    // Written beside it and renamed over it: a crash part-way leaves the old
+    // log whole, never half of a new one.
+    let temp = logs.with_file_name(".stash.gitnoob.tmp");
+    fs::write(&temp, out).map_err(|e| format!("Could not write the stash log: {e}"))?;
+    fs::rename(&temp, &logs).map_err(|e| {
+        let _ = fs::remove_file(&temp);
+        format!("Could not write the stash log: {e}")
+    })?;
     Ok(format!("Renamed {selector}"))
+}
+
+/// A git-style `.lock` file, removed when dropped.
+struct LockFile(std::path::PathBuf);
+
+impl LockFile {
+    fn take(path: std::path::PathBuf) -> std::io::Result<Self> {
+        fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&path)?;
+        Ok(LockFile(path))
+    }
+}
+
+impl Drop for LockFile {
+    fn drop(&mut self) {
+        let _ = fs::remove_file(&self.0);
+    }
 }
 
 /// One reflog line with its description replaced, or `None` if it is not the
@@ -1477,14 +1513,26 @@ pub fn stash_apply_many(
             run.conflicted = unmerged_paths(&root);
             break;
         }
-        run.applied.push(message);
+        run.applied.push(message.clone());
         // Each one steps back on its own, newest first — the same order they
         // went on, reversed. A popped one is put back on the list by its undo.
         if drop_after {
             let line = journal::stash_message_at(&root, &oid);
             // Re-resolved from the commit id: every drop renumbers the rest.
             if let Some(at) = journal::stash_index(state, &oid) {
-                git_cmd::run_checked(&root, &["stash", "drop", &format!("stash@{{{at}}}")])?;
+                let selector = format!("stash@{{{at}}}");
+                if let Err(reason) = git_cmd::run_checked(&root, &["stash", "drop", &selector]) {
+                    // Applied but still listed: on the undo stack as an apply,
+                    // and the run stops here so what happened can be read.
+                    record_applied(state, &root, &oid, false, held);
+                    run.stopped = Some(StashStop {
+                        message,
+                        reason: format!(
+                            "It was applied, but could not be dropped from the list: {reason}"
+                        ),
+                    });
+                    break;
+                }
                 record_popped(state, &root, &oid, line, held);
             }
         } else {
@@ -1763,8 +1811,13 @@ pub fn undo_restore(state: &AppState) -> Result<String, String> {
     };
 
     // Clears the half-applied pop: conflicted files, and whatever else came
-    // out of the stash cleanly. The stash still holds all of it.
+    // out of the stash cleanly. The stash still holds all of it. The reset
+    // leaves the untracked files the pop put back, and the pop below refuses
+    // to write over them, so they go too: each is in the stash.
     git_cmd::run_checked(&root, &["reset", "--hard", "HEAD"])?;
+    if let Ok(held) = git_cmd::run_checked(&root, &["rev-parse", "stash@{0}"]) {
+        clean_stash_leftovers(&root, held.trim());
+    }
     match &back {
         Back::Branch(home) => {
             git_cmd::run_checked(&root, &["switch", "--", home])?;
@@ -1776,9 +1829,6 @@ pub fn undo_restore(state: &AppState) -> Result<String, String> {
             // Nothing says where the work came from, and popping it onto the
             // same commit again would only stop on the same conflict. The
             // tree is clean and the work stays where it is safe: in the stash.
-            if let Ok(held) = git_cmd::run_checked(&root, &["rev-parse", "stash@{0}"]) {
-                clean_stash_leftovers(&root, held.trim());
-            }
             return Ok(
                 "The conflicted files are cleared, and your changes are still in the stash at \
                  the top of the list — putting them back on this commit would stop on the same \
@@ -2365,20 +2415,20 @@ pub fn create_tag(
     message: Option<&str>,
 ) -> Result<String, String> {
     let root = state.path()?;
+    // A name led by `-` would be read as an option (`-f` forces), so the
+    // options end before the name, and git's own check turns such a name down.
     let mut args = vec!["tag"];
     if let Some(message) = message.filter(|m| !m.trim().is_empty()) {
-        args.extend(["-a", name, "-m", message]);
-    } else {
-        args.push(name);
+        args.extend(["-a", "-m", message]);
     }
-    args.push(oid);
+    args.extend(["--end-of-options", name, oid]);
     git_cmd::run_checked(&root, &args)?;
     Ok(format!("Tagged {} as {name}", &oid[..oid.len().min(7)]))
 }
 
 pub fn delete_tag(state: &AppState, name: &str) -> Result<String, String> {
     let root = state.path()?;
-    git_cmd::run_checked(&root, &["tag", "-d", name])?;
+    git_cmd::run_checked(&root, &["tag", "-d", "--end-of-options", name])?;
     Ok(format!("Deleted tag {name}"))
 }
 
@@ -2463,6 +2513,11 @@ impl Lines {
 /// and feeds that back to `git apply`. The index and the working tree are then
 /// changed by git itself, which is the only way to be sure the result matches
 /// what a command-line `git add -p` would have produced.
+///
+/// An untracked file is in no diff git prints, while the window shows it as
+/// one hunk of added lines with the same buttons. Git is told about it first
+/// with an intent-to-add entry, which puts it in `git diff` as a new file, and
+/// that entry is taken back out when the file is not staged in the end.
 pub fn apply_hunk(
     state: &AppState,
     path: &str,
@@ -2471,6 +2526,31 @@ pub fn apply_hunk(
     lines: Option<Lines>,
 ) -> Result<String, String> {
     let root = state.path()?;
+    let pathspec = format!(":(literal){path}");
+    let untracked = action != HunkAction::Unstage
+        && state.repo().is_ok_and(|repo| {
+            repo.status_file(std::path::Path::new(path))
+                .is_ok_and(|status| status.contains(git2::Status::WT_NEW))
+        });
+    if untracked {
+        git_cmd::run_checked(&root, &["add", "--intent-to-add", "--", &pathspec])?;
+    }
+    let done = apply_hunk_listed(state, &root, path, hunk_index, action, lines);
+    if untracked && (done.is_err() || action == HunkAction::Discard) {
+        let _ = git_cmd::run(&root, &["rm", "--cached", "-q", "--", &pathspec]);
+    }
+    done
+}
+
+fn apply_hunk_listed(
+    state: &AppState,
+    root: &std::path::Path,
+    path: &str,
+    hunk_index: usize,
+    action: HunkAction,
+    lines: Option<Lines>,
+) -> Result<String, String> {
+    let root = root.to_path_buf();
 
     // Unstaging reads the index-versus-HEAD diff; the other two read the
     // working tree against the index.

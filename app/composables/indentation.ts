@@ -84,7 +84,7 @@ export function languageIndent(path: string): { tabs: boolean; size: number } | 
   if (name === 'makefile' || name === 'gnumakefile' || name.endsWith('.mk')) return { tabs: true, size: 0 }
   const extension = name.includes('.') ? name.slice(name.lastIndexOf('.') + 1) : ''
   if (extension === 'go') return { tabs: true, size: 0 }
-  if (['php', 'py', 'rs', 'java', 'cs', 'kt', 'swift', 'c', 'h', 'cpp', 'hpp'].includes(extension)) {
+  if (['php', 'phtml', 'py', 'rs', 'java', 'cs', 'kt', 'swift', 'c', 'h', 'cpp', 'hpp'].includes(extension)) {
     return { tabs: false, size: 4 }
   }
   if (

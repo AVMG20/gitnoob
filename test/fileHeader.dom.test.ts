@@ -182,8 +182,11 @@ describe("the bar over an open file", () => {
     readonlyAnswer = "dependency";
     const wrapper = await show();
     await flushPromises();
-    const badge = wrapper.find(".badge.ignored");
+    const badge = wrapper.find(".badge.dependency");
     expect(badge.text()).toBe("vendor");
+    // Tinted, so it is never taken for the project's own code.
+    expect(wrapper.find(".bar").classes()).toContain("dependency");
+    expect(wrapper.find(".body").classes()).toContain("dependency");
     expect(badge.attributes("title")).toMatch(/dependency.*read-only/i);
     expect(wrapper.findAll(".badge").map((one) => one.text())).not.toContain("ignored");
     expect(labels(wrapper).some((one) => /Stage|Discard|Add|Delete/.test(one))).toBe(false);

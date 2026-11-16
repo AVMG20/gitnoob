@@ -53,7 +53,7 @@ pub fn of(state: &AppState, path: &str, at: Option<&str>) -> Result<Vec<BlameRun
         options.newest_commit(commit.id());
     }
 
-    let blame = match repo.blame_file(std::path::Path::new(path), Some(&mut options)) {
+    let committed = match repo.blame_file(std::path::Path::new(path), Some(&mut options)) {
         Ok(blame) => blame,
         // A file that has never been committed is not in the tree blame reads
         // from, and libgit2 says so as an error. It is not one: every line of
@@ -68,21 +68,45 @@ pub fn of(state: &AppState, path: &str, at: Option<&str>) -> Result<Vec<BlameRun
         Err(e) => return Err(format!("Could not blame {path}: {e}")),
     };
 
+    // `blame_file` answers for the committed copy, so on its own it numbers
+    // the lines of HEAD. The window shows the working copy, and once a line is
+    // added above, every chip below it would name the wrong commit. Blaming
+    // the working copy as a buffer on top of it marks what is not committed
+    // and moves the rest to where it now stands.
+    let working = match at {
+        None => working_copy(state, &repo, path),
+        Some(_) => None,
+    };
+    let buffered;
+    let blame = match &working {
+        // Emptied in the working tree: no lines, nothing to say about them.
+        Some(bytes) if bytes.is_empty() => return Ok(Vec::new()),
+        Some(bytes) => {
+            buffered = committed
+                .blame_buffer(bytes)
+                .map_err(|e| format!("Could not blame {path}: {e}"))?;
+            &buffered
+        }
+        None => &committed,
+    };
+
     let mut summaries: HashMap<git2::Oid, (String, String, String, i64)> = HashMap::new();
     let mut runs = Vec::with_capacity(blame.len());
+    let mut you: Option<(String, String)> = None;
 
     for hunk in blame.iter() {
+        if hunk.lines_in_hunk() == 0 {
+            continue;
+        }
         let oid = hunk.final_commit_id();
         // libgit2 gives the not-yet-committed lines the zero id, which no
-        // commit lookup will ever answer for.
+        // commit lookup will ever answer for. Nor is there a signature on
+        // them to read (it is null), so they are named for whoever the
+        // repository would commit as.
         let uncommitted = oid.is_zero();
         let (summary, author, email, time) = if uncommitted {
-            (
-                "Not committed yet".to_string(),
-                hunk.final_signature().name().unwrap_or("You").to_string(),
-                hunk.final_signature().email().unwrap_or("").to_string(),
-                hunk.final_signature().when().seconds(),
-            )
+            let (name, email) = you.get_or_insert_with(|| committer(&repo)).clone();
+            ("Not committed yet".to_string(), name, email, chrono_now())
         } else {
             summaries
                 .entry(oid)
@@ -128,15 +152,8 @@ fn all_uncommitted(state: &AppState, path: &str) -> Vec<BlameRun> {
     }
     let who = state
         .repo()
-        .ok()
-        .and_then(|repo| repo.signature().ok())
-        .map(|signature| {
-            (
-                signature.name().unwrap_or("You").to_string(),
-                signature.email().unwrap_or("").to_string(),
-            )
-        })
-        .unwrap_or_else(|| ("You".to_string(), String::new()));
+        .map(|repo| committer(&repo))
+        .unwrap_or_else(|_| ("You".to_string(), String::new()));
 
     vec![BlameRun {
         oid: git2::Oid::zero().to_string(),
@@ -149,6 +166,59 @@ fn all_uncommitted(state: &AppState, path: &str) -> Vec<BlameRun> {
         lines,
         uncommitted: true,
     }]
+}
+
+/// Whoever the repository would commit as, which is who wrote the lines that
+/// are not committed yet.
+fn committer(repo: &Repository) -> (String, String) {
+    repo.signature()
+        .ok()
+        .map(|signature| {
+            (
+                signature.name().unwrap_or("You").to_string(),
+                signature.email().unwrap_or("").to_string(),
+            )
+        })
+        .unwrap_or_else(|| ("You".to_string(), String::new()))
+}
+
+/// The working copy of a file, when it differs from the committed one.
+///
+/// None when it is the same (there is nothing to blame on top) or cannot be
+/// read. Line endings are put back the way the commit has them: a checkout
+/// with `core.autocrlf` writes CRLF over a blob stored with LF, and without
+/// this every line of every file on such a machine would read as uncommitted.
+fn working_copy(state: &AppState, repo: &Repository, path: &str) -> Option<Vec<u8>> {
+    let root = state.path().ok()?;
+    let mut bytes = std::fs::read(root.join(path)).ok()?;
+    let blob = repo
+        .head()
+        .ok()?
+        .peel_to_tree()
+        .ok()?
+        .get_path(std::path::Path::new(path))
+        .ok()?
+        .to_object(repo)
+        .ok()?
+        .peel_to_blob()
+        .ok()?;
+    let committed = blob.content();
+    if !committed.contains(&b'\r') && bytes.contains(&b'\r') {
+        bytes = without_cr(&bytes);
+    }
+    (bytes != committed).then_some(bytes)
+}
+
+/// CRLF turned into LF; a lone CR is left alone.
+fn without_cr(bytes: &[u8]) -> Vec<u8> {
+    let mut out = Vec::with_capacity(bytes.len());
+    for (at, byte) in bytes.iter().enumerate() {
+        if *byte == b'\r' && bytes.get(at + 1) == Some(&b'\n') {
+            continue;
+        }
+        out.push(*byte);
+    }
+    out
 }
 
 /// Seconds since the epoch, for a run that has no commit to take a time from.

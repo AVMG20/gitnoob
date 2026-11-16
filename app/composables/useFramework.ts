@@ -114,10 +114,14 @@ export async function frameworkLinks(path: string, offset: number, text: string 
   return invoke<FrameworkLinks | null>('framework_links', { path, offset, text }).catch(() => null)
 }
 
+/** A path to a view file, with a folder: `rma/request_created.html`, `css/styles.css`. */
+const VIEW_PATH = /\/[^/]*\.(html|phtml|js|css|less|json|svg|png|jpe?g|gif|webp|ico|woff2?|ttf|eot)$/i
+
 /**
  * The token a framework link would cover around `pos` in a line of text:
  * a namespaced class (`Foo\Bar\Baz`), a `Vendor_Module::path`, a
- * `Vendor_Module/js/x` or a dotted layout name. Null for a plain word,
+ * `Vendor_Module/js/x`, a `.phtml` or a view file under a folder
+ * (`rma/request_created.html`, `css/styles.css`). Null for a plain word,
  * which the editor's own word rule underlines.
  */
 export function frameworkToken(line: string, pos: number): { from: number; to: number } | null {
@@ -132,7 +136,11 @@ export function frameworkToken(line: string, pos: number): { from: number; to: n
   const token = line.slice(from, to)
   if (to - from < 3 || pos < from || pos > to) return null
   const shaped =
-    token.includes('\\') || token.includes('::') || /^[A-Z][A-Za-z0-9]*_[A-Za-z0-9]+\//.test(token) || /\.phtml$/.test(token)
+    token.includes('\\') ||
+    token.includes('::') ||
+    /^[A-Z][A-Za-z0-9]*_[A-Za-z0-9]+\//.test(token) ||
+    /\.phtml$/.test(token) ||
+    VIEW_PATH.test(token)
   return shaped ? { from, to } : null
 }
 

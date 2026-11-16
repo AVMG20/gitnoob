@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { headerState } from "~/composables/fileHeader";
+import { headerState, isDependencyPath } from "~/composables/fileHeader";
 
 const file = (extra = {}) => ({ path: "app/Cart.php", ...extra });
 const none = {};
@@ -105,5 +105,15 @@ describe("the bar over an open file", () => {
     expect(state.kind).toBe("missing");
     expect(state.actions).toEqual([]);
     expect(state.counts).toBe(false);
+  });
+});
+
+describe("isDependencyPath", () => {
+  it("knows vendor/ and node_modules/ at any depth, and nothing that only looks like them", () => {
+    expect(isDependencyPath("vendor/magento/framework/App/Http.php")).toBe(true);
+    expect(isDependencyPath("web/node_modules/lodash/index.js")).toBe(true);
+    expect(isDependencyPath("app/code/Vendor/Module/Model/Thing.php")).toBe(false);
+    expect(isDependencyPath("src/vendors/thing.ts")).toBe(false);
+    expect(isDependencyPath("vendor")).toBe(false);
   });
 });

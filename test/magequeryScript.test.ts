@@ -1,4 +1,4 @@
-import { mkdtempSync, rmSync, writeFileSync } from 'node:fs'
+import { chmodSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { describe, expect, it } from 'vitest'
@@ -12,6 +12,7 @@ import {
   hostTriple,
   plan,
   sha256,
+  stamp,
   tarCommand,
   upToDate,
   verify
@@ -22,6 +23,12 @@ import {
  * check, the names Tauri looks for, and which target gets what.
  */
 describe('scripts/magequery.mjs', () => {
+  it('pins the same version the Rust side says it was written against', () => {
+    const rust = readFileSync(join(__dirname, '../src-tauri/src/frameworks/magequery.rs'), 'utf8')
+    const pinned = rust.match(/pub const PINNED: &str = "([^"]+)";/)?.[1]
+    expect(pinned).toBe(VERSION)
+  })
+
   it('accepts a download whose sha256 is the pinned one', () => {
     const bytes = Buffer.from('magequery fixture')
     expect(verify(bytes, sha256(bytes), 'fixture')).toBe(true)
@@ -97,16 +104,42 @@ describe('scripts/magequery.mjs', () => {
     expect(tarCommand('win32', 'C:\\Windows')).toMatch(/System32.tar\.exe$/)
   })
 
-  it('skips a binary that is already this version, and not an empty placeholder', () => {
+  it.skipIf(process.platform === 'win32')('gives an up-to-date binary its execute bit back', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'magequery-mode-'))
+    try {
+      const name = binaryName('x86_64-unknown-linux-gnu')
+      const file = join(dir, name)
+      writeFileSync(file, 'binary')
+      chmodSync(file, 0o644)
+      stamp(dir, name)
+      expect(upToDate(dir, name)).toBe(true)
+      expect(statSync(file).mode & 0o111).not.toBe(0)
+    } finally {
+      rmSync(dir, { recursive: true, force: true })
+    }
+  })
+
+  it('skips a binary that is already this version, and not an empty placeholder or a changed file', () => {
     const dir = mkdtempSync(join(tmpdir(), 'magequery-stamp-'))
     try {
       const name = binaryName('aarch64-apple-darwin')
-      writeFileSync(join(dir, name), '')
-      writeFileSync(join(dir, '.magequery-version.json'), JSON.stringify({ [name]: VERSION }))
+      const file = join(dir, name)
+      const stampFile = join(dir, '.magequery-version.json')
+      writeFileSync(file, '')
+      writeFileSync(stampFile, JSON.stringify({ [name]: { version: VERSION, sha256: sha256(Buffer.from('')) } }))
       expect(upToDate(dir, name)).toBe(false)
-      writeFileSync(join(dir, name), 'binary')
+      writeFileSync(file, 'binary')
+      stamp(dir, name)
       expect(upToDate(dir, name)).toBe(true)
-      writeFileSync(join(dir, '.magequery-version.json'), JSON.stringify({ [name]: '0.0.1' }))
+      // Changed after it was stamped: not the file that was fetched.
+      writeFileSync(file, 'binarY')
+      expect(upToDate(dir, name)).toBe(false)
+      writeFileSync(file, 'binary')
+      expect(upToDate(dir, name)).toBe(true)
+      // Another version, or a stamp from before hashes were kept.
+      writeFileSync(stampFile, JSON.stringify({ [name]: { version: '0.0.1', sha256: sha256(Buffer.from('binary')) } }))
+      expect(upToDate(dir, name)).toBe(false)
+      writeFileSync(stampFile, JSON.stringify({ [name]: VERSION }))
       expect(upToDate(dir, name)).toBe(false)
     } finally {
       rmSync(dir, { recursive: true, force: true })

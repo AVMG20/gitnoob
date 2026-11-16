@@ -112,6 +112,10 @@ pub fn read_file_at(root: &Path, relative: &str) -> Result<FileRead, String> {
         }
         Err(e) => return Err(format!("Could not read {relative}: {e}")),
     };
+    // A named pipe or a device would block the read for good.
+    if !meta.is_file() {
+        return Err(format!("{relative} is not a regular file"));
+    }
     if meta.len() > MAX_SHOW as u64 {
         return too_big(&real, &meta, relative);
     }
@@ -239,7 +243,15 @@ pub fn write_file_at(
     new_shape: Option<(bool, bool)>,
 ) -> Result<String, String> {
     let real = files::resolve(root, relative, false)?;
-    if crate::deps::is_dependency(root, relative) {
+    // The link's own name and where it leads: `app/Link.php` pointing into
+    // `vendor/` is a dependency all the same.
+    let landed = root
+        .canonicalize()
+        .ok()
+        .and_then(|base| real.strip_prefix(&base).ok().map(files::slashed));
+    if crate::deps::is_dependency(root, relative)
+        || landed.is_some_and(|inner| crate::deps::is_dependency(root, &inner))
+    {
         return Err(format!("{relative} is a dependency, and read-only"));
     }
     let current = match std::fs::read(&real) {
@@ -254,6 +266,17 @@ pub fn write_file_at(
                 return Err(format!("{relative} is not a text file"));
             }
             let found = shape(bytes);
+            // `read_file_at` opens such a file read-only; checked again here
+            // rather than trusted to the window, because a save of text that
+            // came out of a lossy decode rewrites every byte it lost.
+            let body = if found.bom {
+                &bytes[BOM.len()..]
+            } else {
+                &bytes[..]
+            };
+            if std::str::from_utf8(body).is_err() {
+                return Err(format!("{relative} is not UTF-8, and read-only"));
+            }
             if found.mixed {
                 return Err(format!(
                     "{relative} mixes line endings; saving it would change lines nobody edited"

@@ -16,7 +16,7 @@
 use std::collections::{HashMap, HashSet};
 use std::path::{Component, Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::{Arc, Mutex, OnceLock};
+use std::sync::{Arc, Mutex, OnceLock, Weak};
 use std::time::{Duration, Instant};
 
 use ignore::WalkBuilder;
@@ -40,13 +40,15 @@ pub struct Entry {
     pub link: bool,
 }
 
-/// One file the finder matched.
+/// One file, or folder, the finder matched.
 #[derive(Serialize, Clone, Debug, PartialEq)]
 pub struct Found {
     pub path: String,
     pub score: u32,
     /// Which characters of the path matched, for drawing them bold.
     pub indices: Vec<u32>,
+    /// A folder rather than a file. Only when folders were asked for.
+    pub dir: bool,
 }
 
 /// Turns a path from the window into a real one inside the work tree.
@@ -72,7 +74,7 @@ pub fn resolve(root: &Path, relative: &str, must_exist: bool) -> Result<PathBuf,
         Err(e) if !must_exist && e.kind() == std::io::ErrorKind::NotFound => {
             let name = joined
                 .file_name()
-                .filter(|name| *name != ".." && *name != "." && *name != ".git")
+                .filter(|name| *name != ".." && *name != "." && !name.eq_ignore_ascii_case(".git"))
                 .ok_or_else(|| format!("{relative} is not a file name"))?
                 .to_owned();
             let parent = joined
@@ -90,7 +92,12 @@ pub fn resolve(root: &Path, relative: &str, must_exist: bool) -> Result<PathBuf,
     let inner = real
         .strip_prefix(&root)
         .map_err(|_| format!("{relative} is not inside the work tree"))?;
-    if inner.components().any(|part| part.as_os_str() == ".git") {
+    // Any case: on the case-insensitive filesystems macOS and Windows use by
+    // default, `.GIT/config` is the repository's own config file.
+    if inner
+        .components()
+        .any(|part| part.as_os_str().eq_ignore_ascii_case(".git"))
+    {
         return Err(format!("{relative} is inside .git"));
     }
     Ok(real)
@@ -241,7 +248,11 @@ pub fn open_default(state: &AppState, relative: &str) -> Result<(), String> {
     let (program, args): (&str, Vec<std::ffi::OsString>) = if cfg!(target_os = "macos") {
         ("open", vec![real.into_os_string()])
     } else if cfg!(target_os = "windows") {
-        ("explorer", vec![real.into_os_string()])
+        // Explorer does not take the `\\?\` form `canonicalize` gives on
+        // Windows, and opened a different window instead of the file.
+        let plain = real.to_str().map(without_verbatim);
+        let arg = plain.map_or_else(|| real.into_os_string(), std::ffi::OsString::from);
+        ("explorer", vec![arg])
     } else {
         ("xdg-open", vec![real.into_os_string()])
     };
@@ -252,13 +263,88 @@ pub fn open_default(state: &AppState, relative: &str) -> Result<(), String> {
         .map_err(|e| format!("Could not open {relative}: {e}"))
 }
 
+/// A Windows path without the verbatim prefix: `\\?\C:\x` is `C:\x`, and
+/// `\\?\UNC\server\share` is `\\server\share`. Anything else as it is.
+pub fn without_verbatim(path: &str) -> String {
+    if let Some(rest) = path.strip_prefix(r"\\?\UNC\") {
+        return format!(r"\\{rest}");
+    }
+    match path.strip_prefix(r"\\?\") {
+        Some(rest) if rest.as_bytes().get(1) == Some(&b':') => rest.to_string(),
+        _ => path.to_string(),
+    }
+}
+
 /// The real path of a file `open_default` may hand to the desktop.
+///
+/// Not a program or a script: the desktop's "open" runs those (`open` on a
+/// `.command` file or on anything executable starts Terminal and runs it,
+/// Explorer runs a `.bat`), and a cloned repository can hold one with any
+/// name. Asking to see a file should not run it.
 pub fn openable(root: &Path, relative: &str) -> Result<PathBuf, String> {
     let real = resolve(root, relative, true)?;
     if !real.is_file() {
         return Err(format!("{relative} is not a file"));
     }
+    if runs_when_opened(&real) {
+        return Err(format!(
+            "{relative} is a program or a script, and opening it would run it. \
+             Reveal it instead if that is what you want."
+        ));
+    }
     Ok(real)
+}
+
+/// Kinds of file the desktop runs rather than shows when asked to open them.
+const RUNNABLE: [&str; 22] = [
+    "app",
+    "applescript",
+    "bat",
+    "cmd",
+    "com",
+    "command",
+    "cpl",
+    "desktop",
+    "exe",
+    "hta",
+    "jar",
+    "lnk",
+    "msi",
+    "pif",
+    "ps1",
+    "reg",
+    "scpt",
+    "scr",
+    "sh",
+    "tool",
+    "vbs",
+    "wsf",
+];
+
+/// Run by Windows Script Host when opened there; shown everywhere else.
+const RUNNABLE_ON_WINDOWS: [&str; 2] = ["js", "jse"];
+
+fn runs_when_opened(path: &Path) -> bool {
+    let by_name = path
+        .extension()
+        .and_then(|ext| ext.to_str())
+        .map(str::to_ascii_lowercase)
+        .is_some_and(|ext| {
+            RUNNABLE.contains(&ext.as_str())
+                || (cfg!(windows) && RUNNABLE_ON_WINDOWS.contains(&ext.as_str()))
+        });
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let executable = std::fs::metadata(path)
+            .map(|meta| meta.permissions().mode() & 0o111 != 0)
+            .unwrap_or(false);
+        by_name || executable
+    }
+    #[cfg(not(unix))]
+    {
+        by_name
+    }
 }
 
 /// Whether git ignores a path, the folders it is in included.
@@ -298,6 +384,14 @@ pub fn forget(root: &Path) {
     if let Ok(mut cached) = cache().lock() {
         cached.remove(&key);
     }
+    if let Ok(mut cached) = dependency_cache().lock() {
+        cached.remove(&key);
+    }
+}
+
+/// Drops only the list of dependency files, for a change under `vendor/`.
+pub fn forget_dependencies(root: &Path) {
+    let key = root.canonicalize().unwrap_or_else(|_| root.to_path_buf());
     if let Ok(mut cached) = dependency_cache().lock() {
         cached.remove(&key);
     }
@@ -345,8 +439,11 @@ pub fn all_files(root: &Path) -> Result<Arc<Vec<String>>, String> {
             if let Ok(entry) = entry {
                 // A link to a folder is a folder here, as it is in the tree:
                 // there is no file to open or to search behind its name.
-                let is_file = entry.file_type().is_some_and(|kind| !kind.is_dir())
-                    && !(entry.path_is_symlink() && entry.path().is_dir());
+                // Only regular files: a named pipe or a socket is nothing to
+                // open or search, and reading one blocks.
+                let is_file = entry.file_type().is_some_and(|kind| {
+                    kind.is_file() || (kind.is_symlink() && entry.path().is_file())
+                });
                 if is_file && entry.depth() > 0 {
                     if let Ok(inner) = entry.path().strip_prefix(&root) {
                         if let Ok(mut list) = found.lock() {
@@ -505,6 +602,25 @@ pub fn find_files_with(
     also: &[String],
     dependencies: bool,
 ) -> Result<Vec<Found>, String> {
+    find_paths(root, query, limit, request, also, dependencies, false)
+}
+
+/// The same, and with `folders` the folders whose own name matches too, for
+/// the window's finder (the Files tree's filter lists files only).
+///
+/// A folder named exactly what was typed (`RMA` or `rma` for `app/code/Acme/RMA`)
+/// comes before everything; other folders take their place among the files by
+/// score. Folders never fill more than a sixth of `limit`, so a query like
+/// `model` in a tree full of `Model/` folders still lists files.
+pub fn find_paths(
+    root: &Path,
+    query: &str,
+    limit: usize,
+    request: u64,
+    also: &[String],
+    dependencies: bool,
+    folders: bool,
+) -> Result<Vec<Found>, String> {
     let newest = latest(root);
     newest.fetch_max(request, Ordering::SeqCst);
     let query = query.trim();
@@ -516,12 +632,165 @@ pub fn find_files_with(
     if superseded() {
         return Err("superseded".into());
     }
-    let mut found = rank(&paths, query, limit, also, &superseded)?;
     let wanted = limit.max(1);
+    let room = if folders { (wanted / 6).max(1) } else { 0 };
+    let mut found = rank(&paths, query, limit, also, &superseded)?;
+    let mut used = 0;
+    if room > 0 {
+        let dirs = rank_folders(&folders_of(&paths), query, room, &superseded)?;
+        used = dirs.len();
+        found = merged(found, dirs, limit, also);
+    }
     if dependencies && found.len() < wanted {
         let extra = dependency_files(root)?;
-        found.extend(rank(&extra, query, wanted - found.len(), &[], &superseded)?);
+        let left = wanted - found.len();
+        let mut more = rank(&extra, query, left, &[], &superseded)?;
+        if room > used {
+            let dirs = rank_folders(&folders_of(&extra), query, room - used, &superseded)?;
+            more = merged(more, dirs, left, &[]);
+        }
+        found.extend(more);
     }
+    Ok(found)
+}
+
+/// Every folder the files in `paths` sit in, sorted. Worked out once per
+/// list: the answer is kept for as long as the list itself is.
+fn folders_of(paths: &Arc<Vec<String>>) -> Arc<Vec<String>> {
+    type Kept = Vec<(Weak<Vec<String>>, Arc<Vec<String>>)>;
+    static KEPT: OnceLock<Mutex<Kept>> = OnceLock::new();
+    let kept = KEPT.get_or_init(|| Mutex::new(Vec::new()));
+    // A list still alive is at its own address, so the address names it.
+    let same = |from: &Weak<Vec<String>>| {
+        from.strong_count() > 0 && std::ptr::eq(from.as_ptr(), Arc::as_ptr(paths))
+    };
+    {
+        let mut all = kept.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+        all.retain(|(from, _)| from.strong_count() > 0);
+        if let Some((_, dirs)) = all.iter().find(|(from, _)| same(from)) {
+            return dirs.clone();
+        }
+    }
+    let mut dirs: HashSet<&str> = HashSet::new();
+    for path in paths.iter() {
+        let mut end = path.len();
+        while let Some(at) = path[..end].rfind('/') {
+            // Its parents went in with it the first time.
+            if !dirs.insert(&path[..at]) {
+                break;
+            }
+            end = at;
+        }
+    }
+    let mut dirs: Vec<String> = dirs.into_iter().map(str::to_string).collect();
+    dirs.sort();
+    let dirs = Arc::new(dirs);
+    let mut all = kept.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+    if !all.iter().any(|(from, _)| same(from)) {
+        all.push((Arc::downgrade(paths), dirs.clone()));
+    }
+    dirs
+}
+
+/// Best first; between equals the shorter path, then the alphabet.
+fn better(a: &Found, b: &Found) -> std::cmp::Ordering {
+    b.score
+        .cmp(&a.score)
+        .then_with(|| a.path.len().cmp(&b.path.len()))
+        .then_with(|| a.path.cmp(&b.path))
+}
+
+/// Files and folders in one list, best first, `limit` of them and any file
+/// of `also` the files kept.
+fn merged(files: Vec<Found>, dirs: Vec<Found>, limit: usize, also: &[String]) -> Vec<Found> {
+    if dirs.is_empty() {
+        return files;
+    }
+    let mut all = files;
+    all.extend(dirs);
+    all.sort_by(better);
+    let wanted: HashSet<&str> = also.iter().map(String::as_str).collect();
+    let mut kept = 0usize;
+    all.retain(|one| {
+        kept += 1;
+        kept <= limit.max(1) || (!one.dir && wanted.contains(one.path.as_str()))
+    });
+    all
+}
+
+/// A folder named what was typed: above every shaped tier.
+const NAMED: u32 = 4;
+
+/// The folders whose own name matches, best first, at most `room` of them.
+///
+/// The query has to reach into the last part of the folder: `RMA` finds
+/// `app/code/Acme/RMA` and not every folder inside it. A folder whose name
+/// is the query (or, with a slash, whose name is the last part of it) ranks
+/// [`NAMED`], the shortest path first.
+fn rank_folders(
+    dirs: &[String],
+    query: &str,
+    room: usize,
+    superseded: &dyn Fn() -> bool,
+) -> Result<Vec<Found>, String> {
+    if room == 0 {
+        return Ok(Vec::new());
+    }
+    let mut matcher = Matcher::new(Config::DEFAULT.match_paths());
+    let pattern = Pattern::parse(query, CaseMatching::Smart, Normalization::Smart);
+    let shaped = Shaped::of(query);
+    let typed = match &shaped {
+        Shaped::Segments(parts) => parts.last().cloned().unwrap_or_default(),
+        _ => query.to_lowercase(),
+    };
+    let segments = matches!(shaped, Shaped::Segments(_));
+    let mut buffer = Vec::new();
+    let mut found = Vec::new();
+    for (at, path) in dirs.iter().enumerate() {
+        if at % 4096 == 0 && at > 0 && superseded() {
+            return Err("superseded".into());
+        }
+        let fuzzy = pattern.score(Utf32Str::new(path, &mut buffer), &mut matcher);
+        let name = path.rsplit('/').next().unwrap_or(path);
+        let name_at = (path.chars().count() - name.chars().count()) as u32;
+        // A slash query fits only when its last part is this folder's name.
+        let shape = match shaped.score(path) {
+            Some((tier, _)) if segments && tier < 2 => None,
+            shape => shape,
+        };
+        // Named whatever the case: `RMA` and `rma` both find `RMA/`.
+        let named = name.to_lowercase() == typed && (shape.is_some() || !segments);
+        let (score, mut indices) = match (shape, fuzzy) {
+            (Some((_, indices)), _) if named => (NAMED * SHAPED, indices),
+            (None, _) if named => (
+                NAMED * SHAPED,
+                (name_at..name_at + name.chars().count() as u32).collect(),
+            ),
+            (Some((tier, indices)), fuzzy) => {
+                (tier * SHAPED + fuzzy.unwrap_or(0).min(SHAPED - 1), indices)
+            }
+            (None, Some(fuzzy)) => {
+                let mut indices = Vec::new();
+                pattern.indices(Utf32Str::new(path, &mut buffer), &mut matcher, &mut indices);
+                (fuzzy.min(SHAPED - 1), indices)
+            }
+            (None, None) => continue,
+        };
+        indices.sort_unstable();
+        indices.dedup();
+        // Matched only in the folders above it: one of theirs, not this one.
+        if !indices.last().is_some_and(|&last| last >= name_at) {
+            continue;
+        }
+        found.push(Found {
+            path: path.clone(),
+            score,
+            indices,
+            dir: true,
+        });
+    }
+    found.sort_by(better);
+    found.truncate(room);
     Ok(found)
 }
 
@@ -584,6 +853,7 @@ fn rank(
                 path: path.clone(),
                 score,
                 indices,
+                dir: false,
             }
         })
         .collect())
@@ -711,6 +981,17 @@ pub fn initials(path: &str, query: &str) -> Option<(u32, Vec<u32>)> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn explorer_gets_a_path_without_the_verbatim_prefix() {
+        assert_eq!(without_verbatim(r"\\?\C:\repo\a.txt"), r"C:\repo\a.txt");
+        assert_eq!(
+            without_verbatim(r"\\?\UNC\server\share\a.txt"),
+            r"\\server\share\a.txt"
+        );
+        assert_eq!(without_verbatim(r"C:\repo\a.txt"), r"C:\repo\a.txt");
+        assert_eq!(without_verbatim("/repo/a.txt"), "/repo/a.txt");
+    }
 
     #[test]
     fn spells_paths_with_forward_slashes() {

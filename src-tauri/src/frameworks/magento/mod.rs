@@ -419,12 +419,33 @@ impl Provider for Magento {
     }
 
     fn stale(&self, relative: &str) -> bool {
-        let name = relative.rsplit('/').next().unwrap_or(relative);
-        matches!(
-            name,
-            "registration.php" | "theme.xml" | "composer.lock" | "installed.json" | "config.php"
-        ) || name.ends_with(".xml")
+        stale(relative)
     }
+}
+
+/// Whether a changed file makes the registry or its indexes stale: the files
+/// it is built from, and XML where config, layout and UI components are
+/// read from. Not an IDE's settings (`.idea/workspace.xml` is written all the
+/// time) or what Magento writes itself (`var/`, `generated/`, `pub/static/`).
+fn stale(relative: &str) -> bool {
+    let parts: Vec<&str> = relative.split('/').collect();
+    if matches!(
+        parts.first().copied(),
+        Some(".idea" | ".vscode" | ".git" | "var" | "generated" | "pub" | "node_modules")
+    ) {
+        return false;
+    }
+    let name = parts.last().copied().unwrap_or(relative);
+    if matches!(
+        name,
+        "registration.php" | "theme.xml" | "composer.lock" | "installed.json" | "config.php"
+    ) {
+        return true;
+    }
+    name.ends_with(".xml")
+        && parts[..parts.len() - 1]
+            .iter()
+            .any(|part| matches!(*part, "etc" | "layout" | "ui_component"))
 }
 
 // --- classes ------------------------------------------------------------------------
@@ -625,6 +646,31 @@ fn view_link(
             .next()
             .is_some_and(|last| last.contains('.'))
     };
+    // A file type a view file can have. `jquery.min` or `slick.min` in a
+    // RequireJS `paths` entry has a dot but no type: `.js` is left off there.
+    let typed = |rest: &str| {
+        rest.rsplit_once('.').is_some_and(|(_, ext)| {
+            matches!(
+                ext.to_ascii_lowercase().as_str(),
+                "js" | "html"
+                    | "phtml"
+                    | "css"
+                    | "less"
+                    | "json"
+                    | "svg"
+                    | "png"
+                    | "jpg"
+                    | "jpeg"
+                    | "gif"
+                    | "webp"
+                    | "ico"
+                    | "woff"
+                    | "woff2"
+                    | "ttf"
+                    | "eot"
+            )
+        })
+    };
     let (module_name, rest, folder) = match module_prefix(value) {
         // `Vendor_Module::something` with no file extension is an ACL
         // resource or a menu id, not a file.
@@ -656,7 +702,7 @@ fn view_link(
         Some(area) => vec![area],
         None => AREAS.to_vec(),
     };
-    let names: Vec<String> = if folder == "web" && !extension(rest) {
+    let names: Vec<String> = if folder == "web" && !typed(rest) {
         vec![
             format!("{rest}.js"),
             format!("{rest}.html"),
@@ -667,37 +713,16 @@ fn view_link(
     } else {
         vec![rest.to_string()]
     };
-    let mut seen: HashSet<String> = HashSet::new();
-    let mut targets: Vec<Target> = Vec::new();
-    let mut push = |path: String, label: String, targets: &mut Vec<Target>| {
-        if seen.insert(path.clone()) && is_file(root, &path) {
-            targets.push(target(root, &path, 1, 1, kind_of(folder), Some(label)));
-        }
-    };
-    if let Some(module) = module {
-        for area in areas.iter().chain(std::iter::once(&"base")) {
-            for name in &names {
-                let path = registry::join(&module.dir, &format!("view/{area}/{folder}/{name}"));
-                push(path, format!("{area} · module"), &mut targets);
-            }
-        }
-    }
-    for theme in registry.themes_in(&areas) {
-        for name in &names {
-            let path = registry::join(&theme.dir, &format!("{module_name}/{folder}/{name}"));
-            let parent = theme
-                .parent
-                .as_deref()
-                .and_then(|key| key.split_once('/'))
-                .map(|(_, name)| format!(" (inherits {name})"))
-                .unwrap_or_default();
-            push(
-                path,
-                format!("{} · {}{parent} · override", theme.area, theme.name),
-                &mut targets,
-            );
-        }
-    }
+    let module_areas: Vec<&str> = areas.iter().copied().chain(["base"]).collect();
+    let targets = view_files(
+        root,
+        registry,
+        &module_name,
+        folder,
+        &names,
+        &module_areas,
+        &areas,
+    );
     let what = if folder == "templates" {
         "Template"
     } else {
@@ -723,8 +748,236 @@ fn view_link(
     Some(links)
 }
 
+/// The files `names` can be in `folder` of a module's view: the module's
+/// own for each of `module_areas` in turn, then each theme's override for
+/// `theme_areas`, parents first. Only the ones that are there.
+fn view_files(
+    root: &Path,
+    registry: &Registry,
+    module_name: &str,
+    folder: &str,
+    names: &[String],
+    module_areas: &[&str],
+    theme_areas: &[&str],
+) -> Vec<Target> {
+    let mut seen: HashSet<String> = HashSet::new();
+    let mut targets: Vec<Target> = Vec::new();
+    let mut push = |path: String, label: String, targets: &mut Vec<Target>| {
+        // `..` in what was written is worked out here, so the path handed
+        // back is the file's own; one that climbs out of the tree is nothing.
+        let Some(path) = deps::normal(&path) else {
+            return;
+        };
+        if seen.insert(path.clone()) && is_file(root, &path) {
+            targets.push(target(root, &path, 1, 1, kind_of(folder), Some(label)));
+        }
+    };
+    if let Some(module) = registry.module(module_name) {
+        for area in module_areas {
+            for name in names {
+                let path = registry::join(&module.dir, &format!("view/{area}/{folder}/{name}"));
+                push(path, format!("{area} · module"), &mut targets);
+            }
+        }
+    }
+    for theme in registry.themes_in(theme_areas) {
+        for name in names {
+            let path = registry::join(&theme.dir, &format!("{module_name}/{folder}/{name}"));
+            push(
+                path,
+                format!(
+                    "{} · {}{} · override",
+                    theme.area,
+                    theme.name,
+                    inherits(theme)
+                ),
+                &mut targets,
+            );
+        }
+    }
+    targets
+}
+
+/// ` (inherits luma)` after a theme with a parent.
+fn inherits(theme: &registry::Theme) -> String {
+    theme
+        .parent
+        .as_deref()
+        .and_then(|key| key.split_once('/'))
+        .map(|(_, name)| format!(" (inherits {name})"))
+        .unwrap_or_default()
+}
+
+/// An email template's `file=` in `email_templates.xml`: the module's
+/// `view/<area>/email/<file>`, then `base`, then the other area, then each
+/// theme's `<Vendor_Module>/email/<file>` for the area.
+fn email_link(
+    root: &Path,
+    registry: &Registry,
+    from_path: &str,
+    element: &xml::Element,
+    file: &str,
+    from: usize,
+    to: usize,
+) -> Option<Links> {
+    let module_name = match element.attr("module") {
+        Some(attr) => attr.value.trim().to_string(),
+        None => registry.module_of(from_path)?.name.clone(),
+    };
+    let area = element
+        .attr("area")
+        .map(|attr| attr.value.trim())
+        .and_then(|area| AREAS.iter().copied().find(|known| *known == area));
+    let (module_areas, theme_areas): (Vec<&str>, Vec<&str>) = match area {
+        Some(area) => {
+            let other = AREAS.iter().copied().filter(|one| *one != area);
+            (
+                std::iter::once(area).chain(["base"]).chain(other).collect(),
+                vec![area],
+            )
+        }
+        None => (["base"].into_iter().chain(AREAS).collect(), AREAS.to_vec()),
+    };
+    let names = [file.to_string()];
+    let targets = view_files(
+        root,
+        registry,
+        &module_name,
+        "email",
+        &names,
+        &module_areas,
+        &theme_areas,
+    );
+    let module = registry.module(&module_name);
+    let mut links = Links {
+        from: from as u32,
+        to: to as u32,
+        title: format!("Email template {module_name}::{file} · {}", targets.len()),
+        targets,
+        ..Links::default()
+    };
+    if links.targets.is_empty() {
+        links.note = Some(if module.is_none() {
+            format!("No module {module_name} is registered")
+        } else {
+            format!("No email template {file} in {module_name} or a theme")
+        });
+    }
+    Some(links)
+}
+
+/// A `module="Vendor_Module"` attribute (email templates, menus, widgets):
+/// the module's `etc/module.xml` and `registration.php`.
+fn module_link(
+    root: &Path,
+    registry: &Registry,
+    name: &str,
+    from: usize,
+    to: usize,
+) -> Option<Links> {
+    let (vendor, rest) = name.split_once('_')?;
+    if vendor.is_empty()
+        || rest.is_empty()
+        || !name.chars().all(|c| c.is_ascii_alphanumeric() || c == '_')
+    {
+        return None;
+    }
+    let module = registry.module(name);
+    let targets: Vec<Target> = module
+        .map(|module| {
+            ["etc/module.xml", "registration.php"]
+                .iter()
+                .map(|file| registry::join(&module.dir, file))
+                .filter(|path| is_file(root, path))
+                .map(|path| {
+                    target(
+                        root,
+                        &path,
+                        1,
+                        1,
+                        "config",
+                        Some(format!("{name} · module")),
+                    )
+                })
+                .collect()
+        })
+        .unwrap_or_default();
+    let mut links = Links {
+        from: from as u32,
+        to: to as u32,
+        title: format!("Module {name} · {}", targets.len()),
+        targets,
+        ..Links::default()
+    };
+    if links.targets.is_empty() {
+        links.note = Some(format!("No module {name} is registered"));
+    }
+    Some(links)
+}
+
+/// A layout's `<css src>` or `<script src>` with no `Vendor_Module::`: a
+/// file of the theme (`web/<src>`, or the `.less` it is built from) or of
+/// `lib/web`.
+fn asset_link(
+    root: &Path,
+    registry: &Registry,
+    from_path: &str,
+    src: &str,
+    from: usize,
+    to: usize,
+) -> Option<Links> {
+    if src.contains("://") || src.starts_with("//") || !src.contains('.') {
+        return None;
+    }
+    let theme_area = registry
+        .theme_of(from_path)
+        .map(|theme| theme.area.as_str());
+    let areas: Vec<&str> = match theme_area.or(area_of(from_path)) {
+        Some(area) => vec![area],
+        None => AREAS.to_vec(),
+    };
+    let mut names = vec![src.to_string()];
+    if let Some(stem) = src.strip_suffix(".css") {
+        names.push(format!("{stem}.less"));
+    }
+    let mut seen: HashSet<String> = HashSet::new();
+    let mut targets: Vec<Target> = Vec::new();
+    let mut push = |path: String, label: String| {
+        let Some(path) = deps::normal(&path) else {
+            return;
+        };
+        if seen.insert(path.clone()) && is_file(root, &path) {
+            targets.push(target(root, &path, 1, 1, "asset", Some(label)));
+        }
+    };
+    for theme in registry.themes_in(&areas) {
+        for name in &names {
+            push(
+                registry::join(&theme.dir, &format!("web/{name}")),
+                format!("{} · {}{}", theme.area, theme.name, inherits(theme)),
+            );
+        }
+    }
+    for lib in ["lib/web", "vendor/magento/magento2-base/lib/web"] {
+        for name in &names {
+            push(format!("{lib}/{name}"), "library".to_string());
+        }
+    }
+    let mut links = Links {
+        from: from as u32,
+        to: to as u32,
+        title: format!("File {src} · {}", targets.len()),
+        targets,
+        ..Links::default()
+    };
+    if links.targets.is_empty() {
+        links.note = Some(format!("No {src} in a theme or lib/web"));
+    }
+    Some(links)
+}
+
 fn kind_of(folder: &str) -> &'static str {
-    if folder == "templates" {
+    if folder == "templates" || folder == "email" {
         "template"
     } else {
         "asset"
@@ -966,6 +1219,14 @@ fn xml_links(
             let local = element.local();
             match attr.name {
                 "template" => view_link(root, registry, path, value, from, to),
+                "file" if local == "template" && path.ends_with("email_templates.xml") => {
+                    email_link(root, registry, path, element, value, from, to)
+                }
+                "module" => module_link(root, registry, value, from, to)
+                    .or_else(|| loose(root, registry, path, value, from, to)),
+                "src" if matches!(local, "css" | "script" | "link") && !view_shaped(value) => {
+                    asset_link(root, registry, path, value, from, to)
+                }
                 "method" => {
                     let class = METHOD_OWNERS.iter().find_map(|owner| element.attr(owner))?;
                     method_link(root, registry, class.value, value, from, to)
@@ -1201,6 +1462,36 @@ mod tests {
         assert_eq!(value, "A_B::x.phtml");
         assert_eq!(&text[from..to], "A_B::x.phtml");
         assert!(string_at(text, 3).is_none());
+    }
+
+    #[test]
+    fn only_config_changes_make_the_registry_stale() {
+        for path in [
+            "app/code/A/B/etc/di.xml",
+            "app/code/A/B/etc/frontend/events.xml",
+            "app/code/A/B/view/frontend/layout/default.xml",
+            "app/code/A/B/view/adminhtml/ui_component/a_listing.xml",
+            "app/design/frontend/V/t/A_B/layout/default.xml",
+            "app/design/frontend/V/t/theme.xml",
+            "app/code/A/B/registration.php",
+            "etc/di.xml",
+            "vendor/composer/installed.json",
+            "composer.lock",
+            "app/etc/config.php",
+        ] {
+            assert!(stale(path), "{path}");
+        }
+        for path in [
+            ".idea/workspace.xml",
+            "var/cache/x.xml",
+            "generated/metadata/x.xml",
+            "pub/static/frontend/V/t/en_US/x.xml",
+            "phpunit.xml",
+            "app/code/A/B/Model/X.php",
+            "app/code/A/B/view/frontend/templates/x.phtml",
+        ] {
+            assert!(!stale(path), "{path}");
+        }
     }
 
     #[test]

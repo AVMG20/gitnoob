@@ -87,15 +87,15 @@ describe('the blame toggle in the bar', () => {
     expect(blamed()).toHaveLength(0)
   })
 
-  it('reads the blame when the button turns it on, and shows it on the caret line', async () => {
+  it('reads the blame when the button turns it on, and shows it in the column', async () => {
     const wrapper = await show()
     await toggle(wrapper).trigger('click')
     await flushPromises()
     expect(diffMode.blame).toBe(true)
     expect(blamed()).toHaveLength(1)
-    // A working-tree file is the editor, which says who wrote the line the
-    // caret is on rather than drawing a column.
-    expect(wrapper.find('.cm-blame').text()).toContain('Ramon Robben')
+    // A working-tree file is the editor, whose gutter carries the column.
+    expect(wrapper.find('.cm-blame-on').exists()).toBe(true)
+    expect(wrapper.find('.cm-blame-entry.head').text()).toContain('Ramon Robben')
   })
 
   it('takes the column away again, and the file stays', async () => {
@@ -104,7 +104,7 @@ describe('the blame toggle in the bar', () => {
     await flushPromises()
     await toggle(wrapper).trigger('click')
     await flushPromises()
-    expect(wrapper.find('.cm-blame').exists()).toBe(false)
+    expect(wrapper.find('.cm-blame-on').exists()).toBe(false)
     expect(wrapper.findAll('.cm-line').length).toBeGreaterThan(1)
   })
 
@@ -127,7 +127,7 @@ describe('the blame toggle in the bar', () => {
     await flushPromises()
     expect(diffMode.mode).toBe('file')
     expect(diffMode.blame).toBe(true)
-    expect(wrapper.find('.cm-blame').text()).toContain('Ramon Robben')
+    expect(wrapper.find('.cm-blame-entry.head').text()).toContain('Ramon Robben')
   })
 
   it('keeps the blame column for a commit’s copy, which is not the editor', async () => {

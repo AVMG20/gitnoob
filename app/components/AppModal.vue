@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { onMounted, onUnmounted, ref } from 'vue'
+import { nextTick, onMounted, onUnmounted, ref } from 'vue'
 import { X } from 'lucide-vue-next'
 
 /**
@@ -21,8 +21,56 @@ function onKey(event: KeyboardEvent) {
   if (event.key === 'Escape') emit('close')
 }
 
-onMounted(() => window.addEventListener('keydown', onKey))
-onUnmounted(() => window.removeEventListener('keydown', onKey))
+/**
+ * Focus goes into the dialog, stays in it, and goes back where it was.
+ *
+ * Left behind the scrim, Tab walked the window under the dialog and Enter
+ * could press Pull or Push while a "Delete branch?" was open. The box itself
+ * takes focus, not its first button, so Enter on opening confirms nothing; a
+ * dialog that puts the caret in a field itself is left alone.
+ */
+const box = ref<HTMLElement | null>(null)
+let before: Element | null = null
+
+const FOCUSABLE =
+  'button:not([disabled]), [href], input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])'
+
+function focusables() {
+  return [...(box.value?.querySelectorAll<HTMLElement>(FOCUSABLE) ?? [])]
+}
+
+function onTab(event: KeyboardEvent) {
+  // A palette has its own use for Tab (the search window's modes).
+  if (event.key !== 'Tab' || !box.value || props.palette || event.defaultPrevented) return
+  const all = focusables()
+  if (!all.length) {
+    event.preventDefault()
+    return
+  }
+  const first = all[0]!
+  const last = all[all.length - 1]!
+  const active = document.activeElement
+  const inside = active instanceof Node && box.value.contains(active)
+  if (!inside || (event.shiftKey && (active === first || active === box.value))) {
+    event.preventDefault()
+    ;(event.shiftKey ? last : first).focus()
+  } else if (!event.shiftKey && active === last) {
+    event.preventDefault()
+    first.focus()
+  }
+}
+
+onMounted(async () => {
+  window.addEventListener('keydown', onKey)
+  before = document.activeElement
+  await nextTick()
+  const active = document.activeElement
+  if (box.value && !(active instanceof Node && box.value.contains(active))) box.value.focus()
+})
+onUnmounted(() => {
+  window.removeEventListener('keydown', onKey)
+  if (before instanceof HTMLElement && before.isConnected) before.focus()
+})
 
 /**
  * A click lands on the scrim whenever the press and the release straddle
@@ -45,10 +93,14 @@ function onScrim() {
 <template>
   <div class="scrim" :class="{ palette: props.palette }" @pointerdown="onDown" @click.self="onScrim">
     <div
+      ref="box"
       class="modal"
       role="dialog"
+      aria-modal="true"
+      tabindex="-1"
       :aria-label="props.title"
       :style="{ width: `${props.width ?? 460}px` }"
+      @keydown="onTab"
     >
       <div v-if="!props.palette" class="head">
         <h2>{{ props.title }}</h2>
@@ -133,6 +185,10 @@ function onScrim() {
 .scrim.palette {
   place-items: start center;
   padding-top: 4vh;
+}
+
+.modal:focus {
+  outline: none;
 }
 
 .palette .modal {

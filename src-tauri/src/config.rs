@@ -766,10 +766,28 @@ pub fn secret_get(key: &str) -> Option<String> {
     if let Some(known) = cached(key) {
         return known;
     }
-    let found = store_get(key).filter(|value| !value.is_empty());
+    // Only an answer is remembered. A keychain that was locked, or a prompt
+    // dismissed by reflex, said nothing about the token, and remembering that
+    // as "no token" reported a stored one as missing until the next restart.
+    let found = store_get(key)?.filter(|value| !value.is_empty());
     cache(key, found.clone());
     found
 }
+
+/// What a save says when the keychain would not open. On Linux that is
+/// usually no Secret Service running at all, which the user can fix.
+#[cfg_attr(debug_assertions, allow(dead_code))]
+const KEYCHAIN_CLOSED: &str = if cfg!(target_os = "linux") {
+    "The keychain would not open. gitnoob keeps tokens in the Secret Service: install and \
+     unlock a keyring such as GNOME Keyring or KWallet, then try again."
+} else {
+    "The keychain would not open. Unlock it, or allow gitnoob when it asks, then try again."
+};
+
+/// Held across every read-modify-write of the stored secrets, so two saves at
+/// once (a profile's token and the AI key) cannot each write a copy missing
+/// the other's.
+static WRITING: Mutex<()> = Mutex::new(());
 
 /// The one keychain item every secret lives in, as a JSON object.
 ///
@@ -850,7 +868,10 @@ fn blob_set(all: HashMap<String, String>) -> Result<(), String> {
 
 #[cfg(not(debug_assertions))]
 fn store_set(key: &str, value: Option<&str>) -> Result<(), String> {
-    let mut all = blob().ok_or("The keychain would not open")?;
+    let _writing = WRITING
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    let mut all = blob().ok_or(KEYCHAIN_CLOSED)?;
     match value {
         Some(value) => all.insert(key.to_string(), value.to_string()),
         None => all.remove(key),
@@ -858,21 +879,30 @@ fn store_set(key: &str, value: Option<&str>) -> Result<(), String> {
     blob_set(all)
 }
 
+/// `None` when the keychain would not answer, `Some(None)` when it answered
+/// that there is nothing under `key`.
 #[cfg(not(debug_assertions))]
-fn store_get(key: &str) -> Option<String> {
+fn store_get(key: &str) -> Option<Option<String>> {
     if let Some(found) = blob()?.get(key) {
-        return Some(found.clone());
+        return Some(Some(found.clone()));
     }
     // Every secret used to have an item of its own. One that is still there is
     // moved across the first time it is asked for, so an install that predates
     // the single item keeps its tokens; the old item goes only once the new one
     // holds the value.
-    let old = entry(key).ok()?;
-    let found = old.get_password().ok()?;
-    if store_set(key, Some(&found)).is_ok() {
-        let _ = old.delete_credential();
+    let Ok(old) = entry(key) else {
+        return Some(None);
+    };
+    match old.get_password() {
+        Ok(found) => {
+            if store_set(key, Some(&found)).is_ok() {
+                let _ = old.delete_credential();
+            }
+            Some(Some(found))
+        }
+        Err(keyring::Error::NoEntry) => Some(None),
+        Err(_) => None,
     }
-    Some(found)
 }
 
 /// Where a development build keeps its tokens.
@@ -925,9 +955,9 @@ fn keychain_get(key: &str) -> Option<Option<String>> {
 /// key that turns out not to be in the keychain either is written down as
 /// empty, which counts as an answer: the question is not asked twice.
 #[cfg(debug_assertions)]
-fn store_get(key: &str) -> Option<String> {
+fn store_get(key: &str) -> Option<Option<String>> {
     if let Some(known) = dev_all().get(key) {
-        return Some(known.clone());
+        return Some(Some(known.clone()));
     }
     let adopted = match keychain_get(key) {
         Some(Some(found)) => found,
@@ -939,11 +969,14 @@ fn store_get(key: &str) -> Option<String> {
         None => return None,
     };
     let _ = store_set(key, Some(&adopted));
-    Some(adopted)
+    Some(Some(adopted))
 }
 
 #[cfg(debug_assertions)]
 fn store_set(key: &str, value: Option<&str>) -> Result<(), String> {
+    let _writing = WRITING
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
     let Some(path) = dev_file() else {
         return Err("No config directory to keep tokens in".to_string());
     };
@@ -966,6 +999,22 @@ fn store_set(key: &str, value: Option<&str>) -> Result<(), String> {
 }
 
 /// Keychain key for a profile's forge token.
+/// A forge host as the API calls need it: `gitlab.example.com`, or with a
+/// port. Typed as a web address (`https://gitlab.example.com/`), every call
+/// went to `https://https://…` and failed with an error that never named it.
+pub fn bare_host(typed: &str) -> String {
+    let host = typed.trim();
+    let lower = host.to_ascii_lowercase();
+    let host = if lower.starts_with("https://") {
+        &host[8..]
+    } else if lower.starts_with("http://") {
+        &host[7..]
+    } else {
+        host
+    };
+    host.trim_end_matches('/').to_string()
+}
+
 pub fn forge_key(profile_id: &str) -> String {
     format!("forge:{profile_id}")
 }
@@ -1472,6 +1521,20 @@ mod tests {
 
     /// Tokens are keyed by profile, so two profiles on the same forge do not
     /// read each other's.
+    #[test]
+    fn a_host_typed_as_an_address_is_kept_as_a_host() {
+        assert_eq!(
+            super::bare_host(" https://gitlab.corp.example/ "),
+            "gitlab.corp.example"
+        );
+        assert_eq!(
+            super::bare_host("HTTP://git.example:8443"),
+            "git.example:8443"
+        );
+        assert_eq!(super::bare_host("github.com"), "github.com");
+        assert_eq!(super::bare_host(""), "");
+    }
+
     #[test]
     fn forge_keys_are_per_profile() {
         assert_eq!(forge_key("abc"), "forge:abc");

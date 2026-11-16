@@ -98,8 +98,8 @@ export function stateOf(path: string): UsageState {
 
 let lastRequest = 0
 
-/** The files `dependency_definition` reads names in: PHP, TypeScript, JavaScript. */
-const RESOLVED = /\.(php|[cm]?[jt]sx?)$/i
+/** The files `dependency_definition` reads names in: PHP (and `.phtml` templates), TypeScript, JavaScript. */
+const RESOLVED = /\.(php|phtml|[cm]?[jt]sx?)$/i
 
 /** Where `dependency_definition` lands: a place, maybe in a dependency. */
 export interface DependencyJump extends CodeLocation {
@@ -120,6 +120,20 @@ export function nextSymbolRequest() {
 }
 
 const ORDER: Record<UsageState, number> = { changed: 0, new: 1, unchanged: 2 }
+
+/** The newest ⌘-click or usages lookup; an older one's answer is dropped. */
+let lookup = 0
+
+/**
+ * A lookup's place in line, and whether its answer may still be shown: not
+ * once a newer lookup has started, the popup was closed, or another project
+ * came to the front (opening the file there would open it in the wrong one).
+ */
+function startLookup() {
+  const ticket = ++lookup
+  const repo = useGit().store.repo?.path ?? null
+  return () => ticket === lookup && (useGit().store.repo?.path ?? null) === repo
+}
 
 /** Opens a place: pinned, at its line, and remembered for ⌘[. */
 export function openLocation(place: CodeLocation) {
@@ -164,6 +178,8 @@ function showPopup(
 
 export function closeUsages() {
   usagesPopup.open = false
+  // Whatever was still being looked up is not wanted now.
+  lookup += 1
 }
 
 function label(name: string, kind: string) {
@@ -182,15 +198,19 @@ export async function showUsages(
   kind: string,
   at: { x: number; y: number } | null = null,
   line: number | null = null,
-  jump: 'one' | 'only' = 'only'
+  jump: 'one' | 'only' = 'only',
+  text: string | null = null
 ) {
+  const wanted = startLookup()
   let list: UsageList | null
   try {
-    list = await invoke<UsageList | null>('usages', { name, path, kind, line })
+    // The editor's text when it has edits the disk does not: `line` counts in it.
+    list = await invoke<UsageList | null>('usages', { name, path, kind, line, text })
   } catch (error) {
-    useToasts().info('Could not look up the usages', String(error))
+    if (wanted()) useToasts().info('Could not look up the usages', String(error))
     return
   }
+  if (!wanted()) return
   const definite = list?.definite ?? []
   const possible = list?.possible ?? []
   const config = list?.config ?? []
@@ -265,9 +285,11 @@ export async function jumpFrom(
   text: string | null,
   at: { x: number; y: number } | null = null
 ) {
+  const wanted = startLookup()
   // The framework first: a class in XML, a template or an event name is a
   // string to the language, and nothing would come of it below.
   const links = await frameworkLinks(path, offset, text)
+  if (!wanted()) return
   if (links) {
     showFrameworkLinks(links, at)
     return
@@ -278,8 +300,9 @@ export async function jumpFrom(
   } catch {
     symbol = null
   }
+  if (!wanted()) return
   if (symbol?.definition) {
-    await showUsages(symbol.name, path, symbol.kind, at, symbol.line, 'one')
+    await showUsages(symbol.name, path, symbol.kind, at, symbol.line, 'one', text)
     return
   }
   // PHP through the imports and Composer's autoload, scripts through
@@ -289,6 +312,7 @@ export async function jumpFrom(
     const jump = await invoke<DependencyJump | null>('dependency_definition', { path, offset, text }).catch(
       () => null
     )
+    if (!wanted()) return
     if (jump) {
       openLocation(jump)
       if (jump.note) useToasts().info(jump.note)
@@ -301,9 +325,10 @@ export async function jumpFrom(
     found =
       (await invoke<CodeLocation[] | null>('definitions', { name: symbol.name, path, shape: symbol.shape })) ?? []
   } catch (error) {
-    useToasts().info('Could not look up the definition', String(error))
+    if (wanted()) useToasts().info('Could not look up the definition', String(error))
     return
   }
+  if (!wanted()) return
   if (!found.length) {
     if (symbol.shape !== 'member' && symbol.shape !== 'scoped') {
       useToasts().info(`No definition of ${symbol.name} in this repository`)
@@ -313,11 +338,12 @@ export async function jumpFrom(
     // classes the file imports that have a method of that name are offered
     // to pick from, rather than nothing.
     const doubt = `Couldn't work out which class ${symbol.name} belongs to`
-    const candidates = /\.php$/i.test(path)
+    const candidates = /\.(php|phtml)$/i.test(path)
       ? await invoke<DependencyJump[] | null>('member_candidates', { path, name: symbol.name, text })
           .then((all) => all ?? [])
           .catch(() => [] as DependencyJump[])
       : []
+    if (!wanted()) return
     if (!candidates.length) {
       useToasts().info(doubt)
       return

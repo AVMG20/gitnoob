@@ -46,6 +46,7 @@
     "externalBin": ["binaries/magequery"],
     "resources": {
       "../licenses/magequery-EUPL-1.2.txt": "licenses/magequery-EUPL-1.2.txt",
+      "../licenses/Inter-OFL-1.1.txt": "licenses/Inter-OFL-1.1.txt",
       "../THIRD_PARTY_NOTICES.md": "THIRD_PARTY_NOTICES.md"
     },
     "icon": [

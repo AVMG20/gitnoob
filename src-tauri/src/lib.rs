@@ -203,6 +203,21 @@ async fn init_repo(name: String, parent: String, state: Aimed) -> Result<create:
     .map_err(|e| format!("Creating the repository did not finish: {e}"))?
 }
 
+/// Runs `work` on the blocking pool and waits for it.
+///
+/// An `async` command that does its work inline holds one of the async
+/// runtime's workers, of which there are as many as cores, for as long as
+/// the work takes. A few slow ones at once (calls waiting for the code index
+/// to finish building, cold walks of a big tree, a graph with thousands of
+/// rows) left every other command queued behind them, and the window froze.
+async fn blocking<T: Send + 'static>(
+    work: impl FnOnce() -> Result<T, String> + Send + 'static,
+) -> Result<T, String> {
+    tauri::async_runtime::spawn_blocking(work)
+        .await
+        .map_err(|e| e.to_string())?
+}
+
 #[tauri::command]
 fn repo_info(state: Aimed) -> Result<refs::RepoInfo, String> {
     refs::describe(&state)
@@ -215,7 +230,7 @@ async fn ref_tree(state: Aimed) -> Result<refs::RefTree, String> {
 
 #[tauri::command]
 async fn working_status(state: Aimed) -> Result<refs::WorkingStatus, String> {
-    refs::status_counted(&state)
+    blocking(move || refs::status_counted(&state)).await
 }
 
 // --- history ----------------------------------------------------------------
@@ -227,12 +242,13 @@ async fn commit_graph(
     state: Aimed,
 ) -> Result<graph::GraphPage, String> {
     let fallback = state.config().global.graph_page_size;
-    graph::soloed(&state, limit.unwrap_or(fallback), &solo.unwrap_or_default())
+    blocking(move || graph::soloed(&state, limit.unwrap_or(fallback), &solo.unwrap_or_default()))
+        .await
 }
 
 #[tauri::command]
 async fn commit_detail(oid: String, state: Aimed) -> Result<diff::CommitDetail, String> {
-    diff::commit_detail(&state, &oid)
+    blocking(move || diff::commit_detail(&state, &oid)).await
 }
 
 #[tauri::command]
@@ -250,7 +266,7 @@ async fn working_file_diff(
     side: diff::Side,
     state: Aimed,
 ) -> Result<diff::FileDiff, String> {
-    diff::working_file_diff(&state, &path, side)
+    blocking(move || diff::working_file_diff(&state, &path, side)).await
 }
 
 /// A working-tree file against the last commit, for the editor's change bars.
@@ -282,7 +298,7 @@ async fn file_text(
 /// Ignored entries are flagged rather than left out.
 #[tauri::command]
 async fn list_dir(path: String, state: Aimed) -> Result<Vec<files::Entry>, String> {
-    files::list_dir(&state, &path)
+    blocking(move || files::list_dir(&state, &path)).await
 }
 
 /// Class, function and method names matching `query`, for the search
@@ -293,7 +309,7 @@ async fn find_symbols(
     limit: Option<usize>,
     state: Aimed,
 ) -> Result<Vec<symbols::FoundSymbol>, String> {
-    symbols::find_symbols(&state, &query, limit.unwrap_or(60))
+    blocking(move || symbols::find_symbols(&state, &query, limit.unwrap_or(60))).await
 }
 
 /// An image's bytes and sniffed type, from the work tree or a blob.
@@ -329,7 +345,8 @@ fn open_default(path: String, state: Aimed) -> Result<(), String> {
 /// with every call, and an older call still running gives up.
 ///
 /// `also` are paths the window ranks first (recently opened, changed): they
-/// are matched too and kept even when they fall outside `limit`.
+/// are matched too and kept even when they fall outside `limit`. `folders`
+/// lists the folders whose own name matches as well, for the window's finder.
 #[tauri::command]
 async fn find_files(
     query: String,
@@ -337,16 +354,22 @@ async fn find_files(
     request: Option<u64>,
     also: Option<Vec<String>>,
     dependencies: Option<bool>,
+    folders: Option<bool>,
     state: Aimed,
 ) -> Result<Vec<files::Found>, String> {
-    files::find_files(
-        &state,
-        &query,
-        limit.unwrap_or(200),
-        request.unwrap_or(0),
-        &also.unwrap_or_default(),
-        dependencies.unwrap_or(false),
-    )
+    let root = state.path()?;
+    blocking(move || {
+        files::find_paths(
+            &root,
+            &query,
+            limit.unwrap_or(200),
+            request.unwrap_or(0),
+            &also.unwrap_or_default(),
+            dependencies.unwrap_or(false),
+            folders.unwrap_or(false),
+        )
+    })
+    .await
 }
 
 /// Searches inside the files of the work tree. Returns at once; what is found
@@ -387,7 +410,7 @@ async fn search_file(
     state: Aimed,
 ) -> Result<Vec<search::LineHit>, String> {
     let root = state.path()?;
-    search::search_file(&root, &path, &query, &options)
+    blocking(move || search::search_file(&root, &path, &query, &options)).await
 }
 
 /// Where the name under a ⌘-click is defined when that is in a dependency
@@ -401,7 +424,7 @@ async fn dependency_definition(
     state: Aimed,
 ) -> Result<Option<deps::Jump>, String> {
     let root = state.path()?;
-    deps::dependency_definition(&root, &path, offset, text.as_deref())
+    blocking(move || deps::dependency_definition(&root, &path, offset, text.as_deref())).await
 }
 
 /// The framework the open repository uses, for the chip in the title bar;
@@ -458,10 +481,8 @@ async fn framework_wiring(
         };
         let tool = frameworks::magequery::find(&state);
         if tool.is_none() {
-            return Err(
-                "magequery is not bundled with this build, and Settings → Frameworks names none"
-                    .to_string(),
-            );
+            let setting = state.config().global.magequery_path;
+            return Err(frameworks::magequery::not_found(setting.as_deref()));
         }
         provider.wiring(&root, &class, tool.as_deref())
     })
@@ -580,7 +601,7 @@ async fn symbol_at(
     text: Option<String>,
     state: Aimed,
 ) -> Result<Option<symbols::SymbolAt>, String> {
-    symbols::symbol_at(&state, &path, offset, text.as_deref())
+    blocking(move || symbols::symbol_at(&state, &path, offset, text.as_deref())).await
 }
 
 /// Where a name is defined, among files of the same language as `path`.
@@ -591,7 +612,7 @@ async fn definitions(
     shape: Option<symbols::Shape>,
     state: Aimed,
 ) -> Result<Vec<symbols::Location>, String> {
-    symbols::definitions(&state, &name, path.as_deref(), shape)
+    blocking(move || symbols::definitions(&state, &name, path.as_deref(), shape)).await
 }
 
 /// Every use of a definition, among files of the same language as `path`:
@@ -602,9 +623,20 @@ async fn usages(
     path: Option<String>,
     kind: Option<String>,
     line: Option<u32>,
+    text: Option<String>,
     state: Aimed,
 ) -> Result<symbols::UsageList, String> {
-    symbols::usages(&state, &name, path.as_deref(), kind.as_deref(), line)
+    blocking(move || {
+        symbols::usages_in(
+            &state,
+            &name,
+            path.as_deref(),
+            kind.as_deref(),
+            line,
+            text.as_deref(),
+        )
+    })
+    .await
 }
 
 /// What nothing uses in a file: dimmed if private, hinted at if public.
@@ -615,7 +647,7 @@ async fn unused_in(
     request: Option<u64>,
     state: Aimed,
 ) -> Result<Vec<symbols::Mark>, String> {
-    symbols::unused_in(&state, &path, text.as_deref(), request)
+    blocking(move || symbols::unused_in(&state, &path, text.as_deref(), request)).await
 }
 
 /// "3 usages" over each definition in a file.
@@ -625,14 +657,14 @@ async fn usage_counts(
     text: Option<String>,
     state: Aimed,
 ) -> Result<Vec<symbols::Lens>, String> {
-    symbols::usage_counts(&state, &path, text.as_deref())
+    blocking(move || symbols::usage_counts(&state, &path, text.as_deref())).await
 }
 
 /// A file for the editor: its text in `\n`, the hash a save has to name, how
 /// it is written, and why it is read-only when it is.
 #[tauri::command]
 async fn read_file(path: String, state: Aimed) -> Result<edit::FileRead, String> {
-    edit::read_file(&state, &path)
+    blocking(move || edit::read_file(&state, &path)).await
 }
 
 /// Saves the editor's text over a file, refused with a `Conflict` when the
@@ -648,7 +680,8 @@ async fn write_file(
     state: Aimed,
 ) -> Result<String, String> {
     let new_shape = eol.map(|eol| (eol == "crlf", bom.unwrap_or(false)));
-    edit::write_file(&state, &path, &text, expected_hash.as_deref(), new_shape)
+    blocking(move || edit::write_file(&state, &path, &text, expected_hash.as_deref(), new_shape))
+        .await
 }
 
 // --- branches ---------------------------------------------------------------
@@ -1452,7 +1485,8 @@ fn config_set_global(global: config::Global, state: Aimed) -> Result<config::Con
 
 /// Creates the profile when its id is unknown, updates it otherwise.
 #[tauri::command]
-fn profile_save(profile: config::Profile, state: Aimed) -> Result<config::Config, String> {
+fn profile_save(mut profile: config::Profile, state: Aimed) -> Result<config::Config, String> {
+    profile.host = config::bare_host(&profile.host);
     state.update_config(|config| {
         match config.profiles.iter_mut().find(|p| p.id == profile.id) {
             Some(existing) => {

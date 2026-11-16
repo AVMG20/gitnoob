@@ -66,26 +66,57 @@ function themePainter() {
 }
 
 /**
+ * Whether a line cut out of a `.phtml` template is PHP on its own (a line
+ * inside a `<?php` block, such as `$items = $block->getItems();`) rather than
+ * HTML with PHP tags in it. Read alone, in the template's own mixed mode, such
+ * a line would be taken for HTML text and come out plain.
+ */
+export function phpLine(line: string): boolean {
+  const text = line.trim()
+  if (!text || text.startsWith('<') || /<\?|\?>/.test(text)) return false
+  return /^(\$|\/\/|\/\*|\*|#|use\b|if\b|else|endif|foreach\b|endforeach|for\b|endfor|while\b|endwhile|switch\b|case\b|return\b|echo\b)|;$/.test(text)
+}
+
+/**
  * The tokens of each of `lines`, from `path`'s grammar; null while its
  * language is still on its way (or there is none, or no theme colours).
+ * A `.phtml` template's lines are read one by one, each as plain PHP or as
+ * the template's HTML with PHP in it, whichever it is.
  */
 export function colourLines(path: string, lines: string[]): Token[][] | null {
   const language = languageOf(path)
   if (!language) return null
+  const template = extensionOf(path) === 'phtml'
+  const plain = template ? languageOf('plain.php') : null
+  if (template && !plain) return null
   const { highlighter, css } = themePainter()
   if (!css.length) return null
   const text = lines.join('\n')
   const key = `${path}\u0000${text}`
   const known = cache.get(key)
   if (known) return known
+  const out: Token[][] = lines.map(() => [])
+  if (template) {
+    lines.forEach((line, row) => {
+      const tree = (phpLine(line) ? plain! : language).parser.parse(line)
+      paint(tree, highlighter, css, [line], out.slice(row, row + 1))
+    })
+  } else {
+    paint(language.parser.parse(text), highlighter, css, lines, out)
+  }
+  if (cache.size > 800) cache.clear()
+  cache.set(key, out)
+  return out
+}
+
+/** Puts the tokens of `tree`, a parse of `lines` joined, into `out`, line by line. */
+function paint(tree: ReturnType<Language['parser']['parse']>, highlighter: Highlighter, css: string[], lines: string[], out: Token[][]) {
   const starts: number[] = []
   let at = 0
   for (const line of lines) {
     starts.push(at)
     at += line.length + 1
   }
-  const out: Token[][] = lines.map(() => [])
-  const tree = language.parser.parse(text)
   let row = 0
   highlightTree(tree, highlighter, (from, to, classes) => {
     const style = classes
@@ -105,9 +136,6 @@ export function colourLines(path: string, lines: string[]): Token[][] | null {
       start = starts[line] ?? to
     }
   })
-  if (cache.size > 800) cache.clear()
-  cache.set(key, out)
-  return out
 }
 
 export interface Part {

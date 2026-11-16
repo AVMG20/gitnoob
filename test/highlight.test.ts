@@ -2,6 +2,7 @@ import { beforeAll, describe, expect, it, vi } from 'vitest'
 import {
   highlightLine,
   highlightWhole,
+  MAX_COLOURED,
   labelFor,
   languageFor,
   ready
@@ -91,6 +92,17 @@ describe('highlightWhole', () => {
     "const label = ref('x')",
     '</script>'
   ].join('\n')
+
+  it('shows a file past the size limit plain, one line per line, without tokenising it', () => {
+    const line = "const label = ref('x') // <b>\n"
+    const big = line.repeat(Math.ceil(MAX_COLOURED / line.length) + 1)
+    const started = Date.now()
+    const lines = highlightWhole(big, 'ts')
+    expect(lines).toHaveLength(big.split('\n').length)
+    expect(lines[0]).toContain('&lt;b&gt;')
+    expect(coloured(lines.slice(0, 50).join(''))).toBe(0)
+    expect(Date.now() - started).toBeLessThan(2000)
+  })
 
   it('hands back one line of html for every line of source', () => {
     const lines = highlightWhole(SFC, 'vue')

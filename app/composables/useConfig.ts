@@ -156,6 +156,9 @@ export type SettingsSection =
   | 'frameworks'
   | 'updates'
 
+/** Settings writes in flight, so each starts from what the last one left. */
+let globalWrites: Promise<void> = Promise.resolve()
+
 const store = reactive({
   config: null as Config | null,
   /** Which secrets exist, keyed by keychain key. Never holds a value. */
@@ -235,8 +238,9 @@ export function useConfig() {
       store.opening = path
     },
     /** The open has landed, or failed: the config is the answer again. */
-    endOpen() {
-      store.opening = null
+    /** Ends the open of `path`; one asked for since then is still on its way. */
+    endOpen(path?: string) {
+      if (path === undefined || store.opening === path) store.opening = null
     },
     load,
     refreshSecrets,
@@ -254,6 +258,20 @@ export function useConfig() {
 
     async saveGlobal(global: GlobalSettings) {
       apply(await invoke<Config>('config_set_global', { global }))
+    },
+    /**
+     * Changes the settings from what they are when the change's turn comes,
+     * one change at a time. Two quick changes each spreading the settings as
+     * they were before either landed sent the second without the first.
+     */
+    updateGlobal(change: (current: GlobalSettings) => GlobalSettings) {
+      const next = globalWrites.then(async () => {
+        const current = store.config?.global
+        if (!current) return
+        apply(await invoke<Config>('config_set_global', { global: change(current) }))
+      })
+      globalWrites = next.catch(() => undefined)
+      return next
     },
     async saveProfile(next: Profile) {
       apply(await invoke<Config>('profile_save', { profile: next }))

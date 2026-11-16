@@ -200,6 +200,21 @@ describe('⌘-click in a framework file', () => {
     expect(php.slice(template.from, template.to)).toBe('BigBridge_Foo::catalog/options.phtml')
     expect(frameworkToken('$plain = word;', 3)).toBeNull()
   })
+
+  it('underlines the whole file= of an email template and a layout src=, wherever ⌘ is in it', () => {
+    const line = '<template id="rma_request_created" area="frontend" file="rma/rma_request_created.html" type="html"/>'
+    const value = 'rma/rma_request_created.html'
+    const start = line.indexOf(value)
+    for (const into of [0, 2, 5, 10, value.length - 2]) {
+      const found = frameworkToken(line, start + into)!
+      expect(line.slice(found.from, found.to)).toBe(value)
+    }
+    const css = '<css src="css/styles-m.css"/>'
+    const asset = frameworkToken(css, css.indexOf('styles'))!
+    expect(css.slice(asset.from, asset.to)).toBe('css/styles-m.css')
+    // An id is a plain word, left to the editor's word rule.
+    expect(frameworkToken(line, line.indexOf('request_created'))).toBeNull()
+  })
 })
 
 describe('config references in the usage counts', () => {
@@ -288,6 +303,46 @@ describe('the wiring view', () => {
     expect(view.find('[data-testid="wiring-error"]').text()).toBe(
       'magequery took longer than 10 seconds and was stopped'
     )
+  })
+
+  it('shows its loading, empty and no-magequery states, and no line where magequery has none', async () => {
+    let answer: (value: unknown) => void = () => undefined
+    asked.mockImplementation(async (cmd: string) => {
+      if (cmd === 'framework_wiring') return new Promise((done) => (answer = done))
+      return null
+    })
+    const asking = openWiring('Foo\\Bar')
+    const view = mount(WiringPopover, { attachTo: document.body })
+    wrappers.push(view)
+    await flushPromises()
+    expect(view.find('.state').text()).toContain('Asking magequery')
+    answer({
+      class: 'Foo\\Bar',
+      kind: null,
+      module: null,
+      path: null,
+      preference: null,
+      sections: [{ title: 'Observes', rows: [{ label: 'x_saved', detail: null, class: null, path: DI, line: null }] }]
+    })
+    await asking
+    await flushPromises()
+    expect(view.find('.row .source').text()).toBe('di.xml')
+    expect(view.find('.row .source').attributes('title')).toBe(DI)
+
+    asked.mockImplementation(async (cmd: string) =>
+      cmd === 'framework_wiring' ? { class: 'Foo\\Baz', kind: null, module: null, path: null, preference: null, sections: [] } : null
+    )
+    await openWiring('Foo\\Baz')
+    await flushPromises()
+    expect(view.find('.none').text()).toBe('No plugins, observers or config reference it.')
+
+    asked.mockImplementation(async (cmd: string) => {
+      if (cmd === 'framework_wiring') throw 'magequery is not bundled with this build, and Settings → Frameworks names none'
+      return null
+    })
+    await openWiring('Foo\\Qux')
+    await flushPromises()
+    expect(view.find('[data-testid="wiring-error"]').text()).toContain('not bundled')
   })
 
   it('reads the class a PHP file declares', () => {

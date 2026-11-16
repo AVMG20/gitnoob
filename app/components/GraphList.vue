@@ -59,7 +59,7 @@ import { useRebase } from '~/composables/useRebase'
 import { useRewrite } from '~/composables/useRewrite'
 import { useContextMenu } from '~/composables/useContextMenu'
 import { useDragDrop } from '~/composables/useDragDrop'
-import { keyLabel, useShortcuts } from '~/composables/useShortcuts'
+import { keyLabel, keysHere, useShortcuts } from '~/composables/useShortcuts'
 import { useColumns, type ColumnId } from '~/composables/useColumns'
 import { useConfig } from '~/composables/useConfig'
 import { branchNameProblem } from '~/composables/useBranchName'
@@ -1331,10 +1331,10 @@ onUnmounted(() => {
           <span class="count" :class="{ none: !matches.length }">
             {{ matches.length ? `${hit + 1} of ${matches.length}` : 'no matches' }}
           </span>
-          <button class="step" :disabled="!matches.length" title="Previous (↑ or ⇧⌘G)" @click="step(-1)">
+          <button class="step" :disabled="!matches.length" :title="keysHere('Previous (↑ or ⇧⌘G)')" @click="step(-1)">
             <ChevronUp :size="13" />
           </button>
-          <button class="step" :disabled="!matches.length" title="Next (↓ or ⌘G)" @click="step(1)">
+          <button class="step" :disabled="!matches.length" :title="keysHere('Next (↓ or ⌘G)')" @click="step(1)">
             <ChevronDown :size="13" />
           </button>
         </template>

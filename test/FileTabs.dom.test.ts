@@ -69,6 +69,16 @@ describe('the file tab strip', () => {
     expect(fileTabs(w)[0]!.classes()).not.toContain('preview')
   })
 
+  it('tints a dependency tab amber and leaves project tabs alone', async () => {
+    openTab({ path: 'app/InvoiceService.php' })
+    openTab({ path: 'vendor/magento/module-catalog/Model/Product.php' })
+    openTab({ path: 'web/node_modules/lodash/index.js' })
+    const w = await show()
+    const marked = fileTabs(w).map((tab) => tab.classes().includes('dependency'))
+    expect(marked).toEqual([false, true, true])
+    expect(fileTabs(w)[1]!.attributes('title')).toMatch(/dependency, read-only/)
+  })
+
   it('names the commit a file was opened at', async () => {
     openTab({ path: 'app/InvoiceService.php', commit: 'a41c9e7f00' })
     const w = await show()

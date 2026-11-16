@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref } from 'vue'
+import { ref, watch } from 'vue'
 import { CircleAlert, Copy, Info, X } from 'lucide-vue-next'
 import { useToasts } from '~/composables/useToasts'
 
@@ -28,6 +28,19 @@ function watching(on: boolean) {
   inside.value = on
   toasts.hold(on || opened.value.size > 0)
 }
+
+// A notice dismissed while opened up is not being read any more: without
+// this its id stayed in the set and every later notice stayed up for good.
+watch(
+  () => toasts.items.value.map((one) => one.id),
+  (ids) => {
+    const live = new Set(ids)
+    const kept = [...opened.value].filter((id) => live.has(id))
+    if (kept.length === opened.value.size) return
+    opened.value = new Set(kept)
+    toasts.hold(inside.value || kept.length > 0)
+  }
+)
 
 function toggle(id: number) {
   const next = new Set(opened.value)

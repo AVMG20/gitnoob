@@ -267,13 +267,19 @@ pub fn deinit(state: &AppState, path: &str, force: bool) -> Result<String, Strin
 /// Takes a submodule out altogether: out of the working tree, out of the
 /// index, and out of `.gitmodules`.
 ///
-/// Three commands because git has never had one. The deinit is forced —
-/// somebody who has confirmed removing the whole submodule has already
-/// answered the question `--force` asks — but the `git rm` is not, so a
-/// surprise it finds still stops the removal rather than shredding it.
+/// Two commands because git has never had one. Neither is forced: a plain
+/// deinit refuses when the submodule holds uncommitted or untracked work,
+/// and that refusal is what keeps the work. Confirming the removal is not
+/// the same as agreeing to lose edits nobody was shown, so the way through
+/// is "Empty it even with changes" first, which says so.
 pub fn remove(state: &AppState, path: &str) -> Result<String, String> {
     let root = state.path()?;
-    git_cmd::run_checked(&root, &["submodule", "deinit", "--force", "--", path])?;
+    git_cmd::run_checked(&root, &["submodule", "deinit", "--", path]).map_err(|said| {
+        format!(
+            "{said}\n{path} has work in it that is not committed. \
+             Empty it even with changes first if that work can go."
+        )
+    })?;
     git_cmd::run_checked(&root, &["rm", "--", path])?;
     Ok(format!("Removed {path}. Commit to record it."))
 }

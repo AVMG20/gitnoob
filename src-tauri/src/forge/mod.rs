@@ -904,16 +904,8 @@ pub async fn compare_url(
         // slashes; everything else is a query value. A fork's branch is
         // named with its owner in front.
         ForgeKind::GitHub => {
-            let head = if from_fork {
-                format!("{}:{head_branch}", head_repo.owner)
-            } else {
-                head_branch
-            };
-            format!(
-                "https://{host}/{path}/compare/{target}...{head}?expand=1&title={}&body={}",
-                urlencode(title),
-                urlencode(body)
-            )
+            let owner = from_fork.then_some(head_repo.owner.as_str());
+            github_compare_url(host, &path, target, owner, &head_branch, title, body)
         }
         // GitLab opens a merge request from the project the branch is in; a
         // fork's form already aims at the project it was forked from.
@@ -931,6 +923,30 @@ pub async fn compare_url(
         ),
         ForgeKind::None => return Err("No forge configured".to_string()),
     })
+}
+
+/// GitHub's compare page for opening a pull request. The branch names are
+/// encoded segment by segment: a `#` or `?` in one (both legal in git) cut
+/// the address short and opened the wrong comparison.
+fn github_compare_url(
+    host: &str,
+    path: &str,
+    target: &str,
+    owner: Option<&str>,
+    branch: &str,
+    title: &str,
+    body: &str,
+) -> String {
+    let head = match owner {
+        Some(owner) => format!("{}:{}", urlencode(owner), urlencode_path(branch)),
+        None => urlencode_path(branch),
+    };
+    format!(
+        "https://{host}/{path}/compare/{}...{head}?expand=1&title={}&body={}",
+        urlencode_path(target),
+        urlencode(title),
+        urlencode(body)
+    )
 }
 
 // --- review conversation -----------------------------------------------------
@@ -1936,6 +1952,8 @@ pub async fn resolve_thread(
         }
         ForgeKind::GitLab => {
             let project = urlencode(&call.slug.full());
+            // One path segment, whatever the window sent.
+            let thread = urlencode(thread);
             let url = format!(
                 "{base}/projects/{project}/merge_requests/{number}/discussions/{thread}?resolved={resolved}"
             );
@@ -2337,15 +2355,11 @@ pub async fn review_file_text(state: &AppState, number: i64, path: &str) -> Resu
             .await
         }
         ForgeKind::GitLab => {
-            let project = urlencode(&slug);
-            http.get(format!(
-                "{base}/projects/{project}/repository/files/{}/raw",
-                urlencode_path(path)
-            ))
-            .query(&[("ref", head.as_str())])
-            .bearer_auth(&call.token)
-            .send()
-            .await
+            http.get(gitlab_raw_file_url(&base, &slug, path))
+                .query(&[("ref", head.as_str())])
+                .bearer_auth(&call.token)
+                .send()
+                .await
         }
         ForgeKind::None => return Err("No forge configured".to_string()),
     }
@@ -2354,6 +2368,17 @@ pub async fn review_file_text(state: &AppState, number: i64, path: &str) -> Resu
         return Err(describe(response).await);
     }
     response.text().await.map_err(|e| e.to_string())
+}
+
+/// GitLab's raw-file address. The path is one segment there, slashes and
+/// all encoded (`app%2Fmodels%2Fuser.rb`); left as slashes it was routed as
+/// something else and every file below the root came back 404.
+fn gitlab_raw_file_url(base: &str, slug: &str, path: &str) -> String {
+    format!(
+        "{base}/projects/{}/repository/files/{}/raw",
+        urlencode(slug),
+        urlencode(path)
+    )
 }
 
 /* ---------- the project itself --------------------------------------------- */
@@ -2512,6 +2537,35 @@ pub async fn rerequest_review(state: &AppState, number: i64, login: &str) -> Res
 }
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn github_compare_links_encode_branch_names() {
+        let url = super::github_compare_url(
+            "github.com",
+            "acme/app",
+            "main",
+            Some("them"),
+            "fix/a#b",
+            "Fix",
+            "",
+        );
+        assert_eq!(
+            url,
+            "https://github.com/acme/app/compare/main...them:fix/a%23b?expand=1&title=Fix&body="
+        );
+    }
+
+    #[test]
+    fn a_gitlab_file_below_the_root_is_one_encoded_segment() {
+        assert_eq!(
+            super::gitlab_raw_file_url(
+                "https://gitlab.com/api/v4",
+                "group/app",
+                "app/components/Foo.vue"
+            ),
+            "https://gitlab.com/api/v4/projects/group%2Fapp/repository/files/app%2Fcomponents%2FFoo.vue/raw"
+        );
+    }
+
     use super::*;
 
     #[test]

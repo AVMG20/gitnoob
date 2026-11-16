@@ -52,7 +52,7 @@ import {
   patchMarks
 } from '~/composables/useCode'
 import { findIn, type FindMarks } from '~/composables/useFind'
-import { keyLabel, useShortcuts } from '~/composables/useShortcuts'
+import { keyLabel, keysHere, useShortcuts } from '~/composables/useShortcuts'
 import { closeTab, goToLine, openTab, showGraph, tabId, useTabs } from '~/composables/useTabs'
 import { aimedAt, invoke } from '~/composables/useInvoke'
 import {
@@ -245,6 +245,9 @@ const ignored = ref(false)
 /** Commit subjects, for the hash's tooltip on a commit tab. */
 const subjects = ref<Record<string, string>>({})
 
+/** A Composer or npm dependency: read-only, and tinted so it is never taken for project code. */
+const dependency = computed(() => facts.value?.readonly === 'dependency')
+
 const head = computed(() => {
   const current = target.value
   if (!current) return null
@@ -402,7 +405,8 @@ function showMore(event: MouseEvent) {
     items.push(
       { label: 'History', action: () => void showHistory(event) },
       {
-        label: diffMode.blame && diffMode.mode === 'file' ? 'Hide blame' : 'Show blame',
+        label:
+          diffMode.blame && diffMode.mode === 'file' ? 'Close Annotations' : 'Annotate with Git Blame',
         action: toggleBlame
       },
       { label: 'Reveal in Files', action: () => revealInFiles(current.path) }
@@ -710,21 +714,37 @@ async function fetchFromLfs() {
 const blame = ref<BlameRun[]>([])
 const blaming = ref(false)
 const blameError = ref<string | null>(null)
+/** The file and commit the runs in `blame` are for. */
+let blamedKey = ''
+/** Goes up with every read, so only the latest answer is shown. */
+let blameTicket = 0
 
 async function loadBlame() {
   const current = target.value
   if (!current || diffMode.mode !== 'file' || !diffMode.blame) return
+  // Another file's runs would annotate this one with its authors until the
+  // answer came; nothing is better than that.
+  const key = tabId(current.path, current.commit)
+  if (key !== blamedKey) {
+    blame.value = []
+    blamedKey = key
+  }
+  const ticket = ++blameTicket
   blaming.value = true
   blameError.value = null
   try {
     const found = await git.blameFile(current.path, current.commit)
-    // A slower answer for a file that is no longer open is not this file's.
+    // Reads overlap (every save reloads the file), and they can finish out of
+    // order: an older answer is for a copy of the file saved over since, and
+    // a slower answer for a file that is no longer open is not this file's.
+    if (ticket !== blameTicket) return
     if (target.value?.path === current.path) blame.value = found
   } catch (error) {
+    if (ticket !== blameTicket) return
     blame.value = []
     blameError.value = String(error)
   } finally {
-    blaming.value = false
+    if (ticket === blameTicket) blaming.value = false
   }
 }
 
@@ -1141,8 +1161,11 @@ function onKey(event: KeyboardEvent) {
   if (typing(event) || covered() || event.altKey || event.ctrlKey || event.metaKey) return
   // Tab flips between the patch and the file, which is the one thing anyone
   // does twice while reading a change. Left alone wherever it still means
-  // "next field", and wherever a modifier makes it mean something else.
+  // "next field" or "next button", and wherever a modifier makes it mean
+  // something else: taking it everywhere left a keyboard user unable to
+  // move focus at all while a file was open.
   if (event.key === 'Tab') {
+    if (onControl(event)) return
     event.preventDefault()
     flipMode(event.shiftKey ? -1 : 1)
     return
@@ -1166,6 +1189,14 @@ function onKey(event: KeyboardEvent) {
  */
 function covered() {
   return !!document.querySelector('.scrim, .overlay')
+}
+
+/** True when focus is on something Tab should move on from: a button, a link, a tree. */
+function onControl(event: KeyboardEvent) {
+  const element = event.target
+  if (!(element instanceof HTMLElement)) return false
+  if (element === document.body || element === document.documentElement) return false
+  return !!element.closest('button, a[href], input, select, textarea, [tabindex], [role]')
 }
 
 /** True when the keystroke belongs to whatever is being written in. */
@@ -1266,7 +1297,7 @@ onUnmounted(() => window.removeEventListener('keydown', onKey))
 
 <template>
   <section v-if="target" class="viewer">
-    <header ref="bar" class="bar" :data-state="head?.kind">
+    <header ref="bar" class="bar" :class="{ dependency }" :data-state="head?.kind">
       <span class="type" :title="language ?? undefined"><FileIcon :path="target.path" :size="15" /></span>
       <!-- Where the file is: each folder a way to it in the Files tree. The
            folders give way first and the name never does, the way MidTruncate
@@ -1325,7 +1356,7 @@ onUnmounted(() => window.removeEventListener('keydown', onKey))
         {{ svgSource ? 'Image' : 'Source' }}
       </button>
             <span v-if="editing && facts" class="facts">
-        <button class="fact" title="Go to line (⌘G)" @click="openLine">
+        <button class="fact" :title="keysHere('Go to line (⌘G)')" @click="openLine">
           Ln {{ caret.line }}, Col {{ caret.col }}
         </button>
         <template v-if="!narrow">
@@ -1471,7 +1502,7 @@ onUnmounted(() => window.removeEventListener('keydown', onKey))
       <div
         ref="body"
         class="body"
-        :class="{ editing: editing || showImage }"
+        :class="{ editing: editing || showImage, dependency }"
         :data-code-view="showImage || pointer ? undefined : ''"
       >
         <!-- What is on disk is the pointer, not the file. Nothing below can
@@ -1546,6 +1577,7 @@ onUnmounted(() => window.removeEventListener('keydown', onKey))
           @scroller="(element: HTMLElement | null) => (editorScroller = element)"
           @bar="toBar"
           @facts="(value: EditorFacts) => (facts = value)"
+          @toggle-blame="diffMode.blame = !diffMode.blame"
         />
 
         <FileView
@@ -1784,6 +1816,25 @@ onUnmounted(() => window.removeEventListener('keydown', onKey))
 .badge.readonly,
 .badge.ignored {
   color: var(--text-faint);
+}
+
+/* A file in vendor/ or node_modules/: amber, the way an IDE marks library
+   code, so it is never taken for the project's own. The bar, the name and
+   the badge say it; the page under it carries a faint wash of the same. */
+.bar.dependency {
+  background: color-mix(in srgb, var(--amber) 12%, var(--canvas));
+  border-bottom-color: color-mix(in srgb, var(--amber) 35%, var(--line));
+}
+
+.bar.dependency .base-name {
+  color: var(--amber);
+}
+
+.badge.dependency {
+  color: var(--amber);
+  background: color-mix(in srgb, var(--amber) 14%, transparent);
+  border-color: color-mix(in srgb, var(--amber) 45%, transparent);
+  font-weight: 600;
 }
 
 /* Where the caret is and how the file is written, quiet until wanted. */
@@ -2029,6 +2080,16 @@ button.fact:hover {
   flex: 1;
   min-width: 0;
   overflow: auto;
+}
+
+.body.dependency {
+  --dependency-page: color-mix(in srgb, var(--amber) 5%, var(--bg));
+  background: var(--dependency-page);
+}
+
+/* The gutter is drawn opaque so code scrolls under it; it takes the wash too. */
+.body.dependency :deep(.cm-gutters) {
+  background-color: var(--dependency-page);
 }
 
 /* An LFS file that is not here: said in the middle of the pane, because there

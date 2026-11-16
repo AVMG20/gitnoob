@@ -11,11 +11,11 @@
 //! only the status changed, which is cheap. Telling them apart is what keeps a
 //! file save from re-walking the whole history.
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
-use std::sync::mpsc::{channel, RecvTimeoutError};
+use std::sync::mpsc::{channel, Receiver, RecvTimeoutError};
 use std::sync::{Arc, Mutex};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use notify::{RecommendedWatcher, RecursiveMode, Watcher};
 use serde::Serialize;
@@ -27,6 +27,13 @@ use tauri::{AppHandle, Emitter};
 /// reporting each one would refresh the window hundreds of times. Everything
 /// inside this window is coalesced into one message.
 const QUIET: Duration = Duration::from_millis(350);
+
+/// The longest a burst is held before it is reported anyway.
+///
+/// Something that writes every few hundred milliseconds for as long as it
+/// runs (a dev server's log, a queue worker, a cache warming up) never goes
+/// quiet, and waiting for quiet left the window stale for as long as it ran.
+const MAX_BURST: Duration = Duration::from_secs(2);
 
 /// Directories never worth watching. Build output and dependencies change
 /// constantly, are almost always ignored by git anyway, and on this repository
@@ -95,6 +102,7 @@ pub fn start(app: AppHandle, root: PathBuf) -> Option<Watch> {
         let mut pending = Changed::default();
         // The work-tree files written in this burst, for the code index.
         let mut touched: HashSet<PathBuf> = HashSet::new();
+        let mut ignore = Ignore::new(&places.root);
         loop {
             // Block until something happens, then keep draining until the burst
             // goes quiet. Reporting mid-burst would show a half-finished
@@ -103,16 +111,29 @@ pub fn start(app: AppHandle, root: PathBuf) -> Option<Watch> {
                 Ok(event) => event,
                 Err(_) => return,
             };
-            note(&mut pending, &mut touched, first, &places);
-
-            loop {
-                match rx.recv_timeout(QUIET) {
-                    Ok(event) => note(&mut pending, &mut touched, event, &places),
-                    Err(RecvTimeoutError::Timeout) => break,
-                    Err(RecvTimeoutError::Disconnected) => return,
+            let mut rescan = false;
+            let mut fold = |event: notify::Result<notify::Event>| {
+                if event.as_ref().is_ok_and(|event| event.need_rescan()) {
+                    rescan = true;
                 }
+                note(&mut pending, &mut touched, event, &places, &mut ignore);
+            };
+            fold(first);
+            if !drain(&rx, QUIET, MAX_BURST, &mut fold) {
+                return;
             }
 
+            if rescan {
+                // The platform dropped events and says so: which files
+                // changed is unknown, so everything that was read from the
+                // tree is read again.
+                pending.git_dir = true;
+                pending.work_tree = true;
+                touched.clear();
+                crate::files::forget(&places.root);
+                crate::frameworks::forget(&places.root);
+                crate::symbols::start(places.root.clone());
+            }
             if pending != Changed::default() {
                 let _ = app.emit(EVENT, pending.clone());
             }
@@ -184,12 +205,95 @@ fn inside(path: &Path, dir: &Path) -> bool {
             .is_some_and(|(dir, path)| path.starts_with(dir))
 }
 
+/// Takes events until none has come for `quiet`, or until `max` has passed
+/// since the call, whichever is first. False once the sender is gone.
+fn drain<T>(rx: &Receiver<T>, quiet: Duration, max: Duration, each: &mut impl FnMut(T)) -> bool {
+    let started = Instant::now();
+    loop {
+        let left = max.saturating_sub(started.elapsed());
+        if left.is_zero() {
+            return true;
+        }
+        match rx.recv_timeout(quiet.min(left)) {
+            Ok(event) => each(event),
+            Err(RecvTimeoutError::Timeout) => return true,
+            Err(RecvTimeoutError::Disconnected) => return false,
+        }
+    }
+}
+
+/// What git ignores in the work tree, asked of libgit2 and remembered per
+/// folder for the folders named like build output.
+///
+/// A missing repository answers "not ignored" for files and "ignored" for
+/// folders named like build output, which is the old behaviour.
+struct Ignore {
+    repo: Option<git2::Repository>,
+    /// The work tree as given and as the filesystem resolves it.
+    roots: Vec<PathBuf>,
+    folders: HashMap<PathBuf, bool>,
+}
+
+impl Ignore {
+    fn new(root: &Path) -> Self {
+        Ignore {
+            repo: git2::Repository::open(root).ok(),
+            roots: both(root.to_path_buf()),
+            folders: HashMap::new(),
+        }
+    }
+
+    /// No repository: nothing is ignored. For tests and unwatchable places.
+    #[cfg(test)]
+    fn none() -> Self {
+        Ignore {
+            repo: None,
+            roots: Vec::new(),
+            folders: HashMap::new(),
+        }
+    }
+
+    fn relative<'a>(&self, path: &'a Path) -> Option<&'a Path> {
+        self.roots
+            .iter()
+            .find_map(|root| path.strip_prefix(root).ok())
+    }
+
+    /// Whether git ignores this work-tree file.
+    fn file(&self, path: &Path) -> bool {
+        let (Some(repo), Some(relative)) = (&self.repo, self.relative(path)) else {
+            return false;
+        };
+        repo.is_path_ignored(relative).unwrap_or(false)
+    }
+
+    /// Whether git ignores this folder, relative to the work tree. With no
+    /// repository to ask, a folder named like build output is taken to be it.
+    fn folder(&mut self, relative: &Path) -> bool {
+        if let Some(known) = self.folders.get(relative) {
+            return *known;
+        }
+        let ignored = self
+            .repo
+            .as_ref()
+            .map_or(true, |repo| repo.is_path_ignored(relative).unwrap_or(false));
+        self.folders.insert(relative.to_path_buf(), ignored);
+        ignored
+    }
+
+    /// A `.gitignore` changed: what was remembered may be wrong now.
+    fn reset(&mut self) {
+        self.folders.clear();
+    }
+}
+
 /// Folds one filesystem event into what will be reported.
 fn note(
     pending: &mut Changed,
     touched: &mut HashSet<PathBuf>,
     event: notify::Result<notify::Event>,
     places: &Places,
+    ignore: &mut Ignore,
 ) {
     let Ok(event) = event else { return };
     // The editor's own save goes through a temp file renamed over the real
@@ -200,16 +304,33 @@ fn note(
         if editor_temp(path) {
             continue;
         }
-        match classify(path, places) {
+        if path.file_name().is_some_and(|name| name == ".gitignore") {
+            ignore.reset();
+        }
+        match classify(path, places, ignore) {
             Some(true) => pending.git_dir = true,
             Some(false) => {
                 pending.work_tree = true;
                 touched.insert(path.clone());
-                if !own_save
-                    && changes_listing(&event.kind, path)
-                    && !replaced_in_place(&event.kind, path, &places.root)
+                if own_save
+                    || !changes_listing(&event.kind, path)
+                    || replaced_in_place(&event.kind, path, &places.root)
                 {
+                    continue;
+                }
+                // A file git ignores is not in the finder's list, so a cache
+                // or log folder that churns files costs no re-walk. What
+                // Composer installs is ignored too, and has a list of its own.
+                if !ignore.file(path) {
                     crate::files::forget(&places.root);
+                } else if ignore.relative(path).is_some_and(|relative| {
+                    relative.components().next().is_some_and(|first| {
+                        crate::files::DEPENDENCY_DIRS
+                            .iter()
+                            .any(|dir| first.as_os_str() == *dir)
+                    })
+                }) {
+                    crate::files::forget_dependencies(&places.root);
                 }
             }
             None => {}
@@ -255,7 +376,11 @@ fn changes_listing(kind: &notify::EventKind, path: &Path) -> bool {
 /// a change to the repository rebuilt the branch list and walked the history
 /// again, once per click. A commit or a checkout writes refs or HEAD as well
 /// as the index, so they still rebuild everything.
-fn classify(path: &Path, places: &Places) -> Option<bool> {
+///
+/// A folder named like build output (`dist`, `target`, ...) is skipped when it
+/// sits at the top of the work tree, or when git ignores it. A tracked
+/// `app/code/Acme/Foo/dist` deeper down is somebody's source.
+fn classify(path: &Path, places: &Places, ignore: &mut Ignore) -> Option<bool> {
     // The names inside a git directory, and whether it is this checkout's.
     let found = places
         .own
@@ -278,9 +403,15 @@ fn classify(path: &Path, places: &Places) -> Option<bool> {
             true
         }
         None => {
-            let relative = path.strip_prefix(&places.root).unwrap_or(path);
+            // Events arrive with the resolved path (`/private/var` for a root
+            // opened as `/var`); strip whichever form matches, so the folders
+            // above the work tree are never mistaken for ones inside it.
+            let relative = ignore
+                .relative(path)
+                .or_else(|| path.strip_prefix(&places.root).ok())?;
             let mut in_git_dir = false;
-            for name in names(relative) {
+            let mut folder = PathBuf::new();
+            for (depth, name) in names(relative).into_iter().enumerate() {
                 if in_git_dir {
                     parts.push(name);
                     continue;
@@ -291,7 +422,8 @@ fn classify(path: &Path, places: &Places) -> Option<bool> {
                     in_git_dir = true;
                     continue;
                 }
-                if NOISE.contains(&name.as_str()) {
+                folder.push(&name);
+                if NOISE.contains(&name.as_str()) && (depth == 0 || ignore.folder(&folder)) {
                     return None;
                 }
             }
@@ -313,6 +445,12 @@ fn classify(path: &Path, places: &Places) -> Option<bool> {
         || name == "COMMIT_EDITMSG"
         || name.starts_with("gitnoob-journal.json")
     {
+        return None;
+    }
+    // A loose object is written by every `git add`, and an object changes
+    // nothing on screen until a ref or the index points at it, which is a
+    // write of its own.
+    if parts.first().is_some_and(|first| first == "objects") {
         return None;
     }
     if name == "index" {
@@ -360,47 +498,119 @@ mod tests {
         root().join(path)
     }
 
+    /// `classify` with nothing ignored.
+    fn sort(path: &Path, places: &Places) -> Option<bool> {
+        classify(path, places, &mut Ignore::none())
+    }
+
+    #[test]
+    fn a_burst_that_never_goes_quiet_is_still_reported() {
+        let (tx, rx) = channel();
+        let writer = std::thread::spawn(move || {
+            for _ in 0..200 {
+                if tx.send(()).is_err() {
+                    return;
+                }
+                std::thread::sleep(Duration::from_millis(10));
+            }
+        });
+        let started = Instant::now();
+        let mut seen = 0;
+        assert!(drain(
+            &rx,
+            Duration::from_millis(100),
+            Duration::from_millis(300),
+            &mut |_| seen += 1
+        ));
+        assert!(started.elapsed() < Duration::from_millis(1500));
+        assert!(seen > 0);
+        drop(rx);
+        writer.join().unwrap();
+    }
+
+    #[test]
+    fn only_an_ignored_folder_named_like_build_output_is_skipped() {
+        let dir = std::env::temp_dir().join(format!("gitnoob-watch-noise-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(dir.join("packages/x/node_modules/y")).unwrap();
+        std::fs::create_dir_all(dir.join("packages/x/dist")).unwrap();
+        let ok = std::process::Command::new("git")
+            .args(["init", "-q"])
+            .current_dir(&dir)
+            .status()
+            .unwrap()
+            .success();
+        assert!(ok);
+        std::fs::write(dir.join(".gitignore"), "node_modules/\n").unwrap();
+        let places = Places {
+            root: dir.clone(),
+            own: vec![dir.join(".git")],
+            shared: Vec::new(),
+        };
+        let mut ignore = Ignore::new(&dir);
+        assert_eq!(
+            classify(
+                &dir.join("packages/x/node_modules/y/i.js"),
+                &places,
+                &mut ignore
+            ),
+            None
+        );
+        // Deeper than the top, a `dist` git does not ignore is source.
+        assert_eq!(
+            classify(&dir.join("packages/x/dist/a.js"), &places, &mut ignore),
+            Some(false)
+        );
+        // At the top it is build output, ignored or not.
+        assert_eq!(classify(&dir.join("dist/a.js"), &places, &mut ignore), None);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_loose_object_is_not_news() {
+        // Every stage writes one; the index write that follows is the news.
+        assert_eq!(sort(&at(".git/objects/ab/cdef0123"), &plain()), None);
+        assert_eq!(sort(&at(".git/objects/pack/pack-1.pack"), &plain()), None);
+    }
+
     #[test]
     fn a_write_under_git_asks_for_everything() {
-        assert_eq!(classify(&at(".git/refs/heads/main"), &plain()), Some(true));
-        assert_eq!(classify(&at(".git/HEAD"), &plain()), Some(true));
+        assert_eq!(sort(&at(".git/refs/heads/main"), &plain()), Some(true));
+        assert_eq!(sort(&at(".git/HEAD"), &plain()), Some(true));
     }
 
     #[test]
     fn a_write_in_the_work_tree_asks_only_for_the_status() {
-        assert_eq!(classify(&at("app/main.rs"), &plain()), Some(false));
+        assert_eq!(sort(&at("app/main.rs"), &plain()), Some(false));
     }
 
     #[test]
     fn build_output_is_not_worth_waking_up_for() {
-        assert_eq!(classify(&at("node_modules/x/index.js"), &plain()), None);
-        assert_eq!(
-            classify(&at("src-tauri/target/debug/app.exe"), &plain()),
-            None
-        );
-        assert_eq!(classify(&at(".output/public/x.js"), &plain()), None);
+        assert_eq!(sort(&at("node_modules/x/index.js"), &plain()), None);
+        assert_eq!(sort(&at("src-tauri/target/debug/app.exe"), &plain()), None);
+        assert_eq!(sort(&at(".output/public/x.js"), &plain()), None);
     }
 
     #[test]
     fn a_branch_named_like_build_output_is_still_a_branch() {
-        assert_eq!(classify(&at(".git/refs/heads/dist"), &plain()), Some(true));
+        assert_eq!(sort(&at(".git/refs/heads/dist"), &plain()), Some(true));
     }
 
     #[test]
     fn gits_own_scratch_files_are_ignored() {
         // Written and deleted constantly while git works; each one would
         // otherwise be a refresh.
-        assert_eq!(classify(&at(".git/index.lock"), &plain()), None);
-        assert_eq!(classify(&at(".git/COMMIT_EDITMSG"), &plain()), None);
+        assert_eq!(sort(&at(".git/index.lock"), &plain()), None);
+        assert_eq!(sort(&at(".git/COMMIT_EDITMSG"), &plain()), None);
     }
 
     #[test]
     fn the_index_is_only_the_status() {
         // Staging writes it and nothing else; the graph has not moved.
-        assert_eq!(classify(&at(".git/index"), &plain()), Some(false));
+        assert_eq!(sort(&at(".git/index"), &plain()), Some(false));
         // Another worktree's, or a submodule's, is not this window's.
-        assert_eq!(classify(&at(".git/worktrees/other/index"), &plain()), None);
-        assert_eq!(classify(&at(".git/modules/sub/index"), &plain()), None);
+        assert_eq!(sort(&at(".git/worktrees/other/index"), &plain()), None);
+        assert_eq!(sort(&at(".git/modules/sub/index"), &plain()), None);
         // Reached through the folder rather than through the git directory,
         // which is how it arrives when nothing resolved the directory.
         let unknown = Places {
@@ -408,8 +618,8 @@ mod tests {
             own: Vec::new(),
             shared: Vec::new(),
         };
-        assert_eq!(classify(&at(".git/index"), &unknown), Some(false));
-        assert_eq!(classify(&at(".git/refs/heads/x"), &unknown), Some(true));
+        assert_eq!(sort(&at(".git/index"), &unknown), Some(false));
+        assert_eq!(sort(&at(".git/refs/heads/x"), &unknown), Some(true));
     }
 
     #[test]
@@ -417,27 +627,27 @@ mod tests {
         let wt = linked();
         // Its own HEAD and index live in the main repository's `.git`.
         assert_eq!(
-            classify(Path::new("/repo/.git/worktrees/wt/HEAD"), &wt),
+            sort(Path::new("/repo/.git/worktrees/wt/HEAD"), &wt),
             Some(true)
         );
         assert_eq!(
-            classify(Path::new("/repo/.git/worktrees/wt/index"), &wt),
+            sort(Path::new("/repo/.git/worktrees/wt/index"), &wt),
             Some(false)
         );
         // Branches are shared.
         assert_eq!(
-            classify(Path::new("/repo/.git/refs/heads/feature"), &wt),
+            sort(Path::new("/repo/.git/refs/heads/feature"), &wt),
             Some(true)
         );
         // The main checkout's index and another worktree's are not its own.
-        assert_eq!(classify(Path::new("/repo/.git/index"), &wt), None);
+        assert_eq!(sort(Path::new("/repo/.git/index"), &wt), None);
         assert_eq!(
-            classify(Path::new("/repo/.git/worktrees/other/index"), &wt),
+            sort(Path::new("/repo/.git/worktrees/other/index"), &wt),
             None
         );
         // The pointer file in its own folder is not a git directory.
-        assert_eq!(classify(Path::new("/wt/.git"), &wt), None);
-        assert_eq!(classify(Path::new("/wt/src/a.rs"), &wt), Some(false));
+        assert_eq!(sort(Path::new("/wt/.git"), &wt), None);
+        assert_eq!(sort(Path::new("/wt/src/a.rs"), &wt), Some(false));
     }
 
     #[test]
@@ -446,7 +656,13 @@ mod tests {
         let mut touched = HashSet::new();
         for path in [".git/refs/heads/main", "app/a.rs", "app/b.rs"] {
             let event = notify::Event::new(notify::EventKind::Any).add_path(at(path));
-            note(&mut pending, &mut touched, Ok(event), &plain());
+            note(
+                &mut pending,
+                &mut touched,
+                Ok(event),
+                &plain(),
+                &mut Ignore::none(),
+            );
         }
         // Only the work-tree files go to the code index.
         assert_eq!(touched, HashSet::from([at("app/a.rs"), at("app/b.rs")]));
@@ -456,7 +672,13 @@ mod tests {
         let mut quiet = Changed::default();
         let event =
             notify::Event::new(notify::EventKind::Any).add_path(at("app/.a.rs.gitnoob-1-0.tmp"));
-        note(&mut quiet, &mut touched, Ok(event), &plain());
+        note(
+            &mut quiet,
+            &mut touched,
+            Ok(event),
+            &plain(),
+            &mut Ignore::none(),
+        );
         assert_eq!(quiet, Changed::default());
         assert!(touched.is_empty());
         assert_eq!(
@@ -504,7 +726,7 @@ mod tests {
             .any(|d| d.canonicalize().unwrap() == main_git));
         // Its index, written by a stage made there, reads as a status change.
         let index = main_git.join("worktrees/wt/index");
-        assert_eq!(classify(&index, &wt), Some(false));
+        assert_eq!(sort(&index, &wt), Some(false));
         let _ = std::fs::remove_dir_all(&dir);
     }
 }

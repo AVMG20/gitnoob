@@ -568,8 +568,8 @@ const openFile = computed(() => {
   return { path: open.path, side: open.side ?? 'unstaged' }
 })
 
-/** Unstaged changes to one file waiting on the question before they go. */
-const discarding = ref<string | null>(null)
+/** Unstaged changes waiting on the question before they go. */
+const discarding = ref<string[] | null>(null)
 
 function askDiscard() {
   const open = openFile.value
@@ -580,13 +580,13 @@ function askDiscard() {
     if (entry?.kind === 'untracked') deleting.value = [open.path]
     return
   }
-  discarding.value = open.path
+  discarding.value = [open.path]
 }
 
 async function discardConfirmed() {
-  const path = discarding.value
+  const paths = discarding.value
   discarding.value = null
-  if (path) await git.discard([path])
+  if (paths?.length) await git.discard(paths)
 }
 
 /** Opens the changed file `by` steps along both lists, or the first one. */
@@ -713,7 +713,10 @@ function dirMenu(event: MouseEvent, dir: string, side: 'staged' | 'unstaged') {
               icon: Undo2,
               danger: true,
               disabled: !tracked.length,
-              action: () => git.discard(tracked)
+              // A folder is many files at once: asked, like the key.
+              action: () => {
+                discarding.value = tracked
+              }
             }
           ]
         : []),
@@ -1164,8 +1167,10 @@ function fileMenu(event: MouseEvent, path: string, side: 'staged' | 'unstaged', 
     @close="discarding = null"
   >
     <p class="gone">
-      The unstaged changes to <span class="mono">{{ discarding }}</span> go back to what is
-      staged or committed. Anything staged stays staged.
+      The unstaged changes to
+      <span v-if="discarding.length === 1" class="mono">{{ discarding[0] }}</span>
+      <template v-else>{{ discarding.length }} files</template>
+      go back to what is staged or committed. Anything staged stays staged.
     </p>
     <template #footer>
       <button class="btn btn-ghost" @click="discarding = null">Cancel</button>

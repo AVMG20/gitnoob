@@ -9,7 +9,7 @@ import { useGit } from '~/composables/useGit'
 import { useContextMenu } from '~/composables/useContextMenu'
 import { useShortcuts } from '~/composables/useShortcuts'
 import { useTabs } from '~/composables/useTabs'
-import { closeTabsSafely } from '~/composables/useFileEdit'
+import { closeProjectSafely, closeTabsSafely } from '~/composables/useFileEdit'
 
 const emit = defineEmits<{ open: [string]; clone: []; init: []; home: [] }>()
 
@@ -80,6 +80,7 @@ function addMenu(event: MouseEvent) {
 }
 
 async function close(path: string) {
+  if (!(await closeProjectSafely(path))) return
   await config.closeProject(path)
   const next = config.activeProject.value
   if (next) emit('open', next)

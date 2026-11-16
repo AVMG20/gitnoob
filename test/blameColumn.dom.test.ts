@@ -3,9 +3,10 @@ import { mount } from '@vue/test-utils'
 import { describe, expect, it, vi } from 'vitest'
 import FileView from '~/components/FileView.vue'
 import { useContextMenu } from '~/composables/useContextMenu'
+import { blamePopup, closeBlamePopup } from '~/composables/blame'
 import type { BlameRun } from '~/composables/useGit'
 
-vi.mock('@tauri-apps/api/core', () => ({ invoke: vi.fn() }))
+vi.mock('@tauri-apps/api/core', () => ({ invoke: vi.fn(async () => null) }))
 
 const now = Math.floor(Date.now() / 1000)
 
@@ -50,7 +51,7 @@ describe('the blame column in the file view', () => {
       run({ start: 3, lines: 2, uncommitted: true, oid: '0'.repeat(40), short: '' })
     ])
     const chips = wrapper.findAll('button.chip')
-    expect(chips[1]!.text()).toContain('Uncommitted')
+    expect(chips[1]!.text()).toContain('Not committed yet')
     expect(chips[1]!.attributes('disabled')).toBeDefined()
   })
 
@@ -78,10 +79,26 @@ describe('the blame column in the file view', () => {
     const wrapper = show([run({ start: 1, lines: 4 })], false)
     await wrapper.findAll('.no')[1]!.trigger('contextmenu')
     expect(menu.state.open).toBe(true)
-    expect(menu.state.items[0]!.label).toBe('Show blame')
+    expect(menu.state.items[0]!.label).toBe('Annotate with Git Blame')
     menu.state.items[0]!.action?.()
     expect(wrapper.emitted('toggle-blame')).toHaveLength(1)
     menu.close()
+  })
+
+  it('offers the hash and the way out on a right-click of an entry', async () => {
+    const menu = useContextMenu()
+    const wrapper = show([run({ start: 1, lines: 4 })])
+    await wrapper.find('button.chip').trigger('contextmenu')
+    const labels = menu.state.items.filter((item) => !item.separator).map((item) => item.label)
+    expect(labels).toEqual(['Copy commit hash', 'Show in graph', 'Close Annotations'])
+    menu.close()
+  })
+
+  it('says who, when to the minute, the hash and the subject on hover', () => {
+    const wrapper = show([run({ start: 1, lines: 4 })])
+    const title = wrapper.find('button.chip').attributes('title')!
+    expect(title).toContain('Ramon Robben <ramon@example.com>')
+    expect(title).toContain('a91c4e2 feat: the first pass')
   })
 
   it('says the column could not be read without taking the file away', () => {
@@ -98,5 +115,14 @@ describe('the blame column in the file view', () => {
     })
     expect(wrapper.text()).toContain('No blame here')
     expect(wrapper.findAll('.line').length).toBeGreaterThan(1)
+  })
+
+  it('opens the commit beside the chip that was clicked, not in the graph', async () => {
+    const wrapper = show([run({ start: 1, lines: 4 })])
+    await wrapper.find('button.chip').trigger('click')
+    expect(blamePopup.open).toBe(true)
+    expect(blamePopup.run?.short).toBe('a91c4e2')
+    expect(blamePopup.path).toBe('app/app.vue')
+    closeBlamePopup()
   })
 })

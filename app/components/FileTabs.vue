@@ -9,6 +9,7 @@ import { keyLabel, keysFor, useShortcuts } from '~/composables/useShortcuts'
 import { useTabs, type Tab } from '~/composables/useTabs'
 import { revealInFiles } from '~/composables/useFileTree'
 import { closeTabsSafely } from '~/composables/useFileEdit'
+import { isDependencyPath } from '~/composables/fileHeader'
 
 /**
  * The strip over the middle of the window: back and forward, the graph, and
@@ -57,7 +58,7 @@ function base(path: string) {
 }
 
 function title(tab: Tab) {
-  const where = tab.commit ? ` at ${tab.commit.slice(0, 7)}` : ''
+  const where = (tab.commit ? ` at ${tab.commit.slice(0, 7)}` : '') + (isDependencyPath(tab.path) ? ' (dependency, read-only)' : '')
   const how = tab.preview ? ' — preview, double-click to keep it' : ''
   return `${tab.path}${where}${how}\nMiddle-click or ⇧-click to close`
 }
@@ -170,7 +171,12 @@ const forwardTitle = computed(() => `Forward (${keyLabel(keysFor('nav.forward'))
         :key="tab.id"
         class="ftab"
         role="tab"
-        :class="{ on: tabs.state.active === tab.id, preview: tab.preview, unsaved: tab.dirty }"
+        :class="{
+          on: tabs.state.active === tab.id,
+          preview: tab.preview,
+          unsaved: tab.dirty,
+          dependency: isDependencyPath(tab.path)
+        }"
         :aria-selected="tabs.state.active === tab.id"
         :data-path="tab.path"
         :title="title(tab)"
@@ -288,6 +294,20 @@ const forwardTitle = computed(() => `Forward (${keyLabel(keysFor('nav.forward'))
   color: var(--text);
   margin-bottom: -1px;
   box-shadow: inset 0 2px 0 var(--accent);
+}
+
+/* A dependency's tab: amber name on an amber wash, as the bar over it. */
+.ftab.dependency {
+  background: color-mix(in srgb, var(--amber) 8%, var(--canvas));
+}
+
+.ftab.dependency.on {
+  background: color-mix(in srgb, var(--amber) 12%, var(--bg));
+  box-shadow: inset 0 2px 0 var(--amber);
+}
+
+.ftab.dependency .name {
+  color: var(--amber);
 }
 
 .ftab.preview .name {

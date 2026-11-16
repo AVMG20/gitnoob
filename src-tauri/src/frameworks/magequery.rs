@@ -111,6 +111,18 @@ pub fn status(state: &AppState) -> Status {
     }
 }
 
+/// Why there is no magequery to run, in words that point at the fix.
+pub fn not_found(setting: Option<&str>) -> String {
+    match setting.map(str::trim).filter(|path| !path.is_empty()) {
+        Some(path) => format!(
+            "Settings → Frameworks names {path}, which is not a program gitnoob can find. \
+             Give its full path (no ~), as `which magequery` prints it."
+        ),
+        None => "magequery is not bundled with this build, and Settings → Frameworks names none"
+            .to_string(),
+    }
+}
+
 /// Whether a class name is safe to pass: letters, digits, `_` and `\`, not
 /// starting with a digit. Never a flag.
 pub fn valid_class(name: &str) -> bool {
@@ -130,7 +142,11 @@ pub fn run(binary: &Path, args: &[String]) -> Result<String, String> {
     {
         return Err("magequery is never run against the database".to_string());
     }
-    let mut child = Command::new(binary)
+    let mut command = Command::new(binary);
+    // A console program started from the windowed app gets a console window
+    // of its own on Windows, two per wiring lookup, unless told not to.
+    crate::git_cmd::quiet(&mut command);
+    let mut child = command
         .args(args)
         .env("NO_COLOR", "1")
         .stdin(Stdio::null())
@@ -375,6 +391,13 @@ fn plugin_row(root: &Path, asked: &str, item: &Value) -> Option<Row> {
 /// 0.24 prints them (its `Whatis` and `Vec<Plugin>`, serialised by serde
 /// with the field names as written in its source). Every field is read on
 /// its own and a missing one is skipped.
+/// Whether a `whatis` answer has any of the fields the wiring is read from.
+fn understood(whatis: &Value) -> bool {
+    ["class", "kind", "plugin_count", "resolves_to", "module"]
+        .iter()
+        .any(|key| whatis.get(key).is_some_and(|value| !value.is_null()))
+}
+
 pub fn read_wiring(root: &Path, fqn: &str, whatis: &Value, plugins: Option<&Value>) -> Wiring {
     let asked = fqn.trim().trim_start_matches('\\');
     let class = text(whatis, "class").unwrap_or_else(|| asked.to_string());
@@ -549,6 +572,15 @@ pub fn wiring(binary: &Path, root: &Path, fqn: &str) -> Result<Wiring, String> {
     let whatis = run(binary, &whatis_args)?;
     let whatis: Value = serde_json::from_str(&whatis)
         .map_err(|e| format!("magequery's answer was not the JSON expected: {e}"))?;
+    // Every field is optional to the reader, so an answer in some other shape
+    // (another version, another tool by that name) read as a class nothing
+    // touches, which is a confident wrong answer.
+    if !understood(&whatis) {
+        return Err(format!(
+            "magequery answered in a shape gitnoob does not know. This build expects \
+             magequery {PINNED}; check the one Settings → Frameworks points at."
+        ));
+    }
     let plugins = plugins
         .join()
         .ok()
@@ -559,6 +591,25 @@ pub fn wiring(binary: &Path, root: &Path, fqn: &str) -> Result<Wiring, String> {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn a_setting_that_finds_nothing_is_named_in_the_error() {
+        assert!(super::not_found(Some("~/bin/magequery")).contains("~/bin/magequery"));
+        assert!(super::not_found(Some("  ")).contains("names none"));
+        assert!(super::not_found(None).contains("names none"));
+    }
+
+    #[test]
+    fn an_answer_without_any_known_field_is_not_read_as_an_empty_class() {
+        assert!(!super::understood(&serde_json::json!({})));
+        assert!(!super::understood(
+            &serde_json::json!({ "error": "unknown command" })
+        ));
+        assert!(super::understood(
+            &serde_json::json!({ "class": "Acme\\Foo" })
+        ));
+        assert!(super::understood(&serde_json::json!({ "plugin_count": 0 })));
+    }
+
     use super::*;
 
     #[test]

@@ -299,6 +299,29 @@ export async function closeTabsSafely(ids: string[], close: () => void): Promise
   return true
 }
 
+/**
+ * Asks before a whole project closes with edits in it that are not on disk,
+ * the same question a file tab asks. True when it may close.
+ */
+export async function closeProjectSafely(repo: string): Promise<boolean> {
+  const prefix = editKey(repo, '')
+  const risky = Object.keys(saveStates).filter(
+    (key) => key.startsWith(prefix) && (saveStates[key] === 'conflict' || saveStates[key] === 'failed')
+  )
+  if (!risky.length) return true
+  const names = risky.map((key) => key.slice(prefix.length).replace(/^work:/, '')).join(', ')
+  const ok = await confirmLoss(
+    `${names} has edits that are not on disk: the file changed underneath them, or the save failed. Close the project anyway and lose them?`,
+    'Close anyway'
+  )
+  if (!ok) return false
+  for (const key of risky) {
+    drafts.delete(key)
+    delete saveStates[key]
+  }
+  return true
+}
+
 /** For tests: forgets every draft and state. */
 export function resetEdits() {
   drafts.clear()

@@ -165,7 +165,20 @@ pub(super) async fn describe(response: reqwest::Response) -> String {
         })
         .unwrap_or_else(|| text.chars().take(200).collect());
 
-    if status == reqwest::StatusCode::UNAUTHORIZED || status == reqwest::StatusCode::FORBIDDEN {
+    said(status, &detail)
+}
+
+/// The words for a failed status. A rate limit is not a bad token: GitHub
+/// answers its secondary limit with 403, and sending the user off to replace
+/// a good token was the wrong advice.
+fn said(status: reqwest::StatusCode, detail: &str) -> String {
+    let limited = status == reqwest::StatusCode::TOO_MANY_REQUESTS
+        || detail.to_ascii_lowercase().contains("rate limit");
+    if limited {
+        format!("{status}: {detail} — the forge is limiting requests from this account; wait a few minutes and try again")
+    } else if status == reqwest::StatusCode::UNAUTHORIZED
+        || status == reqwest::StatusCode::FORBIDDEN
+    {
         format!("{status}: {detail} — check the profile's access token and its scopes")
     } else {
         format!("{status}: {detail}")
@@ -195,4 +208,21 @@ pub fn urlencode(input: &str) -> String {
         }
     }
     out
+}
+
+#[cfg(test)]
+mod tests {
+    use reqwest::StatusCode;
+
+    #[test]
+    fn a_rate_limit_is_not_blamed_on_the_token() {
+        let limited = super::said(
+            StatusCode::FORBIDDEN,
+            "You have exceeded a secondary rate limit",
+        );
+        assert!(limited.contains("limiting requests"), "{limited}");
+        assert!(!limited.contains("access token"));
+        assert!(super::said(StatusCode::TOO_MANY_REQUESTS, "slow down").contains("limiting"));
+        assert!(super::said(StatusCode::UNAUTHORIZED, "Bad credentials").contains("access token"));
+    }
 }

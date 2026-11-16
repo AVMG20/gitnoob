@@ -120,6 +120,20 @@ describe('building a rebase plan', () => {
     expect(rebase.store.rows.map((r) => r.oid)).toEqual(['aaa', 'bbb', 'ccc'])
     expect(rebase.store.rows.every((r) => r.action === 'pick')).toBe(true)
   })
+
+  it('puts the plan back in git\'s order, not by author date', async () => {
+    // A cherry-picked commit on top keeps the older date of its original.
+    const picked = [
+      { ...CANDIDATES[0]!, time: 50 },
+      { ...CANDIDATES[1]!, time: 10 },
+      { ...CANDIDATES[2]!, time: 60 }
+    ]
+    asked.mockImplementation(async (cmd: string) => (cmd === 'rebase_plan' ? picked : null))
+    await rebase.planFrom('base1', 'base1')
+    rebase.move(2, 0)
+    rebase.reset()
+    expect(rebase.store.rows.map((r) => r.oid)).toEqual(['aaa', 'bbb', 'ccc'])
+  })
 })
 
 describe('a rebase that has stopped', () => {

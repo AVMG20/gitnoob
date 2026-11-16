@@ -4,6 +4,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { defineComponent, h } from 'vue'
 import { invoke } from '@tauri-apps/api/core'
 import { EditorView } from '@codemirror/view'
+import { ensureSyntaxTree, language } from '@codemirror/language'
 import FileEditor from '~/components/FileEditor.vue'
 import AppModal from '~/components/AppModal.vue'
 import { useGit } from '~/composables/useGit'
@@ -69,6 +70,8 @@ let countsOff = false
 /** Holds writes or reads back until released, to catch them in flight. */
 let writeGate: Promise<void> | null = null
 let readGate: Promise<void> | null = null
+/** Something else writing the file just after the editor's own save. */
+let afterWrite: (() => void) | null = null
 
 beforeEach(() => {
   resetTabs()
@@ -86,6 +89,7 @@ beforeEach(() => {
   countsOff = false
   writeGate = null
   readGate = null
+  afterWrite = null
   answer.ask = true
   answer.asked = []
   aimAt(null)
@@ -107,7 +111,9 @@ beforeEach(() => {
       if (refuse) throw new Error(refuse)
       if (args?.expectedHash !== disk.hash) throw new Error('Conflict: changed on disk')
       disk = { text: String(args?.text), hash: `h${calls.length}` }
-      return disk.hash
+      const written = disk.hash
+      afterWrite?.()
+      return written
     }
     return null
   })
@@ -325,12 +331,13 @@ describe('the file editor', () => {
     expect(w.emitted('bar')?.[0]).toEqual([1])
   })
 
-  it('shows who wrote the caret line when blame is on', async () => {
+  it('annotates the lines in a column when blame is on, and adds no note to the caret line', async () => {
     const runs = [
       { oid: 'a'.repeat(40), short: 'aaaaaaa', summary: 'Tax rates', author: 'Sam', email: 's@x', time: Math.floor(Date.now() / 1000) - 60, start: 1, lines: 2, uncommitted: false }
     ]
     const w = await show({ runs, blame: true })
-    expect(w.find('.cm-blame').text()).toContain('Sam')
+    expect(w.find('.cm-blame-entry.head .cm-blame-who').text()).toBe('Sam')
+    expect(w.find('.cm-blame').exists()).toBe(false)
   })
 
   it('lands on the line a jump asked for', async () => {
@@ -465,6 +472,26 @@ describe('what the audit found', () => {
     expect(drafts.get(key)?.text).toBe('draft\n')
   })
 
+  it('looks at the disk again after a save when it changed while the save was on its way', async () => {
+    const w = await show()
+    const held = gate()
+    writeGate = held.promise
+    type(w, 'mine ')
+    const saving = (w.vm as unknown as { save: () => Promise<void> }).save()
+    await flushPromises()
+    // Another program writes the file just after the editor's rename, and
+    // the watcher says so while the save has not come back yet.
+    afterWrite = () => {
+      disk = { text: 'theirs\n', hash: 'h-theirs' }
+    }
+    diskChanged?.({ payload: { work_tree: true } })
+    await wait(150)
+    held.open()
+    await saving
+    await flushPromises()
+    expect(editorOf(w).state.doc.toString()).toBe('theirs\n')
+  })
+
   it('does not take a read from before its own save landed', async () => {
     const w = await show()
     const held = gate()
@@ -569,7 +596,10 @@ describe('names in the editor', () => {
     expect(lens.text()).toBe('3 usages')
     lens.element.dispatchEvent(new MouseEvent('mousedown', { bubbles: true }))
     await flushPromises()
-    expect(calls.find((one) => one.cmd === 'usages')?.args).toEqual({ name: 'total', path: PATH, kind: 'method', line: 2 })
+    const usages = calls.find((one) => one.cmd === 'usages')?.args
+    expect(usages).toMatchObject({ name: 'total', path: PATH, kind: 'method', line: 2 })
+    // The editor's own text goes along: `line` counts in it, not on disk.
+    expect(typeof usages?.text).toBe('string')
   })
 
   it('shows possible usages muted, and what the framework calls by the uses of its class', async () => {
@@ -600,6 +630,41 @@ describe('names in the editor', () => {
     await useConfig().load()
   })
 
+  it('asks for the counts again when framework support is turned off', async () => {
+    await useConfig().load()
+    lenses = [{ name: 'Tax', kind: 'class', line: 2, from: 6, count: 1, config: 2 }]
+    const w = await show()
+    await flush()
+    await flushPromises()
+    expect(w.find('.cm-lens').text()).toBe('1 usage · 2 in config')
+    const asked = () => calls.filter((one) => one.cmd === 'usage_counts').length
+    const before = asked()
+    lenses = [{ name: 'Tax', kind: 'class', line: 2, from: 6, count: 1 }]
+    useConfig().store.config!.global.frameworks = false
+    for (let i = 0; i < 20 && asked() === before; i++) await flush()
+    await flushPromises()
+    expect(asked()).toBeGreaterThan(before)
+    expect(w.find('.cm-lens').text()).toBe('1 usage')
+    useConfig().store.config!.global.frameworks = true
+  })
+
+  it('does not ask again when a settings save changed something else', async () => {
+    await useConfig().load()
+    const w = await show()
+    await flush()
+    await flushPromises()
+    const asked = () => calls.filter((one) => one.cmd === 'usage_counts').length
+    const before = asked()
+    // A whole new settings object, as every save hands back, with the same
+    // two values in it.
+    const config = useConfig().store.config!
+    useConfig().store.config = { ...config, global: { ...config.global, editor_font_size: 15 } } as never
+    for (let i = 0; i < 5; i++) await flush()
+    await flushPromises()
+    expect(asked()).toBe(before)
+    w.unmount()
+  })
+
   it('asks what is at the caret on ⌘J, with the text as typed', async () => {
     const w = await show()
     type(w, 'x')
@@ -611,6 +676,22 @@ describe('names in the editor', () => {
       offset: 9,
       text: 'x<?php\nreturn 21;\n'
     })
+  })
+
+  it('reads a .phtml template as PHP in HTML, and asks about its names', async () => {
+    const template = 'app/code/Acme/Shop/view/frontend/templates/list.phtml'
+    disk = { text: '<ul>\n<?php foreach ($block->getItems() as $item): ?>\n<li></li>\n<?php endforeach ?>\n</ul>\n', hash: 'h1' }
+    const w = await show({ path: template })
+    for (let i = 0; i < 50 && editorOf(w).state.facet(language)?.name !== 'php'; i++) await flush()
+    const state = editorOf(w).state
+    expect(state.facet(language)?.name).toBe('php')
+    const nodes: string[] = []
+    ensureSyntaxTree(state, state.doc.length, 5000)!.iterate({ enter: (node) => void nodes.push(node.name) })
+    expect(nodes).toContain('PhpOpen')
+    expect(nodes).toContain('ForeachStatement')
+    // The backend reads names in it, as PHP.
+    await flushPromises()
+    expect(calls.some((one) => one.cmd === 'unused_in' && one.args.path === template)).toBe(true)
   })
 
   it('asks nothing about a file in a language it cannot read', async () => {

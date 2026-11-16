@@ -1300,7 +1300,10 @@ pub fn delete_remote_branch(
 
 pub fn push_tag(state: &AppState, remote: &str, tag: &str) -> Result<CmdOutput, String> {
     let path = state.path()?;
-    git_cmd::run(&path, &["push", remote, tag])
+    // Spelled out, like the deletes: a branch with the tag's name would
+    // otherwise make the short name ambiguous.
+    let spec = format!("refs/tags/{tag}:refs/tags/{tag}");
+    git_cmd::run(&path, &["push", remote, &spec])
 }
 
 pub fn delete_remote_tag(state: &AppState, remote: &str, tag: &str) -> Result<CmdOutput, String> {

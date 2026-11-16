@@ -163,6 +163,14 @@ impl AppState {
 /// Resolves a path the user picked to the root of its work tree, so opening a
 /// subdirectory of a repository works the way it does on the command line.
 pub fn discover_workdir(input: &Path) -> Result<PathBuf, String> {
+    // A project moved or deleted since it was last open is a different
+    // problem from a folder that never was a repository, and says so.
+    if !input.exists() {
+        return Err(format!(
+            "{} is not there any more. It was moved or deleted; close its tab or open it from where it is now.",
+            input.display()
+        ));
+    }
     let repo = Repository::discover(input)
         .map_err(|_| format!("{} is not inside a Git repository", input.display()))?;
     repo.workdir()

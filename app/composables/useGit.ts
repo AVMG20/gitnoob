@@ -827,6 +827,23 @@ watch(
 )
 
 /**
+ * The files that have been in conflict since the current merge, rebase or
+ * pick stopped, so an abort can tell which of them were resolved meanwhile:
+ * the ones no longer conflicted. Emptied once nothing is in conflict.
+ */
+const conflictedSince = new Set<string>()
+let conflictedIn: string | null = null
+
+watch(
+  () => [fields.repo?.path ?? null, fields.status?.conflicted ?? []] as const,
+  ([repo, conflicted]) => {
+    if (repo !== conflictedIn || !conflicted.length) conflictedSince.clear()
+    conflictedIn = repo
+    for (const path of conflicted) conflictedSince.add(path)
+  }
+)
+
+/**
  * The store as the rest of the app sees it.
  *
  * `busy` is attached above rather than declared in the object, which left it
@@ -875,6 +892,69 @@ function stuckEdits(tab: string) {
  * ever edited in place — each read replaces the last wholesale — so the
  * tracking buys nothing and the raw object is handed over as it arrived.
  */
+/**
+ * The background fetch in flight, if one is. Not counted as busy, so it never
+ * blocks a click; a git command that moves refs waits for it instead, since
+ * two gits updating the same refs at once fail on each other's ref locks.
+ */
+let quietFetch: Promise<unknown> | null = null
+
+/** Runs `work` once the background fetch, if any, has finished. */
+function afterQuietFetch<T>(work: () => Promise<T>): () => Promise<T> {
+  return async () => {
+    if (quietFetch) await quietFetch
+    return work()
+  }
+}
+
+/**
+ * A short stand-in for a long string, to tell "changed" from "the same".
+ *
+ * The snapshots kept the whole JSON of every field (twenty thousand graph rows
+ * of it once scrolled) for up to eight repositories. Two independent 32-bit
+ * hashes and the length make a collision, which would only skip one redraw
+ * until the next change, too unlikely to matter.
+ */
+export function fingerprint(text: string): string {
+  let a = 0x811c9dc5
+  let b = 0x9747b28c
+  for (let at = 0; at < text.length; at++) {
+    const code = text.charCodeAt(at)
+    a = Math.imul(a ^ code, 0x01000193)
+    b = Math.imul(b ^ code, 0x5bd1e995)
+    b ^= b >>> 15
+  }
+  return `${text.length}:${(a >>> 0).toString(36)}:${(b >>> 0).toString(36)}`
+}
+
+/**
+ * Asks before an abort throws away conflicts already resolved: the abort puts
+ * every file back as it was before the merge or rebase began. Nothing
+ * resolved yet, nothing to ask.
+ */
+export async function confirmAbort(what: string): Promise<boolean> {
+  const still = new Set(store.status?.conflicted ?? [])
+  const resolved = [...conflictedSince].filter((path) => !still.has(path)).length
+  if (!resolved) return true
+  const files = resolved === 1 ? 'The 1 file you resolved goes' : `The ${resolved} files you resolved go`
+  try {
+    const { ask } = await import('@tauri-apps/plugin-dialog')
+    return await ask(
+      `${files} back to how ${resolved === 1 ? 'it was' : 'they were'} before the ${what} started. Abort anyway?`,
+      { title: `Abort the ${what}?`, kind: 'warning', okLabel: 'Abort', cancelLabel: 'Keep going' }
+    )
+  } catch {
+    // No dialog to ask with: the button was pressed on purpose.
+    return true
+  }
+}
+
+/** The newest repository asked to open; an older open that lands late is dropped. */
+let openSeq = 0
+
+/** The newest request for the detail panel; older answers are dropped. */
+let detailSeq = 0
+
 function raw<T>(value: T): T {
   return value && typeof value === 'object' ? (markRaw(value as object) as T) : value
 }
@@ -1091,9 +1171,13 @@ export function useGit() {
    */
   /** `replace` names the tab this repository takes the place of. */
   async function openRepo(path: string, record = true, replace?: string) {
+    const ticket = ++openSeq
     const info = await guard('Open repository', () =>
       invoke<RepoInfo>('open_repo', { path, record, replace: replace ?? null })
     )
+    // Another open was asked for while this one was on its way: that one is
+    // what the window is about now, whichever answer comes back last.
+    if (ticket !== openSeq) return false
     if (!info) return false
     // From here every call says it is about this repository, so a switch to
     // another tab cannot retarget work that is already under way.
@@ -1155,7 +1239,7 @@ export function useGit() {
     // watcher; comparing costs nothing next to rebuilding the panel.
     const snapshot = snapshots.get(path)
     if (snapshot) {
-      const key = JSON.stringify(status)
+      const key = fingerprint(JSON.stringify(status))
       if (snapshot.seen.status === key) return
       snapshot.seen.status = key
       snapshot.status = raw(status)
@@ -1238,7 +1322,7 @@ export function useGit() {
     // triggered by a window focus or a file being saved, find nothing new.
     const seen = snapshots.get(path)?.seen ?? {}
     const settle = <T>(field: string, value: T, current: T): T => {
-      const key = JSON.stringify(value) ?? 'undefined'
+      const key = fingerprint(JSON.stringify(value) ?? 'undefined')
       if (seen[field] === key) return current
       seen[field] = key
       return raw(value)
@@ -1291,10 +1375,23 @@ export function useGit() {
     }
     // Keep the detail panel current for whatever is selected.
     if (store.selected !== WIP) {
-      store.detail = await invoke<CommitDetail>('commit_detail', { oid: store.selected }).catch(
-        () => store.detail
-      )
+      const oid = store.selected
+      const ticket = ++detailSeq
+      const detail = await invoke<CommitDetail>('commit_detail', { oid }).catch(() => undefined)
+      if (detail !== undefined) showDetail(ticket, oid, detail)
     }
+  }
+
+  /**
+   * Puts a commit's detail on the panel, unless something newer has been
+   * asked for since: a slow answer for the commit clicked first must not
+   * land under the row clicked after it.
+   */
+  function showDetail(ticket: number, oid: string, detail: CommitDetail | null) {
+    if (ticket !== detailSeq || store.selected !== oid) return
+    // Not reactive inside: a commit of thirty thousand files would otherwise
+    // be proxied file by file on every refresh.
+    store.detail = raw(detail)
   }
 
   /**
@@ -1333,13 +1430,15 @@ export function useGit() {
 
   async function select(oid: string) {
     store.selected = oid
+    const ticket = ++detailSeq
     if (oid === WIP) {
       store.detail = null
       return
     }
-    store.detail = await guard('Load commit', () =>
+    const detail = await guard('Load commit', () =>
       invoke<CommitDetail>('commit_detail', { oid })
     )
+    showDetail(ticket, oid, detail)
   }
 
   /**
@@ -1498,7 +1597,7 @@ export function useGit() {
       part('what git is doing', invoke<InProgress>('in_progress'), store.progress)
     ])
     if (store.repo?.path !== path) return
-    const key = JSON.stringify(progress) ?? 'undefined'
+    const key = fingerprint(JSON.stringify(progress) ?? 'undefined')
     const snapshot = snapshots.get(path)
     if (snapshot) {
       if (snapshot.seen.progress === key) return
@@ -1511,7 +1610,7 @@ export function useGit() {
   }
 
   async function run<T>(label: string, command: string, args: Record<string, unknown> = {}) {
-    const result = await guard(label, () => invoke<T>(command, args))
+    const result = await guard(label, afterQuietFetch(() => invoke<T>(command, args)))
     // Refresh whether or not it worked. A git command that fails can still have
     // changed the repository — a branch switch whose stash pop conflicted has
     // switched, a rebase that stopped has moved HEAD — and leaving the window
@@ -1808,7 +1907,7 @@ export function useGit() {
 
   /** The pull the toolbar's button does, for a notice to offer. */
   async function pullHere() {
-    const outcome = await guard('Pull', () => invoke<MergeOutcome>('pull', {}))
+    const outcome = await guard('Pull', afterQuietFetch(() => invoke<MergeOutcome>('pull', {})))
     if (outcome) note(`Pull: ${outcome.message}`, outcome.ok ? 'info' : 'error')
     if (outcome?.conflicts.length) store.resolving = outcome.conflicts[0] ?? null
     await refresh()
@@ -1828,10 +1927,13 @@ export function useGit() {
     const path = store.repo?.path
     if (!path) return false
     const before = watched()
-    const out = await invoke<CmdOutput>('fetch_primary').catch((error) => {
+    const asked = invoke<CmdOutput>('fetch_primary').catch((error) => {
       note(`Background fetch: ${String(error)}`, 'failed')
       return null
     })
+    quietFetch = asked
+    const out = await asked
+    if (quietFetch === asked) quietFetch = null
     if (store.repo?.path !== path) return false
     if (!out?.ok) {
       if (out) note(`Background fetch: ${out.stderr.trim() || `exit ${out.code}`}`, 'failed')
@@ -1994,13 +2096,16 @@ export function useGit() {
     const tracked = (upstream ?? local?.gone ?? null)?.split('/')[0] ?? null
     const primary = tracked ? null : await invoke<string | null>('primary_remote').catch(() => null)
     const target = tracked ?? primary ?? 'origin'
-    const out = await guard('Push', () =>
-      invoke<CmdOutput>('push', {
-        remoteName: target,
-        branch,
-        force: false,
-        setUpstream
-      })
+    const out = await guard(
+      'Push',
+      afterQuietFetch(() =>
+        invoke<CmdOutput>('push', {
+          remoteName: target,
+          branch,
+          force: false,
+          setUpstream
+        })
+      )
     )
     const ok = report('Push', out)
     afterPush(branch, setUpstream, ok)
@@ -2280,7 +2385,7 @@ export function useGit() {
 
     fetch: async (remote?: string) => {
       const path = store.repo?.path
-      const out = await guard('Fetch', () => invoke<CmdOutput>('fetch', { remote }))
+      const out = await guard('Fetch', afterQuietFetch(() => invoke<CmdOutput>('fetch', { remote })))
       const ok = report('Fetch', out)
       if (out && !out.ok) void offerToDropDeadRemotes(out, remote)
       // Even a fetch that failed on one remote has usually brought the rest.
@@ -2299,7 +2404,7 @@ export function useGit() {
      * `pull.rebase` decides, the way a typed `git pull` would.
      */
     pull: async (rebase?: boolean) => {
-      const outcome = await guard('Pull', () => invoke<MergeOutcome>('pull', { rebase }))
+      const outcome = await guard('Pull', afterQuietFetch(() => invoke<MergeOutcome>('pull', { rebase })))
       if (outcome) note(`Pull: ${outcome.message}`, outcome.ok ? 'info' : 'error')
       await refresh()
       return outcome
@@ -2319,8 +2424,11 @@ export function useGit() {
       setUpstream: boolean,
       lease?: string | null
     ) => {
-      const out = await guard('Push', () =>
-        invoke<CmdOutput>('push', { remoteName, branch, force, setUpstream, lease })
+      const out = await guard(
+        'Push',
+        afterQuietFetch(() =>
+          invoke<CmdOutput>('push', { remoteName, branch, force, setUpstream, lease })
+        )
       )
       const ok = report(force ? 'Force push' : 'Push', out)
       afterPush(branch, setUpstream, ok)
@@ -2377,7 +2485,8 @@ export function useGit() {
       await refresh()
       return outcome
     },
-    abortRebase: () => run<string>('Abort rebase', 'abort_rebase'),
+    abortRebase: async () =>
+      (await confirmAbort('rebase')) ? run<string>('Abort rebase', 'abort_rebase') : null,
     continueRebase: async () => {
       const outcome = await guard('Continue rebase', () =>
         invoke<MergeOutcome>('continue_rebase')
@@ -2423,7 +2532,8 @@ export function useGit() {
       await refresh()
       return outcome
     },
-    abortMerge: () => run<string>('Abort merge', 'abort_merge'),
+    abortMerge: async () =>
+      (await confirmAbort('merge')) ? run<string>('Abort merge', 'abort_merge') : null,
     /** The way out of a conflicted auto-stash, which no abort can undo. */
     undoRestore: () => run<string>('Put it back', 'undo_restore'),
 

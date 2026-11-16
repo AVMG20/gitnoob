@@ -290,6 +290,9 @@ export function highlightLine(code: string, language: string | null): string {
   return paint(tokens[0]!)
 }
 
+/** The largest text [`highlightWhole`] colours, in characters. */
+export const MAX_COLOURED = 1_000_000
+
 /**
  * Colours a whole file, and hands back one line of HTML per line of source.
  *
@@ -304,6 +307,10 @@ export function highlightLine(code: string, language: string | null): string {
  */
 export function highlightWhole(text: string, language: string | null): string[] {
   const source = text.split('\n')
+  // Shiki tokenises in one synchronous pass on the window's thread: a file of
+  // several megabytes froze the window for as long as that took, and again
+  // whenever a grammar or theme loaded. Past this it is shown plain.
+  if (text.length > MAX_COLOURED) return source.map(escapeHtml)
   const tokens = tokenise(text, language)
   // A highlighter that lost a line somewhere is not worth trusting over the
   // plain text: the marks in the gutter are keyed by line number.
@@ -505,6 +512,7 @@ const NAMED: Record<string, string> = {
   md: 'markdown',
   mjs: 'javascript',
   nu: 'nushell',
+  phtml: 'php template',
   ps1: 'powershell',
   py: 'python',
   rb: 'ruby',
@@ -545,6 +553,8 @@ export function labelFor(path: string) {
   const file = path.split('/').pop() ?? path
   const name = file.toLowerCase()
   if (BY_NAME[name]) return name
+  // Coloured as PHP, but a view, not a class: `.php` alone would say otherwise.
+  if (name.endsWith('.blade.php')) return 'blade template'
   const extension = extensionOf(name)
   const base = dotfileBase(name)
   // What follows a dotfile's own name is a label only where it names a type we

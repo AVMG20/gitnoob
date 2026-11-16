@@ -80,4 +80,23 @@ describe('the file viewer', () => {
     expect(git.store.viewer).not.toBeNull()
     wrapper.unmount()
   })
+
+  it('lets Tab move focus off a button, and flips the view only from the page', async () => {
+    const wrapper = mount(DiffViewer, { attachTo: document.body })
+    await flushPromises()
+    const button = document.createElement('button')
+    document.body.appendChild(button)
+    button.focus()
+
+    const onButton = new KeyboardEvent('keydown', { key: 'Tab', bubbles: true, cancelable: true })
+    button.dispatchEvent(onButton)
+    expect(onButton.defaultPrevented).toBe(false)
+
+    const onPage = new KeyboardEvent('keydown', { key: 'Tab', bubbles: true, cancelable: true })
+    document.body.dispatchEvent(onPage)
+    expect(onPage.defaultPrevented).toBe(true)
+
+    button.remove()
+    wrapper.unmount()
+  })
 })

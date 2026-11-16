@@ -11,7 +11,7 @@ import {
   type LoadedImage
 } from '~/composables/useImage'
 import { aimedAt } from '~/composables/useInvoke'
-import { matchesShortcut } from '~/composables/useShortcuts'
+import { keysHere, matchesShortcut } from '~/composables/useShortcuts'
 
 /**
  * One image, on a checkerboard so transparency shows, fitted to the view.
@@ -197,13 +197,13 @@ defineExpose({ zoom, fit, actual, reload: load })
 <template>
   <div class="image-view" :class="{ compact: props.compact }">
     <div v-if="!props.compact && image?.url" class="tools">
-      <button class="tool" :class="{ on: scale === null }" title="Fit to the view (⌘0)" @click="fit">
+      <button class="tool" :class="{ on: scale === null }" :title="keysHere('Fit to the view (⌘0)')" @click="fit">
         <Maximize :size="13" /> Fit
       </button>
       <button class="tool" :class="{ on: scale === 1 }" title="Actual size" @click="actual">100%</button>
-      <button class="tool" title="Zoom out (⌘−)" @click="zoom(-1)"><Minus :size="13" /></button>
+      <button class="tool" :title="keysHere('Zoom out (⌘−)')" @click="zoom(-1)"><Minus :size="13" /></button>
       <span class="pct">{{ Math.round(shownScale * 100) }}%</span>
-      <button class="tool" title="Zoom in (⌘+)" @click="zoom(1)"><Plus :size="13" /></button>
+      <button class="tool" :title="keysHere('Zoom in (⌘+)')" @click="zoom(1)"><Plus :size="13" /></button>
     </div>
     <div
       ref="stage"

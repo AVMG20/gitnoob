@@ -125,7 +125,7 @@ export const TIPS: Tip[] = [
   },
   {
     id: 'blame',
-    text: 'Right-click the line numbers in an open file to turn blame on beside them.'
+    text: 'Right-click the line numbers in an open file and choose Annotate with Git Blame to see who last changed each line. Click a name to open its commit.'
   },
   {
     id: 'stash-list',

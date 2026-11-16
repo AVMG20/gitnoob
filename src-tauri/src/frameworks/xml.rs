@@ -265,33 +265,60 @@ pub fn parse(text: &str) -> Doc<'_> {
 }
 
 /// Where the lines of a text start, so many offsets in one file cost one
-/// pass over it and a binary search each, not a pass each.
+/// pass over it and a binary search each, not a pass each. A line that is
+/// all ASCII has its column by subtraction; a long one that is not (a
+/// minified file with an accent in it) is counted on from the last offset
+/// asked on it, so offsets asked in order cost one pass over the line.
 pub struct Lines<'a> {
     text: &'a str,
     starts: Vec<usize>,
+    ascii: Vec<bool>,
+    /// The last offset asked on a line that is not ASCII, and its column.
+    last: std::cell::Cell<(usize, usize, u32)>,
 }
 
 impl<'a> Lines<'a> {
     pub fn new(text: &'a str) -> Self {
         let mut starts = vec![0];
-        starts.extend(
-            text.bytes()
-                .enumerate()
-                .filter(|(_, byte)| *byte == b'\n')
-                .map(|(at, _)| at + 1),
-        );
-        Lines { text, starts }
+        let mut ascii = Vec::new();
+        let mut plain = true;
+        for (at, byte) in text.bytes().enumerate() {
+            if byte == b'\n' {
+                starts.push(at + 1);
+                ascii.push(plain);
+                plain = true;
+            } else if byte >= 0x80 {
+                plain = false;
+            }
+        }
+        ascii.push(plain);
+        Lines {
+            text,
+            starts,
+            ascii,
+            last: std::cell::Cell::new((usize::MAX, 0, 1)),
+        }
     }
 
     /// Line (from 1) and column (UTF-16, from 1) of a byte offset.
     pub fn line_col(&self, byte: usize) -> (u32, u32) {
-        let byte = byte.min(self.text.len());
+        let mut byte = byte.min(self.text.len());
+        while !self.text.is_char_boundary(byte) {
+            byte -= 1;
+        }
         let line = self.starts.partition_point(|start| *start <= byte) - 1;
-        let column = self
-            .text
-            .get(self.starts[line]..byte)
-            .map_or(0, |before| before.encode_utf16().count()) as u32
-            + 1;
+        let start = self.starts[line];
+        if self.ascii[line] {
+            return (line as u32 + 1, (byte - start) as u32 + 1);
+        }
+        let (last_line, last_byte, last_column) = self.last.get();
+        let (from, column) = if last_line == line && last_byte <= byte {
+            (last_byte, last_column)
+        } else {
+            (start, 1)
+        };
+        let column = column + self.text[from..byte].encode_utf16().count() as u32;
+        self.last.set((line, byte, column));
         (line as u32 + 1, column)
     }
 }
@@ -368,9 +395,10 @@ mod tests {
                 "  <block class=\"Foo\\Bar\\Baz\" name=\"a.b\" template=\"A_B::c.phtml\">1 < 2</block>\n",
             );
         }
-        // Tags that never close with end tags that match nothing.
+        // Tags that never close with end tags that match nothing, all on
+        // one line, with an accent in it so columns must be counted.
         for _ in 0..100_000 {
-            source.push_str("<a></b>");
+            source.push_str("<a t=\"é\"></b>");
         }
         // Never closed, and a comment that never ends.
         source.push_str("<container name=\"open\"><!-- no end");
@@ -382,6 +410,11 @@ mod tests {
             last = lines.line_col(element.start).0;
         }
         assert!(doc.elements.len() > 50_000 && last > 50_000);
+        let tail = doc.elements[doc.elements.len() - 2].start;
+        assert_eq!(lines.line_col(tail), line_col(&source, tail));
+        // Asked out of order, it still counts right.
+        let early = doc.elements[doc.elements.len() - 50_000].start;
+        assert_eq!(lines.line_col(early), line_col(&source, early));
         assert!(
             started.elapsed() < std::time::Duration::from_secs(5),
             "{:?}",

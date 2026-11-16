@@ -76,7 +76,9 @@ async function store(font: number) {
   const config = useConfig()
   const settings = config.settings.value
   if (!settings || settings.editor_font_size === font) return
-  await config.saveGlobal({ ...settings, editor_font_size: font }).catch(() => undefined)
+  await config
+    .updateGlobal((current) => ({ ...current, editor_font_size: font }))
+    .catch(() => undefined)
 }
 
 let following = false

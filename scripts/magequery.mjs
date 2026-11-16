@@ -139,24 +139,34 @@ export function plan(triple) {
   return { kind: 'download', asset }
 }
 
-/** Whether `name` in `dir` is already this version. */
+/**
+ * Whether `name` in `dir` is already this version, and the very file that
+ * was put there: the stamp keeps its sha256 too, so a binary changed or cut
+ * short since is fetched again rather than bundled.
+ */
 export function upToDate(dir, name) {
   const file = join(dir, name)
   if (!existsSync(file) || statSync(file).size === 0) return false
   try {
-    const stamp = JSON.parse(readFileSync(join(dir, STAMP), 'utf8'))
-    return stamp[name] === VERSION
+    const stamp = JSON.parse(readFileSync(join(dir, STAMP), 'utf8'))[name]
+    const same = stamp?.version === VERSION && stamp?.sha256 === sha256(readFileSync(file))
+    // The right bytes are not enough: a copy that lost its execute bit (a zip,
+    // a filesystem without modes) bundles a sidecar that cannot be started.
+    if (same && process.platform !== 'win32' && (statSync(file).mode & 0o111) === 0) {
+      chmodSync(file, 0o755)
+    }
+    return same
   } catch {
     return false
   }
 }
 
-function stamp(dir, name) {
+export function stamp(dir, name) {
   let all = {}
   try {
     all = JSON.parse(readFileSync(join(dir, STAMP), 'utf8'))
   } catch {}
-  all[name] = VERSION
+  all[name] = { version: VERSION, sha256: sha256(readFileSync(join(dir, name))) }
   writeFileSync(join(dir, STAMP), `${JSON.stringify(all, null, 2)}\n`)
 }
 
@@ -239,15 +249,21 @@ async function buildIntel(dir, work) {
   const into = unpack(buffer, SOURCE.file, work)
   const source = join(into, SOURCE.folder)
   console.log('magequery: building for x86_64-apple-darwin from source')
+  // Named outright: a CARGO_TARGET_DIR in the environment, or a target-dir in
+  // ~/.cargo/config.toml, would put the binary somewhere this does not look.
+  const target = join(source, 'target')
   try {
-    run('cargo', ['build', '--release', '--locked', '--target', triple, '--bin', 'magequery'], { cwd: source })
+    run('cargo', ['build', '--release', '--locked', '--target', triple, '--bin', 'magequery'], {
+      cwd: source,
+      env: { ...process.env, CARGO_TARGET_DIR: target }
+    })
   } catch (error) {
     throw new Error(
       `Could not build magequery for ${triple}. Install the target with ` +
         `\`rustup target add ${triple}\` and try again. (${error.message})`
     )
   }
-  const binary = join(source, 'target', triple, 'release', 'magequery')
+  const binary = join(target, triple, 'release', 'magequery')
   if (!existsSync(binary)) throw new Error(`The ${triple} build left no binary at ${binary}`)
   return install(binary, dir, binaryName(triple))
 }

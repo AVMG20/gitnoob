@@ -6,6 +6,7 @@ import SearchModal from "~/components/SearchModal.vue";
 import AppModal from "~/components/AppModal.vue";
 import { useGit } from "~/composables/useGit";
 import { openTab, resetTabs, switchTabs, useTabs } from "~/composables/useTabs";
+import { resetFileTree, treeSession } from "~/composables/useFileTree";
 import {
   openSearch,
   resetSearch,
@@ -24,7 +25,7 @@ const git = useGit();
 const tabs = useTabs();
 const isMac = navigator.userAgent.includes("Mac");
 let wrapper: ReturnType<typeof mount> | null = null;
-let found: { path: string; score: number; indices: number[] }[] = [];
+let found: { path: string; score: number; indices: number[]; dir?: boolean }[] = [];
 let symbolsFound: {
   name: string;
   kind: string;
@@ -39,6 +40,7 @@ const wait = (ms: number) => new Promise((done) => setTimeout(done, ms));
 beforeEach(() => {
   resetTabs();
   resetSearch();
+  resetFileTree();
   switchTabs("/repos/shop");
   git.store.repo = { path: "/repos/shop", name: "shop", head: "main" } as never;
   git.store.status = {
@@ -52,6 +54,12 @@ beforeEach(() => {
   asked.mockImplementation(async (cmd: string) => {
     if (cmd === "find_files") return found;
     if (cmd === "find_symbols") return symbolsFound;
+    if (cmd === "list_dir") {
+      return [
+        { name: "Model", path: "app/code/Acme/RMA/Model", dir: true, ignored: false, link: false },
+        { name: "registration.php", path: "app/code/Acme/RMA/registration.php", dir: false, ignored: false, link: false },
+      ];
+    }
     if (cmd === "read_file") {
       return {
         text: "a\nb\nc\n",
@@ -185,6 +193,25 @@ describe("searching inside files", () => {
     ]);
     expect(w.text()).toContain("3 matches in 2 files");
     expect(w.text()).toContain("40 more not shown");
+  });
+
+  it("says when a search stopped at the cap with files left unread", async () => {
+    const w = await show();
+    await w.find('.search input[type="text"]').setValue("total");
+    await wait(150);
+    await flushPromises();
+    takeDone({
+      request: search.request,
+      matches: 0,
+      files: 0,
+      more: 12,
+      capped: true,
+      searched: 10,
+      cancelled: false,
+      error: null,
+    });
+    await flushPromises();
+    expect(w.text()).toContain("12+ more not shown");
   });
 
   it("drops what an older search sends after a new one started", async () => {
@@ -350,6 +377,39 @@ describe("finding files by name", () => {
     ]);
   });
 
+  it("lists a folder with a trailing slash and shows it in the Files tree rather than opening it", async () => {
+    const name = "app/code/Acme/".length;
+    found = [
+      { path: "app/code/Acme/RMA", score: 400000, indices: [name, name + 1, name + 2], dir: true },
+      { path: "lib/RmaManager.php", score: 90, indices: [4, 5, 6] },
+    ];
+    const w = await show("files");
+    await w.find('.search input[type="text"]').setValue("RMA");
+    await wait(80);
+    await flushPromises();
+    expect(
+      (asked.mock.calls.find(([cmd]) => cmd === "find_files")![1] as { folders: boolean }).folders,
+    ).toBe(true);
+    const rows = w.findAll(".item");
+    expect(rows[0]!.find(".file").text()).toBe("RMA/");
+    expect(rows[0]!.find(".file b").text()).toBe("RMA");
+    expect(rows[0]!.find(".dir").text()).toBe("app/code/Acme");
+    // The folder icon, not a file's.
+    expect(rows[0]!.find(".file-icon").attributes("data-glyph")).toBe("folder");
+    expect(rows[1]!.find(".file-icon").attributes("data-glyph")).not.toBe("folder");
+    // The preview lists what is in it, and never reads it as a file.
+    expect(asked.mock.calls.some(([cmd, args]) => cmd === "list_dir" && (args as { path: string }).path === "app/code/Acme/RMA")).toBe(true);
+    expect(asked.mock.calls.some(([cmd, args]) => cmd === "read_file" && (args as { path: string }).path === "app/code/Acme/RMA")).toBe(false);
+    expect(w.find(".folder-preview").text()).toContain("Model/");
+    expect(w.find(".folder-preview").text()).toContain("registration.php");
+    press(w, "Enter");
+    await flushPromises();
+    expect(tabs.state.tabs.some((one) => one.path === "app/code/Acme/RMA")).toBe(false);
+    expect(treeSession().mode).toBe("files");
+    expect(treeSession().reveal?.path).toBe("app/code/Acme/RMA");
+    expect(search.open).toBe(false);
+  });
+
   it("reads :N on the end as the line to open at", async () => {
     found = [{ path: "app/Tax.php", score: 10, indices: [] }];
     const w = await show("files");
@@ -363,6 +423,91 @@ describe("finding files by name", () => {
     const tab = tabs.state.tabs.find((one) => one.path === "app/Tax.php")!;
     expect(tab.line).toBe(42);
     expect(tab.mode).toBe("file");
+  });
+});
+
+describe("a search with thousands of hits", () => {
+  /** 5,000 hits in 1,000 files, and 28,000 more only counted. */
+  function flood() {
+    const files = Array.from({ length: 1000 }, (_, f) => ({
+      path: `app/Tr${f}.php`,
+      lines: Array.from(
+        { length: 5 },
+        (_, i): [number, string, [number, number][]] => [i + 1, `$x = new Tr${f}();`, [[9, 11]]],
+      ),
+    }));
+    answer(files, 28000);
+  }
+
+  it("draws a page of rows, adds the next as the list scrolls or the cursor nears its end, and keeps the true totals", async () => {
+    const w = await show();
+    await w.find('.search input[type="text"]').setValue("Tr");
+    await wait(150);
+    await flushPromises();
+    flood();
+    await flushPromises();
+    expect(search.found).toHaveLength(1000);
+    expect(w.findAll(".item")).toHaveLength(100);
+    expect(w.find(".summary").text()).toContain("5,000 matches in 1000 files");
+    expect(w.find(".summary").text()).toContain("28,000 more not shown");
+
+    // Arrowing past the drawn rows draws more, and the cursor's row is there.
+    for (let i = 0; i < 120; i++) press(w, "ArrowDown");
+    await flushPromises();
+    expect(w.findAll(".item").length).toBeGreaterThan(120);
+    expect(w.findAll(".item").length).toBeLessThanOrEqual(300);
+    const on = w.find(".item.on");
+    expect(on.find(".num").text()).toBe("1");
+    // Row 120 is the first hit of the 25th file.
+    expect(w.find(".where").text()).toContain("Tr24.php");
+
+    // Scrolled near the end: the next page.
+    const list = w.find(".list").element as HTMLElement;
+    const before = w.findAll(".item").length;
+    Object.defineProperty(list, "scrollHeight", { configurable: true, value: 5000 });
+    Object.defineProperty(list, "clientHeight", { configurable: true, value: 600 });
+    list.scrollTop = 4300;
+    list.dispatchEvent(new Event("scroll"));
+    await flushPromises();
+    expect(w.findAll(".item")).toHaveLength(before + 100);
+
+    // ⌘↵ there opens that file at that line and stays.
+    press(w, "Enter", { metaKey: isMac, ctrlKey: !isMac });
+    await flushPromises();
+    const tab = tabs.state.tabs.find((one) => one.path === "app/Tr24.php")!;
+    expect(tab.line).toBe(1);
+    expect(search.open).toBe(true);
+
+    // A new query starts again from the first page.
+    await w.find('.search input[type="text"]').setValue("Tra");
+    await wait(150);
+    await flushPromises();
+    flood();
+    await flushPromises();
+    expect(w.findAll(".item")).toHaveLength(100);
+  });
+
+  it("puts the hits that arrive in a burst into the list once a frame", async () => {
+    const w = await show();
+    await w.find('.search input[type="text"]').setValue("Tr");
+    await wait(150);
+    await flushPromises();
+    const request = search.request;
+    for (let f = 0; f < 50; f++) {
+      takeHits({ request, path: `app/Tr${f}.php`, hits: [{ line: 1, text: "Tr", ranges: [[0, 2]] }] });
+    }
+    // Not one update per event.
+    expect(search.found).toHaveLength(0);
+    await wait(40);
+    await flushPromises();
+    expect(search.found).toHaveLength(50);
+    expect(w.findAll(".item")).toHaveLength(50);
+    // An older search's hits waiting for the frame are dropped with it.
+    takeHits({ request, path: "app/Old.php", hits: [{ line: 1, text: "Tr", ranges: [[0, 2]] }] });
+    await w.find('.search input[type="text"]').setValue("Tx");
+    await wait(150);
+    await flushPromises();
+    expect(search.found).toHaveLength(0);
   });
 });
 

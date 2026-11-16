@@ -9,7 +9,8 @@ import { change } from '~/composables/useFileView'
 import { usePanes } from '~/composables/usePanes'
 import { keyLabel, keysFor, matchesShortcut } from '~/composables/useShortcuts'
 import { openTab, tabId } from '~/composables/useTabs'
-import { aimedAt } from '~/composables/useInvoke'
+import { aimedAt, invoke } from '~/composables/useInvoke'
+import { revealInFiles, type DirEntry } from '~/composables/useFileTree'
 import { useToasts } from '~/composables/useToasts'
 import { editKey, flushing, saveErrorOf, saveStateOf, type SaveState } from '~/composables/useFileEdit'
 import { colourLines, runsOf, snippetTick } from '~/composables/snippetColours'
@@ -95,6 +96,8 @@ interface Item {
   symbolKind?: string
   /** For a hit: which of its file's hits it is. */
   hitAt?: number
+  /** A folder the finder matched: shown in the Files tree, never opened. */
+  dir?: boolean
 }
 
 const items = computed<Item[]>(() => {
@@ -126,13 +129,48 @@ const items = computed<Item[]>(() => {
   return names.value.map((one) => ({
     kind: 'name',
     path: one.path,
-    line,
+    line: one.dir ? null : line,
     group: one.group,
-    indices: one.indices
+    indices: one.indices,
+    dir: one.dir
   }))
 })
 
 const current = computed(() => items.value[cursor.value] ?? null)
+
+/**
+ * How many rows are in the DOM. A search can list two thousand lines; the
+ * list shows a page of them and the next page as it is scrolled, or arrowed,
+ * near its end. Rendering them all made every keystroke, every hit that came
+ * in and every row the mouse crossed redraw the whole list.
+ */
+const PAGE = 100
+const shown = ref(PAGE)
+const rendered = computed(() => items.value.slice(0, shown.value))
+
+/** Shows rows up to `at` and a little past it, in whole pages. */
+function showUpTo(at: number) {
+  if (at < shown.value - 5) return
+  shown.value = Math.min(Math.max(items.value.length, PAGE), (Math.floor((at + 5) / PAGE) + 1) * PAGE)
+}
+
+// The cursor is always on a row that is drawn, however it got there.
+watch(cursor, (at) => showUpTo(at))
+
+// A new search starts from the first page again.
+watch(
+  () => [search.mode, search.request],
+  () => {
+    shown.value = PAGE
+  }
+)
+
+/** The next page once the list is scrolled near its end. */
+function onScroll() {
+  const el = list.value
+  if (!el || shown.value >= items.value.length) return
+  if (el.scrollTop + el.clientHeight >= el.scrollHeight - 300) shown.value += PAGE
+}
 
 const LETTERS = { added: 'A', modified: 'M', deleted: 'D', renamed: 'R' } as const
 
@@ -168,17 +206,29 @@ const colours = computed(() => {
   void snippetTick.value
   const out = new Map<string, ReturnType<typeof colourLines>>()
   if (search.mode !== 'text') return out
+  // Only the files with a row on screen: the rest are coloured when the list
+  // gets to them.
+  const drawn = new Set(rendered.value.map((item) => item.path))
   for (const file of search.found) {
-    out.set(file.path, colourLines(file.path, file.hits.map((hit) => hit.text)))
+    if (drawn.has(file.path)) out.set(file.path, colourLines(file.path, file.hits.map((hit) => hit.text)))
   }
   return out
 })
 
-/** A hit line in runs of one colour, its matches marked over the colours. */
-function hitRuns(item: Item) {
-  const tokens = colours.value.get(item.path)?.[item.hitAt ?? -1] ?? null
-  return runsOf(item.text ?? '', tokens, item.ranges)
-}
+/**
+ * Each drawn hit line in runs of one colour, its matches marked over the
+ * colours, by row. Worked out when the rows change, not on every redraw (the
+ * cursor moving is one).
+ */
+const runs = computed(() => {
+  const out = new Map<number, ReturnType<typeof runsOf>>()
+  rendered.value.forEach((item, at) => {
+    if (item.kind !== 'hit') return
+    const tokens = colours.value.get(item.path)?.[item.hitAt ?? -1] ?? null
+    out.set(at, runsOf(item.text ?? '', tokens, item.ranges))
+  })
+  return out
+})
 
 /** `text` with the characters at `indices` (counted from `offset`) picked out. */
 function picked(text: string, indices: number[] = [], offset = 0) {
@@ -199,7 +249,7 @@ const nameCut = (path: string) => path.lastIndexOf('/') + 1
 const firstOf = computed(() => {
   const out = new Map<number, string>()
   let previous = ''
-  items.value.forEach((item, at) => {
+  rendered.value.forEach((item, at) => {
     const key = search.mode === 'text' ? item.path : search.mode === 'files' ? (item.group ?? '') : ''
     if (key && key !== previous) out.set(at, key)
     previous = key
@@ -230,7 +280,9 @@ const summary = computed(() => {
   const where = search.text.changedOnly ? 'changed files' : 'files'
   let text = `${matches.toLocaleString()} ${matches === 1 ? 'match' : 'matches'} in ${files} ${files === 1 ? 'file' : where}`
   if (search.running) text += ' · searching…'
-  if (done?.more) text += ` · ${done.more.toLocaleString()} more not shown`
+  if (done?.capped) {
+    text += done.more ? ` · ${done.more.toLocaleString()}+ more not shown` : ' · stopped here, more not searched'
+  } else if (done?.more) text += ` · ${done.more.toLocaleString()} more not shown`
   if (done && search.text.changedOnly) text += ' · only changed files'
   return text
 })
@@ -241,6 +293,21 @@ const previewHits = computed(() => {
   const file = search.found.find((one) => one.path === current.value!.path)
   return (file?.hits ?? []).map((hit) => ({ line: hit.line, ranges: hit.ranges }))
 })
+
+/** What is in the folder under the cursor, one level down, for its preview. */
+const folderEntries = ref<DirEntry[] | null>(null)
+let folderAsk = 0
+
+watch(
+  () => (current.value?.dir ? current.value.path : null),
+  async (path) => {
+    const mine = ++folderAsk
+    folderEntries.value = null
+    if (path === null) return
+    const entries = await invoke<DirEntry[]>('list_dir', { path }).catch(() => [])
+    if (mine === folderAsk) folderEntries.value = entries ?? []
+  }
+)
 
 /** The folders of the file under the cursor, for the line over the preview. */
 const crumbs = computed(() => (current.value ? current.value.path.split('/') : []))
@@ -421,6 +488,12 @@ watch(
 
 function open(item: Item | null, stay: boolean) {
   if (!item) return
+  if (item.dir) {
+    // A folder: the sidebar comes to the Files tree with it in view.
+    revealInFiles(item.path)
+    if (!stay) closeSearch()
+    return
+  }
   // A file that was looked for: the sidebar comes to the Files tree with it.
   openTab(
     { path: item.path, mode: 'file', side: 'unstaged' },
@@ -689,8 +762,8 @@ const hint = computed(
       >
         <div class="left">
           <div v-if="summary" class="summary" :class="{ bad: search.done?.error }">{{ summary }}</div>
-          <div ref="list" class="list" role="listbox">
-            <template v-for="(item, at) in items" :key="`${item.kind}:${item.path}:${item.line}:${at}`">
+          <div ref="list" class="list" role="listbox" @scroll.passive="onScroll">
+            <template v-for="(item, at) in rendered" :key="`${item.kind}:${item.path}:${item.line}:${at}`">
               <!-- A file's heading: its hits fold under it with ← and open with →. -->
               <div
                 v-if="search.mode === 'text' && (item.kind === 'file' || firstOf.has(at))"
@@ -724,7 +797,7 @@ const hint = computed(
                 <template v-if="item.kind === 'hit'">
                   <span class="num">{{ item.line }}</span>
                   <span class="code">
-                    <template v-for="(run, index) in hitRuns(item)" :key="index">
+                    <template v-for="(run, index) in runs.get(at) ?? []" :key="index">
                       <mark v-if="run.hit"
                         ><span v-for="(part, p) in run.parts" :key="p" :style="part.style ?? undefined">{{
                           part.text
@@ -750,11 +823,11 @@ const hint = computed(
                   <span class="dir">{{ base(item.path) }}:{{ item.line }} · {{ folder(item.path) }}</span>
                 </template>
                 <template v-else>
-                  <span v-if="status(item.path)" class="letter" :class="status(item.path)!.kind">{{
+                  <span v-if="!item.dir && status(item.path)" class="letter" :class="status(item.path)!.kind">{{
                     status(item.path)!.letter
                   }}</span>
-                  <FileIcon :path="item.path" :size="13" />
-                  <span class="file" :class="status(item.path)?.kind">
+                  <FileIcon :path="item.path" :folder="item.dir" :size="13" />
+                  <span class="file" :class="item.dir ? null : status(item.path)?.kind" :data-dir="item.dir || null">
                     <template
                       v-for="(piece, index) in picked(base(item.path), item.indices, nameCut(item.path))"
                       :key="index"
@@ -762,6 +835,7 @@ const hint = computed(
                       <b v-if="piece.hit">{{ piece.text }}</b>
                       <template v-else>{{ piece.text }}</template>
                     </template>
+                    <template v-if="item.dir">/</template>
                   </span>
                   <span class="dir">
                     <template v-for="(piece, index) in picked(folder(item.path), item.indices)" :key="index">
@@ -788,7 +862,7 @@ const hint = computed(
         <div ref="preview" class="side">
           <!-- Where the file is and which line, small, over the preview. -->
           <div v-if="current" class="where" :title="current.path">
-            <FileIcon :path="current.path" :size="12" />
+            <FileIcon :path="current.path" :folder="current.dir" :size="12" />
             <!-- The folders give way first: the name is what says which file. -->
             <span class="crumbs">
               <span v-if="crumbs.length > 1" class="dirs">
@@ -806,9 +880,18 @@ const hint = computed(
               ><TriangleAlert :size="11" />{{ previewSave.text }}</span
             >
           </div>
+          <!-- A folder is not read as a file: what is in it, one level down. -->
+          <div v-if="current?.dir" class="folder-preview">
+            <div v-for="entry in folderEntries ?? []" :key="entry.path" class="entry" :class="{ faint: entry.ignored }">
+              <FileIcon :path="entry.path" :folder="entry.dir" :size="13" />
+              <span>{{ entry.name }}{{ entry.dir ? '/' : '' }}</span>
+            </div>
+            <p v-if="folderEntries && !folderEntries.length" class="none faint">Empty folder.</p>
+          </div>
           <CodePreview
+            v-show="!current?.dir"
             ref="previewer"
-            :path="current?.path ?? null"
+            :path="current?.dir ? null : (current?.path ?? null)"
             :line="current?.line ?? null"
             :hits="previewHits"
             :query="previewQuery"
@@ -1210,6 +1293,25 @@ const hint = computed(
 .none {
   padding: 10px;
   font-size: 12px;
+}
+
+/* A folder's preview: its files and folders, one level down. */
+.folder-preview {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+  padding: 6px 0;
+}
+
+.folder-preview .entry {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 2px 10px;
+  font-size: 12.5px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 .keys {

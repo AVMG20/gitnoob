@@ -10,8 +10,8 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 
 use gitnoob_lib::state::AppState;
 use gitnoob_lib::{
-    complete, conflict, create, deps, diff, edit, editorconfig, files, graph, image, journal,
-    rebase, refs, remote, search, symbols, work, worktree,
+    blame, complete, conflict, create, deps, diff, edit, editorconfig, files, graph, image,
+    journal, rebase, refs, remote, search, symbols, work, worktree,
 };
 
 static COUNTER: AtomicUsize = AtomicUsize::new(0);
@@ -2897,6 +2897,33 @@ fn undo_restore_recovers_from_a_conflicted_auto_stash_pop() {
     assert!(std::fs::read_to_string(sandbox.root.join("f.txt"))
         .unwrap()
         .contains("EIGHT-mine"));
+    assert!(gitnoob_lib::work::stash_list(&state).unwrap().is_empty());
+}
+
+/// An untracked file the auto-stash held comes back out of a pop that then
+/// stops on a conflict. Left there, the pop after switching home refused with
+/// "already exists" and the undo stopped half done.
+#[test]
+fn undo_restore_clears_the_untracked_files_a_conflicted_pop_left() {
+    let sandbox = carry_sandbox("undorestoreuntracked");
+    sandbox.write("f.txt", &LINES.replace("eight", "EIGHT-mine"));
+    sandbox.write("new.txt", "mine, never committed\n");
+    let state = sandbox.state();
+
+    let held = gitnoob_lib::work::stash_before(&state, "testing").unwrap();
+    sandbox.git(&["checkout", "-q", "other"]);
+    gitnoob_lib::work::restore_after(&state, held).unwrap_err();
+
+    gitnoob_lib::work::undo_restore(&state).unwrap();
+
+    assert_eq!(refs::describe(&state).unwrap().head, "main");
+    assert!(std::fs::read_to_string(sandbox.root.join("f.txt"))
+        .unwrap()
+        .contains("EIGHT-mine"));
+    assert_eq!(
+        std::fs::read_to_string(sandbox.root.join("new.txt")).unwrap(),
+        "mine, never committed\n"
+    );
     assert!(gitnoob_lib::work::stash_list(&state).unwrap().is_empty());
 }
 
@@ -8084,6 +8111,19 @@ fn a_search_stops_sending_at_the_cap_and_counts_the_rest() {
     assert_eq!(found[0].hits.len(), search::MAX_HITS);
     assert_eq!(done.matches, search::MAX_HITS);
     assert_eq!(done.more, 50);
+    assert!(!done.capped);
+}
+
+#[test]
+fn a_search_past_the_cap_leaves_the_other_files_unread() {
+    let sandbox = Sandbox::new("search-cap-stop");
+    sandbox.write("a.txt", &"hit\n".repeat(search::MAX_HITS + 5));
+    sandbox.write("b.txt", "hit\n");
+    let (found, done) = search_all(&sandbox, "hit", Default::default(), None);
+    assert_eq!(found.len(), 1);
+    assert_eq!(done.more, 5);
+    assert!(done.capped);
+    assert_eq!(done.searched, 1);
 }
 
 #[test]
@@ -9905,6 +9945,120 @@ fn the_finder_lists_dependencies_only_when_asked_and_after_the_project() {
     );
 }
 
+/// A Magento-ish tree: a module folder named RMA, files named after it, and
+/// a Model/ folder in every module.
+fn folder_finder_sandbox(tag: &str) -> Sandbox {
+    let sandbox = Sandbox::new(tag);
+    let put = |path: &str| {
+        let full = sandbox.root.join(path);
+        std::fs::create_dir_all(full.parent().unwrap()).unwrap();
+        std::fs::write(full, "<?php\n").unwrap();
+    };
+    for file in [
+        "app/code/Acme/RMA/registration.php",
+        "app/code/Acme/RMA/Model/Request.php",
+        "app/code/Acme/RMA/Model/ResourceModel/Request.php",
+        "app/code/Acme/RMA/Controller/Index/Index.php",
+        "app/code/Acme/Returns/RmaManager.php",
+        "lib/RmaManager.php",
+        "vendor/acme/kit/RMA/Helper.php",
+    ] {
+        put(file);
+    }
+    for at in 0..30 {
+        put(&format!("app/code/Acme/Module{at}/Model/Thing{at}.php"));
+        put(&format!("app/code/Acme/Module{at}/Model/Other{at}.php"));
+    }
+    sandbox.write(".gitignore", "vendor/\n");
+    sandbox.git(&["add", "--all"]);
+    sandbox.git(&["commit", "-q", "-m", "files"]);
+    sandbox
+}
+
+fn find_with_folders(
+    sandbox: &Sandbox,
+    query: &str,
+    request: u64,
+    deps: bool,
+) -> Vec<files::Found> {
+    files::find_paths(&sandbox.root, query, 60, request, &[], deps, true).unwrap()
+}
+
+#[test]
+fn the_finder_puts_a_folder_named_what_was_typed_first() {
+    let sandbox = folder_finder_sandbox("finder-folder-named");
+    for (request, query) in [(1, "RMA"), (2, "rma")] {
+        let found = find_with_folders(&sandbox, query, request, false);
+        assert_eq!(found[0].path, "app/code/Acme/RMA", "{query}: {found:#?}");
+        assert!(found[0].dir);
+        // The highlight is the folder's own name.
+        let name_at = "app/code/Acme/".len() as u32;
+        assert_eq!(found[0].indices, vec![name_at, name_at + 1, name_at + 2]);
+        // Folders inside RMA/ match only through their parent: not listed.
+        assert!(
+            found
+                .iter()
+                .all(|one| !one.dir || one.path == "app/code/Acme/RMA"),
+            "{query}: {found:#?}"
+        );
+        // Files are still there, after it.
+        assert!(found.iter().skip(1).any(|one| !one.dir), "{found:#?}");
+    }
+    let found = find_with_folders(&sandbox, "rma", 3, false);
+    assert!(found.iter().any(|one| one.path == "lib/RmaManager.php"));
+    // The Files tree's filter asks for files only.
+    let files_only = files::find_files_at(&sandbox.root, "rma", 60, 4, &[]).unwrap();
+    assert!(files_only.iter().all(|one| !one.dir));
+    assert!(files_only.iter().all(|one| one.path != "app/code/Acme/RMA"));
+}
+
+#[test]
+fn the_finder_finds_a_folder_typed_with_a_slash() {
+    let sandbox = folder_finder_sandbox("finder-folder-slash");
+    let found = find_with_folders(&sandbox, "acme/rma", 1, false);
+    assert_eq!(found[0].path, "app/code/Acme/RMA", "{found:#?}");
+    assert!(found[0].dir);
+    assert!(
+        found
+            .iter()
+            .all(|one| !one.dir || one.path == "app/code/Acme/RMA"),
+        "{found:#?}"
+    );
+}
+
+#[test]
+fn folders_never_crowd_the_files_out_of_the_finder() {
+    let sandbox = folder_finder_sandbox("finder-folder-cap");
+    let found = find_with_folders(&sandbox, "model", 1, false);
+    let dirs: Vec<&str> = found
+        .iter()
+        .filter(|one| one.dir)
+        .map(|one| one.path.as_str())
+        .collect();
+    assert!(!dirs.is_empty() && dirs.len() <= 10, "{dirs:#?}");
+    assert!(found.len() == 60, "{}", found.len());
+    assert!(found.iter().filter(|one| !one.dir).count() >= 50);
+    // Every one of them is a Model/ folder, named exactly what was typed and
+    // so first, the shortest path first.
+    assert!(found[..dirs.len()].iter().all(|one| one.dir));
+    assert!(dirs.iter().all(|dir| dir.ends_with("/Model")), "{dirs:#?}");
+    assert_eq!(dirs[0], "app/code/Acme/RMA/Model");
+}
+
+#[test]
+fn the_finder_lists_dependency_folders_only_when_asked() {
+    let sandbox = folder_finder_sandbox("finder-folder-deps");
+    let without = find_with_folders(&sandbox, "RMA", 1, false);
+    assert!(without.iter().all(|one| !one.path.starts_with("vendor/")));
+    let with = find_with_folders(&sandbox, "RMA", 2, true);
+    let vendor = with
+        .iter()
+        .find(|one| one.path == "vendor/acme/kit/RMA")
+        .expect("the vendor folder");
+    assert!(vendor.dir);
+    assert_eq!(with[0].path, "app/code/Acme/RMA");
+}
+
 #[cfg(unix)]
 #[test]
 fn a_dependency_linked_out_of_the_work_tree_is_not_followed() {
@@ -11304,6 +11458,215 @@ fn magento_layout_handles_and_block_names_list_their_files() {
     assert_eq!(links.targets[0].line, 3);
 }
 
+/// A module with email templates in both areas, a layout, a UI component
+/// and a theme that overrides one email, on top of `magento_tree`.
+fn magento_rma_tree(tag: &str) -> Sandbox {
+    let sandbox = magento_tree(tag);
+    let s = &sandbox;
+    let rma = "app/code/BigBridge/Rma";
+    put(
+        s,
+        &format!("{rma}/registration.php"),
+        &registration("MODULE", "BigBridge_Rma"),
+    );
+    put(
+        s,
+        &format!("{rma}/etc/module.xml"),
+        "<config>\n    <module name=\"BigBridge_Rma\">\n        <sequence>\n            <module name=\"BigBridge_Foo\"/>\n        </sequence>\n    </module>\n</config>\n",
+    );
+    put(
+        s,
+        &format!("{rma}/etc/email_templates.xml"),
+        r#"<?xml version="1.0"?>
+<config>
+    <template id="rma_request_created" area="frontend" label="RMA Request success"
+              file="rma/rma_request_created.html" type="html" module="BigBridge_Rma"/>
+    <template id="rma_admin_notice" area="adminhtml" label="RMA notice"
+              file="rma/rma_admin_notice.html" type="html" module="BigBridge_Rma"/>
+    <template id="rma_shared" area="frontend" label="Shared"
+              file="rma/rma_shared.html" type="html" module="BigBridge_Rma"/>
+    <template id="rma_only_admin" area="frontend" label="Only in admin"
+              file="rma/rma_only_admin.html" type="html" module="BigBridge_Rma"/>
+</config>
+"#,
+    );
+    for file in [
+        "view/frontend/email/rma/rma_request_created.html",
+        "view/adminhtml/email/rma/rma_admin_notice.html",
+        "view/frontend/email/rma/rma_admin_notice.html",
+        "view/base/email/rma/rma_shared.html",
+        "view/adminhtml/email/rma/rma_only_admin.html",
+        "view/frontend/templates/form.phtml",
+        "view/frontend/templates/list.phtml",
+        "view/frontend/web/css/module.css",
+        "view/frontend/web/js/rma.js",
+        "view/adminhtml/web/js/grid/status.js",
+        "view/adminhtml/web/js/grid/columns.js",
+    ] {
+        let body = if file.ends_with("form.phtml") {
+            "<script type=\"text/x-magento-init\">{\"*\": {\"component\": \"BigBridge_Rma/js/rma\"}}</script>\n"
+        } else {
+            "x\n"
+        };
+        put(s, &format!("{rma}/{file}"), body);
+    }
+    put(
+        s,
+        "app/design/frontend/BigBridge/default/BigBridge_Rma/email/rma/rma_request_created.html",
+        "<p>ours</p>\n",
+    );
+    put(
+        s,
+        "app/design/frontend/BigBridge/default/web/css/rma.less",
+        "@a: 1;\n",
+    );
+    put(
+        s,
+        &format!("{rma}/view/frontend/layout/rma_index_index.xml"),
+        r#"<?xml version="1.0"?>
+<page>
+    <head>
+        <css src="css/rma.css"/>
+        <css src="BigBridge_Rma::css/module.css"/>
+        <script src="BigBridge_Rma::js/rma.js"/>
+    </head>
+    <body>
+        <block class="BigBridge\Rma\Block\Form" name="rma.a" template="BigBridge_Rma::form.phtml"/>
+        <block class="BigBridge\Rma\Block\Form" name="rma.b" template="list.phtml"/>
+        <block class="BigBridge\Rma\Block\Form" name="rma.c">
+            <arguments>
+                <argument name="template" xsi:type="string">BigBridge_Rma::form.phtml</argument>
+                <argument name="other" xsi:type="string">BigBridge_Rma::list.phtml</argument>
+            </arguments>
+        </block>
+    </body>
+</page>
+"#,
+    );
+    put(
+        s,
+        &format!("{rma}/view/adminhtml/ui_component/rma_listing.xml"),
+        r#"<?xml version="1.0"?>
+<listing>
+    <columns name="rma_columns">
+        <column name="status" component="BigBridge_Rma/js/grid/status"/>
+        <argument name="data" xsi:type="array">
+            <item name="config" xsi:type="array">
+                <item name="component" xsi:type="string">BigBridge_Rma/js/grid/columns</item>
+            </item>
+        </argument>
+    </columns>
+</listing>
+"#,
+    );
+    frameworks::forget(&s.root);
+    sandbox
+}
+
+#[test]
+fn magento_email_templates_open_their_file_for_the_area() {
+    let sandbox = magento_rma_tree("mage-email");
+    let state = sandbox.state();
+    let rma = "app/code/BigBridge/Rma";
+    let emails = format!("{rma}/etc/email_templates.xml");
+    let text = std::fs::read_to_string(sandbox.root.join(&emails)).unwrap();
+
+    // Frontend: the module's own, then the theme's override. The underline
+    // is the whole value, in UTF-16 units.
+    let links = magento_click(&sandbox, &state, &emails, "rma/rma_request_created", 6).unwrap();
+    assert_eq!(
+        paths_of(&links),
+        vec![
+            format!("{rma}/view/frontend/email/rma/rma_request_created.html").as_str(),
+            "app/design/frontend/BigBridge/default/BigBridge_Rma/email/rma/rma_request_created.html",
+        ]
+    );
+    let start = text.find("rma/rma_request_created.html").unwrap();
+    assert_eq!(links.from as usize, start);
+    assert_eq!(
+        links.to as usize,
+        start + "rma/rma_request_created.html".len()
+    );
+
+    // Admin: the adminhtml file first, though a frontend one has the name.
+    let links = magento_click(&sandbox, &state, &emails, "rma/rma_admin_notice", 3).unwrap();
+    assert_eq!(
+        paths_of(&links)[0],
+        format!("{rma}/view/adminhtml/email/rma/rma_admin_notice.html")
+    );
+    // base, then the other area.
+    let links = magento_click(&sandbox, &state, &emails, "rma/rma_shared", 3).unwrap();
+    assert_eq!(
+        paths_of(&links),
+        vec![format!("{rma}/view/base/email/rma/rma_shared.html").as_str()]
+    );
+    let links = magento_click(&sandbox, &state, &emails, "rma/rma_only_admin", 3).unwrap();
+    assert_eq!(
+        paths_of(&links),
+        vec![format!("{rma}/view/adminhtml/email/rma/rma_only_admin.html").as_str()]
+    );
+
+    // module= opens the module's declaration.
+    let links = magento_click(&sandbox, &state, &emails, "module=\"BigBridge_Rma", 10).unwrap();
+    assert_eq!(
+        paths_of(&links),
+        vec![
+            format!("{rma}/etc/module.xml").as_str(),
+            &format!("{rma}/registration.php"),
+        ]
+    );
+}
+
+#[test]
+fn magento_layout_and_ui_component_references_open_their_files() {
+    let sandbox = magento_rma_tree("mage-view-refs");
+    let state = sandbox.state();
+    let rma = "app/code/BigBridge/Rma";
+    let layout = format!("{rma}/view/frontend/layout/rma_index_index.xml");
+    let first = |needle: &str, into: usize| {
+        let links = magento_click(&sandbox, &state, &layout, needle, into).unwrap();
+        links.targets.first().map(|one| one.path.clone())
+    };
+    let form = format!("{rma}/view/frontend/templates/form.phtml");
+    let list = format!("{rma}/view/frontend/templates/list.phtml");
+    assert_eq!(first("BigBridge_Rma::form.phtml\"", 16), Some(form.clone()));
+    // No prefix: the layout file's own module.
+    assert_eq!(first("\"list.phtml\"", 2), Some(list.clone()));
+    assert_eq!(first(">BigBridge_Rma::form.phtml", 17), Some(form.clone()));
+    assert_eq!(first(">BigBridge_Rma::list.phtml", 17), Some(list));
+    assert_eq!(
+        first("BigBridge_Rma::css/module.css", 18),
+        Some(format!("{rma}/view/frontend/web/css/module.css"))
+    );
+    assert_eq!(
+        first("BigBridge_Rma::js/rma.js", 16),
+        Some(format!("{rma}/view/frontend/web/js/rma.js"))
+    );
+    // A bare src is the theme's (or lib/web's); the .less it is built from.
+    assert_eq!(
+        first("css/rma.css", 5),
+        Some("app/design/frontend/BigBridge/default/web/css/rma.less".to_string())
+    );
+
+    let listing = format!("{rma}/view/adminhtml/ui_component/rma_listing.xml");
+    let links = magento_click(&sandbox, &state, &listing, "js/grid/status", 3).unwrap();
+    assert_eq!(
+        paths_of(&links),
+        vec![format!("{rma}/view/adminhtml/web/js/grid/status.js").as_str()]
+    );
+    let links = magento_click(&sandbox, &state, &listing, "js/grid/columns", 3).unwrap();
+    assert_eq!(
+        paths_of(&links),
+        vec![format!("{rma}/view/adminhtml/web/js/grid/columns.js").as_str()]
+    );
+    // "component" in a template's x-magento-init.
+    let links = magento_click(&sandbox, &state, &form, "js/rma", 2).unwrap();
+    assert_eq!(
+        paths_of(&links),
+        vec![format!("{rma}/view/frontend/web/js/rma.js").as_str()]
+    );
+}
+
 #[test]
 fn magento_events_lead_from_dispatch_to_observers_and_back() {
     let sandbox = magento_tree("mage-events");
@@ -11390,6 +11753,22 @@ fn magento_links_stay_inside_the_work_tree() {
     // A path from the window that leaves the work tree is refused.
     assert!(frameworks::links_at(&state, "../outside.xml", 0, None).is_err());
     assert!(frameworks::links_at(&state, "/etc/hosts", 0, None).is_err());
+    // A template name that climbs: what it names inside the tree comes back
+    // without the `..`, and one that climbs out of it is nothing.
+    let block = "app/code/BigBridge/Foo/Block/Climb.php";
+    put(
+        &sandbox,
+        block,
+        "<?php
+$a = 'BigBridge_Foo::../../frontend/templates/info.phtml';
+$b = 'BigBridge_Foo::../../../../../../../../../outside.phtml';
+",
+    );
+    let links = magento_click(&sandbox, &state, block, "../../frontend", 2).unwrap();
+    assert!(paths_of(&links).contains(&"app/code/BigBridge/Foo/view/frontend/templates/info.phtml"));
+    assert!(paths_of(&links).iter().all(|path| !path.contains("..")));
+    let links = magento_click(&sandbox, &state, block, "outside", 2).unwrap();
+    assert!(links.targets.is_empty());
     // A theme folder linked out of the work tree offers nothing from there.
     #[cfg(unix)]
     {
@@ -12134,4 +12513,800 @@ fn a_phtml_template_is_read_as_php() {
     // Nothing in the template itself is grayed out.
     let marks = symbols::unused_in(&state, &template, None, None).unwrap();
     assert!(marks.is_empty(), "{marks:?}");
+}
+
+#[test]
+fn magento_requirejs_paths_and_a_theme_cycle_resolve() {
+    let sandbox = magento_tree("mage-requirejs");
+    let s = &sandbox;
+    let ours = "app/code/BigBridge/Foo";
+    put(
+        s,
+        &format!("{ours}/view/frontend/web/js/slick.min.js"),
+        "/* slick */\n",
+    );
+    let config = format!("{ours}/view/frontend/requirejs-config.js");
+    put(
+        s,
+        &config,
+        "var config = {\n    map: { '*': { bbFoo: 'BigBridge_Foo/js/foo' } },\n    paths: { slick: 'BigBridge_Foo/js/slick.min' },\n    config: { mixins: { 'Magento_Catalog/js/gallery': { 'BigBridge_Foo/js/foo': true } } }\n};\n",
+    );
+    // Two themes that each name the other as their parent.
+    for (name, parent) in [("one", "two"), ("two", "one")] {
+        let dir = format!("app/design/frontend/Cyc/{name}");
+        put(
+            s,
+            &format!("{dir}/registration.php"),
+            &registration("THEME", &format!("frontend/Cyc/{name}")),
+        );
+        put(
+            s,
+            &format!("{dir}/theme.xml"),
+            &format!("<theme><parent>Cyc/{parent}</parent></theme>\n"),
+        );
+        put(
+            s,
+            &format!("{dir}/BigBridge_Foo/templates/info.phtml"),
+            "<p/>\n",
+        );
+    }
+    frameworks::forget(&s.root);
+    let state = s.state();
+    // A `paths` entry has a dot in its name and no `.js`.
+    let links = magento_click(s, &state, &config, "BigBridge_Foo/js/slick", 2).unwrap();
+    assert_eq!(
+        paths_of(&links),
+        vec!["app/code/BigBridge/Foo/view/frontend/web/js/slick.min.js"]
+    );
+    // A `map` value and a mixin.
+    let foo = "app/code/BigBridge/Foo/view/frontend/web/js/foo.js";
+    let links = magento_click(s, &state, &config, "BigBridge_Foo/js/foo'", 2).unwrap();
+    assert_eq!(paths_of(&links), vec![foo]);
+    let links = magento_click(s, &state, &config, "BigBridge_Foo/js/foo':", 2).unwrap();
+    assert_eq!(paths_of(&links), vec![foo]);
+    // The alias itself is the language's business.
+    assert!(magento_click(s, &state, &config, "bbFoo", 2).is_none());
+    // The cycle neither hangs nor hides a theme: the module's own file
+    // first, then every theme's override.
+    let layout = "app/code/BigBridge/Foo/view/frontend/layout/catalog_product_view.xml";
+    let links = magento_click(s, &state, layout, "BigBridge_Foo::info", 3).unwrap();
+    let paths = paths_of(&links);
+    assert_eq!(
+        paths[0],
+        "app/code/BigBridge/Foo/view/frontend/templates/info.phtml"
+    );
+    for theme in ["Cyc/one", "Cyc/two", "BigBridge/default"] {
+        let path = format!("app/design/frontend/{theme}/BigBridge_Foo/templates/info.phtml");
+        assert!(paths.contains(&path.as_str()), "{path} in {paths:?}");
+    }
+}
+
+#[test]
+fn the_magento_registry_is_read_again_after_config_changes_only() {
+    let sandbox = magento_tree("mage-stale");
+    let s = &sandbox;
+    let state = s.state();
+    assert!(frameworks::info(&state).is_some());
+    let root = s.root.canonicalize().unwrap();
+    let first = frameworks::magento::registry::registry(&root);
+    assert!(!first.virtual_types(&root).contains_key("bbLater"));
+    let touch = |path: &str| {
+        let changed: std::collections::HashSet<PathBuf> = [root.join(path)].into_iter().collect();
+        frameworks::touched(&root, &changed);
+    };
+    // An IDE's settings and what Magento writes itself change nothing.
+    put(s, ".idea/workspace.xml", "<project/>\n");
+    touch(".idea/workspace.xml");
+    put(s, "var/cache/mage--x/config.xml", "<config/>\n");
+    touch("var/cache/mage--x/config.xml");
+    let same = frameworks::magento::registry::registry(&root);
+    assert!(std::sync::Arc::ptr_eq(&first, &same));
+    // A module's di.xml does.
+    let di = "app/code/BigBridge/Foo/etc/di.xml";
+    let text = std::fs::read_to_string(s.root.join(di)).unwrap();
+    put(
+        s,
+        di,
+        &text.replace(
+            "</config>",
+            "    <virtualType name=\"bbLater\" type=\"BigBridge\\Foo\\Helper\\Data\"/>\n</config>",
+        ),
+    );
+    touch(di);
+    let again = frameworks::magento::registry::registry(&root);
+    assert!(!std::sync::Arc::ptr_eq(&first, &again));
+    assert!(again.virtual_types(&root).contains_key("bbLater"));
+}
+
+/// A repository with `libs/shared` added as a submodule from a second
+/// local repository, committed.
+fn with_submodule(tag: &str) -> (Sandbox, Sandbox) {
+    let inner = Sandbox::new(&format!("{tag}-inner"));
+    inner.commit("lib.txt", "lib\n", "Lib");
+    let outer = Sandbox::new(tag);
+    outer.commit("a.txt", "a\n", "First");
+    std::fs::create_dir_all(outer.root.join("libs")).unwrap();
+    let url = inner.root.to_string_lossy().replace('\\', "/");
+    outer.git(&[
+        "-c",
+        "protocol.file.allow=always",
+        "submodule",
+        "add",
+        "-q",
+        "--",
+        &url,
+        "libs/shared",
+    ]);
+    outer.git(&["commit", "-q", "-m", "Add submodule"]);
+    (outer, inner)
+}
+
+#[test]
+fn removing_a_submodule_refuses_when_it_holds_uncommitted_work() {
+    let (outer, _inner) = with_submodule("submodule-remove-dirty");
+    let state = outer.state();
+    outer.write("libs/shared/notes.txt", "mine\n");
+    outer.write("libs/shared/lib.txt", "edited\n");
+
+    let said = gitnoob_lib::submodule::remove(&state, "libs/shared");
+    assert!(said.is_err(), "removal went ahead: {said:?}");
+    assert_eq!(
+        std::fs::read_to_string(outer.root.join("libs/shared/notes.txt")).unwrap(),
+        "mine\n"
+    );
+    assert_eq!(
+        std::fs::read_to_string(outer.root.join("libs/shared/lib.txt")).unwrap(),
+        "edited\n"
+    );
+}
+
+#[test]
+fn removing_a_clean_submodule_takes_it_out_of_index_and_gitmodules() {
+    let (outer, _inner) = with_submodule("submodule-remove-clean");
+    let state = outer.state();
+
+    gitnoob_lib::submodule::remove(&state, "libs/shared").unwrap();
+    assert!(!outer.root.join("libs/shared/lib.txt").exists());
+    let index = outer.git(&["ls-files", "--stage"]);
+    assert!(!index.contains("libs/shared"), "{index}");
+    let modules = std::fs::read_to_string(outer.root.join(".gitmodules")).unwrap_or_default();
+    assert!(!modules.contains("libs/shared"), "{modules}");
+}
+
+#[test]
+fn unused_marks_reuse_the_text_search_until_another_file_changes() {
+    let sandbox = Sandbox::new("symbols-unused-seen");
+    std::fs::create_dir_all(sandbox.root.join("src")).unwrap();
+    std::fs::create_dir_all(sandbox.root.join("notes")).unwrap();
+    sandbox.write(
+        "src/util.ts",
+        "export function lonelyHelper() {\n  return 1\n}\n",
+    );
+    sandbox.write("src/main.ts", "console.log('hi')\n");
+    sandbox.git(&["add", "--all"]);
+    sandbox.git(&["commit", "-q", "-m", "First"]);
+    let state = sandbox.state();
+    let names = |marks: Vec<symbols::Mark>| -> Vec<String> {
+        marks.into_iter().map(|mark| mark.name).collect()
+    };
+
+    let marks = symbols::unused_in(&state, "src/util.ts", None, None).unwrap();
+    assert_eq!(names(marks), vec!["lonelyHelper".to_string()]);
+
+    // Another file now spells the name. Until the watcher says so, the
+    // answer from the last search stands; that is what saves a whole-tree
+    // read on every save of util.ts.
+    sandbox.write("notes/plan.md", "call lonelyHelper from the cron\n");
+    let marks = symbols::unused_in(&state, "src/util.ts", None, None).unwrap();
+    assert_eq!(names(marks), vec!["lonelyHelper".to_string()]);
+
+    // A change to the file itself does not count; a change to another does.
+    let own: std::collections::HashSet<_> = [sandbox.root.join("src/util.ts")].into();
+    symbols::touched(&sandbox.root, &own);
+    let marks = symbols::unused_in(&state, "src/util.ts", None, None).unwrap();
+    assert_eq!(names(marks), vec!["lonelyHelper".to_string()]);
+
+    files::forget(&sandbox.root);
+    let other: std::collections::HashSet<_> = [sandbox.root.join("notes/plan.md")].into();
+    symbols::touched(&sandbox.root, &other);
+    let marks = symbols::unused_in(&state, "src/util.ts", None, None).unwrap();
+    assert!(names(marks).is_empty());
+}
+
+#[test]
+fn unused_locals_skip_a_function_too_big_to_scan_for_each_of_them() {
+    let sandbox = Sandbox::new("symbols-unused-big-body");
+    std::fs::create_dir_all(sandbox.root.join("src")).unwrap();
+    let filler = "  total = total + 1\n".repeat(4000);
+    sandbox.write(
+        "src/small.ts",
+        "export function small() {\n  const neverRead = 1\n  return 2\n}\n",
+    );
+    sandbox.write(
+        "src/big.ts",
+        &format!(
+            "export function big() {{\n  let total = 0\n  const neverRead = 1\n{filler}  return total\n}}\n"
+        ),
+    );
+    sandbox.git(&["add", "--all"]);
+    sandbox.git(&["commit", "-q", "-m", "First"]);
+    let state = sandbox.state();
+    let small = symbols::unused_in(&state, "src/small.ts", None, None).unwrap();
+    assert!(small.iter().any(|mark| mark.name == "neverRead"));
+    let big = symbols::unused_in(&state, "src/big.ts", None, None).unwrap();
+    assert!(big.iter().all(|mark| mark.name != "neverRead"));
+}
+
+#[test]
+fn open_in_default_app_refuses_what_the_desktop_would_run() {
+    let sandbox = Sandbox::new("open-default-runnable");
+    sandbox.write("notes.md", "hello\n");
+    sandbox.write("setup.command", "echo hi\n");
+    sandbox.write("tools.BAT", "echo hi\n");
+    assert!(files::openable(&sandbox.root, "notes.md").is_ok());
+    assert!(files::openable(&sandbox.root, "setup.command").is_err());
+    assert!(files::openable(&sandbox.root, "tools.BAT").is_err());
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        sandbox.write("run-me", "#!/bin/sh\necho hi\n");
+        let file = sandbox.root.join("run-me");
+        let mut mode = std::fs::metadata(&file).unwrap().permissions();
+        mode.set_mode(0o755);
+        std::fs::set_permissions(&file, mode).unwrap();
+        assert!(files::openable(&sandbox.root, "run-me").is_err());
+    }
+}
+
+#[test]
+fn status_counts_stop_reading_untracked_files_past_a_few_hundred() {
+    let sandbox = Sandbox::new("status-many-untracked");
+    sandbox.commit("a.txt", "one\n", "First");
+    sandbox.write("a.txt", "one\ntwo\n");
+    sandbox.write("new.txt", "x\ny\n");
+    let state = sandbox.state();
+
+    let few = refs::status_counted(&state).unwrap();
+    let new = few.unstaged.iter().find(|e| e.path == "new.txt").unwrap();
+    assert_eq!(new.additions, 2);
+
+    std::fs::create_dir_all(sandbox.root.join("junk")).unwrap();
+    for at in 0..refs::MAX_COUNTED_UNTRACKED {
+        sandbox.write(&format!("junk/{at}.txt"), "line\n");
+    }
+    let many = refs::status_counted(&state).unwrap();
+    let new = many.unstaged.iter().find(|e| e.path == "new.txt").unwrap();
+    assert_eq!(new.additions, 0);
+    assert!(many.unstaged.iter().any(|e| e.path == "junk/0.txt"));
+    // Tracked files are still counted.
+    let a = many.unstaged.iter().find(|e| e.path == "a.txt").unwrap();
+    assert_eq!(a.additions, 1);
+}
+
+#[test]
+fn stages_picked_lines_of_an_untracked_file() {
+    use gitnoob_lib::work::{apply_hunk, HunkAction, Lines};
+    let sandbox = Sandbox::new("hunk-untracked");
+    sandbox.commit("a.txt", "a\n", "First");
+    sandbox.write("notes.md", "one\ntwo\nthree\n");
+    let state = sandbox.state();
+
+    let picked = Lines {
+        added: vec![1, 3],
+        removed: vec![],
+    };
+    apply_hunk(&state, "notes.md", 0, HunkAction::Stage, Some(picked)).unwrap();
+    assert_eq!(sandbox.git(&["show", ":notes.md"]), "one\nthree\n");
+    assert_eq!(
+        std::fs::read_to_string(sandbox.root.join("notes.md")).unwrap(),
+        "one\ntwo\nthree\n"
+    );
+}
+
+#[test]
+fn stages_a_whole_untracked_file_from_its_one_hunk() {
+    use gitnoob_lib::work::{apply_hunk, HunkAction};
+    let sandbox = Sandbox::new("hunk-untracked-whole");
+    sandbox.commit("a.txt", "a\n", "First");
+    sandbox.write("new.txt", "x\ny\n");
+    let state = sandbox.state();
+    apply_hunk(&state, "new.txt", 0, HunkAction::Stage, None).unwrap();
+    assert_eq!(sandbox.git(&["show", ":new.txt"]), "x\ny\n");
+}
+
+#[test]
+fn a_failed_hunk_on_an_untracked_file_leaves_it_untracked() {
+    use gitnoob_lib::work::{apply_hunk, HunkAction};
+    let sandbox = Sandbox::new("hunk-untracked-fail");
+    sandbox.commit("a.txt", "a\n", "First");
+    sandbox.write("new.txt", "x\n");
+    let state = sandbox.state();
+    // There is no fifth hunk.
+    assert!(apply_hunk(&state, "new.txt", 4, HunkAction::Stage, None).is_err());
+    let status = sandbox.git(&["status", "--porcelain", "--", "new.txt"]);
+    assert_eq!(status.trim(), "?? new.txt");
+}
+
+#[test]
+fn a_failed_rebase_abort_keeps_the_rebase_bookkeeping() {
+    let sandbox = Sandbox::new("rebase-abort-fails");
+    sandbox.commit("f.txt", "base\n", "Base");
+    sandbox.git(&["checkout", "-q", "-b", "other"]);
+    sandbox.commit("f.txt", "theirs\n", "Theirs");
+    sandbox.git(&["checkout", "-q", "main"]);
+    sandbox.commit("f.txt", "mine\n", "Mine");
+    assert!(!sandbox.git_may_fail(&["rebase", "other"]));
+    let git_dir = sandbox.root.join(".git");
+    std::fs::write(git_dir.join("gitnoob-rebase-rewords"), "abc\n").unwrap();
+    std::fs::write(git_dir.join("index.lock"), "").unwrap();
+    let state = sandbox.state();
+
+    assert!(rebase::abort(&state).is_err());
+    assert!(git_dir.join("gitnoob-rebase-rewords").exists());
+
+    std::fs::remove_file(git_dir.join("index.lock")).unwrap();
+    rebase::abort(&state).unwrap();
+    assert!(!git_dir.join("gitnoob-rebase-rewords").exists());
+}
+
+/// A merge that stops on `f.txt`, with the conflicted copy then edited by hand.
+fn hand_edited_conflict(tag: &str) -> Sandbox {
+    let sandbox = Sandbox::new(tag);
+    sandbox.commit("f.txt", "base\n", "Base");
+    sandbox.git(&["checkout", "-q", "-b", "other"]);
+    sandbox.commit("f.txt", "theirs\n", "Theirs");
+    sandbox.git(&["checkout", "-q", "main"]);
+    sandbox.commit("f.txt", "mine\n", "Mine");
+    assert!(!sandbox.git_may_fail(&["merge", "other"]));
+    sandbox.write("f.txt", "worked out by hand\n");
+    sandbox
+}
+
+#[test]
+fn throwing_a_conflict_away_can_be_undone_with_the_hand_edits() {
+    let sandbox = hand_edited_conflict("conflict-discard-saved");
+    let state = sandbox.state();
+    conflict::discard(&state, &["f.txt".to_string()]).unwrap();
+    assert_eq!(
+        std::fs::read_to_string(sandbox.root.join("f.txt")).unwrap(),
+        "mine\n"
+    );
+    // Undo waits for the merge to be finished.
+    sandbox.git(&["commit", "-q", "--no-edit"]);
+    journal::undo(&state).unwrap();
+    assert_eq!(
+        std::fs::read_to_string(sandbox.root.join("f.txt")).unwrap(),
+        "worked out by hand\n"
+    );
+}
+
+#[test]
+fn taking_a_whole_side_can_be_undone_with_the_hand_edits() {
+    let sandbox = hand_edited_conflict("conflict-whole-saved");
+    let state = sandbox.state();
+    conflict::resolve_whole(&state, "f.txt", "theirs").unwrap();
+    assert_eq!(
+        std::fs::read_to_string(sandbox.root.join("f.txt")).unwrap(),
+        "theirs\n"
+    );
+    sandbox.git(&["commit", "-q", "--no-edit"]);
+    journal::undo(&state).unwrap();
+    assert_eq!(
+        std::fs::read_to_string(sandbox.root.join("f.txt")).unwrap(),
+        "worked out by hand\n"
+    );
+}
+
+#[test]
+fn taking_one_side_everywhere_is_one_undo_step() {
+    let sandbox = hand_edited_conflict("conflict-all-one-step");
+    let state = sandbox.state();
+    let before = journal::stacks(&state).undo.len();
+    conflict::resolve_all(&state, "theirs").unwrap();
+    assert_eq!(journal::stacks(&state).undo.len(), before + 1);
+}
+
+#[test]
+fn a_tag_name_led_by_a_dash_is_refused_not_read_as_an_option() {
+    let sandbox = Sandbox::new("tag-dash");
+    sandbox.commit("a.txt", "a\n", "First");
+    let state = sandbox.state();
+    let oid = sandbox.git(&["rev-parse", "HEAD"]).trim().to_string();
+    assert!(gitnoob_lib::work::create_tag(&state, "-f", &oid, None).is_err());
+    assert!(gitnoob_lib::work::create_tag(&state, "-f", &oid, Some("note")).is_err());
+    assert_eq!(sandbox.git(&["tag", "--list"]).trim(), "");
+    gitnoob_lib::work::create_tag(&state, "v1", &oid, Some("note")).unwrap();
+    gitnoob_lib::work::delete_tag(&state, "v1").unwrap();
+    assert_eq!(sandbox.git(&["tag", "--list"]).trim(), "");
+}
+
+#[test]
+fn pushing_a_tag_pushes_the_tag_when_a_branch_has_its_name() {
+    let remote = Sandbox::new("tag-push-remote");
+    remote.git(&["config", "receive.denyCurrentBranch", "ignore"]);
+    let sandbox = Sandbox::new("tag-push");
+    sandbox.commit("a.txt", "a\n", "First");
+    let tagged = sandbox.git(&["rev-parse", "HEAD"]).trim().to_string();
+    sandbox.git(&["tag", "release"]);
+    sandbox.git(&["branch", "release"]);
+    sandbox.git(&["checkout", "-q", "release"]);
+    sandbox.commit("a.txt", "b\n", "On the branch");
+    sandbox.git(&["checkout", "-q", "main"]);
+    let url = remote.root.to_string_lossy().replace('\\', "/");
+    sandbox.git(&["remote", "add", "origin", &url]);
+    let state = sandbox.state();
+
+    let out = remote::push_tag(&state, "origin", "release").unwrap();
+    assert!(out.ok, "{}", out.stderr);
+    assert_eq!(
+        remote.git(&["rev-parse", "refs/tags/release"]).trim(),
+        tagged
+    );
+    assert!(!remote.git_may_fail(&["rev-parse", "--verify", "-q", "refs/heads/release"]));
+}
+
+#[test]
+fn stash_rename_waits_for_gits_lock_on_the_stash() {
+    let sandbox = Sandbox::new("stash-rename-lock");
+    sandbox.commit("a.txt", "one\n", "First");
+    sandbox.write("a.txt", "two\n");
+    let state = sandbox.state();
+    gitnoob_lib::work::stash_push(&state, Some("before"), false).unwrap();
+
+    let lock = sandbox.root.join(".git/refs/stash.lock");
+    std::fs::write(&lock, "").unwrap();
+    assert!(gitnoob_lib::work::stash_rename(&state, 0, "after").is_err());
+    assert!(lock.exists(), "someone else's lock was removed");
+    std::fs::remove_file(&lock).unwrap();
+
+    gitnoob_lib::work::stash_rename(&state, 0, "after").unwrap();
+    assert!(!lock.exists());
+    assert!(sandbox.git(&["stash", "list"]).contains("after"));
+    assert!(!sandbox
+        .root
+        .join(".git/logs/refs/.stash.gitnoob.tmp")
+        .exists());
+}
+
+#[test]
+fn a_drop_that_fails_after_an_apply_is_reported_and_can_be_undone() {
+    let sandbox = Sandbox::new("apply-many-drop-fails");
+    sandbox.commit("a.txt", "base\n", "Base");
+    sandbox.write("one.txt", "the first\n");
+    sandbox.git(&["add", "one.txt"]);
+    sandbox.git(&["stash", "push", "-q", "-m", "first"]);
+    let state = sandbox.state();
+    // Somebody else holds the stash ref, so the drop cannot happen.
+    let lock = sandbox.root.join(".git/refs/stash.lock");
+    std::fs::write(&lock, "").unwrap();
+
+    let run = work::stash_apply_many(&state, vec![0], true).unwrap();
+    std::fs::remove_file(&lock).unwrap();
+    assert_eq!(run.applied.len(), 1);
+    let stopped = run.stopped.expect("the failed drop is reported");
+    assert!(
+        stopped.reason.contains("could not be dropped"),
+        "{}",
+        stopped.reason
+    );
+    assert_eq!(work::stash_list(&state).unwrap().len(), 1);
+    assert!(sandbox.root.join("one.txt").exists());
+
+    journal::undo(&state).unwrap();
+    assert!(!sandbox.root.join("one.txt").exists());
+}
+
+#[cfg(unix)]
+#[test]
+fn search_does_not_follow_a_link_out_of_the_work_tree_or_open_a_pipe() {
+    let outside = Sandbox::new("search-outside-target");
+    outside.write("secret.txt", "Host hidden-box\n");
+    let sandbox = Sandbox::new("search-link-pipe");
+    sandbox.write("inside.txt", "Host visible-box\n");
+    std::os::unix::fs::symlink(
+        outside.root.join("secret.txt"),
+        sandbox.root.join("notes.txt"),
+    )
+    .unwrap();
+    let made = Command::new("mkfifo")
+        .arg(sandbox.root.join("dev.pipe"))
+        .status()
+        .unwrap()
+        .success();
+    assert!(made);
+    files::forget(&sandbox.root);
+
+    let (found, done) = search_all(&sandbox, "Host", search::SearchOptions::default(), None);
+    let paths: Vec<&str> = found.iter().map(|hits| hits.path.as_str()).collect();
+    assert_eq!(paths, vec!["inside.txt"]);
+    assert!(!done.cancelled);
+
+    let words = search::words_found(
+        &sandbox.root,
+        &["hidden".to_string(), "visible".to_string()],
+        true,
+        None,
+        &|| false,
+    )
+    .unwrap()
+    .unwrap();
+    assert!(words.contains("visible") && !words.contains("hidden"));
+
+    // Opening the pipe in the editor is refused rather than left waiting.
+    assert!(edit::read_file_at(&sandbox.root, "dev.pipe").is_err());
+    let listed = files::all_files(&sandbox.root).unwrap();
+    assert!(!listed.iter().any(|path| path == "dev.pipe"));
+}
+
+#[test]
+fn a_save_refuses_a_file_that_is_not_utf8_whatever_the_window_sends() {
+    let sandbox = Sandbox::new("edit-latin1");
+    std::fs::write(sandbox.root.join("old.txt"), b"caf\xe9\n").unwrap();
+    let read = edit::read_file_at(&sandbox.root, "old.txt").unwrap();
+    assert_eq!(read.readonly.as_deref(), Some("encoding"));
+    let said = edit::write_file_at(&sandbox.root, "old.txt", "cafe\n", Some(&read.hash), None);
+    assert!(said.is_err());
+    assert_eq!(
+        std::fs::read(sandbox.root.join("old.txt")).unwrap(),
+        b"caf\xe9\n"
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn a_link_into_vendor_is_as_read_only_as_vendor() {
+    let sandbox = Sandbox::new("edit-link-vendor");
+    std::fs::create_dir_all(sandbox.root.join("vendor/acme/x")).unwrap();
+    std::fs::create_dir_all(sandbox.root.join("app")).unwrap();
+    sandbox.write("composer.json", "{}\n");
+    sandbox.write(".gitignore", "/vendor/\n");
+    sandbox.write("vendor/acme/x/Foo.php", "<?php\n");
+    std::os::unix::fs::symlink(
+        "../vendor/acme/x/Foo.php",
+        sandbox.root.join("app/Link.php"),
+    )
+    .unwrap();
+    let read = edit::read_file_at(&sandbox.root, "app/Link.php").unwrap();
+    let said = edit::write_file_at(
+        &sandbox.root,
+        "app/Link.php",
+        "<?php // mine\n",
+        Some(&read.hash),
+        None,
+    );
+    assert!(said.is_err(), "{said:?}");
+    assert_eq!(
+        std::fs::read_to_string(sandbox.root.join("vendor/acme/x/Foo.php")).unwrap(),
+        "<?php\n"
+    );
+}
+
+#[test]
+fn a_huge_untracked_file_is_not_read_to_show_it() {
+    let sandbox = Sandbox::new("diff-huge-untracked");
+    sandbox.commit("a.txt", "a\n", "First");
+    let mut text = "x".repeat(65 * 1024 * 1024);
+    text.push('\n');
+    sandbox.write("dump.log", &text);
+    drop(text);
+    let state = sandbox.state();
+    let shown = diff::working_file_diff(&state, "dump.log", diff::Side::Unstaged).unwrap();
+    assert!(shown.binary);
+    let whole = diff::file_text(&state, "dump.log", None, false).unwrap_err();
+    assert!(whole.contains("too large"), "{whole}");
+}
+
+#[test]
+fn a_review_branch_led_by_a_dash_is_refused_before_any_fetch() {
+    let sandbox = Sandbox::new("review-dash-branch");
+    sandbox.commit("a.txt", "a\n", "First");
+    let state = sandbox.state();
+    let review = gitnoob_lib::review::ReviewTarget {
+        number: 7,
+        branch: "--upload-pack=touch pwned".to_string(),
+        head_sha: String::new(),
+        source: Some(gitnoob_lib::review::Source {
+            owner: "them".to_string(),
+            ssh_url: String::new(),
+            https_url: "https://example.invalid/them/repo.git".to_string(),
+            is_fork: true,
+        }),
+    };
+    assert!(gitnoob_lib::review::checkout(&state, review).is_err());
+    assert_eq!(sandbox.git(&["remote"]).trim(), "");
+    assert!(!sandbox.root.join("pwned").exists());
+}
+
+#[test]
+fn usages_pick_the_definition_by_the_editors_lines_not_the_disks() {
+    let sandbox = Sandbox::new("symbols-usages-text");
+    std::fs::create_dir_all(sandbox.root.join("src")).unwrap();
+    // Two methods called `render`, in two classes.
+    let disk = "export class A {\n  render() { return 1 }\n}\nexport class B {\n  render() { return 2 }\n}\n";
+    sandbox.write("src/views.ts", disk);
+    sandbox.write(
+        "src/use.ts",
+        "import { B } from './views'\nnew B().render()\n",
+    );
+    sandbox.git(&["add", "--all"]);
+    sandbox.git(&["commit", "-q", "-m", "First"]);
+    let state = sandbox.state();
+
+    // Unsaved: four lines added above, so A's render is on line 6 in the
+    // editor; on disk line 6 is nearest B's (line 5), not A's (line 2).
+    let edited = format!("// one\n// two\n// three\n// four\n{disk}");
+    let ask = |line: u32, text: Option<&str>| {
+        symbols::usages_in(
+            &state,
+            "render",
+            Some("src/views.ts"),
+            Some("method"),
+            Some(line),
+            text,
+        )
+        .unwrap()
+    };
+    let paths = |list: symbols::UsageList| -> Vec<String> {
+        let mut found: Vec<String> = list
+            .definite
+            .iter()
+            .chain(&list.possible)
+            .map(|one| format!("{}:{}", one.path, one.line))
+            .collect();
+        found.sort();
+        found
+    };
+    let a = paths(ask(2, None));
+    let b = paths(ask(5, None));
+    assert_ne!(a, b, "the fixture must tell the two apart");
+    assert_eq!(paths(ask(6, Some(&edited))), a);
+}
+
+#[test]
+fn unsaved_edits_do_not_put_new_marks_on_the_wrong_lines() {
+    let sandbox = Sandbox::new("symbols-unused-new-edited");
+    std::fs::create_dir_all(sandbox.root.join("src")).unwrap();
+    sandbox.write(
+        "src/a.ts",
+        "export function used() {}\nfunction oldThing() {}\n",
+    );
+    sandbox.write("src/b.ts", "import { used } from './a'\nused()\n");
+    sandbox.git(&["add", "--all"]);
+    sandbox.git(&["commit", "-q", "-m", "First"]);
+    // On disk, not committed: a new unused function on line 2.
+    sandbox.write(
+        "src/a.ts",
+        "export function used() {}\nfunction freshlyAdded() {}\nfunction oldThing() {}\n",
+    );
+    let state = sandbox.state();
+    let marks = symbols::unused_in(&state, "src/a.ts", None, None).unwrap();
+    assert!(marks.iter().any(|m| m.name == "freshlyAdded" && m.new));
+    assert!(marks.iter().any(|m| m.name == "oldThing" && !m.new));
+
+    // In the editor the new one is gone again, unsaved: the committed one
+    // is on line 2 now, which the disk's diff calls new.
+    let edited = "export function used() {}\nfunction oldThing() {}\n";
+    let marks = symbols::unused_in(&state, "src/a.ts", Some(edited), None).unwrap();
+    let old = marks.iter().find(|m| m.name == "oldThing").unwrap();
+    assert!(!old.new);
+}
+
+#[test]
+fn symbol_search_keeps_the_best_however_few_are_asked_for() {
+    let sandbox = Sandbox::new("symbols-find-limit");
+    std::fs::create_dir_all(sandbox.root.join("src")).unwrap();
+    let mut text = String::new();
+    for at in 0..60 {
+        text.push_str(&format!("export function format{at}Value() {{}}\n"));
+    }
+    text.push_str("export function fmt() {}\nexport class Formatter {}\n");
+    sandbox.write("src/many.ts", &text);
+    sandbox.git(&["add", "--all"]);
+    sandbox.git(&["commit", "-q", "-m", "First"]);
+    let all = symbols::find_symbols_at(&sandbox.root, "fmt", 1000).unwrap();
+    let few = symbols::find_symbols_at(&sandbox.root, "fmt", 5).unwrap();
+    let names = |found: &[symbols::FoundSymbol]| -> Vec<String> {
+        found.iter().map(|one| one.name.clone()).collect()
+    };
+    assert_eq!(names(&few), names(&all[..5]));
+    assert_eq!(few[0].name, "fmt");
+    assert!(!few[0].indices.is_empty());
+}
+
+#[test]
+fn a_file_too_large_to_edit_gets_no_marks_or_counts() {
+    let sandbox = Sandbox::new("symbols-too-big");
+    std::fs::create_dir_all(sandbox.root.join("src")).unwrap();
+    sandbox.write("src/a.ts", "function unusedOne() {}\n");
+    sandbox.git(&["add", "--all"]);
+    sandbox.git(&["commit", "-q", "-m", "First"]);
+    let state = sandbox.state();
+    let big = format!(
+        "function unusedOne() {{}}\n{}",
+        "// filler\n".repeat(300_000)
+    );
+    assert!(symbols::unused_in(&state, "src/a.ts", Some(&big), None)
+        .unwrap()
+        .is_empty());
+    assert!(symbols::usage_counts(&state, "src/a.ts", Some(&big))
+        .unwrap()
+        .is_empty());
+    assert!(!symbols::unused_in(&state, "src/a.ts", None, None)
+        .unwrap()
+        .is_empty());
+}
+
+#[test]
+fn a_project_folder_that_is_gone_says_so() {
+    let gone = std::env::temp_dir().join(format!("gitnoob-gone-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&gone);
+    let said = gitnoob_lib::state::discover_workdir(&gone).unwrap_err();
+    assert!(said.contains("not there any more"), "{said}");
+}
+
+#[test]
+fn the_git_directory_is_out_of_reach_in_any_case() {
+    let sandbox = Sandbox::new("resolve-git-case");
+    sandbox.commit("a.txt", "a\n", "First");
+    // On a case-insensitive filesystem this is the real config; on others it
+    // is a folder that does not exist. Refused either way.
+    assert!(files::resolve(&sandbox.root, ".GIT/config", false).is_err());
+    assert!(files::resolve(&sandbox.root, ".Git", false).is_err());
+    assert!(files::resolve(&sandbox.root, "a.txt", false).is_ok());
+}
+
+/// Which commit each line of a blame answer came in with, line by line.
+fn blamed_lines(runs: &[blame::BlameRun]) -> Vec<String> {
+    let mut lines = Vec::new();
+    for run in runs {
+        assert_eq!(run.start, lines.len() + 1, "runs leave a gap: {runs:?}");
+        for _ in 0..run.lines {
+            lines.push(if run.uncommitted {
+                "-".to_string()
+            } else {
+                run.summary.clone()
+            });
+        }
+    }
+    lines
+}
+
+#[test]
+fn blame_of_a_working_file_numbers_the_lines_on_disk() {
+    let sandbox = Sandbox::new("blame-working");
+    sandbox.commit("a.txt", "a\nb\nc\n", "first");
+    sandbox.commit("a.txt", "a\nb\nc\nd\n", "second");
+    let state = sandbox.state();
+
+    // Unchanged, it is the committed answer.
+    let runs = blame::of(&state, "a.txt", None).unwrap();
+    assert_eq!(blamed_lines(&runs), ["first", "first", "first", "second"]);
+
+    // A line added above, one rewritten and one added at the end: the
+    // committed lines keep their commits on the lines they moved to, and the
+    // rest are uncommitted. It used to number HEAD's lines, so everything
+    // under the new first line named the commit of the line above it.
+    sandbox.write("a.txt", "new\na\nB!\nc\nd\nend\n");
+    let runs = blame::of(&state, "a.txt", None).unwrap();
+    assert_eq!(
+        blamed_lines(&runs),
+        ["-", "first", "-", "first", "second", "-"]
+    );
+    let fresh = runs.iter().find(|run| run.uncommitted).unwrap();
+    assert_eq!(fresh.author, "Test");
+    assert_eq!(fresh.summary, "Not committed yet");
+    assert!(fresh.short.is_empty());
+
+    // As of a commit, the working copy has nothing to do with it.
+    let runs = blame::of(&state, "a.txt", Some("HEAD")).unwrap();
+    assert_eq!(blamed_lines(&runs), ["first", "first", "first", "second"]);
+
+    // A checkout that wrote CRLF over LF blobs has not changed every line.
+    sandbox.write("a.txt", "a\r\nb\r\nc\r\nd\r\n");
+    let runs = blame::of(&state, "a.txt", None).unwrap();
+    assert_eq!(blamed_lines(&runs), ["first", "first", "first", "second"]);
+
+    // Emptied, there are no lines to answer for.
+    sandbox.write("a.txt", "");
+    assert!(blame::of(&state, "a.txt", None).unwrap().is_empty());
 }

@@ -5,9 +5,10 @@ import { invoke } from '@tauri-apps/api/core'
 import ProjectTabs from '~/components/ProjectTabs.vue'
 import { useConfig } from '~/composables/useConfig'
 import { openTab, resetTabs, switchTabs, useTabs } from '~/composables/useTabs'
+import { editKey, resetEdits, saveStates } from '~/composables/useFileEdit'
 
 vi.mock('@tauri-apps/api/core', () => ({ invoke: vi.fn() }))
-vi.mock('@tauri-apps/plugin-dialog', () => ({ open: vi.fn() }))
+vi.mock('@tauri-apps/plugin-dialog', () => ({ open: vi.fn(), ask: vi.fn(async () => false) }))
 vi.mock('@tauri-apps/api/window', () => ({ getCurrentWindow: () => ({}) }))
 
 const asked = vi.mocked(invoke)
@@ -115,5 +116,18 @@ describe('closing with the keyboard', () => {
     await flushPromises()
     expect(asked.mock.calls.some(([cmd]) => cmd === 'project_close')).toBe(true)
     wrapper.unmount()
+  })
+
+  it('asks before closing a project with edits that did not save, and keeps it when told to', async () => {
+    resetEdits()
+    saveStates[editKey('/repos/api', 'work:app/a.ts')] = 'failed'
+    const w = show()
+    await flushPromises()
+    const api = w.findAll('.tab').find((one) => one.text().includes('api'))!
+    await api.find('.close').trigger('click')
+    await flushPromises()
+    expect(asked.mock.calls.some(([cmd]) => cmd === 'project_close' || cmd === 'config_close_project')).toBe(false)
+    expect(config.projects.value.map((one) => one.path)).toContain('/repos/api')
+    resetEdits()
   })
 })

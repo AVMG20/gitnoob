@@ -37,7 +37,16 @@ So I started building my own. This is it. It's the tool I use for my own work no
 - Multiple repos open as tabs
 - Optional AI commit messages and conflict resolution through OpenRouter. Off unless you add a key
 
-Reads go through libgit2. Writes go through your own `git` binary, so hooks, signing, SSH agent, and credential helpers keep working. Nothing leaves your machine.
+Reads go through libgit2. Writes go through your own `git` binary, so hooks, signing, SSH agent, and credential helpers keep working.
+
+There is no telemetry and no account. What does go over the network:
+
+- fetch, pull and push, to your own remotes
+- the GitHub or GitLab API, for a profile you gave a token to
+- OpenRouter, only once you add a key, and only when you ask it for something
+- a check for a new release on GitHub, at launch and every few hours (Settings → Updates turns it off)
+- author pictures, looked up by commit email on GitHub, Gravatar (as a SHA-256 of the address) and GitLab (Settings → Behaviour turns them off)
+- images in review comments, from wherever they are hosted
 
 ## Install
 
@@ -82,8 +91,9 @@ More on the architecture, testing, and releasing in [docs/development.md](docs/d
 
 ## Shortcuts
 
-`⌘⇧F` fetch · `⌘⇧L` pull · `⌘⇧P` push · `⌘Enter` commit · `⌘B` branch ·
-`⌘⇧S` stash · `⌘F` search · `⌘P` switch repo · `⌘Z` undo · `⌘,` settings
+`⌘⌥F` fetch · `⌘⇧L` pull · `⌘⇧P` push · `⌘Enter` commit · `⌘B` branch ·
+`⌘⇧S` stash · `⌘⇧F` search in files · `⌘⇧N` find a file · `⌘F` search commits ·
+`⌘P` switch repo · `⌘Z` undo · `⌘,` settings
 
 Use `Ctrl` on Windows and Linux. Full list under Settings → Shortcuts.
 

@@ -6,6 +6,7 @@ import ConflictView from '~/components/ConflictView.vue'
 import ContextMenu from '~/components/ContextMenu.vue'
 import ChangeRuler from '~/components/ChangeRuler.vue'
 import Spinner from '~/components/Spinner.vue'
+import AppModal from '~/components/AppModal.vue'
 import { useGit, type Resolution } from '~/composables/useGit'
 
 /**
@@ -107,7 +108,7 @@ const Host = {
 async function open(conflicted = ['src/app.ts']) {
   const git = useGit()
   git.store.status = { staged: [], unstaged: [], conflicted }
-  const wrapper = mount(Host, { global: { components: { ChangeRuler, Spinner } } })
+  const wrapper = mount(Host, { global: { components: { ChangeRuler, Spinner, AppModal } } })
   await flushPromises()
   await flushPromises()
   return wrapper
@@ -257,6 +258,31 @@ describe('the conflict resolver', () => {
     wrapper.unmount()
   })
 
+  it('jumps to the next open region on Tab from the page, but not from a button', async () => {
+    const wrapper = await open()
+    expect(wrapper.find('.place').text()).toContain('1 of 2')
+
+    const button = document.createElement('button')
+    document.body.appendChild(button)
+    const fromButton = new KeyboardEvent('keydown', { key: 'Tab', bubbles: true, cancelable: true })
+    button.dispatchEvent(fromButton)
+    await flushPromises()
+    expect(fromButton.defaultPrevented).toBe(false)
+    expect(wrapper.find('.place').text()).toContain('1 of 2')
+
+    const back = new KeyboardEvent('keydown', { key: 'Tab', shiftKey: true, bubbles: true, cancelable: true })
+    document.body.dispatchEvent(back)
+    expect(back.defaultPrevented).toBe(false)
+
+    const fromPage = new KeyboardEvent('keydown', { key: 'Tab', bubbles: true, cancelable: true })
+    document.body.dispatchEvent(fromPage)
+    await flushPromises()
+    expect(fromPage.defaultPrevented).toBe(true)
+    expect(wrapper.find('.place').text()).toContain('2 of 2')
+    button.remove()
+    wrapper.unmount()
+  })
+
   it('marks every region on the strip, and what has been decided about it', async () => {
     const wrapper = await open()
     const marks = wrapper.findAll('.panes .ruler .mark')
@@ -343,6 +369,34 @@ describe('the conflict resolver', () => {
     await pickFromMenu(wrapper, 'All 2 files', 'Take theirs in all 2 files')
     expect(calls.some((call) => call.cmd === 'conflict_resolve_all')).toBe(true)
     expect(calls.find((call) => call.cmd === 'conflict_resolve_all')?.args.side).toBe('theirs')
+  })
+
+  it('keeps hand edits made while the model was asked about the open file', async () => {
+    const { useAi } = await import('~/composables/useAi')
+    useAi().store.status = { configured: true, model: 'a/b', default_commit_prompt: '' }
+    let reply: (lines: string[]) => void = () => {}
+    asked.mockImplementation(async (cmd: string, args?: Record<string, unknown>) => {
+      calls.push({ cmd, args: args ?? {} })
+      if (cmd === 'ai_resolve_conflict') return new Promise((resolve) => (reply = resolve))
+      return answer(cmd, args ?? {})
+    })
+    const wrapper = await open(['src/app.ts'])
+    await pickFromMenu(wrapper, 'All 1 file', 'Ask the model to resolve all')
+    await wrapper.findAll('button').find((one) => one.text() === 'Ask the model')!.trigger('click')
+    await flushPromises()
+    expect(calls.some((call) => call.cmd === 'ai_resolve_conflict')).toBe(true)
+
+    // While the model thinks, the head checkbox takes their side by hand.
+    await wrapper.findAll('.pane')[1]!.findAll('.head input')[0]!.trigger('change')
+    await flushPromises()
+    reply(['from the model'])
+    await flushPromises()
+    reply(['from the model'])
+    await flushPromises()
+
+    expect(choices().every((one) => one.custom === null)).toBe(true)
+    useAi().store.status = { configured: false, model: null, default_commit_prompt: '' }
+    wrapper.unmount()
   })
 
   it('will not stage files that still have markers in them', async () => {

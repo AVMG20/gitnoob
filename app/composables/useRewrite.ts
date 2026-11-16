@@ -1,6 +1,6 @@
 import { reactive } from 'vue'
 import { invoke } from './useInvoke'
-import { useGit } from './useGit'
+import { confirmAbort, useGit } from './useGit'
 import { useRebase } from './useRebase'
 
 /**
@@ -123,7 +123,7 @@ export function useRewrite() {
 
     sequenceContinue: () => sequence('sequence_continue', 'Continue'),
     sequenceSkip: () => sequence('sequence_skip', 'Skip this commit'),
-    sequenceAbort: () => sequence('sequence_abort', 'Abort'),
+    sequenceAbort: async () => ((await confirmAbort('pick')) ? sequence('sequence_abort', 'Abort') : null),
 
     resolvedFiles: () =>
       invoke<string[] | null>('conflict_resolved')

@@ -76,6 +76,9 @@ pub struct SearchDone {
     pub files: usize,
     /// Matching lines found past the cap and not sent.
     pub more: usize,
+    /// The cap was reached with files still to read, and they were left
+    /// unread: `more` counts only what the last file read had past it.
+    pub capped: bool,
     /// How many files were looked at.
     pub searched: usize,
     /// A newer search took over before this one finished.
@@ -260,6 +263,13 @@ pub fn search(
             done.cancelled = true;
             return finish(done, &mut emit);
         }
+        // Past the cap nothing more is sent, and reading the rest of the
+        // tree only to put a number on it kept the disk busy for minutes on
+        // a common word.
+        if done.matches >= MAX_HITS {
+            done.capped = true;
+            break;
+        }
         if let Some(changed) = &changed {
             if !changed.contains(path) {
                 continue;
@@ -271,13 +281,9 @@ pub fn search(
                 continue;
             }
         }
-        let file = base.join(path);
-        if std::fs::metadata(&file)
-            .map(|meta| meta.len() > MAX_FILE)
-            .unwrap_or(true)
-        {
+        let Some(file) = searchable(&base, path) else {
             continue;
-        }
+        };
         done.searched += 1;
 
         let room = MAX_HITS.saturating_sub(done.matches);
@@ -294,6 +300,22 @@ pub fn search(
         }
     }
     finish(done, &mut emit)
+}
+
+/// The file to read for a listed path, when it is one worth reading: a
+/// regular file no bigger than [`MAX_FILE`]. A named pipe would block the
+/// read for good, and a link is followed only when it stays in the work tree
+/// (a committed `notes.txt -> ~/.ssh/config` is not searched).
+fn searchable(base: &Path, path: &str) -> Option<std::path::PathBuf> {
+    let file = base.join(path);
+    let own = std::fs::symlink_metadata(&file).ok()?;
+    let file = if own.file_type().is_symlink() {
+        files::resolve(base, path, false).ok()?
+    } else {
+        file
+    };
+    let meta = std::fs::metadata(&file).ok()?;
+    (meta.is_file() && meta.len() <= MAX_FILE).then_some(file)
 }
 
 /// Every matching line in one file, up to `room` of them; the rest are only
@@ -352,9 +374,9 @@ pub fn search_file(
     }
     let matcher = matcher(query, options)?;
     let file = files::resolve(root, relative, false)?;
-    if std::fs::metadata(&file)
-        .map(|meta| meta.len() > MAX_FILE)
-        .unwrap_or(true)
+    if !std::fs::metadata(&file)
+        .map(|meta| meta.is_file() && meta.len() <= MAX_FILE)
+        .unwrap_or(false)
     {
         return Ok(Vec::new());
     }
@@ -419,13 +441,9 @@ pub fn words_found(
         if skip == Some(path.as_str()) {
             continue;
         }
-        let file = base.join(path);
-        if std::fs::metadata(&file)
-            .map(|meta| meta.len() > MAX_FILE)
-            .unwrap_or(true)
-        {
+        let Some(file) = searchable(&base, path) else {
             continue;
-        }
+        };
         let _ = searcher.search_path(
             &matcher,
             &file,

@@ -29,6 +29,8 @@ import {
   type Change
 } from '~/composables/changeCard'
 import { copyText, useGit } from '~/composables/useGit'
+import { blameMenu, openBlamePopup } from '~/composables/blame'
+import { useContextMenu } from '~/composables/useContextMenu'
 import type { BlameRun, DiffHunk } from '~/composables/useGit'
 import type { FindMarks } from '~/composables/useFind'
 import { version } from '~/composables/useHighlight'
@@ -38,11 +40,12 @@ import {
   barLines,
   barsFor,
   basics,
+  blameGutter,
+  blameOfLine,
   changeBars,
   editingBasics,
   editorKeys,
   findPosition,
-  inlineBlame,
   editorLanguage,
   readOnly,
   rememberFocus,
@@ -124,7 +127,7 @@ const props = defineProps<{
   path: string
   /** The working tree against the last commit, for the change bars. */
   hunks: DiffHunk[]
-  /** Who last touched each line, for the caret line, when blame is on. */
+  /** Who last touched each line, for the blame column, when it is on. */
   runs: BlameRun[] | null
   blame: boolean
   find: FindMarks | null
@@ -152,6 +155,8 @@ const emit = defineEmits<{
   read: [FileRead | null]
   /** How the file is written and whether it can be edited, for the header. */
   facts: [EditorFacts]
+  /** "Annotate with Git Blame" or "Close Annotations" on the line numbers. */
+  'toggle-blame': []
 }>()
 
 export interface EditorFacts {
@@ -182,6 +187,7 @@ const config = useConfig()
 const repo = aimedAt()
 const key = editKey(repo, props.tabId)
 const host = ref<HTMLElement | null>(null)
+const contextMenu = useContextMenu()
 let view: EditorView | null = null
 let alive = true
 
@@ -207,6 +213,8 @@ const movedOn = ref(false)
 const failure = ref<string | null>(null)
 /** The save under way, so another waits for it rather than racing it. */
 let inflight: Promise<void> | null = null
+/** The disk was asked about while a save was on its way: ask again after. */
+let recheck = false
 let timer: ReturnType<typeof setTimeout> | undefined
 
 const editable = computed(() => !reason.value && !props.locked)
@@ -301,6 +309,10 @@ async function save(): Promise<void> {
   } finally {
     inflight = null
   }
+  if (recheck) {
+    recheck = false
+    void checkDisk()
+  }
   if (view && !lent && !conflict.value && !failure.value && text() !== base.text) {
     state('unsaved')
     schedule()
@@ -356,12 +368,19 @@ function replaceText(next: string, record = false) {
 
 /** Something on disk moved: is it this file, and what does it mean here? */
 async function checkDisk() {
-  if (lent || !view || inflight || base.hash === null) return
+  // A save on its way: asked again once it has landed, or a change made by
+  // something else in the meantime would go unseen until the next one.
+  if (inflight) {
+    recheck = true
+    return
+  }
+  if (lent || !view || base.hash === null) return
   seenEpoch = workTreeEpoch()
   const before = base.hash
   const read = await readFile(props.path, repo)
   // A save landed meanwhile: this read may be from before it, and taking it
   // would put the text back to what it was.
+  if (inflight) recheck = true
   if (!read || lent || !view || inflight || base.hash !== before) return
   const dirty = text() !== base.text
   if (read.missing) {
@@ -705,7 +724,7 @@ function focus() {
 // --- names: ⌘-click, unused code, usage counts
 
 /** The languages the backend reads names from (symbols.rs). */
-const NAMED = /\.(php|js|mjs|cjs|jsx|ts|mts|cts|tsx|vue|rs|py|go)$/i
+const NAMED = /\.(php|phtml|js|mjs|cjs|jsx|ts|mts|cts|tsx|vue|rs|py|go)$/i
 
 function named() {
   return NAMED.test(props.path) && !/\.(blade\.php|d\.ts)$/i.test(props.path)
@@ -743,8 +762,10 @@ function refreshSymbols(delay = 300) {
 
 async function loadSymbols() {
   // A dependency is not counted, and nothing in it is dimmed: what uses it is
-  // mostly outside this repository.
-  if (lent || !view || !named() || props.locked || props.preview || reason.value === 'dependency') return
+  // mostly outside this repository. A file too large to edit is generated or
+  // data, and parsing all of it on every open bought nothing.
+  if (lent || !view || !named() || props.locked || props.preview) return
+  if (reason.value === 'dependency' || reason.value === 'large') return
   const mine = ++symbolSeq
   const asked = text()
   const counts = config.settings.value?.usage_counts !== false
@@ -807,8 +828,34 @@ function showBars() {
   view.dispatch({ effects: setBars.of(barsFor(text(), props.hunks)) })
 }
 
+/**
+ * The blame column, from the runs read for the file on disk. Said against
+ * the text they were read from, so lines typed since that has not been saved
+ * yet are not put down to whoever wrote the line that was there.
+ */
 function showBlame() {
-  view?.dispatch({ effects: setBlame.of(props.blame ? props.runs : null) })
+  if (!view) return
+  const read = editable.value && base.hash !== null ? base.text : null
+  view.dispatch({
+    effects: setBlame.of(props.blame && props.runs ? { runs: props.runs, text: read } : null)
+  })
+}
+
+/**
+ * Right-click on the line numbers or the blame column: turn the column on or
+ * off, and on an entry of it, that commit's hash. Not in the search window's
+ * preview, which has no column to show.
+ */
+function onGutterMenu(event: MouseEvent) {
+  if (!view || props.preview) return
+  const target = event.target as HTMLElement | null
+  if (!target?.closest('.cm-lineNumbers, .cm-blameGutter')) return
+  let run = null
+  if (target.closest('.cm-blameGutter')) {
+    const block = view.lineBlockAtHeight(event.clientY - view.documentTop)
+    run = blameOfLine(view.state, view.state.doc.lineAt(block.from).number)
+  }
+  contextMenu.show(event, blameMenu(props.blame, () => emit('toggle-blame'), run))
 }
 
 let lastFind = ''
@@ -856,11 +903,20 @@ function onBlur() {
 function own() {
   return [
     changeBars((line) => openCard(line)),
+    blameGutter((run, entry) => openBlamePopup(run, props.path, entry, view?.contentDOM)),
     navigation((pos, event) => {
       if (linked()) void jumpFrom(props.path, pos, text(), { x: event.clientX, y: event.clientY })
     }, linkToken),
     usageLenses((lens, event) =>
-      void showUsages(lens.name, props.path, lens.kind, { x: event.clientX, y: event.clientY }, lens.line)
+      void showUsages(
+        lens.name,
+        props.path,
+        lens.kind,
+        { x: event.clientX, y: event.clientY },
+        lens.line,
+        'only',
+        text()
+      )
     ),
     EditorView.updateListener.of(onUpdate),
     EditorView.domEventHandlers({
@@ -1118,6 +1174,7 @@ async function adopt(held: Held, back = false, selection: EditorSelection | null
   emit('scroller', view.scrollDOM)
   emit('text', doc)
   showFind()
+  showBlame()
   // Following the search window's preview, which saves: nothing to do here
   // until it hands the file over.
   if (lent) return
@@ -1197,7 +1254,6 @@ async function start() {
         basics(),
         editingBasics(),
         editorKeys([]),
-        inlineBlame,
         unusedCode,
         language.of([]),
         colours.of(syntaxColours()),
@@ -1353,7 +1409,14 @@ watch(
   },
   { deep: true }
 )
-watch(() => config.settings.value?.usage_counts, () => refreshSymbols(0))
+// Framework support adds "· 2 in config" and keeps classes config names
+// from being dimmed: turned off or on, the marks are asked for again.
+// Compared as text: a new array on every run fired this on every settings
+// save (each ⌘+ saves the font size), in every open editor.
+watch(
+  () => JSON.stringify([config.settings.value?.usage_counts, config.settings.value?.frameworks]),
+  () => refreshSymbols(0)
+)
 // Autocomplete on or off: closing brackets and the list come and go together.
 watch(
   () => config.settings.value?.autocomplete,
@@ -1408,7 +1471,12 @@ watch(
     <p v-else-if="failure" class="note bad">Could not save: {{ failure }}</p>
     <p v-if="notice" class="note">{{ notice }}</p>
     <p v-if="loading" class="note">Loading file…</p>
-    <div ref="host" class="host" :class="{ hidden: reason === 'binary' }" />
+    <div
+      ref="host"
+      class="host"
+      :class="{ hidden: reason === 'binary' }"
+      @contextmenu="onGutterMenu"
+    />
 
     <div
       v-if="card"

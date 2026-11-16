@@ -88,7 +88,8 @@ const MEMBER_TYPES: Record<string, string> = {
   case: 'case'
 }
 
-const PHP = /\.php$/i
+/** PHP, and a Magento `.phtml` template, which is PHP inside HTML. */
+const PHP = /\.(php|phtml)$/i
 const XML = /\.xml$/i
 
 /** What `framework_complete` answers. */
@@ -96,10 +97,11 @@ interface FrameworkCompletions {
   from: number
   items: { label: string; kind: 'class' | 'namespace'; detail: string | null }[]
 }
-const BLADE = /\.blade\.php$/i
+/** A template: names in it are written in full, never imported with `use`. */
+const TEMPLATE = /\.(blade\.php|phtml)$/i
 const SCRIPT = /\.(m|c)?(j|t)sx?$|\.vue$/i
 /** The languages the backend knows members in. */
-const MEMBERS = /\.(php|m?[jt]sx?|c[jt]s|vue)$/i
+const MEMBERS = /\.(php|phtml|m?[jt]sx?|c[jt]s|vue)$/i
 
 /** Whether `pos` is inside a comment or a string (not in an interpolation in one). */
 export function quiet(state: EditorState, pos: number): boolean {
@@ -137,7 +139,7 @@ export function memberAccess(path: string, before: string): string | null {
 
 /** Whether a class picked from the list may need a `use` line. */
 function importable(path: string, item: SymbolItem) {
-  if (BLADE.test(path)) return false
+  if (TEMPLATE.test(path)) return false
   return PHP.test(path) && PHP.test(item.path) && item.kind !== 'function' && item.kind !== 'constant'
 }
 

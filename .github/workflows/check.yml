@@ -1,4 +1,5 @@
-# Both suites, on all three platforms, before anything is tagged.
+# Both suites before anything is tagged: the Rust suite on all three platforms,
+# the frontend suite and the type check on Linux.
 #
 # This exists because two tests failed on Windows for months without anyone
 # finding out: `npm run release` runs the suites on whichever machine cuts the

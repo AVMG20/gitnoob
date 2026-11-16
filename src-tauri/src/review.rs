@@ -43,6 +43,15 @@ pub struct Source {
 /// Checks out a review, doing whatever it takes to have the commits first.
 pub fn checkout(state: &AppState, review: ReviewTarget) -> Result<String, String> {
     let path = state.path()?;
+    // The name comes from whoever owns the fork, and `git fetch` takes its
+    // refspecs after the remote with no `--` to end the options: a name led
+    // by `-` would be read as one. Git never makes such a branch itself.
+    if review.branch.is_empty() || review.branch.starts_with('-') {
+        return Err(format!(
+            "The review's branch is called {:?}, which is not a name git can fetch safely",
+            review.branch
+        ));
+    }
 
     let fork = match &review.source {
         Some(source) if source.is_fork => source,
