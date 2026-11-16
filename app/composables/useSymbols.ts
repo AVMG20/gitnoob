@@ -178,7 +178,7 @@ export async function showUsages(
         owner ? `Nothing in the code uses ${owner}.` : 'Nothing in the code calls it by name.'
       )
     } else {
-      useToasts().info('No usages found', 'Templates and names built at run time are not looked through.')
+      useToasts().explain('No usages found', 'Templates and names built at run time are not looked through.')
     }
     return
   }

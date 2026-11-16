@@ -241,6 +241,16 @@ export function useToasts() {
      */
     info: (title: string, detail: string | null = null) => raise('info', title, detail),
     /**
+     * Good news or a heads-up with one more line of the app's own explanation,
+     * shown under the title as it is. Not behind "What git said": git said
+     * nothing here.
+     */
+    explain: (title: string, note: string) => {
+      const toast = raise('info', title)
+      toast.note = note
+      return toast
+    },
+    /**
      * A failure, said in the app's own words with git's kept underneath.
      *
      * Takes the line that was headed for the log, so every place that already

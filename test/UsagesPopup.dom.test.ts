@@ -147,6 +147,10 @@ describe('⌘-click on a definition', () => {
     await jumpFrom(SERVICE, 122, null)
     expect(usagesPopup.open).toBe(false)
     expect(toasts.items.value.map((one) => one.title)).toContain('No usages found')
+    // The app's own explanation is a plain note, not tucked away as "what git said".
+    const notice = toasts.items.value.find((one) => one.title === 'No usages found')
+    expect(notice?.detail).toBeNull()
+    expect(notice?.note).toMatch(/built at run time/)
     expect(tabs.activeTab()?.path).toBe(SERVICE)
   })
 })
