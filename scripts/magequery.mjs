@@ -252,6 +252,12 @@ async function buildIntel(dir, work) {
   // Named outright: a CARGO_TARGET_DIR in the environment, or a target-dir in
   // ~/.cargo/config.toml, would put the binary somewhere this does not look.
   const target = join(source, 'target')
+  // The source pins its own toolchain (rust-toolchain.toml), which rustup
+  // installs without the Intel target, so add it to that toolchain here.
+  // Run from the source folder, rustup picks the pinned toolchain.
+  if (spawnSync('rustup', ['--version'], { stdio: 'ignore' }).status === 0) {
+    run('rustup', ['target', 'add', triple], { cwd: source })
+  }
   try {
     run('cargo', ['build', '--release', '--locked', '--target', triple, '--bin', 'magequery'], {
       cwd: source,

@@ -946,14 +946,11 @@ fn a_merge_into_the_checked_out_branch_keeps_its_line() {
         .next()
         .expect("a merge sends a line to its second parent");
 
-    for row in merge + 1..head {
+    for (row, between) in page.rows.iter().enumerate().take(head).skip(merge + 1) {
         assert!(
-            page.rows[row]
-                .segments
-                .iter()
-                .any(|s| s.x1 == into && s.y1 == 0),
+            between.segments.iter().any(|s| s.x1 == into && s.y1 == 0),
             "row {row} ({}) drops the line the merge left in lane {into}",
-            page.rows[row].summary
+            between.summary
         );
     }
     // And it arrives at the commit it was drawn for.
