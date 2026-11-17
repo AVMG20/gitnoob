@@ -10,6 +10,9 @@ import { defineConfig } from 'vitest/config'
  * `~` is aliased because the components import their composables the way
  * Nuxt resolves them, and the SFC compiler is what lets a `.vue` file be
  * mounted at all outside Nuxt.
+ *
+ * `test/setup.ts` makes happy-dom fire `selectionchange` the way a browser
+ * does, which CodeMirror depends on.
  */
 export default defineConfig({
   plugins: [vue()],
@@ -19,6 +22,7 @@ export default defineConfig({
     }
   },
   test: {
-    globals: false
+    globals: false,
+    setupFiles: ['./test/setup.ts']
   }
 })
