@@ -1,8 +1,11 @@
 <script setup lang="ts">
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { listen, type UnlistenFn } from '@tauri-apps/api/event'
+import { h, type FunctionalComponent } from 'vue'
 import {
   ChevronRight,
+  ChevronsDown,
+  ChevronsUp,
   Copy,
   FileDiff,
   FileText,
@@ -10,6 +13,7 @@ import {
   FolderOpen,
   History,
   Minus,
+  Palette,
   Plus,
   Search,
   Trash2,
@@ -34,6 +38,7 @@ import {
   type FoundFile
 } from '~/composables/useFileTree'
 import { speedMatch, type SpeedMatch } from '~/composables/speedSearch'
+import { FOLDER_COLORS, folderColor, setFolderColor } from '~/composables/useFolderColors'
 
 /**
  * The repository as folders and files, in the sidebar beside the branches.
@@ -492,6 +497,16 @@ function onTreeKey(event: KeyboardEvent) {
       if (query.value.length > 1) jumpToMatch(query.value.slice(0, -1))
       else endQuery()
       break
+    case '*':
+      // Opens everything in the folder, as in the IDEs; inside a speed search
+      // it is only another character.
+      if (query.value) {
+        jumpToMatch(query.value + '*')
+        break
+      }
+      if (row) select(at)
+      if (row?.dir && !row.loading) void expandAll(row)
+      break
     case ' ':
       if (query.value) {
         jumpToMatch(query.value + ' ')
@@ -532,14 +547,96 @@ const current = computed(() => {
   return tab && !tab.commit ? tab.path : null
 })
 
+/**
+ * Opens or shuts a folder. Shutting one shuts everything open inside it, so
+ * opening it again shows it folded. Opening one that holds a single path of
+ * folders down to a single file opens the whole path, as `Setup/Patch/Data`
+ * with one file at the bottom would otherwise take three clicks to reach.
+ */
 async function toggle(row: Row) {
   const open = session.value.open
   if (open[row.path]) {
-    delete open[row.path]
+    shut(row.path)
     return
   }
   open[row.path] = true
-  if (!row.gone && !(row.path in here.value)) await loadDir(row.path)
+  if (row.gone) return
+  if (!(row.path in here.value)) await loadDir(row.path)
+  await followChain(row.path)
+}
+
+/** Shuts a folder and every folder open inside it. */
+function shut(path: string) {
+  const open = session.value.open
+  delete open[path]
+  const inside = `${path}/`
+  for (const dir of Object.keys(open)) {
+    if (dir.startsWith(inside)) delete open[dir]
+  }
+}
+
+/** How deep a single path of folders is followed before giving up. */
+const CHAIN_LIMIT = 32
+
+/**
+ * Opens the folders below a just-opened one when each holds exactly one thing
+ * and the last of them holds exactly one file. Anything else (two entries
+ * anywhere on the way, an empty folder, a link) leaves it as it was.
+ */
+async function followChain(top: string) {
+  const open = session.value.open
+  const chain: string[] = []
+  let dir = top
+  for (let step = 0; ; step++) {
+    if (step >= CHAIN_LIMIT) return
+    if (!(dir in here.value)) await loadDir(dir)
+    const inside = children(dir)
+    if (inside.length !== 1) return
+    const only = inside[0]!
+    if (!only.dir) break
+    if (only.link || only.gone) return
+    chain.push(only.path)
+    dir = only.path
+  }
+  // Shut again while the folders below were being read: it stays shut.
+  if (!open[top]) return
+  for (const one of chain) open[one] = true
+}
+
+/** The most folders "Open all inside" opens, so a vendor tree cannot stall it. */
+const EXPAND_LIMIT = 500
+
+/**
+ * Opens a folder and every folder in it, all the way down. Ignored folders
+ * inside are left shut unless the folder itself is ignored, and links are
+ * never followed, so it cannot run in circles.
+ */
+async function expandAll(row: Row) {
+  const open = session.value.open
+  const keepIgnored = row.ignored
+  const gone = new Set<string>(row.gone ? [row.path] : [])
+  let budget = EXPAND_LIMIT
+  let level = [row.path]
+  let cut = false
+  while (level.length) {
+    for (const dir of level) open[dir] = true
+    budget -= level.length
+    await Promise.all(
+      level.filter((dir) => !gone.has(dir) && !(dir in here.value)).map((dir) => loadDir(dir))
+    )
+    const next: string[] = []
+    for (const dir of level) {
+      if (!open[dir]) continue
+      for (const one of children(dir)) {
+        if (!one.dir || one.link || (one.ignored && !keepIgnored)) continue
+        if (one.gone) gone.add(one.path)
+        next.push(one.path)
+      }
+    }
+    if (next.length > budget) cut = true
+    level = next.slice(0, Math.max(0, budget))
+  }
+  if (cut) git.note(`Opened the first ${EXPAND_LIMIT} folders in ${row.path}`)
 }
 
 /**
@@ -697,11 +794,55 @@ function fileMenu(event: MouseEvent, row: Row) {
   menu.show(event, items, row.path)
 }
 
+/** A round swatch of a colour, where a menu item has its icon. */
+function swatch(hex: string | null): FunctionalComponent {
+  return () =>
+    h('span', {
+      class: 'icon',
+      style: {
+        display: 'inline-block',
+        width: '12px',
+        height: '12px',
+        margin: '1px',
+        borderRadius: '50%',
+        boxSizing: 'border-box',
+        background: hex ?? 'transparent',
+        border: hex ? 'none' : '1.5px solid currentColor'
+      }
+    })
+}
+
 function dirMenu(event: MouseEvent, row: Row) {
+  const repo = store.repo?.path
+  const now = folderColor(repo, row.path)?.id ?? null
+  const colors: MenuItem[] = FOLDER_COLORS.map((one) => ({
+    label: one.label,
+    icon: swatch(one.hex),
+    hint: one.id === now ? '✓' : undefined,
+    action: () => setFolderColor(repo, row.path, one.id)
+  }))
+  colors.push(
+    { separator: true, label: '' },
+    {
+      label: 'No colour',
+      icon: swatch(null),
+      disabled: now === null,
+      action: () => setFolderColor(repo, row.path, null)
+    }
+  )
   menu.show(
     event,
     [
       { label: row.open ? 'Close' : 'Open', icon: Folder, action: () => toggle(row) },
+      { label: 'Open all inside', icon: ChevronsDown, hint: '*', action: () => expandAll(row) },
+      {
+        label: 'Close all inside',
+        icon: ChevronsUp,
+        disabled: !row.open,
+        action: () => shut(row.path)
+      },
+      { separator: true, label: '' },
+      { label: 'Colour', icon: Palette, children: colors },
       { separator: true, label: '' },
       { label: 'Copy path', icon: Copy, action: () => copyText(row.path, 'Path') },
       { label: git.revealLabel, icon: FolderOpen, disabled: row.gone, action: () => git.reveal(row.path) }
@@ -786,6 +927,13 @@ onBeforeUnmount(() => {
   clearTimeout(idleTimer)
 })
 
+/** The colour a folder was given, as styles for its row. */
+function tint(row: Row) {
+  if (!row.dir || row.loading) return undefined
+  const color = folderColor(store.repo?.path, row.path)
+  return color ? { '--folder-color': color.hex } : undefined
+}
+
 function markOf(row: Row) {
   return row.dir ? null : (marks.value.get(row.path) ?? null)
 }
@@ -855,10 +1003,11 @@ const DOT_TITLE: Record<string, string> = {
               on: !row.dir && row.path === current,
               cursor: filtering && at === cursor,
               selected: at === selectedAt,
-              matched: speedHits.has(at)
+              matched: speedHits.has(at),
+              tinted: !!tint(row)
             }
           ]"
-          :style="{ top: `${at * ROW}px`, paddingLeft: `${8 + row.depth * 14}px` }"
+          :style="{ top: `${at * ROW}px`, paddingLeft: `${8 + row.depth * 14}px`, ...tint(row) }"
           :id="`tree-row-${at}`"
           :data-path="row.path"
           :title="row.folder !== undefined ? row.path : undefined"
@@ -1038,6 +1187,20 @@ const DOT_TITLE: Record<string, string> = {
 
 .row:hover {
   background: var(--bg-hover);
+}
+
+/* A folder given a colour: its icon in it, and a wash of it behind the row,
+   mixed with the theme's text so it reads on light and dark alike. */
+.row.tinted {
+  background: color-mix(in oklab, var(--folder-color) 12%, transparent);
+}
+
+.row.tinted:hover {
+  background: color-mix(in oklab, var(--folder-color) 20%, transparent);
+}
+
+.row.tinted :deep(.file-icon) {
+  color: color-mix(in oklab, var(--folder-color) 80%, var(--fg));
 }
 
 .row.on,
