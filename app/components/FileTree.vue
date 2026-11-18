@@ -33,11 +33,14 @@ import {
   loadDir,
   reloadOpen,
   rootFailed,
+  treeFolder,
   treeSession,
   type DirEntry,
   type FoundFile
 } from '~/composables/useFileTree'
 import { speedMatch, type SpeedMatch } from '~/composables/speedSearch'
+import { openSearch } from '~/composables/useSearch'
+import { keyLabel, keysFor } from '~/composables/useShortcuts'
 import { FOLDER_COLORS, folderColor, setFolderColor } from '~/composables/useFolderColors'
 
 /**
@@ -539,6 +542,23 @@ function onTreeBlur() {
   endQuery()
 }
 
+// The folder ⌘⇧F searches inside: the selected row, while the tree has the
+// focus and the row is a folder.
+watch(
+  () => {
+    const row = focused.value ? rows.value[selectedAt.value] : undefined
+    return row?.dir && !row.loading ? row.path : null
+  },
+  (dir) => {
+    treeFolder.dir = dir
+  },
+  { immediate: true }
+)
+
+onBeforeUnmount(() => {
+  treeFolder.dir = null
+})
+
 // --- opening things
 
 /** The file on screen, when it is one from the work tree. */
@@ -840,6 +860,12 @@ function dirMenu(event: MouseEvent, row: Row) {
         icon: ChevronsUp,
         disabled: !row.open,
         action: () => shut(row.path)
+      },
+      {
+        label: 'Search in folder…',
+        icon: Search,
+        hint: keyLabel(keysFor('search.text')),
+        action: () => openSearch('text', false, row.path)
       },
       { separator: true, label: '' },
       { label: 'Colour', icon: Palette, children: colors },

@@ -348,12 +348,14 @@ fn open_default(path: String, state: Aimed) -> Result<(), String> {
 /// are matched too and kept even when they fall outside `limit`. `folders`
 /// lists the folders whose own name matches as well, for the window's finder.
 #[tauri::command]
+#[allow(clippy::too_many_arguments)]
 async fn find_files(
     query: String,
     limit: Option<usize>,
     request: Option<u64>,
     also: Option<Vec<String>>,
     dependencies: Option<bool>,
+    ignored: Option<bool>,
     folders: Option<bool>,
     state: Aimed,
 ) -> Result<Vec<files::Found>, String> {
@@ -366,6 +368,7 @@ async fn find_files(
             request.unwrap_or(0),
             &also.unwrap_or_default(),
             dependencies.unwrap_or(false),
+            ignored.unwrap_or(false),
             folders.unwrap_or(false),
         )
     })
@@ -397,6 +400,27 @@ async fn search_text(
                 search::Event::Done(done) => app.emit(search::DONE_EVENT, done),
             };
         });
+    });
+    Ok(())
+}
+
+/// Lists the ignored files and the dependencies ahead of the first search
+/// that wants them, on a thread of its own: the search window asks when it
+/// opens, so typing does not wait on the walk.
+#[tauri::command]
+fn search_prepare(
+    ignored: Option<bool>,
+    dependencies: Option<bool>,
+    state: Aimed,
+) -> Result<(), String> {
+    let root = state.path()?;
+    std::thread::spawn(move || {
+        if ignored.unwrap_or(false) {
+            let _ = files::ignored_files(&root);
+        }
+        if dependencies.unwrap_or(false) {
+            let _ = files::dependency_files(&root);
+        }
     });
     Ok(())
 }
@@ -2493,6 +2517,7 @@ pub fn run() {
             open_default,
             find_files,
             search_text,
+            search_prepare,
             search_file,
             dependency_definition,
             framework_info,

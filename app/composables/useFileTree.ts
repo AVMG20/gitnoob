@@ -51,6 +51,12 @@ export function ancestors(path: string): string[] {
   return out
 }
 
+/**
+ * The folder selected in the Files tree while the tree has the focus, else
+ * null: ⌘⇧F then searches inside it.
+ */
+export const treeFolder = reactive({ dir: null as string | null })
+
 /** Switches the sidebar to the files and brings one of them into view. */
 export function revealInFiles(path: string) {
   const session = treeSession()

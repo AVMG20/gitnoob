@@ -45,6 +45,15 @@ pub struct SearchOptions {
     /// File masks, `*.php` or `*.php, *.vue`. A mask with a `/` in it is
     /// matched against the whole path, one without against the file name.
     pub glob: String,
+    /// Only the files in this folder, relative to the work tree. A folder git
+    /// ignores (`vendor/magento/module-catalog`, `generated`) is searched
+    /// whole, whatever `ignored` and `dependencies` say.
+    pub scope: String,
+    /// The files git ignores too, outside the dependencies, after the
+    /// project's.
+    pub ignored: bool,
+    /// The files in `vendor/` and `node_modules/` too, last.
+    pub dependencies: bool,
 }
 
 /// One matching line.
@@ -241,8 +250,12 @@ pub fn search(
             return finish(done, &mut emit);
         }
     };
-    let paths = match files::all_files(root) {
-        Ok(paths) => paths,
+    let paths = match paths_to_search(root, options, &superseded) {
+        Ok(Some(paths)) => paths,
+        Ok(None) => {
+            done.cancelled = true;
+            return finish(done, &mut emit);
+        }
         Err(error) => {
             done.error = Some(error);
             return finish(done, &mut emit);
@@ -300,6 +313,100 @@ pub fn search(
         }
     }
     finish(done, &mut emit)
+}
+
+/// The files a search reads, in the order it reads them: the project's,
+/// then (when asked) what git ignores, then the dependencies, and in each the
+/// tests after the rest, so they only take what room the cap leaves.
+///
+/// With a `scope`, only what is in that folder. A folder git ignores, or
+/// whose contents it ignores (`vendor/acme/kit`, Magento's `generated` under
+/// `/generated/*`), is searched whole with no toggle: from the kept list of
+/// dependencies or ignored files when there is a complete one, else by
+/// walking just that folder (and the kept list is built meanwhile for next
+/// time). `None` when `stop` said to give up during that walk.
+pub fn paths_to_search(
+    root: &Path,
+    options: &SearchOptions,
+    stop: &dyn Fn() -> bool,
+) -> Result<Option<Vec<String>>, String> {
+    let asked = options.scope.trim_matches('/');
+    // The folder as it really is: `vendor/..` is the root, not a dependency.
+    let scope = if asked.is_empty() {
+        String::new()
+    } else {
+        let base = root
+            .canonicalize()
+            .map_err(|e| format!("Could not read the work tree: {e}"))?;
+        let dir = files::resolve(&base, asked, true)?;
+        if !dir.is_dir() {
+            return Err(format!("{asked} is not a folder"));
+        }
+        dir.strip_prefix(&base)
+            .map(files::slashed)
+            .map_err(|_| format!("{asked} is outside the work tree"))?
+    };
+    let prefix = if scope.is_empty() {
+        String::new()
+    } else {
+        format!("{scope}/")
+    };
+    let mut ranked: Vec<(u8, String)> = Vec::new();
+    let take = |ranked: &mut Vec<(u8, String)>, source: u8, list: &[String]| {
+        for path in list {
+            if prefix.is_empty() || path.starts_with(&prefix) {
+                ranked.push((
+                    source * 2 + u8::from(files::is_test_path(path)),
+                    path.clone(),
+                ));
+            }
+        }
+    };
+    take(&mut ranked, 0, &files::all_files(root)?);
+    let dependency = !scope.is_empty() && files::in_dependency(&scope);
+    if dependency || (!scope.is_empty() && files::folder_ignored(root, &scope)?) {
+        let kept = if dependency {
+            files::dependency_walk_kept(root)
+        } else if files::left_out_of_ignored(&scope) {
+            None
+        } else {
+            files::ignored_walk_kept(root)
+        };
+        match kept {
+            Some(walked) if walked.complete => take(&mut ranked, 1, &walked.paths),
+            _ => {
+                if !files::left_out_of_ignored(&scope) || dependency {
+                    let root = root.to_path_buf();
+                    std::thread::spawn(move || {
+                        let _ = if dependency {
+                            files::dependency_files(&root)
+                        } else {
+                            files::ignored_files(&root)
+                        };
+                    });
+                }
+                let Some(found) = files::files_under(root, &scope, stop)? else {
+                    return Ok(None);
+                };
+                let seen: HashSet<String> = ranked.iter().map(|(_, path)| path.clone()).collect();
+                let fresh: Vec<String> = found
+                    .into_iter()
+                    .filter(|path| !seen.contains(path))
+                    .collect();
+                take(&mut ranked, 1, &fresh);
+            }
+        }
+    } else {
+        if options.ignored {
+            take(&mut ranked, 1, &files::ignored_files(root)?);
+        }
+        if options.dependencies {
+            take(&mut ranked, 2, &files::dependency_files(root)?);
+        }
+    }
+    // Stable: each part keeps its own (sorted) order.
+    ranked.sort_by_key(|(rank, _)| *rank);
+    Ok(Some(ranked.into_iter().map(|(_, path)| path).collect()))
 }
 
 /// The file to read for a listed path, when it is one worth reading: a

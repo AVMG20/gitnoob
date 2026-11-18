@@ -16,6 +16,7 @@ import { useZoom } from '~/composables/useZoom'
 import { followConfig, installCodeFontKeys } from '~/composables/useCodeFont'
 import { useNavButtons } from '~/composables/useNavButtons'
 import { openSearch, search } from '~/composables/useSearch'
+import { treeFolder } from '~/composables/useFileTree'
 import { usagesPopup } from '~/composables/useSymbols'
 import { loadFramework, wiring } from '~/composables/useFramework'
 import { blamePopup } from '~/composables/blame'
@@ -61,7 +62,7 @@ useShortcuts({
     switching.value = !switching.value
   },
   // The search window is about the repository on screen.
-  'search.text': () => store.repo && openSearch('text'),
+  'search.text': () => store.repo && openSearch('text', false, treeFolder.dir),
   'search.files': () => store.repo && openSearch('files'),
   'files.recent': () => store.repo && openSearch('files', true),
   'search.symbols': () => store.repo && openSearch('symbols')

@@ -6,7 +6,7 @@ import FileTree from '~/components/FileTree.vue'
 import AppModal from '~/components/AppModal.vue'
 import { useGit, type RepoInfo } from '~/composables/useGit'
 import { resetTabs, switchTabs, useTabs } from '~/composables/useTabs'
-import { resetFileTree, type DirEntry } from '~/composables/useFileTree'
+import { resetFileTree, treeFolder, type DirEntry } from '~/composables/useFileTree'
 import { speedMatch } from '~/composables/speedSearch'
 
 vi.mock('@tauri-apps/api/core', () => ({ invoke: vi.fn() }))
@@ -110,6 +110,22 @@ describe('the files tree from the keyboard', () => {
     expect(selectedPath(w)).toBe('app')
     // None of it reached the window: the viewer's ↑ ↓ never heard it.
     expect(reachedWindow).toEqual([])
+  })
+
+  it('offers the selected folder to ⌘⇧F while the tree has the focus, and no file', async () => {
+    const w = await show()
+    expect(selectedPath(w)).toBe('app')
+    expect(treeFolder.dir).toBe('app')
+    await press(w, 'ArrowDown')
+    await press(w, 'ArrowDown')
+    expect(selectedPath(w)).toBe('big.txt')
+    expect(treeFolder.dir).toBeNull()
+    await press(w, 'ArrowUp')
+    expect(treeFolder.dir).toBe('docs')
+    const list = w.find('.list').element as HTMLElement
+    list.dispatchEvent(new FocusEvent('blur'))
+    await flushPromises()
+    expect(treeFolder.dir).toBeNull()
   })
 
   it('opens a file pinned on ↵ and as a preview on Space, and folds a folder on ↵', async () => {

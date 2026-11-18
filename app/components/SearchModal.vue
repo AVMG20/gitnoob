@@ -1,6 +1,19 @@
 <script setup lang="ts">
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
-import { CaseSensitive, ChevronRight, Funnel, GitCompare, Package, Regex, Search, TriangleAlert, WholeWord } from 'lucide-vue-next'
+import {
+  CaseSensitive,
+  ChevronRight,
+  EyeOff,
+  Folder,
+  Funnel,
+  GitCompare,
+  Package,
+  Regex,
+  Search,
+  TriangleAlert,
+  WholeWord,
+  X
+} from 'lucide-vue-next'
 import { copyText, useGit } from '~/composables/useGit'
 import CodePreview from '~/components/CodePreview.vue'
 import FileIcon from '~/components/FileIcon.vue'
@@ -14,6 +27,7 @@ import { revealInFiles, type DirEntry } from '~/composables/useFileTree'
 import { useToasts } from '~/composables/useToasts'
 import { editKey, flushing, saveErrorOf, saveStateOf, type SaveState } from '~/composables/useFileEdit'
 import { colourLines, runsOf, snippetTick } from '~/composables/snippetColours'
+import { pathKind } from '~/composables/pathKind'
 import {
   closeSearch,
   findNames,
@@ -26,6 +40,7 @@ import {
   SEARCH_MODES,
   setQueryOf,
   splitLine,
+  toggleSource,
   type FoundName,
   type FoundSymbol,
   type SearchMode
@@ -47,6 +62,11 @@ import {
  * the box. What is typed there saves as in a tab, and the file's hits are
  * searched again once it is on disk. An edit that could not be saved opens
  * the file in a tab when the window closes, so it is not left behind unseen.
+ *
+ * Tests and dependencies are drawn in a colour of their own and listed after
+ * the project's files. Opened with a folder selected in the Files tree, the
+ * search is inside that folder, shown as a chip in the box; its ✕, or
+ * Backspace in an empty box, searches everything again.
  */
 
 const git = useGit()
@@ -98,6 +118,8 @@ interface Item {
   hitAt?: number
   /** A folder the finder matched: shown in the Files tree, never opened. */
   dir?: boolean
+  /** Git ignores it. */
+  ignored?: boolean
 }
 
 const items = computed<Item[]>(() => {
@@ -132,7 +154,8 @@ const items = computed<Item[]>(() => {
     line: one.dir ? null : line,
     group: one.group,
     indices: one.indices,
-    dir: one.dir
+    dir: one.dir,
+    ignored: one.ignored
   }))
 })
 
@@ -257,7 +280,19 @@ const firstOf = computed(() => {
   return out
 })
 
-const GROUPS: Record<string, string> = { recent: 'Recent', changed: 'Changed', files: 'Files', deps: 'Dependencies' }
+const GROUPS: Record<string, string> = {
+  recent: 'Recent',
+  changed: 'Changed',
+  files: 'Files',
+  tests: 'Tests',
+  deps: 'Dependencies'
+}
+
+/** A test or a dependency gets a colour and a tag of its own; a project file neither. */
+function kindOf(path: string) {
+  const kind = pathKind(path)
+  return kind === 'project' ? null : kind
+}
 
 const hitCounts = computed(() => new Map(search.found.map((one) => [one.path, one.hits.length])))
 
@@ -284,6 +319,7 @@ const summary = computed(() => {
     text += done.more ? ` · ${done.more.toLocaleString()}+ more not shown` : ' · stopped here, more not searched'
   } else if (done?.more) text += ` · ${done.more.toLocaleString()} more not shown`
   if (done && search.text.changedOnly) text += ' · only changed files'
+  if (search.text.scope) text += ` · in ${search.text.scope}/`
   return text
 })
 
@@ -469,8 +505,12 @@ watch(
     search.text.regex,
     search.text.changedOnly,
     search.text.glob,
+    search.text.scope,
+    search.text.ignored,
+    search.text.deps,
     search.files.query,
     search.files.deps,
+    search.files.ignored,
     search.symbols.query
   ],
   schedule
@@ -611,6 +651,21 @@ function onKey(event: KeyboardEvent) {
     if (inBox && (field?.selectionStart ?? 0) + (field?.selectionEnd ?? 0) > 0) return
     event.preventDefault()
     void fold(current.value.path, true)
+  } else if (
+    event.key === 'Backspace' &&
+    inBox &&
+    search.mode === 'text' &&
+    search.text.scope &&
+    !field?.value &&
+    !mod &&
+    !event.altKey &&
+    !event.repeat &&
+    !event.isComposing
+  ) {
+    // Backspace in an empty box takes the folder chip away, as in a tag field.
+    // Not a held one: holding Backspace to empty the box stops at the chip.
+    event.preventDefault()
+    search.text.scope = ''
   } else if (event.key === 'Enter') {
     // ↵ on an option or a mode button presses that button.
     if ((event.target as HTMLElement | null)?.tagName === 'BUTTON') return
@@ -661,6 +716,18 @@ const hint = computed(
       <div class="top">
         <div class="field">
           <Search :size="14" class="faint" />
+          <span
+            v-if="search.mode === 'text' && search.text.scope"
+            class="scope"
+            data-testid="search-scope"
+            :title="`Searching inside ${search.text.scope}/ only. Backspace in the empty box searches everything.`"
+          >
+            <Folder :size="12" />
+            <span class="scope-path">{{ search.text.scope }}/</span>
+            <button type="button" class="scope-x" aria-label="Search everything" @click="search.text.scope = ''">
+              <X :size="11" />
+            </button>
+          </span>
           <input
             ref="box"
             v-model="query"
@@ -711,6 +778,26 @@ const hint = computed(
             >
               <GitCompare :size="14" />
             </button>
+            <button
+              class="opt"
+              data-option="ignored"
+              :class="{ on: search.text.ignored }"
+              :aria-pressed="search.text.ignored"
+              title="Include files git ignores (app/etc/env.php, .env), after the project's"
+              @click="toggleSource('text', 'ignored')"
+            >
+              <EyeOff :size="14" />
+            </button>
+            <button
+              class="opt"
+              data-option="deps"
+              :class="{ on: search.text.deps }"
+              :aria-pressed="search.text.deps"
+              title="Include dependencies: vendor/ and node_modules/, last"
+              @click="toggleSource('text', 'deps')"
+            >
+              <Package :size="14" />
+            </button>
             <span class="mask-field" title="File mask, e.g. *.php or src/**/*.ts">
               <Funnel :size="12" class="faint" />
               <input
@@ -723,17 +810,28 @@ const hint = computed(
               />
             </span>
           </template>
-          <button
-            v-else-if="search.mode === 'files'"
-            class="opt"
-            data-option="deps"
-            :class="{ on: search.files.deps }"
-            :aria-pressed="search.files.deps"
-            title="Include dependencies: vendor/ and node_modules/, after the project's files"
-            @click="search.files.deps = !search.files.deps"
-          >
-            <Package :size="14" />
-          </button>
+          <template v-else-if="search.mode === 'files'">
+            <button
+              class="opt"
+              data-option="ignored"
+              :class="{ on: search.files.ignored }"
+              :aria-pressed="search.files.ignored"
+              title="Include files git ignores (app/etc/env.php, .env), among the project's"
+              @click="toggleSource('files', 'ignored')"
+            >
+              <EyeOff :size="14" />
+            </button>
+            <button
+              class="opt"
+              data-option="deps"
+              :class="{ on: search.files.deps }"
+              :aria-pressed="search.files.deps"
+              title="Include dependencies: vendor/ and node_modules/, after everything else"
+              @click="toggleSource('files', 'deps')"
+            >
+              <Package :size="14" />
+            </button>
+          </template>
         </div>
         <div class="modes" role="tablist">
           <button
@@ -778,8 +876,11 @@ const hint = computed(
                   status(item.path)!.letter
                 }}</span>
                 <FileIcon :path="item.path" :size="13" />
-                <span class="file" :class="status(item.path)?.kind">{{ base(item.path) }}</span>
+                <span class="file" :class="[kindOf(item.path) && `kind-${kindOf(item.path)}`, status(item.path)?.kind]">{{
+                  base(item.path)
+                }}</span>
                 <span class="dir">{{ folder(item.path) }}</span>
+                <span v-if="kindOf(item.path)" class="kind-tag" :class="kindOf(item.path)">{{ kindOf(item.path) }}</span>
                 <span class="count">{{ hitsIn(item.path) }}</span>
               </div>
               <div v-else-if="firstOf.has(at) && item.group" class="group plain">
@@ -827,7 +928,15 @@ const hint = computed(
                     status(item.path)!.letter
                   }}</span>
                   <FileIcon :path="item.path" :folder="item.dir" :size="13" />
-                  <span class="file" :class="item.dir ? null : status(item.path)?.kind" :data-dir="item.dir || null">
+                  <span
+                    class="file"
+                    :class="[
+                      kindOf(item.path) && `kind-${kindOf(item.path)}`,
+                      { ignored: item.ignored },
+                      item.dir ? null : status(item.path)?.kind
+                    ]"
+                    :data-dir="item.dir || null"
+                  >
                     <template
                       v-for="(piece, index) in picked(base(item.path), item.indices, nameCut(item.path))"
                       :key="index"
@@ -843,6 +952,8 @@ const hint = computed(
                       <template v-else>{{ piece.text }}</template>
                     </template>
                   </span>
+                  <span v-if="kindOf(item.path)" class="kind-tag" :class="kindOf(item.path)">{{ kindOf(item.path) }}</span>
+                  <span v-else-if="item.ignored" class="kind-tag ignored">ignored</span>
                 </template>
               </div>
             </template>
@@ -1269,6 +1380,82 @@ const hint = computed(
   font-size: 11px;
   font-weight: 700;
   color: var(--amber);
+}
+
+/* Tests and dependencies: a colour of their own, quieter than the project's
+   files. A changed file's status colour still wins, below. */
+.file.kind-test {
+  color: color-mix(in srgb, var(--success) 60%, var(--text-faint));
+}
+
+.file.kind-vendor {
+  color: color-mix(in srgb, var(--warning) 45%, var(--text-faint));
+}
+
+.file.ignored {
+  color: var(--text-dim);
+}
+
+.kind-tag {
+  flex: none;
+  font-size: 10px;
+  font-weight: 400;
+  padding: 0 6px;
+  border-radius: var(--radius-pill);
+  white-space: nowrap;
+  text-transform: none;
+}
+
+.kind-tag.test {
+  color: color-mix(in srgb, var(--success) 70%, var(--text-faint));
+  background: color-mix(in srgb, var(--success) 12%, transparent);
+}
+
+.kind-tag.vendor {
+  color: color-mix(in srgb, var(--warning) 60%, var(--text-faint));
+  background: color-mix(in srgb, var(--warning) 12%, transparent);
+}
+
+.kind-tag.ignored {
+  color: var(--text-faint);
+  background: var(--bg-raised);
+}
+
+/* The folder a search is kept inside, as a chip at the start of the box. */
+.scope {
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  max-width: 40%;
+  height: 22px;
+  padding: 0 4px 0 6px;
+  font-size: 12px;
+  color: var(--text-dim);
+  background: var(--bg-raised);
+  border: 1px solid var(--line-soft);
+  border-radius: var(--radius-sm);
+}
+
+.scope-path {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.scope-x {
+  display: grid;
+  place-items: center;
+  width: 16px;
+  height: 16px;
+  color: var(--text-faint);
+  border-radius: var(--radius-sm);
+}
+
+.scope-x:hover {
+  color: var(--text);
+  background: var(--hover);
 }
 
 .letter.added,

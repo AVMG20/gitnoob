@@ -7,6 +7,7 @@ import AppModal from "~/components/AppModal.vue";
 import { useGit } from "~/composables/useGit";
 import { openTab, resetTabs, switchTabs, useTabs } from "~/composables/useTabs";
 import { resetFileTree, treeSession } from "~/composables/useFileTree";
+import { framework } from "~/composables/useFramework";
 import {
   openSearch,
   resetSearch,
@@ -25,7 +26,7 @@ const git = useGit();
 const tabs = useTabs();
 const isMac = navigator.userAgent.includes("Mac");
 let wrapper: ReturnType<typeof mount> | null = null;
-let found: { path: string; score: number; indices: number[]; dir?: boolean }[] = [];
+let found: { path: string; score: number; indices: number[]; dir?: boolean; ignored?: boolean }[] = [];
 let symbolsFound: {
   name: string;
   kind: string;
@@ -38,6 +39,8 @@ let symbolsFound: {
 const wait = (ms: number) => new Promise((done) => setTimeout(done, ms));
 
 beforeEach(() => {
+  localStorage.removeItem("gitnoob.searchSources");
+  framework.info = null;
   resetTabs();
   resetSearch();
   resetFileTree();
@@ -335,6 +338,118 @@ describe("searching inside files", () => {
     expect(
       (w.find('.search input[type="text"]').element as HTMLInputElement).value,
     ).toBe("Cart");
+  });
+});
+
+describe("a search kept inside one folder", () => {
+  it("opens on a folder from the Files tree, sends it, and Backspace in the empty box lets it go", async () => {
+    openSearch("text", false, "vendor/magento/module-catalog");
+    const w = await show();
+    expect(w.find('[data-testid="search-scope"]').text()).toContain("vendor/magento/module-catalog/");
+    await w.find('.search input[type="text"]').setValue("price");
+    await wait(150);
+    await flushPromises();
+    expect(searches().at(-1)![1]).toMatchObject({
+      options: { scope: "vendor/magento/module-catalog" },
+    });
+    answer([{ path: "vendor/magento/module-catalog/Model/Product.php", lines: [[3, "price", [[0, 5]]]] }]);
+    await flushPromises();
+    expect(w.find(".summary").text()).toContain("in vendor/magento/module-catalog/");
+    // A letter in the box: Backspace takes the letter, not the folder.
+    press(w, "Backspace");
+    await flushPromises();
+    expect(search.text.scope).toBe("vendor/magento/module-catalog");
+    await w.find('.search input[type="text"]').setValue("");
+    // Held down to empty the box: it stops at the chip.
+    press(w, "Backspace", { repeat: true });
+    await flushPromises();
+    expect(search.text.scope).toBe("vendor/magento/module-catalog");
+    press(w, "Backspace");
+    await flushPromises();
+    expect(search.text.scope).toBe("");
+    expect(w.find('[data-testid="search-scope"]').exists()).toBe(false);
+  });
+
+  it("forgets the folder when opened again from anywhere else, and the chip's ✕ lets it go", async () => {
+    openSearch("text", false, "app/code");
+    let w = await show();
+    await w.find(".scope-x").trigger("click");
+    expect(search.text.scope).toBe("");
+    w.unmount();
+    search.open = false;
+    openSearch("text", false, "app/code");
+    expect(search.text.scope).toBe("app/code");
+    search.open = false;
+    w = await show();
+    expect(search.text.scope).toBe("");
+  });
+});
+
+describe("files besides the project's", () => {
+  it("sends the ignored and dependency toggles inside files, and remembers them for the repository", async () => {
+    let w = await show();
+    expect(w.find('[data-option="ignored"]').attributes("aria-pressed")).toBe("false");
+    expect(w.find('[data-option="deps"]').attributes("aria-pressed")).toBe("false");
+    await w.find('[data-option="ignored"]').trigger("click");
+    await w.find('[data-option="deps"]').trigger("click");
+    await w.find('.search input[type="text"]').setValue("tax");
+    await wait(150);
+    await flushPromises();
+    expect(searches().at(-1)![1]).toMatchObject({
+      options: { ignored: true, dependencies: true },
+    });
+    expect(asked).toHaveBeenCalledWith("search_prepare", { ignored: true, dependencies: true });
+    w.unmount();
+    wrapper = null;
+    resetSearch();
+    w = await show();
+    expect(w.find('[data-option="ignored"]').attributes("aria-pressed")).toBe("true");
+    expect(w.find('[data-option="deps"]').attributes("aria-pressed")).toBe("true");
+    // Another repository has its own.
+    w.unmount();
+    wrapper = null;
+    resetSearch();
+    git.store.repo = { path: "/repos/blog", name: "blog", head: "main" } as never;
+    w = await show();
+    expect(w.find('[data-option="ignored"]').attributes("aria-pressed")).toBe("false");
+  });
+
+  it("lists ignored file names by default, and dependencies by default in a Magento shop", async () => {
+    let w = await show("files");
+    expect(w.find('[data-option="ignored"]').attributes("aria-pressed")).toBe("true");
+    expect(w.find('[data-option="deps"]').attributes("aria-pressed")).toBe("false");
+    w.unmount();
+    wrapper = null;
+    resetSearch();
+    framework.info = { id: "magento", name: "Magento", version: null, how: "", wiring: true };
+    w = await show("files");
+    expect(w.find('[data-option="deps"]').attributes("aria-pressed")).toBe("true");
+    await w.find('.search input[type="text"]').setValue("env");
+    await wait(80);
+    await flushPromises();
+    const ask = asked.mock.calls.filter(([cmd]) => cmd === "find_files").at(-1)![1];
+    expect(ask).toMatchObject({ ignored: true, dependencies: true });
+  });
+
+  it("groups project files, then tests, then dependencies, each in its own colour, and tags ignored ones", async () => {
+    found = [
+      { path: "vendor/magento/framework/App/Env.php", score: 99, indices: [] },
+      { path: "app/code/Acme/Shop/Test/Unit/EnvTest.php", score: 90, indices: [] },
+      { path: "app/etc/env.php", score: 80, indices: [], ignored: true },
+      { path: "app/Env.php", score: 70, indices: [] },
+    ];
+    const w = await show("files");
+    await w.find('.search input[type="text"]').setValue("env");
+    await wait(80);
+    await flushPromises();
+    expect(w.findAll(".group.plain").map((one) => one.text())).toEqual(["Files", "Tests", "Dependencies"]);
+    const rows = w.findAll(".item");
+    expect(rows.map((row) => row.find(".file").text())).toEqual(["env.php", "Env.php", "EnvTest.php", "Env.php"]);
+    expect(rows[0]!.find(".kind-tag").text()).toBe("ignored");
+    expect(rows[1]!.find(".kind-tag").exists()).toBe(false);
+    expect(rows[2]!.find(".file").classes()).toContain("kind-test");
+    expect(rows[3]!.find(".file").classes()).toContain("kind-vendor");
+    expect(rows[3]!.find(".kind-tag").text()).toBe("vendor");
   });
 });
 
@@ -695,7 +810,7 @@ describe("finding symbols and shaped file names", () => {
     expect(tab.mode).toBe("file");
   });
 
-  it("looks through vendor and node_modules only with Include dependencies on, and groups them last", async () => {
+  it("looks through vendor and node_modules only with dependencies on, and groups them last", async () => {
     found = [
       { path: "app/Sheets.php", score: 9, indices: [] },
       { path: "vendor/revolution/sheets/src/Sheets.php", score: 8, indices: [] },

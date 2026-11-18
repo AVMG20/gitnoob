@@ -4,6 +4,8 @@ import { invoke } from './useInvoke'
 import { useGit } from './useGit'
 import { useTabs } from './useTabs'
 import { editorSelection } from './useCodeMirror'
+import { framework } from './useFramework'
+import { DEPENDENCY, isTestPath } from './pathKind'
 
 /**
  * The search window: inside files (⌘⇧F), file names (⌘⇧N) and symbols
@@ -12,6 +14,16 @@ import { editorSelection } from './useCodeMirror'
  * Each mode keeps its own last search and options for the session. Pressing
  * another mode's key, or Tab, while the window is open switches mode and
  * takes what was typed along.
+ *
+ * Which files are looked at besides the project's (what git ignores, and the
+ * dependencies in vendor/ and node_modules/) is a pair of toggles per mode,
+ * kept per repository in the browser's storage. File names list ignored
+ * files by default, and dependencies in a Magento shop, where looking things
+ * up in vendor/ is everyday work; inside files neither, until turned on.
+ *
+ * ⌘⇧F with a folder selected in the Files tree searches inside that folder
+ * only (`text.scope`), a folder git ignores (vendor/magento/module-catalog)
+ * included whole.
  */
 
 export type SearchMode = 'text' | 'files' | 'symbols'
@@ -44,12 +56,30 @@ export interface SearchDone {
   error: string | null
 }
 
+const EMPTY_TEXT = {
+  query: '',
+  case: false,
+  word: false,
+  regex: false,
+  changedOnly: false,
+  glob: '',
+  /** A folder to search inside, from the Files tree; '' for the whole tree. */
+  scope: '',
+  /** What git ignores too, after the project's files. */
+  ignored: false,
+  /** vendor/ and node_modules/ too, last. */
+  deps: false
+}
+
 export const search = reactive({
   open: false,
   mode: 'text' as SearchMode,
-  text: { query: '', case: false, word: false, regex: false, changedOnly: false, glob: '' },
-  /** `deps`: the file names in vendor/ and node_modules/ too, after the project's. */
-  files: { query: '', deps: false },
+  text: { ...EMPTY_TEXT },
+  /**
+   * `deps`: the file names in vendor/ and node_modules/ too, after the
+   * project's. `ignored`: what git ignores (app/etc/env.php), among them.
+   */
+  files: { query: '', deps: false, ignored: true },
   symbols: { query: '' },
   /**
    * What the text search found, as it arrives: a frame's worth at a time,
@@ -113,8 +143,75 @@ function optionsNow() {
     word: search.text.word,
     regex: search.text.regex,
     changed_only: search.text.changedOnly,
-    glob: search.text.glob
+    glob: search.text.glob,
+    scope: search.text.scope,
+    ignored: search.text.ignored,
+    dependencies: search.text.deps
   }
+}
+
+// --- which files besides the project's, per repository
+
+const SOURCES_KEY = 'gitnoob.searchSources'
+
+interface Sources {
+  textIgnored?: boolean
+  textDeps?: boolean
+  filesIgnored?: boolean
+  filesDeps?: boolean
+}
+
+function savedSources(): Record<string, Sources> {
+  try {
+    const saved = JSON.parse(localStorage.getItem(SOURCES_KEY) ?? '{}') as unknown
+    return saved && typeof saved === 'object' ? (saved as Record<string, Sources>) : {}
+  } catch {
+    return {}
+  }
+}
+
+const repoPath = () => useGit().store.repo?.path ?? ''
+
+/** The toggles as this repository left them, or as its framework suggests. */
+export function loadSources() {
+  const saved = savedSources()[repoPath()] ?? {}
+  const magento = framework.info?.id === 'magento'
+  const bool = (value: unknown, fallback: boolean) => (typeof value === 'boolean' ? value : fallback)
+  search.text.ignored = bool(saved.textIgnored, false)
+  search.text.deps = bool(saved.textDeps, false)
+  search.files.ignored = bool(saved.filesIgnored, true)
+  search.files.deps = bool(saved.filesDeps, magento)
+}
+
+/** Flips one toggle and remembers it for this repository. */
+export function toggleSource(mode: 'text' | 'files', which: 'ignored' | 'deps') {
+  search[mode][which] = !search[mode][which]
+  const repo = repoPath()
+  if (!repo) return
+  try {
+    const all = savedSources()
+    all[repo] = {
+      ...all[repo],
+      [`${mode}${which === 'ignored' ? 'Ignored' : 'Deps'}`]: search[mode][which]
+    }
+    localStorage.setItem(SOURCES_KEY, JSON.stringify(all))
+  } catch {
+    // Storage full or blocked: the toggle lasts for this session.
+  }
+  prepareSources()
+}
+
+/**
+ * Has the backend list the ignored files and the dependencies now, if the
+ * open mode will want them, so the first search does not wait for the walk.
+ */
+export function prepareSources() {
+  const wanted =
+    search.mode === 'text'
+      ? { ignored: search.text.ignored, dependencies: search.text.deps }
+      : { ignored: search.files.ignored, dependencies: search.files.deps }
+  if (!wanted.ignored && !wanted.dependencies) return
+  void invoke('search_prepare', wanted).catch(() => undefined)
 }
 
 /**
@@ -190,7 +287,7 @@ function ensureListening() {
  * from text selected in the editor. `recent` opens the file finder empty, on
  * the list of recent files.
  */
-export function openSearch(mode: SearchMode, recent = false) {
+export function openSearch(mode: SearchMode, recent = false, scope: string | null = null) {
   const wasOpen = search.open
   const typed = wasOpen ? queryOf(search.mode) : ''
   // Leaving the search inside files while it is still reading: nobody is
@@ -202,6 +299,11 @@ export function openSearch(mode: SearchMode, recent = false) {
     cancelRunning(request)
   }
   search.mode = mode
+  if (!wasOpen) {
+    loadSources()
+    // A folder picked in the Files tree, or the whole tree.
+    search.text.scope = mode === 'text' ? (scope ?? '') : ''
+  } else if (scope !== null && mode === 'text') search.text.scope = scope
   if (wasOpen && typed) setQueryOf(mode, typed)
   if (!wasOpen && mode === 'text') {
     const picked = editorSelection() || windowSelection()
@@ -209,6 +311,7 @@ export function openSearch(mode: SearchMode, recent = false) {
   }
   if (recent) search.files.query = ''
   search.open = true
+  prepareSources()
 }
 
 /** What is typed in a mode's box. */
@@ -260,20 +363,20 @@ export function splitLine(query: string): { query: string; line: number | null }
 export interface FoundName {
   path: string
   indices: number[]
-  group: 'recent' | 'changed' | 'files' | 'deps'
+  group: 'recent' | 'changed' | 'files' | 'tests' | 'deps'
   /** A folder, which is shown in the Files tree rather than opened. */
   dir: boolean
+  /** Git ignores it. */
+  ignored?: boolean
 }
 
 /**
  * Files and folders whose name matches, ranked: recently opened files first,
  * then the ones the working tree panel lists as changed, then everything
- * else, folders among the files, by how well it matched. An empty query
- * lists the recent files and then the changed ones.
+ * else (ignored files among them), folders among the files, by how well it
+ * matched; then tests, and dependencies last of all. An empty query lists
+ * the recent files and then the changed ones.
  */
-/** A path inside what Composer or npm installed. */
-const DEPENDENCY = /^(vendor|node_modules)\//
-
 export async function findNames(query: string, limit = 60): Promise<FoundName[] | null> {
   const git = useGit()
   const recent = useTabs().state.recent
@@ -294,7 +397,7 @@ export async function findNames(query: string, limit = 60): Promise<FoundName[] 
     ].slice(0, limit)
   }
   const request = nextRequest()
-  type Found = { path: string; score: number; indices: number[]; dir?: boolean }
+  type Found = { path: string; score: number; indices: number[]; dir?: boolean; ignored?: boolean }
   let found: Found[]
   try {
     found = await invoke<Found[]>('find_files', {
@@ -303,6 +406,7 @@ export async function findNames(query: string, limit = 60): Promise<FoundName[] 
       request,
       also: [...recent, ...changed],
       dependencies: search.files.deps,
+      ignored: search.files.ignored,
       folders: true
     })
   } catch {
@@ -311,21 +415,24 @@ export async function findNames(query: string, limit = 60): Promise<FoundName[] 
   if (request !== lastRequest) return null
   // Recent and changed are files: a folder goes with the rest, by score.
   const rank = (one: Found) =>
-    !one.dir && recent.includes(one.path)
-      ? 0
-      : !one.dir && changed.includes(one.path)
-        ? 1
-        : DEPENDENCY.test(one.path)
-          ? 3
-          : 2
+    DEPENDENCY.test(one.path)
+      ? 4
+      : !one.dir && recent.includes(one.path)
+        ? 0
+        : !one.dir && changed.includes(one.path)
+          ? 1
+          : isTestPath(one.path)
+            ? 3
+            : 2
   return found
     .map((one, order) => ({ one, order, rank: rank(one) }))
     .sort((a, b) => a.rank - b.rank || a.order - b.order)
     .map(({ one, rank }) => ({
       path: one.path,
       indices: one.indices,
-      group: (['recent', 'changed', 'files', 'deps'] as const)[rank]!,
-      dir: !!one.dir
+      group: (['recent', 'changed', 'files', 'tests', 'deps'] as const)[rank]!,
+      dir: !!one.dir,
+      ...(one.ignored ? { ignored: true } : {})
     }))
 }
 
@@ -352,8 +459,8 @@ export async function findSymbols(query: string, limit = 60): Promise<FoundSymbo
 export function resetSearch() {
   search.open = false
   search.mode = 'text'
-  search.text = { query: '', case: false, word: false, regex: false, changedOnly: false, glob: '' }
-  search.files = { query: '', deps: false }
+  search.text = { ...EMPTY_TEXT }
+  search.files = { query: '', deps: false, ignored: true }
   search.symbols = { query: '' }
   search.found = []
   search.done = null

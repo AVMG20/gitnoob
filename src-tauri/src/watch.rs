@@ -131,6 +131,7 @@ pub fn start(app: AppHandle, root: PathBuf) -> Option<Watch> {
                 pending.work_tree = true;
                 touched.clear();
                 crate::files::forget(&places.root);
+                crate::files::forget_ignore_rules(&places.root);
                 crate::frameworks::forget(&places.root);
                 crate::symbols::start(places.root.clone());
             }
@@ -306,6 +307,11 @@ fn note(
         }
         if path.file_name().is_some_and(|name| name == ".gitignore") {
             ignore.reset();
+            // One inside an ignored folder (`vendor/**/.gitignore` during a
+            // `composer install`) changes nothing the list holds.
+            if !ignore.file(path) {
+                crate::files::forget_ignore_rules(&places.root);
+            }
         }
         match classify(path, places, ignore) {
             Some(true) => pending.git_dir = true,

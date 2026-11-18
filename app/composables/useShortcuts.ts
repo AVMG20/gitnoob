@@ -124,7 +124,7 @@ export const SHORTCUTS: Shortcut[] = [
   { id: 'work.previous', keys: 'mod+alt+ArrowUp', label: 'Open the previous changed file', where: WORKING, group: 'Changes and diffs', editor: true },
 
   // Files and editing
-  { id: 'search.text', keys: 'mod+shift+f', label: 'Search inside files', where: ANYWHERE, group: 'Files and editing', note: 'Starts from the text selected in the editor. Press it again in the window to switch.', editor: true },
+  { id: 'search.text', keys: 'mod+shift+f', label: 'Search inside files', where: ANYWHERE, group: 'Files and editing', note: 'Starts from the text selected in the editor. With a folder selected in the Files tree, searches inside that folder only. Press it again in the window to switch.', editor: true },
   { id: 'search.files', keys: 'mod+shift+n', label: 'Find a file by name', where: ANYWHERE, group: 'Files and editing', note: 'Fuzzy, on the whole path. Folders too: one named what you typed comes first, and picking it shows it in the Files tree. Add :42 to open at line 42.', editor: true },
   { id: 'search.symbols', keys: 'mod+alt+o', label: 'Find a class, function or method', where: ANYWHERE, group: 'Files and editing', note: 'Fuzzy on the name; capitals match capitals, so MECC finds MakeExactConnectionCommand. Opens at the definition.', editor: true },
   { id: 'files.recent', keys: 'mod+e', label: 'Recent files', where: ANYWHERE, group: 'Files and editing', editor: true },

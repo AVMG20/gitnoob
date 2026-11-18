@@ -49,6 +49,10 @@ pub struct Found {
     pub indices: Vec<u32>,
     /// A folder rather than a file. Only when folders were asked for.
     pub dir: bool,
+    /// Git ignores it (`app/etc/env.php`). Only when ignored files were asked
+    /// for; never set on a dependency, which the window tells by its path.
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub ignored: bool,
 }
 
 /// Turns a path from the window into a real one inside the work tree.
@@ -377,24 +381,32 @@ fn cache() -> &'static Mutex<HashMap<PathBuf, Listed>> {
 }
 
 /// Drops the list of paths for a work tree, so the next search walks it
-/// again. The watcher calls this when a file is created, removed or renamed,
-/// or a `.gitignore` changes.
+/// again. The watcher calls this when a file is created, removed or renamed.
+///
+/// The ignored files and the dependencies are only marked stale: a project
+/// file coming or going seldom changes them, and walking them again while
+/// someone types would make every keystroke wait. The next ask hands out the
+/// old list and walks again on a thread of its own.
 pub fn forget(root: &Path) {
     let key = root.canonicalize().unwrap_or_else(|_| root.to_path_buf());
     if let Ok(mut cached) = cache().lock() {
         cached.remove(&key);
     }
-    if let Ok(mut cached) = dependency_cache().lock() {
-        cached.remove(&key);
-    }
+    age_kept(Which::Dependencies, &key);
+    age_kept(Which::Ignored, &key);
+}
+
+/// Drops the list of ignored files, for a `.gitignore` that changed or a
+/// rescan: what it holds may be wrong now, not only old.
+pub fn forget_ignore_rules(root: &Path) {
+    let key = root.canonicalize().unwrap_or_else(|_| root.to_path_buf());
+    drop_kept(Which::Ignored, &key);
 }
 
 /// Drops only the list of dependency files, for a change under `vendor/`.
 pub fn forget_dependencies(root: &Path) {
     let key = root.canonicalize().unwrap_or_else(|_| root.to_path_buf());
-    if let Ok(mut cached) = dependency_cache().lock() {
-        cached.remove(&key);
-    }
+    drop_kept(Which::Dependencies, &key);
 }
 
 /// Whether the cached list for a work tree has this (absolute) path. False
@@ -489,65 +501,423 @@ pub fn all_files(root: &Path) -> Result<Arc<Vec<String>>, String> {
 /// and npm install. Git ignores them, so `all_files` never walks them.
 pub const DEPENDENCY_DIRS: [&str; 2] = ["vendor", "node_modules"];
 
+/// Build output and tool caches, left out of the list of ignored files
+/// wherever they are: nobody looks for a file by name in `target/debug`, and
+/// one Rust build fills it with hundreds of thousands. The watcher's own
+/// list of noisy folders, less `vendor` (which is a dependency folder).
+const BUILD_DIRS: [&str; 8] = [
+    "node_modules",
+    "target",
+    ".output",
+    ".nuxt",
+    "dist",
+    ".next",
+    "__pycache__",
+    ".venv",
+];
+
 /// At most this many dependency files are listed: `node_modules` can hold
 /// more than anyone would scroll through.
 const MAX_DEPENDENCY_FILES: usize = 300_000;
 
-fn dependency_cache() -> &'static Mutex<HashMap<PathBuf, Listed>> {
-    static CACHE: OnceLock<Mutex<HashMap<PathBuf, Listed>>> = OnceLock::new();
-    CACHE.get_or_init(|| Mutex::new(HashMap::new()))
+/// At most this many ignored files are listed. A Magento shop's `pub/media`
+/// and `var/` can hold more than anyone would look through by name.
+const MAX_IGNORED_FILES: usize = 300_000;
+
+/// Files at most this deep are listed before any deeper one, so a cap that is
+/// reached never leaves out `app/etc/env.php` or `.env`.
+const SHALLOW: usize = 4;
+
+/// A list of paths walked on demand, and whether the walk got to the end
+/// (it stops at a cap).
+#[derive(Clone, Debug, Default)]
+pub struct Walked {
+    pub paths: Arc<Vec<String>>,
+    pub complete: bool,
+}
+
+/// The two lists walked on demand, kept per work tree.
+#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
+enum Which {
+    Dependencies,
+    Ignored,
+}
+
+struct Kept {
+    at: Instant,
+    /// The watcher saw something change: handed out, and walked again.
+    stale: bool,
+    walked: Walked,
+}
+
+type KeptKey = (Which, PathBuf);
+
+fn kept() -> &'static Mutex<HashMap<KeptKey, Kept>> {
+    static KEPT: OnceLock<Mutex<HashMap<KeptKey, Kept>>> = OnceLock::new();
+    KEPT.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+/// How often a list was dropped, and how often aged. A walk stores what it
+/// found only if no drop came since it began, so a walk that started before a
+/// `.gitignore` changed cannot put back the old answer. An age since it began
+/// stores it marked stale: kept, and walked again on the next ask, so a tree
+/// that keeps changing still gets a list.
+#[derive(Clone, Copy, Default, PartialEq, Eq, Debug)]
+struct Generation {
+    dropped: u64,
+    aged: u64,
+}
+
+fn generations() -> &'static Mutex<HashMap<KeptKey, Generation>> {
+    static GENERATIONS: OnceLock<Mutex<HashMap<KeptKey, Generation>>> = OnceLock::new();
+    GENERATIONS.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+fn generation(key: &KeptKey) -> Generation {
+    generations()
+        .lock()
+        .map(|all| all.get(key).copied().unwrap_or_default())
+        .unwrap_or_default()
+}
+
+fn drop_kept(which: Which, root: &Path) {
+    let key = (which, root.to_path_buf());
+    let mut all = kept()
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    all.remove(&key);
+    if let Ok(mut generations) = generations().lock() {
+        generations.entry(key).or_default().dropped += 1;
+    }
+}
+
+fn age_kept(which: Which, root: &Path) {
+    let key = (which, root.to_path_buf());
+    let mut all = kept()
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    if let Some(one) = all.get_mut(&key) {
+        one.stale = true;
+    }
+    if let Ok(mut generations) = generations().lock() {
+        generations.entry(key).or_default().aged += 1;
+    }
+}
+
+/// Keeps a walk's answer, unless the list was dropped since it began; marked
+/// stale when it was aged meanwhile.
+fn store_kept(key: &KeptKey, began: Generation, walked: Walked) {
+    let mut all = kept()
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    // Taken inside the list's lock, as `drop_kept` and `age_kept` do.
+    let now = generation(key);
+    if now.dropped != began.dropped {
+        return;
+    }
+    all.insert(
+        key.clone(),
+        Kept {
+            at: Instant::now(),
+            stale: now.aged != began.aged,
+            walked,
+        },
+    );
+}
+
+/// What is kept, and whether it should be walked again.
+fn peek(key: &KeptKey) -> Option<(bool, Walked)> {
+    let all = kept().lock().ok()?;
+    all.get(key)
+        .map(|one| (one.stale || one.at.elapsed() >= STALE, one.walked.clone()))
+}
+
+/// One lock per list and work tree, so two asks walk once.
+fn walk_lock(key: &KeptKey) -> Arc<Mutex<()>> {
+    static LOCKS: OnceLock<Mutex<HashMap<KeptKey, Arc<Mutex<()>>>>> = OnceLock::new();
+    let mut all = LOCKS
+        .get_or_init(|| Mutex::new(HashMap::new()))
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    all.entry(key.clone()).or_default().clone()
+}
+
+/// A list kept per work tree. Fresh for [`STALE`], or until the watcher
+/// marks it stale; after that the old list is handed out while a thread
+/// walks it again, so a keystroke never waits on a walk it has already waited
+/// on once. Walked while the caller waits only when there is nothing kept.
+fn kept_list(which: Which, root: PathBuf, walk: fn(&Path) -> Walked) -> Walked {
+    let key = (which, root);
+    if let Some((stale, walked)) = peek(&key) {
+        if stale {
+            let lock = walk_lock(&key);
+            std::thread::spawn(move || {
+                // Somebody is walking it already.
+                let Ok(_walking) = lock.try_lock() else {
+                    return;
+                };
+                // Or has just finished.
+                if !peek(&key).is_some_and(|(stale, _)| stale) {
+                    return;
+                }
+                let began = generation(&key);
+                store_kept(&key, began, walk(&key.1));
+            });
+        }
+        return walked;
+    }
+    let lock = walk_lock(&key);
+    let _walking = lock.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+    // Walked by whoever held the lock before.
+    if let Some((_, walked)) = peek(&key) {
+        return walked;
+    }
+    let began = generation(&key);
+    let walked = walk(&key.1);
+    store_kept(&key, began, walked.clone());
+    walked
+}
+
+fn canonical(root: &Path) -> Result<PathBuf, String> {
+    root.canonicalize()
+        .map_err(|e| format!("Could not read the work tree: {e}"))
 }
 
 /// Every file in `vendor/` and `node_modules/` at the root of the work tree,
-/// relative and sorted, for the finder's "Include dependencies". Walked the
-/// first time it is asked for, never at open, and kept like `all_files`.
-/// Links are not followed, so nothing outside the work tree is listed.
+/// relative and sorted, for the finder's and the search's dependencies
+/// toggle. Walked the first time it is asked for, never at open. Links are
+/// not followed, so nothing outside the work tree is listed.
 pub fn dependency_files(root: &Path) -> Result<Arc<Vec<String>>, String> {
-    let key = root
-        .canonicalize()
-        .map_err(|e| format!("Could not read the work tree: {e}"))?;
-    if let Ok(cached) = dependency_cache().lock() {
-        if let Some(found) = cached.get(&key) {
-            if found.at.elapsed() < STALE {
-                return Ok(found.paths.clone());
-            }
-        }
-    }
+    Ok(dependency_walk(root)?.paths)
+}
+
+/// The same, and whether the walk got to the end.
+pub fn dependency_walk(root: &Path) -> Result<Walked, String> {
+    Ok(kept_list(
+        Which::Dependencies,
+        canonical(root)?,
+        walk_dependencies,
+    ))
+}
+
+/// The dependency files when they have been listed already; never walks.
+pub fn dependency_walk_kept(root: &Path) -> Option<Walked> {
+    let key = (Which::Dependencies, canonical(root).ok()?);
+    peek(&key).map(|(_, walked)| walked)
+}
+
+fn walk_dependencies(key: &Path) -> Walked {
+    // A file committed inside vendor/ (Magento's `vendor/.htaccess`, Go
+    // vendoring) is a project file already: listed once, there.
+    let listed = all_files(key).unwrap_or_default();
     let mut paths = Vec::new();
+    let mut complete = true;
     for dir in DEPENDENCY_DIRS {
         let top = key.join(dir);
         if !top.is_dir() {
             continue;
         }
-        let walk = WalkBuilder::new(&top)
-            .standard_filters(false)
-            .follow_links(false)
-            .filter_entry(|entry| entry.file_name() != ".git")
-            .build();
-        for entry in walk.filter_map(Result::ok) {
-            if paths.len() >= MAX_DEPENDENCY_FILES {
-                break;
-            }
-            if !entry.file_type().is_some_and(|kind| kind.is_file()) {
-                continue;
-            }
-            if let Ok(inner) = entry.path().strip_prefix(&key) {
-                paths.push(slashed(inner));
-            }
+        let room = MAX_DEPENDENCY_FILES - paths.len();
+        let found = walk_everything(key, &top, room + 1, &|| false).unwrap_or_default();
+        if found.len() > room {
+            complete = false;
         }
-    }
-    paths.sort();
-    let paths = Arc::new(paths);
-    if let Ok(mut cached) = dependency_cache().lock() {
-        cached.insert(
-            key,
-            Listed {
-                at: Instant::now(),
-                paths: paths.clone(),
-            },
+        paths.extend(
+            found
+                .into_iter()
+                .take(room)
+                .filter(|path| listed.binary_search(path).is_err()),
         );
     }
-    Ok(paths)
+    paths.sort();
+    Walked {
+        paths: Arc::new(paths),
+        complete,
+    }
+}
+
+/// Every regular file under `dir`, whatever git ignores, relative to `key`
+/// (the canonical work tree). Links are not followed and `.git` is skipped.
+/// At most `room` of them; `None` when `stop` said to give up.
+fn walk_everything(
+    key: &Path,
+    dir: &Path,
+    room: usize,
+    stop: &dyn Fn() -> bool,
+) -> Option<Vec<String>> {
+    let mut paths = Vec::new();
+    let walk = WalkBuilder::new(dir)
+        .standard_filters(false)
+        .follow_links(false)
+        .filter_entry(|entry| entry.file_name() != ".git")
+        .build();
+    for (seen, entry) in walk.filter_map(Result::ok).enumerate() {
+        if seen % 1024 == 0 && seen > 0 && stop() {
+            return None;
+        }
+        if paths.len() >= room {
+            break;
+        }
+        if !entry.file_type().is_some_and(|kind| kind.is_file()) {
+            continue;
+        }
+        if let Ok(inner) = entry.path().strip_prefix(key) {
+            paths.push(slashed(inner));
+        }
+    }
+    Some(paths)
+}
+
+/// Every file git ignores, outside `vendor/` and `node_modules/` (those are
+/// [`dependency_files`]) and build output ([`BUILD_DIRS`]): `app/etc/env.php`,
+/// `.env`, `generated/`, `var/`. Relative and sorted, walked the first time
+/// it is asked for and kept like the dependencies. Links are not followed.
+pub fn ignored_files(root: &Path) -> Result<Arc<Vec<String>>, String> {
+    Ok(ignored_walk(root)?.paths)
+}
+
+/// The same, and whether the walk got to the end.
+pub fn ignored_walk(root: &Path) -> Result<Walked, String> {
+    Ok(kept_list(Which::Ignored, canonical(root)?, walk_ignored))
+}
+
+/// The ignored files when they have been listed already; never walks.
+pub fn ignored_walk_kept(root: &Path) -> Option<Walked> {
+    let key = (Which::Ignored, canonical(root).ok()?);
+    peek(&key).map(|(_, walked)| walked)
+}
+
+/// Whether the walk for ignored files leaves this folder out: a dependency
+/// folder at the root, or build output anywhere.
+pub fn left_out_of_ignored(relative: &str) -> bool {
+    in_dependency(relative) || relative.split('/').any(|part| BUILD_DIRS.contains(&part))
+}
+
+fn walk_ignored(key: &Path) -> Walked {
+    let listed = all_files(key).unwrap_or_default();
+    let found = Arc::new(Mutex::new(Vec::new()));
+    let count = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    // The shallow files first, all of them, then the deeper ones until the
+    // cap: which files a cap leaves out never depends on the threads.
+    for deep in [false, true] {
+        let mut walk = WalkBuilder::new(key);
+        walk.standard_filters(false)
+            .follow_links(false)
+            .filter_entry(|entry| {
+                let name = entry.file_name();
+                if name == ".git" || BUILD_DIRS.iter().any(|dir| name == *dir) {
+                    return false;
+                }
+                !(entry.depth() == 1 && DEPENDENCY_DIRS.iter().any(|dir| name == *dir))
+            });
+        if !deep {
+            walk.max_depth(Some(SHALLOW));
+        }
+        walk.build_parallel().run(|| {
+            let found = found.clone();
+            let count = count.clone();
+            let listed = listed.clone();
+            let root = key.to_path_buf();
+            Box::new(move |entry| {
+                let Ok(entry) = entry else {
+                    return ignore::WalkState::Continue;
+                };
+                if deep && entry.depth() <= SHALLOW {
+                    return ignore::WalkState::Continue;
+                }
+                if !entry.file_type().is_some_and(|kind| kind.is_file()) {
+                    return ignore::WalkState::Continue;
+                }
+                let Ok(inner) = entry.path().strip_prefix(&root) else {
+                    return ignore::WalkState::Continue;
+                };
+                let relative = slashed(inner);
+                if listed.binary_search(&relative).is_ok() {
+                    return ignore::WalkState::Continue;
+                }
+                if count.fetch_add(1, Ordering::SeqCst) >= MAX_IGNORED_FILES {
+                    return ignore::WalkState::Quit;
+                }
+                if let Ok(mut list) = found.lock() {
+                    list.push(relative);
+                }
+                ignore::WalkState::Continue
+            })
+        });
+    }
+    let mut paths = std::mem::take(&mut *found.lock().unwrap_or_else(|p| p.into_inner()));
+    paths.sort();
+    Walked {
+        complete: count.load(Ordering::SeqCst) <= MAX_IGNORED_FILES,
+        paths: Arc::new(paths),
+    }
+}
+
+/// Whether a relative path is inside `vendor/` or `node_modules/` at the
+/// root, or is one of them.
+pub fn in_dependency(relative: &str) -> bool {
+    let first = relative.trim_matches('/').split('/').next().unwrap_or("");
+    DEPENDENCY_DIRS.contains(&first)
+}
+
+/// Whether git ignores what is in a folder: the folder itself (`/vendor/`),
+/// or everything in it (Magento's `/generated/*` with `!/generated/.htaccess`,
+/// which leaves the folder itself not ignored).
+pub fn folder_ignored(root: &Path, relative: &str) -> Result<bool, String> {
+    let relative = relative.trim_matches('/');
+    Ok(path_ignored_at(root, relative)?
+        || path_ignored_at(root, &format!("{relative}/gitnoob-probe"))?)
+}
+
+/// Every file in one folder of the work tree, what git ignores included,
+/// relative and sorted: for a search inside a folder git ignores, such as
+/// `vendor/magento/module-catalog` or `generated`, when the lists above do not
+/// have it. `None` when `stop` said to give up.
+pub fn files_under(
+    root: &Path,
+    relative: &str,
+    stop: &dyn Fn() -> bool,
+) -> Result<Option<Vec<String>>, String> {
+    let key = canonical(root)?;
+    let dir = resolve(&key, relative, true)?;
+    if !dir.is_dir() {
+        return Err(format!("{relative} is not a folder"));
+    }
+    let Some(mut paths) = walk_everything(&key, &dir, MAX_DEPENDENCY_FILES, stop) else {
+        return Ok(None);
+    };
+    paths.sort();
+    Ok(Some(paths))
+}
+
+/// A test file: under a `tests`, `test` (Magento's `Test/Unit`),
+/// `__tests__`, `spec` or `e2e` folder, or named the way a test runner finds
+/// tests (`FooTest.php`, `foo.test.ts`, `foo.spec.js`, `foo_test.go`,
+/// `test_foo.py`). `isTestPath` in `app/composables/pathKind.ts` says the
+/// same for the window.
+pub fn is_test_path(path: &str) -> bool {
+    let mut parts: Vec<&str> = path.split('/').collect();
+    let name = parts.pop().unwrap_or("");
+    if parts.iter().any(|dir| {
+        matches!(
+            dir.to_ascii_lowercase().as_str(),
+            "tests" | "test" | "__tests__" | "spec" | "e2e"
+        )
+    }) {
+        return true;
+    }
+    let lower = name.to_ascii_lowercase();
+    let extension_after = |marker: &str| {
+        lower.rfind(marker).is_some_and(|at| {
+            at > 0 && !lower[at + marker.len()..].contains('.') && lower.len() > at + marker.len()
+        })
+    };
+    (name.ends_with("Test.php") && name.len() > "Test.php".len())
+        || extension_after(".test.")
+        || extension_after(".spec.")
+        || lower.ends_with("_test.go")
+        || lower.ends_with("_test.py")
+        || (lower.starts_with("test_") && lower.ends_with(".py") && lower.len() > "test_.py".len())
 }
 
 /// The newest finder request per work tree. An older one still scoring
@@ -592,8 +962,8 @@ pub fn find_files_at(
 }
 
 /// The same, and with `dependencies` the files in `vendor/` and
-/// `node_modules/` too, after every project file that matched and within the
-/// same limit.
+/// `node_modules/` too, after every project file that matched, `limit` more
+/// at most.
 pub fn find_files_with(
     root: &Path,
     query: &str,
@@ -602,7 +972,25 @@ pub fn find_files_with(
     also: &[String],
     dependencies: bool,
 ) -> Result<Vec<Found>, String> {
-    find_paths(root, query, limit, request, also, dependencies, false)
+    find_paths(
+        root,
+        query,
+        limit,
+        request,
+        also,
+        dependencies,
+        false,
+        false,
+    )
+}
+
+/// What a fuzzy score is worth in a file git ignores: a little less than in a
+/// project file, so `generated/` and `pub/static/` copies of a file come
+/// after it, while `env.php` for `app/etc/env.php` still beats a scatter of
+/// the same letters across the project.
+fn demoted(score: u32) -> u32 {
+    let tier = score / SHAPED;
+    tier * SHAPED + (score % SHAPED) * 3 / 4
 }
 
 /// The same, and with `folders` the folders whose own name matches too, for
@@ -612,6 +1000,13 @@ pub fn find_files_with(
 /// comes before everything; other folders take their place among the files by
 /// score. Folders never fill more than a sixth of `limit`, so a query like
 /// `model` in a tree full of `Model/` folders still lists files.
+///
+/// With `ignored` the files git ignores (outside the dependencies) are ranked
+/// among the project's, a little lower ([`demoted`]) and marked. The
+/// dependencies come after all of those, with a `limit` of their own, so a
+/// good match in `vendor/` is listed even when the project fills its limit
+/// with poor ones.
+#[allow(clippy::too_many_arguments)]
 pub fn find_paths(
     root: &Path,
     query: &str,
@@ -619,6 +1014,7 @@ pub fn find_paths(
     request: u64,
     also: &[String],
     dependencies: bool,
+    ignored: bool,
     folders: bool,
 ) -> Result<Vec<Found>, String> {
     let newest = latest(root);
@@ -635,23 +1031,71 @@ pub fn find_paths(
     let wanted = limit.max(1);
     let room = if folders { (wanted / 6).max(1) } else { 0 };
     let mut found = rank(&paths, query, limit, also, &superseded)?;
+    let ignored_list = if ignored {
+        Some(ignored_files(root)?)
+    } else {
+        None
+    };
+    if let Some(extra) = &ignored_list {
+        let mut more = rank(extra, query, limit, also, &superseded)?;
+        for one in &mut more {
+            one.score = demoted(one.score);
+            one.ignored = true;
+        }
+        found = merged_files(found, more, limit, also);
+    }
     let mut used = 0;
     if room > 0 {
-        let dirs = rank_folders(&folders_of(&paths), query, room, &superseded)?;
+        let mut dirs = rank_folders(&folders_of(&paths), query, room, &superseded)?;
+        if let Some(extra) = &ignored_list {
+            let seen: HashSet<String> = dirs.iter().map(|one| one.path.clone()).collect();
+            let own = folders_of(&paths);
+            let project: HashSet<&str> = own.iter().map(String::as_str).collect();
+            let extra = folders_of(extra);
+            let only: Vec<String> = extra
+                .iter()
+                .filter(|dir| !project.contains(dir.as_str()) && !seen.contains(*dir))
+                .cloned()
+                .collect();
+            let mut more = rank_folders(&only, query, room, &superseded)?;
+            for one in &mut more {
+                one.ignored = true;
+            }
+            dirs.extend(more);
+            dirs.sort_by(better);
+            dirs.truncate(room);
+        }
         used = dirs.len();
         found = merged(found, dirs, limit, also);
     }
-    if dependencies && found.len() < wanted {
+    if dependencies {
         let extra = dependency_files(root)?;
-        let left = wanted - found.len();
-        let mut more = rank(&extra, query, left, &[], &superseded)?;
+        let mut more = rank(&extra, query, wanted, &[], &superseded)?;
         if room > used {
             let dirs = rank_folders(&folders_of(&extra), query, room - used, &superseded)?;
-            more = merged(more, dirs, left, &[]);
+            more = merged(more, dirs, wanted, &[]);
         }
         found.extend(more);
     }
     Ok(found)
+}
+
+/// Two lists of files in one, best first, `limit` of them and any of `also`.
+fn merged_files(
+    mut files: Vec<Found>,
+    more: Vec<Found>,
+    limit: usize,
+    also: &[String],
+) -> Vec<Found> {
+    files.extend(more);
+    files.sort_by(better);
+    let wanted: HashSet<&str> = also.iter().map(String::as_str).collect();
+    let mut kept = 0usize;
+    files.retain(|one| {
+        kept += 1;
+        kept <= limit.max(1) || wanted.contains(one.path.as_str())
+    });
+    files
 }
 
 /// Every folder the files in `paths` sit in, sorted. Worked out once per
@@ -787,6 +1231,7 @@ fn rank_folders(
             score,
             indices,
             dir: true,
+            ignored: false,
         });
     }
     found.sort_by(better);
@@ -854,6 +1299,7 @@ fn rank(
                 score,
                 indices,
                 dir: false,
+                ignored: false,
             }
         })
         .collect())
@@ -991,6 +1437,34 @@ mod tests {
         );
         assert_eq!(without_verbatim(r"C:\repo\a.txt"), r"C:\repo\a.txt");
         assert_eq!(without_verbatim("/repo/a.txt"), "/repo/a.txt");
+    }
+
+    #[test]
+    fn tells_a_test_file_by_its_folder_or_its_name() {
+        for path in [
+            "tests/Feature/InvoiceTest.php",
+            "app/code/Acme/Shop/Test/Unit/Model/ProductTest.php",
+            "dev/tests/integration/x.php",
+            "src/__tests__/a.ts",
+            "app/Billing/InvoiceTest.php",
+            "src/a.test.ts",
+            "src/a.spec.js",
+            "pkg/a_test.go",
+            "lib/test_a.py",
+        ] {
+            assert!(is_test_path(path), "{path}");
+        }
+        for path in [
+            "app/Latest.php",
+            "app/Test.php",
+            "src/contest.ts",
+            ".test.ts",
+            "src/a.test.ts.bak.d",
+            "app/Testing/Helper.php",
+            "lib/test_.py",
+        ] {
+            assert!(!is_test_path(path), "{path}");
+        }
     }
 
     #[test]

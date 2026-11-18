@@ -9933,12 +9933,364 @@ fn the_finder_lists_dependencies_only_when_asked_and_after_the_project() {
     assert!(with
         .iter()
         .any(|one| one.path == "vendor/acme/kit/src/Tools/Helper.php"));
-    // Within the same limit.
+    // The dependencies have a limit of their own, after the project's: a
+    // project that fills its limit still leaves them room.
+    let capped = files::find_files_with(&sandbox.root, "php", 3, 3, &[], true).unwrap();
+    assert!(capped.len() <= 6, "{capped:#?}");
+    let vendor = capped
+        .iter()
+        .filter(|one| one.path.starts_with("vendor/"))
+        .count();
+    assert_eq!(vendor, 3, "{capped:#?}");
+    // One project match is enough to fill a limit of one, and vendor/ still shows.
+    let one = files::find_files_with(&sandbox.root, "php", 1, 4, &[], true).unwrap();
+    assert!(!one[0].path.starts_with("vendor/"), "{one:#?}");
     assert!(
-        files::find_files_with(&sandbox.root, "php", 3, 3, &[], true)
-            .unwrap()
-            .len()
-            <= 3
+        one.iter().any(|found| found.path.starts_with("vendor/")),
+        "{one:#?}"
+    );
+}
+
+/// A Magento-ish tree with what git ignores: `app/etc/env.php`, a
+/// `generated/` copy of a class, a dependency, and tests.
+fn ignored_finder_sandbox(tag: &str) -> Sandbox {
+    let sandbox = Sandbox::new(tag);
+    let put = |path: &str, text: &str| {
+        let full = sandbox.root.join(path);
+        std::fs::create_dir_all(full.parent().unwrap()).unwrap();
+        std::fs::write(full, text).unwrap();
+    };
+    put("app/etc/config.php", "<?php\nreturn [];\n");
+    put(
+        "app/etc/env.php",
+        "<?php\nreturn ['db' => 'secret_marker'];\n",
+    );
+    put(
+        "app/code/Acme/Shop/Model/Product.php",
+        "<?php\nclass Product { function price() { return 'price_marker'; } }\n",
+    );
+    put(
+        "app/code/Acme/Shop/Test/Unit/Model/ProductTest.php",
+        "<?php\n// price_marker in a test\n",
+    );
+    put(
+        "generated/code/Acme/Shop/Model/Product/Interceptor.php",
+        "<?php\n// price_marker generated\n",
+    );
+    put(
+        "vendor/magento/module-catalog/Model/Product.php",
+        "<?php\n// price_marker in vendor\n",
+    );
+    put(
+        "node_modules/left-pad/index.js",
+        "// price_marker in node_modules\n",
+    );
+    put(
+        "app/design/frontend/Acme/theme/node_modules/x/env.php",
+        "<?php // nested node_modules\n",
+    );
+    sandbox.write(
+        ".gitignore",
+        "/vendor/\n/generated/\nnode_modules/\n/app/etc/env.php\n",
+    );
+    sandbox.git(&["add", "--all"]);
+    sandbox.git(&["commit", "-q", "-m", "shop"]);
+    sandbox
+}
+
+#[test]
+fn the_finder_lists_ignored_files_when_asked_and_marks_them() {
+    let sandbox = ignored_finder_sandbox("finder-ignored");
+    let without =
+        files::find_paths(&sandbox.root, "env.php", 60, 1, &[], false, false, false).unwrap();
+    assert!(
+        without.iter().all(|one| one.path != "app/etc/env.php"),
+        "{without:#?}"
+    );
+
+    let with = files::find_paths(&sandbox.root, "env.php", 60, 2, &[], false, true, false).unwrap();
+    let env = with
+        .iter()
+        .find(|one| one.path == "app/etc/env.php")
+        .unwrap_or_else(|| panic!("{with:#?}"));
+    assert!(env.ignored);
+    assert_eq!(with[0].path, "app/etc/env.php", "{with:#?}");
+    // Neither the dependencies nor a node_modules folder anywhere.
+    assert!(
+        with.iter().all(|one| !one.path.contains("node_modules")),
+        "{with:#?}"
+    );
+    assert!(
+        with.iter().all(|one| !one.path.starts_with("vendor/")),
+        "{with:#?}"
+    );
+
+    // A project file comes before its generated copy on the same name.
+    let product =
+        files::find_paths(&sandbox.root, "Product", 60, 3, &[], false, true, false).unwrap();
+    let own = product
+        .iter()
+        .position(|one| one.path == "app/code/Acme/Shop/Model/Product.php")
+        .unwrap();
+    let generated = product
+        .iter()
+        .position(|one| one.path.starts_with("generated/"))
+        .unwrap();
+    assert!(own < generated, "{product:#?}");
+    assert!(!product[own].ignored);
+
+    // Folders git ignores are found by name too, and marked.
+    let dirs =
+        files::find_paths(&sandbox.root, "generated", 60, 4, &[], false, true, true).unwrap();
+    let folder = dirs
+        .iter()
+        .find(|one| one.dir && one.path == "generated")
+        .unwrap();
+    assert!(folder.ignored);
+
+    // Dependencies, when asked as well, come after all of it.
+    let all = files::find_paths(&sandbox.root, "Product", 60, 5, &[], true, true, false).unwrap();
+    let first_vendor = all
+        .iter()
+        .position(|one| one.path.starts_with("vendor/"))
+        .unwrap();
+    assert!(all[first_vendor..]
+        .iter()
+        .all(|one| one.path.starts_with("vendor/") || one.path.starts_with("node_modules/")));
+    assert!(!all[first_vendor].ignored);
+}
+
+#[test]
+fn a_search_can_be_kept_inside_one_folder() {
+    let sandbox = ignored_finder_sandbox("search-scope");
+    let paths = |options: search::SearchOptions| -> Vec<String> {
+        search_all(&sandbox, "price_marker", options, None)
+            .0
+            .into_iter()
+            .map(|one| one.path)
+            .collect()
+    };
+    // The whole tree, by default: the project's files only, tests last.
+    assert_eq!(
+        paths(Default::default()),
+        [
+            "app/code/Acme/Shop/Model/Product.php",
+            "app/code/Acme/Shop/Test/Unit/Model/ProductTest.php"
+        ]
+    );
+    // A folder of the project.
+    assert_eq!(
+        paths(search::SearchOptions {
+            scope: "app/code/Acme/Shop/Model".into(),
+            ..Default::default()
+        }),
+        ["app/code/Acme/Shop/Model/Product.php"]
+    );
+    // A dependency's folder is searched whole, with no toggle.
+    assert_eq!(
+        paths(search::SearchOptions {
+            scope: "vendor/magento/module-catalog".into(),
+            ..Default::default()
+        }),
+        ["vendor/magento/module-catalog/Model/Product.php"]
+    );
+    // So is a folder git ignores.
+    assert_eq!(
+        paths(search::SearchOptions {
+            scope: "generated/".into(),
+            ..Default::default()
+        }),
+        ["generated/code/Acme/Shop/Model/Product/Interceptor.php"]
+    );
+    // Something not a folder, or outside the work tree, is an error.
+    let (_, done) = search_all(
+        &sandbox,
+        "price_marker",
+        search::SearchOptions {
+            scope: "../".into(),
+            ..Default::default()
+        },
+        None,
+    );
+    assert!(done.error.is_some());
+    let (_, done) = search_all(
+        &sandbox,
+        "price_marker",
+        search::SearchOptions {
+            scope: "app/etc/config.php".into(),
+            ..Default::default()
+        },
+        None,
+    );
+    assert!(done.error.is_some());
+}
+
+#[test]
+fn a_search_inside_a_folder_whose_contents_git_ignores_reads_them_all() {
+    // Magento ignores what is in generated/, var/ and pub/media/, not the
+    // folders themselves, so each keeps its committed .htaccess.
+    let sandbox = Sandbox::new("search-scope-contents");
+    let put = |path: &str, text: &str| {
+        let full = sandbox.root.join(path);
+        std::fs::create_dir_all(full.parent().unwrap()).unwrap();
+        std::fs::write(full, text).unwrap();
+    };
+    put("generated/.htaccess", "# price_marker kept\n");
+    put(
+        "generated/code/Acme/Product/Interceptor.php",
+        "<?php // price_marker\n",
+    );
+    put("var/cache/mage--1/x", "price_marker\n");
+    put("vendor/.htaccess", "price_marker kept\n");
+    put("vendor/acme/kit/Thing.php", "<?php // price_marker\n");
+    put("app/.hidden/note.txt", "price_marker\n");
+    put("app/Product.php", "<?php // price_marker\n");
+    put("target/debug/build.txt", "price_marker\n");
+    sandbox.write(
+        ".gitignore",
+        ".*\n!.gitignore\n/generated/*\n!/generated/.htaccess\n/var/*\n/vendor/*\n!/vendor/.htaccess\ntarget/\n",
+    );
+    sandbox.git(&["add", "--all"]);
+    sandbox.git(&["commit", "-q", "-m", "shop"]);
+    assert!(!files::path_ignored_at(&sandbox.root, "generated").unwrap());
+    assert!(files::folder_ignored(&sandbox.root, "generated").unwrap());
+    // `.*` ignores dotfiles, not every folder.
+    assert!(!files::folder_ignored(&sandbox.root, "app").unwrap());
+
+    let paths = |scope: &str| -> Vec<String> {
+        let (found, done) = search_all(
+            &sandbox,
+            "price_marker",
+            search::SearchOptions {
+                scope: scope.into(),
+                ..Default::default()
+            },
+            None,
+        );
+        assert!(done.error.is_none(), "{done:?}");
+        found.into_iter().map(|one| one.path).collect()
+    };
+    // Walked by hand the first time, from the kept list once it is there:
+    // the same answer, each file once.
+    for _ in 0..2 {
+        assert_eq!(
+            paths("generated"),
+            [
+                "generated/.htaccess",
+                "generated/code/Acme/Product/Interceptor.php"
+            ]
+        );
+        files::ignored_files(&sandbox.root).unwrap();
+    }
+    assert_eq!(paths("var"), ["var/cache/mage--1/x"]);
+    assert_eq!(paths("app"), ["app/Product.php"]);
+    // A file committed inside vendor/ is read once, kept list or not.
+    for _ in 0..2 {
+        assert_eq!(
+            paths("vendor"),
+            ["vendor/.htaccess", "vendor/acme/kit/Thing.php"]
+        );
+        files::dependency_files(&sandbox.root).unwrap();
+    }
+    let (everything, _) = search_all(
+        &sandbox,
+        "price_marker",
+        search::SearchOptions {
+            dependencies: true,
+            ..Default::default()
+        },
+        None,
+    );
+    let listed: Vec<&str> = everything.iter().map(|one| one.path.as_str()).collect();
+    assert_eq!(
+        listed
+            .iter()
+            .filter(|path| **path == "vendor/.htaccess")
+            .count(),
+        1,
+        "{listed:?}"
+    );
+    // Build output is never in the list of ignored files, but a search
+    // inside it still reads it.
+    assert!(files::ignored_files(&sandbox.root)
+        .unwrap()
+        .iter()
+        .all(|path| !path.starts_with("target/")));
+    assert_eq!(paths("target"), ["target/debug/build.txt"]);
+    // `vendor/..` is the root, not a dependency: the project only.
+    assert_eq!(
+        paths("generated/.."),
+        ["app/Product.php", "generated/.htaccess", "vendor/.htaccess"]
+    );
+}
+
+#[test]
+fn a_changed_gitignore_drops_the_list_of_ignored_files_and_a_new_file_only_ages_it() {
+    let sandbox = ignored_finder_sandbox("ignored-list-forget");
+    let before = files::ignored_files(&sandbox.root).unwrap();
+    assert!(before.iter().any(|path| path == "app/etc/env.php"));
+    // A project file came: the old list is still handed out at once.
+    sandbox.write("app/New.php", "<?php\n");
+    files::forget(&sandbox.root);
+    let aged = files::ignored_files(&sandbox.root).unwrap();
+    assert!(aged.iter().any(|path| path == "app/etc/env.php"));
+    // The rules changed: the next ask walks again with them.
+    sandbox.write(".gitignore", "/vendor/\n/generated/\nnode_modules/\n");
+    files::forget(&sandbox.root);
+    files::forget_ignore_rules(&sandbox.root);
+    let after = files::ignored_files(&sandbox.root).unwrap();
+    assert!(
+        after.iter().all(|path| path != "app/etc/env.php"),
+        "{after:?}"
+    );
+}
+
+#[test]
+fn a_search_takes_ignored_files_and_dependencies_when_asked_and_after_the_project() {
+    let sandbox = ignored_finder_sandbox("search-sources");
+    let paths = |options: search::SearchOptions| -> Vec<String> {
+        search_all(&sandbox, "price_marker", options, None)
+            .0
+            .into_iter()
+            .map(|one| one.path)
+            .collect()
+    };
+    assert_eq!(
+        paths(search::SearchOptions {
+            ignored: true,
+            ..Default::default()
+        }),
+        [
+            "app/code/Acme/Shop/Model/Product.php",
+            "app/code/Acme/Shop/Test/Unit/Model/ProductTest.php",
+            "generated/code/Acme/Shop/Model/Product/Interceptor.php"
+        ]
+    );
+    assert_eq!(
+        paths(search::SearchOptions {
+            ignored: true,
+            dependencies: true,
+            ..Default::default()
+        }),
+        [
+            "app/code/Acme/Shop/Model/Product.php",
+            "app/code/Acme/Shop/Test/Unit/Model/ProductTest.php",
+            "generated/code/Acme/Shop/Model/Product/Interceptor.php",
+            "node_modules/left-pad/index.js",
+            "vendor/magento/module-catalog/Model/Product.php"
+        ]
+    );
+    // A scope inside the project leaves the dependencies out, toggle or not.
+    assert_eq!(
+        paths(search::SearchOptions {
+            scope: "app".into(),
+            dependencies: true,
+            ..Default::default()
+        }),
+        [
+            "app/code/Acme/Shop/Model/Product.php",
+            "app/code/Acme/Shop/Test/Unit/Model/ProductTest.php"
+        ]
     );
 }
 
@@ -9978,7 +10330,7 @@ fn find_with_folders(
     request: u64,
     deps: bool,
 ) -> Vec<files::Found> {
-    files::find_paths(&sandbox.root, query, 60, request, &[], deps, true).unwrap()
+    files::find_paths(&sandbox.root, query, 60, request, &[], deps, false, true).unwrap()
 }
 
 #[test]
