@@ -331,6 +331,47 @@ describe('the file editor', () => {
     expect(w.emitted('bar')?.[0]).toEqual([1])
   })
 
+  it('draws a run of lines as one bar, rounded at its ends, a dot where lines went, and lights the run on hover', async () => {
+    disk = { text: 'a\nb\nc\nd\ne\nf\n', hash: 'h1' }
+    const hunks = [
+      {
+        header: '@@ -1,2 +1,2 @@',
+        lines: [
+          { origin: '-', old_lineno: 1, new_lineno: null, content: 'A' },
+          { origin: '-', old_lineno: 2, new_lineno: null, content: 'B' },
+          { origin: '+', old_lineno: null, new_lineno: 1, content: 'a' },
+          { origin: '+', old_lineno: null, new_lineno: 2, content: 'b' }
+        ]
+      },
+      {
+        header: '@@ -3,0 +4,1 @@',
+        lines: [{ origin: '+', old_lineno: null, new_lineno: 4, content: 'd' }]
+      },
+      {
+        header: '@@ -6,2 +6,1 @@',
+        lines: [
+          { origin: '-', old_lineno: 6, new_lineno: null, content: 'gone' },
+          { origin: ' ', old_lineno: 7, new_lineno: 6, content: 'f' }
+        ]
+      }
+    ]
+    const w = await show({ hunks })
+    const changed = w.findAll('.cm-bar.changed')
+    expect(changed).toHaveLength(2)
+    expect(changed[0]!.classes()).toEqual(expect.arrayContaining(['head']))
+    expect(changed[0]!.classes()).not.toContain('tail')
+    expect(changed[1]!.classes()).toEqual(expect.arrayContaining(['tail']))
+    expect(changed[1]!.classes()).not.toContain('head')
+    const added = w.findAll('.cm-bar.added')
+    expect(added).toHaveLength(1)
+    expect(added[0]!.classes()).toEqual(expect.arrayContaining(['head', 'tail']))
+    expect(w.findAll('.cm-bar.removed')).toHaveLength(1)
+    // Hovering one line of the rewritten run lights both, and nothing else.
+    changed[1]!.element.parentElement!.dispatchEvent(new MouseEvent('mouseover', { bubbles: true, clientY: 0 }))
+    await flushPromises()
+    expect(w.findAll('.cm-bar.lit').map((one) => one.classes().includes('changed'))).toEqual([true, true])
+  })
+
   it('annotates the lines in a column when blame is on, and adds no note to the caret line', async () => {
     const runs = [
       { oid: 'a'.repeat(40), short: 'aaaaaaa', summary: 'Tax rates', author: 'Sam', email: 's@x', time: Math.floor(Date.now() / 1000) - 60, start: 1, lines: 2, uncommitted: false }

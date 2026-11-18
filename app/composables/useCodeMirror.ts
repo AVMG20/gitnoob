@@ -257,22 +257,32 @@ export const chrome = EditorView.theme({
     backgroundColor: 'var(--active)',
     outline: '1px solid var(--line)'
   },
-  // The change bars: green new, blue rewritten, a red wedge where lines went.
-  '.cm-bars': { width: '6px' },
-  '.cm-bars .cm-gutterElement': { position: 'relative' },
+  // The change bars, as the file view drew them and the change ruler still
+  // does: green where a line is new, the accent where one was rewritten, a
+  // grey dot on the seam where lines were deleted. A run of lines is one bar,
+  // square where it meets the next line and rounded only at its ends, and
+  // hovering any line of it lights the whole run.
+  '.cm-bars': { width: '7px' },
+  '.cm-bars .cm-gutterElement': { position: 'relative', overflow: 'visible' },
   // Only where there is a bar to click.
   '.cm-bars .cm-gutterElement:has(.cm-bar)': { cursor: 'pointer' },
-  '.cm-bar': { position: 'absolute', inset: '0 1px 0 1px', borderRadius: '1px' },
-  '.cm-bar.added': { backgroundColor: 'var(--success)' },
-  '.cm-bar.changed': { backgroundColor: 'var(--info)' },
+  '.cm-bar': { position: 'absolute', top: '0', bottom: '0', left: '2px', width: '3px' },
+  '.cm-bar.head': { borderTopLeftRadius: '2px', borderTopRightRadius: '2px' },
+  '.cm-bar.tail': { borderBottomLeftRadius: '2px', borderBottomRightRadius: '2px' },
+  '.cm-bar.added': { backgroundColor: 'var(--green)' },
+  '.cm-bar.changed': { backgroundColor: 'var(--accent)' },
+  '.cm-bar.lit': { filter: 'brightness(1.35)' },
   '.cm-bar.removed': {
-    inset: '-4px 0 auto 0',
-    height: '0',
-    borderTop: '4px solid transparent',
-    borderBottom: '4px solid transparent',
-    borderLeft: '6px solid var(--danger)',
-    backgroundColor: 'transparent'
+    top: '-3px',
+    bottom: 'auto',
+    left: '1px',
+    width: '5px',
+    height: '5px',
+    borderRadius: '50%',
+    backgroundColor: 'var(--text-faint)',
+    zIndex: '1'
   },
+  '.cm-bar.removed:hover, .cm-bar.removed.lit': { backgroundColor: 'var(--text-dim)', filter: 'none' },
   // The blame column: there only while it is on, a fixed width that grows
   // with the code font, and quiet enough that the code stays what is read.
   // CodeMirror's own `.cm-gutter { display: flex !important }` wins over a
@@ -362,23 +372,34 @@ export interface Bar {
   hunk: number
 }
 
+const BAR_TITLES: Record<Bar['kind'], string> = {
+  added: 'New since the last commit — click for the change',
+  changed: 'Changed — click to see what was here',
+  removed: 'Lines deleted here — click to read them'
+}
+
 class BarMarker extends GutterMarker {
   constructor(
-    readonly kind: string,
-    readonly hunk: number
+    readonly kind: Bar['kind'],
+    readonly hunk: number,
+    /** The first and last line of a run of the same kind: rounded there. */
+    readonly head: boolean,
+    readonly tail: boolean
   ) {
     super()
   }
 
   override eq(other: BarMarker) {
-    return other.kind === this.kind && other.hunk === this.hunk
+    return (
+      other.kind === this.kind && other.hunk === this.hunk && other.head === this.head && other.tail === this.tail
+    )
   }
 
   override toDOM() {
     const element = document.createElement('div')
-    element.className = `cm-bar ${this.kind}`
+    element.className = `cm-bar ${this.kind}${this.head ? ' head' : ''}${this.tail ? ' tail' : ''}`
     element.dataset.hunk = String(this.hunk)
-    element.title = 'Click to see what was here'
+    element.title = BAR_TITLES[this.kind]
     return element
   }
 }
@@ -419,21 +440,41 @@ const barField = StateField.define<RangeSet<BarMarker>>({
     for (const effect of tr.effects) {
       if (!effect.is(setBars)) continue
       const doc = tr.state.doc
-      const ranges = effect.value
+      const kept = effect.value
         .filter((bar) => bar.line >= 1 && bar.line <= doc.lines)
         // A line that both lost lines above it and changed shows the change;
-        // the wedge is for a seam with nothing else on it.
+        // the dot is for a seam with nothing else on it.
         .filter(
           (bar, _, all) =>
             bar.kind !== 'removed' || !all.some((one) => one.line === bar.line && one.kind !== 'removed')
         )
-        .map((bar) => new BarMarker(bar.kind, bar.hunk).range(doc.line(bar.line).from))
+      // Which kind of bar each line has, to tell where a run starts and ends.
+      const solid = new Map<number, Bar['kind']>()
+      for (const bar of kept) if (bar.kind !== 'removed') solid.set(bar.line, bar.kind)
+      const ranges = kept
+        .map((bar) =>
+          new BarMarker(
+            bar.kind,
+            bar.hunk,
+            bar.kind === 'removed' || solid.get(bar.line - 1) !== bar.kind,
+            bar.kind === 'removed' || solid.get(bar.line + 1) !== bar.kind
+          ).range(doc.line(bar.line).from)
+        )
         .sort((a, b) => a.from - b.from)
       next = RangeSet.of(ranges)
     }
     return next
   }
 })
+
+/** Lights every bar of one hunk, or none. */
+function lightRun(root: HTMLElement, hunk: number | null) {
+  for (const bar of root.querySelectorAll<HTMLElement>('.cm-bar.lit')) {
+    if (bar.dataset.hunk !== String(hunk)) bar.classList.remove('lit')
+  }
+  if (hunk === null) return
+  for (const bar of root.querySelectorAll<HTMLElement>(`.cm-bar[data-hunk="${hunk}"]`)) bar.classList.add('lit')
+}
 
 /** The gutter of change bars. `open` is called with the line of the bar clicked. */
 export function changeBars(open: (line: number) => void): Extension {
@@ -451,6 +492,19 @@ export function changeBars(open: (line: number) => void): Extension {
           if (!found) return false
           open(view.state.doc.lineAt(block.from).number)
           return true
+        },
+        // The whole run lights up under the pointer, so it reads as one change.
+        mouseover(view, block) {
+          let hunk: number | null = null
+          view.state.field(barField).between(block.from, block.from, (_from, _to, marker) => {
+            hunk = marker.hunk
+          })
+          lightRun(view.dom, hunk)
+          return false
+        },
+        mouseleave(view) {
+          lightRun(view.dom, null)
+          return false
         }
       }
     })

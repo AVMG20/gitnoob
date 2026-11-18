@@ -108,7 +108,7 @@ const editorOf = (w: ReturnType<typeof mount>) =>
 /** happy-dom lays nothing out: a click on the bar gutter lands on line 1. */
 async function clickBar(w: ReturnType<typeof mount>) {
   const bar = w.find(".cm-bar");
-  expect(bar.attributes("title")).toBe("Click to see what was here");
+  expect(bar.attributes("title")).toMatch(/click to see what was here/i);
   bar.element.parentElement!.dispatchEvent(
     new MouseEvent("mousedown", { bubbles: true, clientY: 0 }),
   );
