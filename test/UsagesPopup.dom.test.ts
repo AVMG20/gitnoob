@@ -120,7 +120,7 @@ describe('a lookup that answers late', () => {
 })
 
 describe('⌘-click on a definition', () => {
-  it('lists the usages, the ones in changed files first and marked', async () => {
+  it('lists the usages, the ones in changed files first and marked, tests last', async () => {
     await jumpFrom(SERVICE, 122, 'the text', { x: 100, y: 200 })
     expect(asked).toHaveBeenCalledWith('symbol_at', { path: SERVICE, offset: 122, text: 'the text' })
     expect(asked).toHaveBeenCalledWith('usages', {
@@ -136,14 +136,18 @@ describe('⌘-click on a definition', () => {
     const rows = w.findAll('.row')
     expect(rows.map((row) => row.find('.file').text())).toEqual([
       'InvoiceController.php',
-      'InvoiceServiceTest.php',
-      'SendInvoiceMail.php'
+      'SendInvoiceMail.php',
+      'InvoiceServiceTest.php'
     ])
     expect(rows.map((row) => row.find('.state').exists() ? row.find('.state').text() : '')).toEqual([
       'changed',
-      'new',
-      ''
+      '',
+      'new'
     ])
+    // A test is drawn apart, with a tag; the others are not.
+    expect(rows.map((row) => row.classes().includes('kind-test'))).toEqual([false, false, true])
+    expect(rows[2]!.find('.kind-tag').text()).toBe('test')
+    expect(rows[0]!.find('.kind-tag').exists()).toBe(false)
     expect(rows[0]!.find('.code').text()).toBe('$this->billing->total($invoice)')
     expect(w.find('.overlay').exists()).toBe(true)
   })
@@ -158,7 +162,7 @@ describe('⌘-click on a definition', () => {
     await flushPromises()
     expect(usagesPopup.open).toBe(false)
     const tab = tabs.activeTab()!
-    expect(tab).toMatchObject({ path: 'tests/InvoiceServiceTest.php', mode: 'file', preview: false, line: 18 })
+    expect(tab).toMatchObject({ path: 'app/Mail/SendInvoiceMail.php', mode: 'file', preview: false, line: 27 })
     expect(tabs.state.back.at(-1)?.path).toBe(SERVICE)
   })
 
@@ -166,7 +170,7 @@ describe('⌘-click on a definition', () => {
     await jumpFrom(SERVICE, 122, null)
     let w = await show()
     await w.findAll('.row')[2]!.trigger('click')
-    expect(tabs.activeTab()?.path).toBe('app/Mail/SendInvoiceMail.php')
+    expect(tabs.activeTab()?.path).toBe('tests/InvoiceServiceTest.php')
     w.unmount()
 
     await jumpFrom(SERVICE, 122, null)
@@ -179,6 +183,21 @@ describe('⌘-click on a definition', () => {
     w = await show()
     await w.find('.usages-backdrop').trigger('mousedown')
     expect(usagesPopup.open).toBe(false)
+  })
+
+  it('puts dependencies after tests, and Magento-style Test/Unit counts as a test', async () => {
+    found = [
+      at('vendor/magento/module-catalog/Model/Product.php', 5, '$p->total()'),
+      at('app/code/Acme/Shop/Test/Unit/ProductTest.php', 7, '$p->total()'),
+      at('app/code/Acme/Shop/Model/Cart.php', 9, '$p->total()')
+    ]
+    git.store.status = { staged: [], unstaged: [], conflicted: [] } as never
+    await jumpFrom(SERVICE, 122, null)
+    const w = await show()
+    const rows = w.findAll('.row')
+    expect(rows.map((row) => row.find('.file').text())).toEqual(['Cart.php', 'ProductTest.php', 'Product.php'])
+    expect(rows[2]!.classes()).toContain('kind-vendor')
+    expect(rows[2]!.find('.kind-tag').text()).toBe('vendor')
   })
 
   it('jumps straight there when there is one usage', async () => {

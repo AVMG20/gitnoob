@@ -5,6 +5,7 @@ import { openTab } from './useTabs'
 import { useToasts } from './useToasts'
 import { change } from './useFileView'
 import { frameworkLinks, type FrameworkLinks } from './useFramework'
+import { pathRank, testsLast } from './pathKind'
 
 /**
  * ⌘-click and ⌘J: from a name to where it is defined, or from a definition
@@ -140,10 +141,11 @@ export function openLocation(place: CodeLocation) {
   openTab({ path: place.path, mode: 'file', side: 'unstaged' }, { line: place.line, reveal: 'switch' })
 }
 
+/** Changed files first; tests after the rest, and dependencies last, whatever their state. */
 function marked(found: CodeLocation[]): PopupItem[] {
   return found
-    .map((one, order) => ({ one: { ...one, state: stateOf(one.path) }, order }))
-    .sort((a, b) => ORDER[a.one.state] - ORDER[b.one.state] || a.order - b.order)
+    .map((one, order) => ({ one: { ...one, state: stateOf(one.path) }, order, rank: pathRank(one.path) }))
+    .sort((a, b) => a.rank - b.rank || ORDER[a.one.state] - ORDER[b.one.state] || a.order - b.order)
     .map(({ one }) => one)
 }
 
@@ -164,7 +166,9 @@ function showPopup(
   usagesPopup.note = extra.note ?? ''
   // Framework candidates come in the backend's order (the module's own file
   // first), which means more than which ones are changed.
-  usagesPopup.items = extra.keepOrder ? found.map((one) => ({ ...one, state: stateOf(one.path) })) : marked(found)
+  usagesPopup.items = extra.keepOrder
+    ? testsLast(found.map((one) => ({ ...one, state: stateOf(one.path) })))
+    : marked(found)
   usagesPopup.possible = marked(extra.possible ?? [])
   usagesPopup.config = marked(extra.config ?? [])
   usagesPopup.configLabel = extra.configLabel ?? 'Config'

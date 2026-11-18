@@ -4,6 +4,7 @@ import { keyLabel, keysFor } from '~/composables/useShortcuts'
 import FileIcon from '~/components/FileIcon.vue'
 import { closeUsages, openLocation, usagesPopup, type PopupItem } from '~/composables/useSymbols'
 import { framework, openWiring } from '~/composables/useFramework'
+import { pathKind } from '~/composables/pathKind'
 
 /**
  * The list ⌘-click shows when a name has several usages, or several
@@ -12,6 +13,10 @@ import { framework, openWiring } from '~/composables/useFramework'
  *
  * Definite usages come first. The possible ones (same name, receiver
  * unknown) sit under a "Possible (n)" row that ↵ or a click unfolds.
+ *
+ * Tests and dependencies sort after the rest of their group (`marked` in
+ * useSymbols.ts) and are drawn in a colour of their own, with a tag, since
+ * they are seldom where anyone means to go.
  *
  * The backdrop is an `.overlay`, so the app's shortcuts stand aside while it
  * is open.
@@ -173,7 +178,7 @@ onBeforeUnmount(() => {
             :id="`usage-${at}`"
             class="row"
             role="option"
-            :class="{ on: at === usagesPopup.cursor, possible: row.possible }"
+            :class="[`kind-${pathKind(row.item.path)}`, { on: at === usagesPopup.cursor, possible: row.possible }]"
             :aria-selected="at === usagesPopup.cursor"
             :title="`${row.item.path}:${row.item.line}`"
             @mousemove="usagesPopup.cursor = at"
@@ -185,6 +190,9 @@ onBeforeUnmount(() => {
               <span class="dir">{{ folder(row.item.path) }}</span>
             </span>
             <span class="code">{{ row.item.text }}</span>
+            <span v-if="pathKind(row.item.path) !== 'project'" class="kind-tag" :class="pathKind(row.item.path)">{{
+              pathKind(row.item.path)
+            }}</span>
             <span v-if="row.item.label" class="tag" :class="{ override: row.item.label.endsWith('override') }">{{ row.item.label }}</span>
             <span v-else-if="LABEL[row.item.state]" class="state" :class="row.item.state">{{ LABEL[row.item.state] }}</span>
           </div>
@@ -238,7 +246,7 @@ onBeforeUnmount(() => {
 
 .row {
   display: grid;
-  grid-template-columns: minmax(0, 15em) minmax(0, 1fr) auto;
+  grid-template-columns: minmax(0, 15em) minmax(0, 1fr) auto auto;
   gap: 10px;
   align-items: baseline;
   padding: 4px 12px;
@@ -253,6 +261,39 @@ onBeforeUnmount(() => {
 .row.possible .file,
 .row.possible .code {
   color: var(--text-faint);
+}
+
+/* A test or a dependency: in a colour of its own, quieter than the rest. */
+.row.kind-test .file,
+.row.kind-test .num {
+  color: color-mix(in srgb, var(--success) 60%, var(--text-faint));
+}
+
+.row.kind-vendor .file,
+.row.kind-vendor .num {
+  color: color-mix(in srgb, var(--warning) 45%, var(--text-faint));
+}
+
+.row.kind-test .code,
+.row.kind-vendor .code {
+  color: var(--text-faint);
+}
+
+.kind-tag {
+  font-size: 10px;
+  padding: 0 6px;
+  border-radius: 8px;
+  white-space: nowrap;
+}
+
+.kind-tag.test {
+  color: color-mix(in srgb, var(--success) 70%, var(--text-faint));
+  background: color-mix(in srgb, var(--success) 12%, transparent);
+}
+
+.kind-tag.vendor {
+  color: color-mix(in srgb, var(--warning) 60%, var(--text-faint));
+  background: color-mix(in srgb, var(--warning) 12%, transparent);
 }
 
 .note {
