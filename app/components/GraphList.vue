@@ -213,6 +213,15 @@ const matches = computed(() =>
   store.query.trim() ? store.rows.filter((row) => rowMatches(row, store.query)) : []
 )
 const matchIds = computed(() => new Set(matches.value.map((row) => row.oid)))
+/** The search match the counter is standing on, or null when nothing matches. */
+const currentHit = computed(() => matches.value[hit.value]?.oid ?? null)
+
+watch(
+  () => matches.value.length,
+  (count) => {
+    if (hit.value >= count) hit.value = Math.max(0, count - 1)
+  }
+)
 
 /**
  * How far the commits sit below the top of the scroller.
@@ -507,6 +516,13 @@ function step(by: number) {
   scrollTo(row.oid)
 }
 
+/** Keeps the search counter on whichever match was just picked by click or key. */
+function syncHit(oid: string) {
+  if (!matches.value.length) return
+  const found = matches.value.findIndex((one) => one.oid === oid)
+  if (found >= 0) hit.value = found
+}
+
 // Something outside the graph — a branch clicked in the sidebar — picked a
 // commit and wants it shown. The row may be past the loaded page, in which case
 // `scrollTo` finds nothing and the detail panel alone answers the question.
@@ -567,6 +583,7 @@ function move(by: number) {
   const next = list[Math.min(list.length - 1, Math.max(0, at < 0 ? 0 : at + by))]
   if (!next || next === store.selected) return
   git.select(next)
+  syncHit(next)
   if (next === WIP) viewport.value?.scrollTo({ top: 0, behavior: 'smooth' })
   else scrollTo(next)
 }
@@ -900,6 +917,7 @@ function onRowClick(event: MouseEvent, row: GraphRow) {
   }
 
   git.select(row.oid)
+  syncHit(row.oid)
 }
 
 function clearMarks() {
@@ -1477,6 +1495,7 @@ onUnmounted(() => {
             on: store.selected === item.row.oid,
             marked: markedSet.has(item.row.oid),
             hit: matchIds.has(item.row.oid),
+            now: currentHit === item.row.oid,
             dim: store.query.trim() && !matchIds.has(item.row.oid),
             drop: drag.state.over === `commit:${item.row.oid}`
           }"
@@ -2138,6 +2157,22 @@ onUnmounted(() => {
   background: var(--warning-bg);
 }
 
+/* The match the search counter is standing on, or a match that was clicked:
+   the same selection ground as any other row (which `.row.hit` above would
+   otherwise paint over), plus a bar and hairlines so it stays apart from a run
+   of neighbouring matches. */
+.row.hit.on,
+.row.hit.now {
+  background: var(--bg-active);
+}
+
+.row.hit.now {
+  box-shadow:
+    inset 3px 0 0 var(--accent),
+    inset 0 1px 0 var(--primary-line),
+    inset 0 -1px 0 var(--primary-line);
+}
+
 .row.drop {
   outline: 1px dashed var(--accent);
   outline-offset: -2px;
@@ -2534,6 +2569,11 @@ onUnmounted(() => {
   color: var(--fg);
 }
 
+.row.hit.now .mark {
+  background: var(--warning);
+  color: var(--bg);
+}
+
 .col-author {
   flex: none;
   color: var(--text-dim);
@@ -2581,7 +2621,8 @@ onUnmounted(() => {
 }
 
 .row:hover .col-refs .chip,
-.row.on .col-refs .chip {
+.row.on .col-refs .chip,
+.row.now .col-refs .chip {
   opacity: 1;
 }
 

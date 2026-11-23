@@ -42,6 +42,8 @@ beforeEach(() => {
   asked.mockImplementation(async () => null)
   git.store.repo = { path: '/repo', name: 'repo', head: 'main', detached: false, author: 'Robin Vale' } as never
   git.store.rows = [row('aaaaaaa1', 'Show the inherited email subject'), row('bbbbbbb2', 'Merged into staging')]
+  git.store.query = ''
+  git.store.selected = 'aaaaaaa1'
   git.store.status = {
     staged: [{ path: 'a.ts', kind: 'modified' }],
     unstaged: [
@@ -336,5 +338,87 @@ describe('resetting from the commit menu', () => {
 
     expect(calls.find((call) => call.cmd === 'reset')?.args).toMatchObject({ mode: 'soft' })
     expect(git.store.log).toHaveLength(0)
+  })
+})
+
+/**
+ * Stepping through search results in the graph.
+ *
+ * Every matching row wears `.hit`; the one the counter is standing on wears
+ * `.now` as well, so it stays visually distinct from a run of neighbouring
+ * matches while walking them with the arrows.
+ */
+describe('stepping through search results', () => {
+  beforeEach(() => {
+    git.store.rows = [
+      { ...row('aaaaaaa1', 'Fix invoice icon'), author: 'Jurgen Jansen' },
+      { ...row('bbbbbbb2', 'Unrelated commit'), author: 'Arno Visker' },
+      { ...row('ccccccc3', 'Remove Luma-only code'), author: 'Jurgen Jansen' },
+      { ...row('ddddddd4', 'Show plain address fields'), author: 'Jurgen Jansen' }
+    ]
+    git.store.selected = 'bbbbbbb2'
+  })
+
+  it('marks the active match as you step up and down through the results', async () => {
+    const wrapper = mount(Host)
+    await flushPromises()
+
+    await wrapper.find('.head-tools .tool').trigger('click')
+    await flushPromises()
+    await wrapper.find('.search input').setValue('Jurgen')
+    await flushPromises()
+
+    const rows = () => wrapper.findAll('.spacer .row')
+    const [prev, next, close] = wrapper.findAll('.search .step')
+
+    // On the first hit right away, while the rest of the matches wear `.hit`
+    // alone and non-matches dim out.
+    expect(wrapper.find('.search .count').text()).toBe('1 of 3')
+    expect(rows()[0]!.classes()).toEqual(expect.arrayContaining(['hit', 'now']))
+    expect(rows()[1]!.classes()).toContain('dim')
+    expect(rows()[2]!.classes()).toContain('hit')
+    expect(rows()[2]!.classes()).not.toContain('now')
+
+    // Stepping down moves `.now` and `.on` together to the second match.
+    await next!.trigger('click')
+    await flushPromises()
+    expect(wrapper.find('.search .count').text()).toBe('2 of 3')
+    expect(rows()[0]!.classes()).not.toContain('now')
+    expect(rows()[2]!.classes()).toEqual(expect.arrayContaining(['hit', 'now', 'on']))
+
+    // Stepping up moves back to the first match, and once more wraps to the last.
+    await prev!.trigger('click')
+    await flushPromises()
+    expect(wrapper.find('.search .count').text()).toBe('1 of 3')
+    expect(rows()[0]!.classes()).toEqual(expect.arrayContaining(['hit', 'now', 'on']))
+
+    await prev!.trigger('click')
+    await flushPromises()
+    expect(wrapper.find('.search .count').text()).toBe('3 of 3')
+    expect(rows()[3]!.classes()).toEqual(expect.arrayContaining(['hit', 'now', 'on']))
+
+    // Closing search clears every match highlight.
+    await close!.trigger('click')
+    await flushPromises()
+    expect(wrapper.findAll('.spacer .row.now')).toHaveLength(0)
+    expect(wrapper.findAll('.spacer .row.hit')).toHaveLength(0)
+  })
+
+  it('syncs the counter and active match when a matching row is clicked', async () => {
+    const wrapper = mount(Host)
+    await flushPromises()
+
+    await wrapper.find('.head-tools .tool').trigger('click')
+    await flushPromises()
+    await wrapper.find('.search input').setValue('Jurgen')
+    await flushPromises()
+
+    const rows = () => wrapper.findAll('.spacer .row')
+    await rows()[3]!.trigger('click')
+    await flushPromises()
+
+    expect(wrapper.find('.search .count').text()).toBe('3 of 3')
+    expect(rows()[3]!.classes()).toEqual(expect.arrayContaining(['hit', 'now', 'on']))
+    expect(rows()[0]!.classes()).not.toContain('now')
   })
 })
