@@ -1,6 +1,15 @@
+use std::collections::HashMap;
+use std::ffi::OsString;
+use std::io::{BufRead, BufReader, Write};
+use std::path::{Path, PathBuf};
+use std::process::{Command, Stdio};
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{mpsc, Mutex, OnceLock};
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
+
 use serde::{Deserialize, Serialize};
 
-use crate::config::{self, OPENROUTER_KEY};
+use crate::config::{self, AiProvider, OPENROUTER_KEY};
 use crate::conflict;
 use crate::git_cmd;
 use crate::state::AppState;
@@ -9,6 +18,9 @@ const BASE: &str = "https://openrouter.ai/api/v1";
 /// Long enough that opening the picker twice does not hit the network twice,
 /// short enough that new models show up the same day.
 const MODEL_CACHE_SECS: u64 = 60 * 60 * 6;
+/// Local CLI model lists are queried from the CLI and cached for two hours
+/// (both in memory and on disk); Recheck bypasses the cache.
+const CLI_MODEL_CACHE_SECS: u64 = 60 * 60 * 2;
 /// Diffs get large; past this the model adds nothing but cost.
 const MAX_DIFF_CHARS: usize = 48_000;
 /// Git's empty tree, which is what a first commit is diffed against.
@@ -30,11 +42,42 @@ pub struct Model {
 #[derive(Serialize)]
 pub struct AiStatus {
     pub configured: bool,
+    pub provider: AiProvider,
     pub model: Option<String>,
     /// What the settings box starts from, and what "put the default back"
     /// puts back. Sent rather than repeated in the window, so the two cannot
     /// drift apart.
     pub default_commit_prompt: String,
+}
+
+/// Whether one of the local AI CLIs is installed on this machine.
+#[derive(Serialize, Clone, Debug)]
+pub struct CliInfo {
+    pub provider: AiProvider,
+    pub binary: String,
+    pub available: bool,
+    pub path: Option<String>,
+    pub version: Option<String>,
+}
+
+/// A model reported by a local AI CLI, together with the thinking/effort modes
+/// it supports.
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
+pub struct CliModel {
+    pub id: String,
+    pub name: String,
+    pub note: String,
+    /// Ordered thinking/effort levels supported by this model (e.g. `low`,
+    /// `medium`, `high`, `xhigh`, `max`).
+    #[serde(default)]
+    pub effort_levels: Vec<String>,
+    /// The model's default thinking/effort level, if reported by the CLI.
+    #[serde(default)]
+    pub default_effort: Option<String>,
+    /// For CLIs whose effort levels are separate model ids (Antigravity), maps
+    /// each effort level to the exact model id passed to `--model`.
+    #[serde(default, skip_serializing_if = "HashMap::is_empty")]
+    pub effort_models: HashMap<String, String>,
 }
 
 #[derive(Serialize)]
@@ -45,12 +88,858 @@ pub struct CommitMessage {
 
 pub fn status(state: &AppState) -> AiStatus {
     let config = state.config();
+    let ai = &config.global.ai;
+    let configured = match ai.provider {
+        AiProvider::OpenRouter => {
+            config::secret_get(OPENROUTER_KEY).is_some() && ai.active_model().is_some()
+        }
+        other => cli_binary_name(other).and_then(find_binary).is_some(),
+    };
     AiStatus {
-        configured: config::secret_get(OPENROUTER_KEY).is_some()
-            && config.global.ai.model.is_some(),
-        model: config.global.ai.model.clone(),
+        configured,
+        provider: ai.provider,
+        model: ai.active_model(),
         default_commit_prompt: DEFAULT_COMMIT_PROMPT.to_string(),
     }
+}
+
+/// The executable name for a CLI provider.
+fn cli_binary_name(provider: AiProvider) -> Option<&'static str> {
+    match provider {
+        AiProvider::OpenRouter => None,
+        AiProvider::Claude => Some("claude"),
+        AiProvider::Codex => Some("codex"),
+        AiProvider::Antigravity => Some("agy"),
+    }
+}
+
+fn cli_display_name(provider: AiProvider) -> &'static str {
+    match provider {
+        AiProvider::OpenRouter => "OpenRouter",
+        AiProvider::Claude => "Claude CLI",
+        AiProvider::Codex => "Codex CLI",
+        AiProvider::Antigravity => "Antigravity CLI",
+    }
+}
+
+/// The user's home directory, read from the platform's own variable.
+fn home_dir() -> Option<PathBuf> {
+    #[cfg(windows)]
+    let var = std::env::var_os("USERPROFILE");
+    #[cfg(not(windows))]
+    let var = std::env::var_os("HOME");
+    var.filter(|v| !v.is_empty()).map(PathBuf::from)
+}
+
+/// Directories to search for user-installed CLIs.
+///
+/// A macOS desktop app launched from Finder or the Dock starts with a minimal
+/// `PATH` (`/usr/bin:/bin:/usr/sbin:/sbin`) that leaves out `~/.local/bin`,
+/// Homebrew and package-manager bin folders — the exact places `claude`,
+/// `codex` and `agy` live. Appending them after `PATH` finds the user's copy
+/// without overriding anything already on `PATH`.
+fn augmented_path_dirs() -> Vec<PathBuf> {
+    let mut dirs: Vec<PathBuf> = std::env::var_os("PATH")
+        .map(|p| std::env::split_paths(&p).collect())
+        .unwrap_or_default();
+
+    let mut extras: Vec<PathBuf> = Vec::new();
+    #[cfg(not(windows))]
+    {
+        if let Some(home) = home_dir() {
+            extras.push(home.join(".local/bin"));
+            extras.push(home.join(".bun/bin"));
+            extras.push(home.join(".npm-global/bin"));
+            extras.push(home.join(".cargo/bin"));
+            extras.push(home.join(".volta/bin"));
+            extras.push(home.join(".nix-profile/bin"));
+            extras.push(home.join(".asdf/shims"));
+            extras.push(home.join(".local/share/mise/shims"));
+        }
+        extras.push(PathBuf::from("/opt/homebrew/bin"));
+        extras.push(PathBuf::from("/opt/homebrew/sbin"));
+        extras.push(PathBuf::from("/usr/local/bin"));
+    }
+    #[cfg(windows)]
+    {
+        if let Some(home) = home_dir() {
+            extras.push(home.join(".local").join("bin"));
+            extras.push(home.join(".bun").join("bin"));
+            extras.push(home.join(".cargo").join("bin"));
+            extras.push(home.join(".volta").join("bin"));
+        }
+        if let Some(appdata) = std::env::var_os("APPDATA") {
+            extras.push(PathBuf::from(appdata).join("npm"));
+        }
+        if let Some(local) = std::env::var_os("LOCALAPPDATA") {
+            extras.push(PathBuf::from(local).join("Microsoft").join("WinGet").join("Links"));
+        }
+    }
+
+    for extra in extras {
+        if !dirs.contains(&extra) {
+            dirs.push(extra);
+        }
+    }
+    dirs
+}
+
+fn augmented_path() -> OsString {
+    std::env::join_paths(augmented_path_dirs())
+        .unwrap_or_else(|_| std::env::var_os("PATH").unwrap_or_default())
+}
+
+fn is_executable(path: &Path) -> bool {
+    let Ok(meta) = std::fs::metadata(path) else {
+        return false;
+    };
+    if !meta.is_file() {
+        return false;
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        meta.permissions().mode() & 0o111 != 0
+    }
+    #[cfg(not(unix))]
+    {
+        true
+    }
+}
+
+/// Locates `name` on the augmented `PATH`, returning its full path when found.
+pub fn find_binary(name: &str) -> Option<PathBuf> {
+    for dir in augmented_path_dirs() {
+        #[cfg(windows)]
+        {
+            for ext in ["exe", "cmd", "bat"] {
+                let candidate = dir.join(format!("{name}.{ext}"));
+                if is_executable(&candidate) {
+                    return Some(candidate);
+                }
+            }
+            let bare = dir.join(name);
+            if is_executable(&bare) {
+                return Some(bare);
+            }
+        }
+        #[cfg(not(windows))]
+        {
+            let candidate = dir.join(name);
+            if is_executable(&candidate) {
+                return Some(candidate);
+            }
+        }
+    }
+    None
+}
+
+fn cli_command(path: &Path) -> Command {
+    let mut cmd = Command::new(path);
+    git_cmd::quiet(&mut cmd);
+    cmd.current_dir(std::env::temp_dir())
+        .env("PATH", augmented_path())
+        .env("NO_COLOR", "1");
+    cmd
+}
+
+/// Checks whether each supported local AI CLI is installed, and reads its
+/// version when it is.
+pub fn cli_info() -> Vec<CliInfo> {
+    const PROVIDERS: [AiProvider; 3] = [
+        AiProvider::Claude,
+        AiProvider::Codex,
+        AiProvider::Antigravity,
+    ];
+    std::thread::scope(|scope| {
+        let handles: Vec<_> = PROVIDERS
+            .iter()
+            .map(|&provider| {
+                scope.spawn(move || {
+                    let binary = cli_binary_name(provider).unwrap_or("").to_string();
+                    let found = find_binary(&binary);
+                    let version = found.as_deref().and_then(read_cli_version);
+                    CliInfo {
+                        provider,
+                        binary,
+                        available: found.is_some(),
+                        path: found.map(|p| p.to_string_lossy().into_owned()),
+                        version,
+                    }
+                })
+            })
+            .collect();
+        handles
+            .into_iter()
+            .filter_map(|handle| handle.join().ok())
+            .collect()
+    })
+}
+
+fn read_cli_version(path: &Path) -> Option<String> {
+    let mut cmd = cli_command(path);
+    cmd.arg("--version")
+        .env_remove("CLAUDECODE")
+        .env_remove("CLAUDE_CODE_ENTRYPOINT");
+    let out = run_cli_with_stdin(cmd, None, "cli", Duration::from_secs(5)).ok()?;
+    if !out.status.success() {
+        return None;
+    }
+    let text = String::from_utf8_lossy(&out.stdout);
+    text.lines()
+        .map(str::trim)
+        .find(|line| !line.is_empty())
+        .map(|line| line.chars().take(60).collect())
+}
+
+#[derive(Serialize, Deserialize, Clone)]
+struct CachedCliModels {
+    fetched_at: u64,
+    models: Vec<CliModel>,
+}
+
+type CliModelCache = HashMap<AiProvider, CachedCliModels>;
+
+fn cli_model_cache() -> &'static Mutex<CliModelCache> {
+    static CACHE: OnceLock<Mutex<CliModelCache>> = OnceLock::new();
+    CACHE.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+/// Serializes read-modify-write updates to `cli-models.json` across concurrent
+/// model fetches so two providers cannot clobber each other or fight over the
+/// temporary file.
+static DISK_CACHE_LOCK: Mutex<()> = Mutex::new(());
+
+fn unix_secs() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0)
+}
+
+fn cache_key(provider: AiProvider) -> &'static str {
+    match provider {
+        AiProvider::OpenRouter => "openrouter",
+        AiProvider::Claude => "claude",
+        AiProvider::Codex => "codex",
+        AiProvider::Antigravity => "antigravity",
+    }
+}
+
+fn disk_cache_path(config_dir: &Path) -> PathBuf {
+    config_dir.join("cli-models.json")
+}
+
+fn read_disk_cache(config_dir: &Path, provider: AiProvider) -> Option<CachedCliModels> {
+    let _guard = DISK_CACHE_LOCK.lock().ok();
+    let text = std::fs::read_to_string(disk_cache_path(config_dir)).ok()?;
+    let map: HashMap<String, CachedCliModels> = serde_json::from_str(&text).ok()?;
+    map.get(cache_key(provider)).cloned()
+}
+
+fn write_disk_cache(config_dir: &Path, provider: AiProvider, entry: &CachedCliModels) {
+    let _guard = DISK_CACHE_LOCK.lock().ok();
+    let path = disk_cache_path(config_dir);
+    let mut map: HashMap<String, CachedCliModels> = std::fs::read_to_string(&path)
+        .ok()
+        .and_then(|text| serde_json::from_str(&text).ok())
+        .unwrap_or_default();
+    map.insert(cache_key(provider).to_string(), entry.clone());
+    if let Ok(json) = serde_json::to_string_pretty(&map) {
+        let _ = std::fs::create_dir_all(config_dir);
+        let temp = path.with_extension("json.tmp");
+        if std::fs::write(&temp, json).is_ok() {
+            let _ = std::fs::rename(&temp, &path);
+        }
+    }
+}
+
+fn fresh_cached_cli_models(config_dir: &Path, provider: AiProvider) -> Option<Vec<CliModel>> {
+    let now = unix_secs();
+    if let Ok(cache) = cli_model_cache().lock() {
+        if let Some(entry) = cache.get(&provider) {
+            if now.saturating_sub(entry.fetched_at) < CLI_MODEL_CACHE_SECS
+                && !entry.models.is_empty()
+            {
+                return Some(entry.models.clone());
+            }
+        }
+    }
+    if let Some(entry) = read_disk_cache(config_dir, provider) {
+        if now.saturating_sub(entry.fetched_at) < CLI_MODEL_CACHE_SECS && !entry.models.is_empty() {
+            if let Ok(mut cache) = cli_model_cache().lock() {
+                cache.insert(provider, entry.clone());
+            }
+            return Some(entry.models);
+        }
+    }
+    None
+}
+
+fn store_cached_cli_models(config_dir: &Path, provider: AiProvider, models: &[CliModel]) {
+    let entry = CachedCliModels {
+        fetched_at: unix_secs(),
+        models: models.to_vec(),
+    };
+    if let Ok(mut cache) = cli_model_cache().lock() {
+        cache.insert(provider, entry.clone());
+    }
+    write_disk_cache(config_dir, provider, &entry);
+}
+
+/// Queries the selectable models and their supported thinking/effort modes
+/// directly from the local CLI, cached for two hours (in memory and on disk).
+pub fn cli_models(
+    config_dir: &Path,
+    provider: AiProvider,
+    refresh: bool,
+) -> Result<Vec<CliModel>, String> {
+    if provider == AiProvider::OpenRouter {
+        return Ok(Vec::new());
+    }
+    if !refresh {
+        if let Some(cached) = fresh_cached_cli_models(config_dir, provider) {
+            return Ok(cached);
+        }
+    }
+
+    let Some(binary) = cli_binary_name(provider) else {
+        return Ok(Vec::new());
+    };
+    let Some(bin) = find_binary(binary) else {
+        return Ok(Vec::new());
+    };
+
+    let models = match provider {
+        AiProvider::OpenRouter => Vec::new(),
+        AiProvider::Claude => fetch_claude_models(&bin)?,
+        AiProvider::Codex => fetch_codex_models(&bin)?,
+        AiProvider::Antigravity => fetch_antigravity_models(&bin)?,
+    };
+
+    if !models.is_empty() {
+        store_cached_cli_models(config_dir, provider, &models);
+    }
+    Ok(models)
+}
+
+/// Runs a short-lived JSON-line handshake against a CLI (such as Claude's
+/// stream-json `initialize` or Codex's `app-server` `model/list`), reading
+/// stdout line-by-line until `extract` returns `Some(T)` or `timeout` elapses.
+fn query_json_rpc_lines<T, F>(
+    mut cmd: Command,
+    requests: &[&str],
+    timeout: Duration,
+    mut extract: F,
+) -> Result<Option<T>, String>
+where
+    F: FnMut(&serde_json::Value) -> Option<T>,
+{
+    cmd.stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null());
+    let mut child = cmd.spawn().map_err(|e| e.to_string())?;
+    let mut stdin = child
+        .stdin
+        .take()
+        .ok_or_else(|| "CLI stdin unavailable".to_string())?;
+    for req in requests {
+        stdin
+            .write_all(req.as_bytes())
+            .and_then(|_| stdin.write_all(b"\n"))
+            .map_err(|e| e.to_string())?;
+    }
+    let _ = stdin.flush();
+
+    let stdout = child
+        .stdout
+        .take()
+        .ok_or_else(|| "CLI stdout unavailable".to_string())?;
+    let (tx, rx) = mpsc::channel::<String>();
+    std::thread::spawn(move || {
+        let reader = BufReader::new(stdout);
+        for line in reader.lines().map_while(Result::ok) {
+            if tx.send(line).is_err() {
+                break;
+            }
+        }
+    });
+
+    let deadline = std::time::Instant::now() + timeout;
+    let mut answer = None;
+    while let Some(remaining) = deadline.checked_duration_since(std::time::Instant::now()) {
+        match rx.recv_timeout(remaining) {
+            Ok(line) => {
+                let trimmed = line.trim();
+                if trimmed.is_empty() {
+                    continue;
+                }
+                if let Ok(json) = serde_json::from_str::<serde_json::Value>(trimmed) {
+                    if let Some(found) = extract(&json) {
+                        answer = Some(found);
+                        break;
+                    }
+                }
+            }
+            Err(_) => break,
+        }
+    }
+
+    drop(stdin);
+    let _ = child.kill();
+    let _ = child.wait();
+    Ok(answer)
+}
+
+/// Fetches Claude CLI's live model catalogue via the stream-json `initialize`
+/// control request, falling back to the standard aliases if the handshake fails.
+fn fetch_claude_models(bin: &Path) -> Result<Vec<CliModel>, String> {
+    let mut cmd = cli_command(bin);
+    cmd.args([
+        "-p",
+        "--input-format",
+        "stream-json",
+        "--output-format",
+        "stream-json",
+        "--verbose",
+        "--no-session-persistence",
+        "--setting-sources",
+        "",
+    ])
+    .env_remove("CLAUDECODE")
+    .env_remove("CLAUDE_CODE_ENTRYPOINT");
+
+    let init_req = r#"{"type":"control_request","request_id":"1","request":{"subtype":"initialize"}}"#;
+    let live = query_json_rpc_lines(cmd, &[init_req], Duration::from_secs(12), |msg| {
+        if msg.get("type").and_then(|v| v.as_str()) != Some("control_response") {
+            return None;
+        }
+        let models = msg
+            .get("response")?
+            .get("response")?
+            .get("models")?
+            .as_array()?;
+        Some(parse_claude_init_models(models))
+    })
+    .ok()
+    .flatten()
+    .unwrap_or_default();
+
+    if !live.is_empty() {
+        return Ok(live);
+    }
+
+    Ok(vec![
+        CliModel {
+            id: "haiku".to_string(),
+            name: "Claude Haiku".to_string(),
+            note: "Fastest for quick answers".to_string(),
+            effort_levels: default_effort_levels(),
+            default_effort: Some("low".to_string()),
+            effort_models: HashMap::new(),
+        },
+        CliModel {
+            id: "sonnet".to_string(),
+            name: "Claude Sonnet".to_string(),
+            note: "Balanced speed and quality".to_string(),
+            effort_levels: default_effort_levels(),
+            default_effort: None,
+            effort_models: HashMap::new(),
+        },
+        CliModel {
+            id: "opus".to_string(),
+            name: "Claude Opus".to_string(),
+            note: "Most capable".to_string(),
+            effort_levels: default_effort_levels(),
+            default_effort: None,
+            effort_models: HashMap::new(),
+        },
+    ])
+}
+
+fn default_effort_levels() -> Vec<String> {
+    vec![
+        "low".to_string(),
+        "medium".to_string(),
+        "high".to_string(),
+        "xhigh".to_string(),
+        "max".to_string(),
+    ]
+}
+
+fn parse_claude_init_models(items: &[serde_json::Value]) -> Vec<CliModel> {
+    let mut models: Vec<CliModel> = items
+        .iter()
+        .filter_map(|item| {
+            let id = item.get("value").and_then(|v| v.as_str())?.trim();
+            if id.is_empty() || id == "default" {
+                return None;
+            }
+            let name = item
+                .get("displayName")
+                .and_then(|v| v.as_str())
+                .map(str::trim)
+                .filter(|s| !s.is_empty())
+                .unwrap_or(id);
+            let note = item
+                .get("description")
+                .and_then(|v| v.as_str())
+                .map(str::trim)
+                .unwrap_or("")
+                .chars()
+                .take(120)
+                .collect();
+
+            let mut effort_levels = Vec::new();
+            let supports_off = item
+                .get("supportsThinkingOff")
+                .and_then(|v| v.as_bool())
+                .unwrap_or(false);
+            if supports_off {
+                effort_levels.push("off".to_string());
+            }
+            if let Some(levels) = item.get("supportedEffortLevels").and_then(|v| v.as_array()) {
+                for level in levels.iter().filter_map(|v| v.as_str()) {
+                    let level = level.trim();
+                    if !level.is_empty() && !effort_levels.iter().any(|x| x == level) {
+                        effort_levels.push(level.to_string());
+                    }
+                }
+            }
+            Some(CliModel {
+                id: id.to_string(),
+                name: name.to_string(),
+                note,
+                effort_levels,
+                default_effort: None,
+                effort_models: HashMap::new(),
+            })
+        })
+        .collect();
+
+    // Put the quick aliases (`haiku`, `sonnet`, `opus`, `fable`) at the top in
+    // that order so Haiku (the default) is right at the start, followed by any
+    // pinned model versions in the order Claude reported them.
+    let rank = |id: &str| match id {
+        "haiku" => 0,
+        "sonnet" => 1,
+        "opus" => 2,
+        "fable" => 3,
+        _ => 4,
+    };
+    models.sort_by_key(|m| rank(&m.id));
+    models
+}
+
+/// Fetches Codex's live model catalogue via `codex app-server`'s `model/list`
+/// RPC, falling back to `~/.codex/models_cache.json`.
+fn fetch_codex_models(bin: &Path) -> Result<Vec<CliModel>, String> {
+    let mut cmd = cli_command(bin);
+    cmd.arg("app-server");
+
+    let reqs = [
+        r#"{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"clientInfo":{"name":"gitnoob","version":"1.0"},"capabilities":{}}}"#,
+        r#"{"jsonrpc":"2.0","method":"initialized","params":{}}"#,
+        r#"{"jsonrpc":"2.0","id":2,"method":"model/list","params":{}}"#,
+    ];
+
+    let live = query_json_rpc_lines(cmd, &reqs, Duration::from_secs(10), |msg| {
+        if msg.get("id").and_then(|v| v.as_u64()) != Some(2) {
+            return None;
+        }
+        let items = msg.get("result")?.get("data")?.as_array()?;
+        Some(parse_codex_app_server_models(items))
+    })
+    .ok()
+    .flatten()
+    .unwrap_or_default();
+
+    if !live.is_empty() {
+        return Ok(live);
+    }
+
+    Ok(read_codex_models_cache())
+}
+
+fn parse_codex_app_server_models(items: &[serde_json::Value]) -> Vec<CliModel> {
+    items
+        .iter()
+        .filter(|item| !item.get("hidden").and_then(|v| v.as_bool()).unwrap_or(false))
+        .filter_map(|item| {
+            let id = item
+                .get("id")
+                .or_else(|| item.get("model"))
+                .and_then(|v| v.as_str())?
+                .trim();
+            if id.is_empty() {
+                return None;
+            }
+            let name = item
+                .get("displayName")
+                .and_then(|v| v.as_str())
+                .map(str::trim)
+                .filter(|s| !s.is_empty())
+                .unwrap_or(id);
+            let note = item
+                .get("description")
+                .and_then(|v| v.as_str())
+                .map(str::trim)
+                .unwrap_or("")
+                .chars()
+                .take(120)
+                .collect();
+            let effort_levels: Vec<String> = item
+                .get("supportedReasoningEfforts")
+                .and_then(|v| v.as_array())
+                .map(|arr| {
+                    arr.iter()
+                        .filter_map(|e| {
+                            e.get("reasoningEffort")
+                                .or_else(|| e.get("effort"))
+                                .and_then(|v| v.as_str())
+                        })
+                        .map(|s| s.trim().to_string())
+                        .filter(|s| !s.is_empty())
+                        .collect()
+                })
+                .unwrap_or_default();
+            let default_effort = item
+                .get("defaultReasoningEffort")
+                .and_then(|v| v.as_str())
+                .map(|s| s.trim().to_string())
+                .filter(|s| !s.is_empty());
+            Some(CliModel {
+                id: id.to_string(),
+                name: name.to_string(),
+                note,
+                effort_levels,
+                default_effort,
+                effort_models: HashMap::new(),
+            })
+        })
+        .collect()
+}
+
+/// Fallback: reads Codex's local cache file (`~/.codex/models_cache.json`).
+fn read_codex_models_cache() -> Vec<CliModel> {
+    let codex_home = std::env::var_os("CODEX_HOME")
+        .filter(|v| !v.is_empty())
+        .map(PathBuf::from)
+        .or_else(|| home_dir().map(|h| h.join(".codex")));
+    if let Some(path) = codex_home.map(|dir| dir.join("models_cache.json")) {
+        if let Ok(text) = std::fs::read_to_string(&path) {
+            let parsed = parse_codex_models_cache(&text);
+            if !parsed.is_empty() {
+                return parsed;
+            }
+        }
+    }
+    Vec::new()
+}
+
+fn parse_codex_models_cache(text: &str) -> Vec<CliModel> {
+    let Ok(body) = serde_json::from_str::<serde_json::Value>(text) else {
+        return Vec::new();
+    };
+    let Some(items) = body.get("models").and_then(|v| v.as_array()) else {
+        return Vec::new();
+    };
+    items
+        .iter()
+        .filter(|item| {
+            item.get("visibility")
+                .and_then(|v| v.as_str())
+                .map(|v| v != "hide")
+                .unwrap_or(true)
+        })
+        .filter_map(|item| {
+            let id = item.get("slug").and_then(|v| v.as_str())?.trim();
+            if id.is_empty() {
+                return None;
+            }
+            let name = item
+                .get("display_name")
+                .and_then(|v| v.as_str())
+                .map(str::trim)
+                .filter(|s| !s.is_empty())
+                .unwrap_or(id);
+            let note = item
+                .get("description")
+                .and_then(|v| v.as_str())
+                .map(str::trim)
+                .unwrap_or("")
+                .chars()
+                .take(120)
+                .collect();
+            let effort_levels: Vec<String> = item
+                .get("supported_reasoning_levels")
+                .and_then(|v| v.as_array())
+                .map(|arr| {
+                    arr.iter()
+                        .filter_map(|e| e.get("effort").and_then(|v| v.as_str()))
+                        .map(|s| s.trim().to_string())
+                        .filter(|s| !s.is_empty())
+                        .collect()
+                })
+                .unwrap_or_default();
+            let default_effort = item
+                .get("default_reasoning_level")
+                .and_then(|v| v.as_str())
+                .map(|s| s.trim().to_string())
+                .filter(|s| !s.is_empty());
+            Some(CliModel {
+                id: id.to_string(),
+                name: name.to_string(),
+                note,
+                effort_levels,
+                default_effort,
+                effort_models: HashMap::new(),
+            })
+        })
+        .collect()
+}
+
+fn fetch_antigravity_models(bin: &Path) -> Result<Vec<CliModel>, String> {
+    let mut cmd = cli_command(bin);
+    cmd.arg("models");
+    let out = run_cli_with_stdin(cmd, None, "agy models", Duration::from_secs(20))?;
+    if !out.status.success() {
+        let err = String::from_utf8_lossy(&out.stderr);
+        let msg = err.trim();
+        return Err(if msg.is_empty() {
+            "agy models failed".to_string()
+        } else {
+            format!("agy models failed: {msg}")
+        });
+    }
+    Ok(parse_agy_models(&String::from_utf8_lossy(&out.stdout)))
+}
+
+fn effort_rank(level: &str) -> usize {
+    match level {
+        "off" => 0,
+        "minimal" => 1,
+        "low" => 2,
+        "medium" => 3,
+        "high" => 4,
+        "xhigh" => 5,
+        "max" => 6,
+        "ultra" => 7,
+        _ => 8,
+    }
+}
+
+/// Splits an Antigravity effort-suffixed model (`gemini-3.8-flash-low`,
+/// `Gemini 3.8 Flash (Low)`) into `(base_id, base_name, effort)`.
+fn split_agy_effort(id: &str, name: &str) -> Option<(String, String, String)> {
+    const SUFFIXES: &[(&str, &str)] = &[
+        ("-low", "low"),
+        ("-medium", "medium"),
+        ("-high", "high"),
+        ("-xhigh", "xhigh"),
+        ("-max", "max"),
+    ];
+    for &(suffix, effort) in SUFFIXES {
+        if let Some(base_id) = id.strip_suffix(suffix) {
+            if base_id.is_empty() {
+                continue;
+            }
+            let base_name = name
+                .rsplit_once(" (")
+                .filter(|(_, tail)| {
+                    tail.trim_end_matches(')')
+                        .eq_ignore_ascii_case(effort)
+                })
+                .map(|(head, _)| head.trim())
+                .unwrap_or(name);
+            return Some((
+                base_id.to_string(),
+                base_name.to_string(),
+                effort.to_string(),
+            ));
+        }
+    }
+    None
+}
+
+/// Parses `agy models` output and groups effort-suffixed variants (e.g.
+/// `gemini-3.8-flash-low` / `-medium` / `-high`) into one model entry with
+/// selectable thinking levels.
+fn parse_agy_models(stdout: &str) -> Vec<CliModel> {
+    let mut order: Vec<String> = Vec::new();
+    let mut grouped: HashMap<String, CliModel> = HashMap::new();
+
+    for raw_line in stdout.lines() {
+        let line = raw_line.rsplit('\r').next().unwrap_or(raw_line).trim();
+        if line.is_empty() || line.starts_with("Fetching ") {
+            continue;
+        }
+        // Columns are separated by a tab (piped) or two+ spaces (TTY).
+        let split = line
+            .split_once('\t')
+            .map(|(a, b)| (a.trim(), b.trim()))
+            .or_else(|| {
+                line.find("  ")
+                    .map(|at| (&line[..at], line[at..].trim()))
+            });
+        let Some((id, name)) = split else {
+            continue;
+        };
+        let id = id.trim();
+        if id.is_empty() || id.contains(' ') {
+            continue;
+        }
+        let display = if name.is_empty() { id } else { name };
+
+        if let Some((base_id, base_name, effort)) = split_agy_effort(id, display) {
+            let entry = grouped.entry(base_id.clone()).or_insert_with(|| {
+                order.push(base_id.clone());
+                CliModel {
+                    id: base_id,
+                    name: base_name,
+                    note: String::new(),
+                    effort_levels: Vec::new(),
+                    default_effort: None,
+                    effort_models: HashMap::new(),
+                }
+            });
+            if !entry.effort_levels.iter().any(|e| e == &effort) {
+                entry.effort_levels.push(effort.clone());
+            }
+            entry.effort_models.insert(effort, id.to_string());
+        } else if !grouped.contains_key(id) {
+            order.push(id.to_string());
+            grouped.insert(
+                id.to_string(),
+                CliModel {
+                    id: id.to_string(),
+                    name: display.to_string(),
+                    note: String::new(),
+                    effort_levels: Vec::new(),
+                    default_effort: None,
+                    effort_models: HashMap::new(),
+                },
+            );
+        }
+    }
+
+    order
+        .into_iter()
+        .filter_map(|id| {
+            let mut model = grouped.remove(&id)?;
+            model.effort_levels.sort_by_key(|e| effort_rank(e));
+            if !model.effort_levels.is_empty() {
+                model.default_effort = if model.effort_levels.iter().any(|e| e == "low") {
+                    Some("low".to_string())
+                } else if model.effort_levels.iter().any(|e| e == "medium") {
+                    Some("medium".to_string())
+                } else {
+                    model.effort_levels.first().cloned()
+                };
+            }
+            Some(model)
+        })
+        .collect()
 }
 
 fn client() -> Result<reqwest::Client, String> {
@@ -344,16 +1233,39 @@ async fn complete_raw(
     user: &str,
     floor: u32,
 ) -> Result<(Reply, String), String> {
-    let config = state.config();
-    let model = config
-        .global
-        .ai
+    let ai = state.config().global.ai;
+    match ai.provider {
+        AiProvider::OpenRouter => complete_openrouter(&ai, system, user, floor).await,
+        AiProvider::Claude | AiProvider::Codex | AiProvider::Antigravity => {
+            let provider = ai.provider;
+            let model = ai.active_model();
+            let effort = ai.active_effort();
+            let config_dir = state.config_dir();
+            let system = system.to_string();
+            let user = user.to_string();
+            tauri::async_runtime::spawn_blocking(move || {
+                complete_cli(&config_dir, provider, model, effort, &system, &user)
+            })
+            .await
+            .map_err(|e| e.to_string())?
+        }
+    }
+}
+
+async fn complete_openrouter(
+    ai: &config::Ai,
+    system: &str,
+    user: &str,
+    floor: u32,
+) -> Result<(Reply, String), String> {
+    let model = ai
         .model
         .clone()
+        .filter(|m| !m.trim().is_empty())
         .ok_or_else(|| "No model chosen — pick one in Settings › AI".to_string())?;
     let key = key()?;
-    let max_tokens = config.global.ai.max_tokens.max(floor);
-    let mut reasoning = Some(reasoning_field(&config.global.ai.reasoning));
+    let max_tokens = ai.max_tokens.max(floor);
+    let mut reasoning = Some(reasoning_field(&ai.reasoning));
     let client = client()?;
 
     let mut reply = Reply::default();
@@ -412,6 +1324,383 @@ async fn complete_raw(
         }
     }
     Ok((reply, model))
+}
+
+/// Runs a local AI CLI (`claude`, `codex` or `agy`) non-interactively and wraps
+/// its stdout into a [`Reply`].
+fn complete_cli(
+    config_dir: &Path,
+    provider: AiProvider,
+    model: Option<String>,
+    effort: Option<String>,
+    system: &str,
+    user: &str,
+) -> Result<(Reply, String), String> {
+    let binary = cli_binary_name(provider)
+        .ok_or_else(|| "Unsupported CLI provider".to_string())?;
+    let bin_path = find_binary(binary).ok_or_else(|| {
+        format!(
+            "{} (`{binary}`) was not found on your PATH — install it or pick another provider in Settings › AI",
+            cli_display_name(provider)
+        )
+    })?;
+    let label = match &model {
+        Some(m) => format!("{} ({m})", cli_display_name(provider)),
+        None => cli_display_name(provider).to_string(),
+    };
+
+    let raw = match provider {
+        AiProvider::Claude => run_claude(
+            &bin_path,
+            model.as_deref().unwrap_or("haiku"),
+            effort.as_deref(),
+            system,
+            user,
+        )?,
+        AiProvider::Codex => {
+            run_codex(&bin_path, model.as_deref(), effort.as_deref(), system, user)?
+        }
+        AiProvider::Antigravity => run_antigravity(
+            config_dir,
+            &bin_path,
+            model.as_deref(),
+            effort.as_deref(),
+            system,
+            user,
+        )?,
+        AiProvider::OpenRouter => unreachable!(),
+    };
+
+    let (content, reasoning) = strip_think_tags(&raw);
+    Ok((
+        Reply {
+            content,
+            reasoning: reasoning.trim().to_string(),
+            finish: "stop".to_string(),
+            reasoning_tokens: None,
+        },
+        label,
+    ))
+}
+
+/// Runs a child command with optional stdin text and a hard timeout so a
+/// stalled CLI (waiting on auth or network) never hangs the app indefinitely.
+fn run_cli_with_stdin(
+    mut cmd: Command,
+    stdin_text: Option<String>,
+    name: &str,
+    timeout: Duration,
+) -> Result<std::process::Output, String> {
+    use std::io::Read;
+
+    cmd.stdout(Stdio::piped()).stderr(Stdio::piped());
+    if stdin_text.is_some() {
+        cmd.stdin(Stdio::piped());
+    } else {
+        cmd.stdin(Stdio::null());
+    }
+    let mut child = cmd
+        .spawn()
+        .map_err(|e| format!("Could not start {name}: {e}"))?;
+
+    let writer = if let (Some(text), Some(mut stdin)) = (stdin_text, child.stdin.take()) {
+        Some(std::thread::spawn(move || {
+            let _ = stdin.write_all(text.as_bytes());
+        }))
+    } else {
+        None
+    };
+
+    let stdout_reader = child.stdout.take().map(|mut pipe| {
+        std::thread::spawn(move || {
+            let mut buf = Vec::new();
+            let _ = pipe.read_to_end(&mut buf);
+            buf
+        })
+    });
+    let stderr_reader = child.stderr.take().map(|mut pipe| {
+        std::thread::spawn(move || {
+            let mut buf = Vec::new();
+            let _ = pipe.read_to_end(&mut buf);
+            buf
+        })
+    });
+
+    let deadline = std::time::Instant::now() + timeout;
+    let status = loop {
+        match child.try_wait() {
+            Ok(Some(status)) => break status,
+            Ok(None) => {
+                if std::time::Instant::now() >= deadline {
+                    let _ = child.kill();
+                    let _ = child.wait();
+                    if let Some(handle) = writer {
+                        let _ = handle.join();
+                    }
+                    if let Some(handle) = stdout_reader {
+                        let _ = handle.join();
+                    }
+                    if let Some(handle) = stderr_reader {
+                        let _ = handle.join();
+                    }
+                    return Err(format!(
+                        "{name} timed out after {} seconds",
+                        timeout.as_secs()
+                    ));
+                }
+                std::thread::sleep(Duration::from_millis(25));
+            }
+            Err(e) => return Err(format!("{name} did not finish: {e}")),
+        }
+    };
+
+    if let Some(handle) = writer {
+        let _ = handle.join();
+    }
+    let stdout = stdout_reader
+        .and_then(|handle| handle.join().ok())
+        .unwrap_or_default();
+    let stderr = stderr_reader
+        .and_then(|handle| handle.join().ok())
+        .unwrap_or_default();
+
+    Ok(std::process::Output {
+        status,
+        stdout,
+        stderr,
+    })
+}
+
+const CLI_COMPLETE_TIMEOUT: Duration = Duration::from_secs(120);
+
+fn run_claude(
+    bin: &Path,
+    model: &str,
+    effort: Option<&str>,
+    system: &str,
+    user: &str,
+) -> Result<String, String> {
+    let mut cmd = cli_command(bin);
+    cmd.args([
+        "-p",
+        "--model",
+        model,
+        "--system-prompt",
+        system,
+        "--tools",
+        "",
+        "--no-session-persistence",
+        "--disable-slash-commands",
+        "--output-format",
+        "text",
+    ]);
+    if let Some(level) = effort {
+        if level == "off" {
+            cmd.args(["--settings", r#"{"alwaysThinkingEnabled":false}"#]);
+        } else {
+            cmd.args(["--effort", level]);
+        }
+    }
+    // Clear nested-session guards in case gitnoob itself was started from
+    // inside a Claude Code terminal.
+    cmd.env_remove("CLAUDECODE")
+        .env_remove("CLAUDE_CODE_ENTRYPOINT");
+
+    let out = run_cli_with_stdin(cmd, Some(user.to_string()), "claude", CLI_COMPLETE_TIMEOUT)?;
+    if !out.status.success() {
+        return Err(cli_error("Claude CLI", &out));
+    }
+    Ok(String::from_utf8_lossy(&out.stdout).into_owned())
+}
+
+/// Deletes a temporary file when dropped, even on early return.
+struct TempFileGuard(PathBuf);
+impl Drop for TempFileGuard {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_file(&self.0);
+    }
+}
+
+fn run_codex(
+    bin: &Path,
+    model: Option<&str>,
+    effort: Option<&str>,
+    system: &str,
+    user: &str,
+) -> Result<String, String> {
+    static SEQ: AtomicU64 = AtomicU64::new(0);
+    let seq = SEQ.fetch_add(1, Ordering::Relaxed);
+    let out_file = std::env::temp_dir().join(format!(
+        "gitnoob-codex-{}-{seq}.txt",
+        std::process::id()
+    ));
+    let _guard = TempFileGuard(out_file.clone());
+
+    let mut cmd = cli_command(bin);
+    cmd.args([
+        "exec",
+        "--ephemeral",
+        "--skip-git-repo-check",
+        "--sandbox",
+        "read-only",
+        "--color",
+        "never",
+        "-o",
+    ])
+    .arg(&out_file);
+    if let Some(model) = model {
+        cmd.args(["-m", model]);
+    }
+    if let Some(level) = effort {
+        cmd.args(["-c", &format!("model_reasoning_effort={level}")]);
+    }
+    cmd.arg("-");
+
+    let combined = format!("{system}\n\n---\n\n{user}");
+    let out = run_cli_with_stdin(cmd, Some(combined), "codex", CLI_COMPLETE_TIMEOUT)?;
+    if !out.status.success() {
+        let detail = extract_codex_error(&String::from_utf8_lossy(&out.stderr))
+            .unwrap_or_else(|| cli_error("Codex CLI", &out));
+        return Err(detail);
+    }
+    if let Ok(text) = std::fs::read_to_string(&out_file) {
+        if !text.trim().is_empty() {
+            return Ok(text);
+        }
+    }
+    Ok(String::from_utf8_lossy(&out.stdout).into_owned())
+}
+
+/// Resolves a grouped Antigravity model id + effort (e.g. `gemini-3.8-flash` +
+/// `low`) to the exact model slug `agy --model` expects (`gemini-3.8-flash-low`),
+/// returning `(resolved_model, pass_effort_flag)`.
+fn resolve_antigravity_args(
+    models: &[CliModel],
+    model: Option<&str>,
+    effort: Option<&str>,
+) -> (Option<String>, Option<String>) {
+    let Some(model_id) = model else {
+        return (None, effort.map(str::to_string));
+    };
+    let entry = models
+        .iter()
+        .find(|m| m.id == model_id || m.effort_models.values().any(|v| v == model_id));
+    if let Some(entry) = entry {
+        if !entry.effort_models.is_empty() {
+            let chosen = effort
+                .and_then(|e| entry.effort_models.get(e))
+                .or_else(|| {
+                    // If the saved id is already an exact variant slug and no
+                    // explicit effort override was chosen, keep that slug.
+                    entry
+                        .effort_models
+                        .values()
+                        .find(|v| v.as_str() == model_id)
+                })
+                .or_else(|| {
+                    entry
+                        .default_effort
+                        .as_deref()
+                        .and_then(|e| entry.effort_models.get(e))
+                })
+                .or_else(|| {
+                    entry
+                        .effort_levels
+                        .first()
+                        .and_then(|e| entry.effort_models.get(e))
+                });
+            if let Some(slug) = chosen {
+                return (Some(slug.clone()), None);
+            }
+        }
+    }
+    (Some(model_id.to_string()), effort.map(str::to_string))
+}
+
+fn run_antigravity(
+    config_dir: &Path,
+    bin: &Path,
+    model: Option<&str>,
+    effort: Option<&str>,
+    system: &str,
+    user: &str,
+) -> Result<String, String> {
+    #[cfg_attr(not(windows), allow(unused_mut))]
+    let mut combined = format!("{system}\n\n---\n\n{user}");
+    // Windows command lines cap at 32,767 UTF-16 code units; keep headroom.
+    #[cfg(windows)]
+    if combined.len() > 26_000 {
+        let cut = combined.floor_char_boundary_compat(26_000);
+        combined.truncate(cut);
+        combined.push_str("\n… (truncated for command-line limit)");
+    }
+
+    let known = fresh_cached_cli_models(config_dir, AiProvider::Antigravity)
+        .or_else(|| cli_models(config_dir, AiProvider::Antigravity, false).ok())
+        .unwrap_or_default();
+    let (resolved_model, effort_flag) = resolve_antigravity_args(&known, model, effort);
+
+    let mut cmd = cli_command(bin);
+    if let Some(model) = resolved_model {
+        cmd.args(["--model", &model]);
+    }
+    if let Some(level) = effort_flag {
+        cmd.args(["--effort", &level]);
+    }
+    cmd.args(["--disable-slash-commands", "--output-format", "text", "-p"])
+        .arg(&combined);
+
+    let out = run_cli_with_stdin(cmd, None, "agy", CLI_COMPLETE_TIMEOUT)?;
+    if !out.status.success() {
+        return Err(cli_error("Antigravity CLI", &out));
+    }
+    Ok(String::from_utf8_lossy(&out.stdout).into_owned())
+}
+
+#[cfg(windows)]
+trait FloorCharBoundary {
+    fn floor_char_boundary_compat(&self, index: usize) -> usize;
+}
+#[cfg(windows)]
+impl FloorCharBoundary for str {
+    fn floor_char_boundary_compat(&self, index: usize) -> usize {
+        let mut i = index.min(self.len());
+        while i > 0 && !self.is_char_boundary(i) {
+            i -= 1;
+        }
+        i
+    }
+}
+
+fn cli_error(name: &str, out: &std::process::Output) -> String {
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    let raw = if !stderr.trim().is_empty() {
+        stderr.trim()
+    } else if !stdout.trim().is_empty() {
+        stdout.trim()
+    } else {
+        return format!("{name} exited with status {}", out.status);
+    };
+    let short: String = raw.chars().take(400).collect();
+    format!("{name} failed: {short}")
+}
+
+/// Pulls the actual `ERROR: …` line out of `codex exec`'s verbose stderr
+/// banner so the toast names the failure instead of the session header.
+fn extract_codex_error(stderr: &str) -> Option<String> {
+    let mut found: Vec<&str> = stderr
+        .lines()
+        .map(str::trim)
+        .filter_map(|line| line.strip_prefix("ERROR:").map(str::trim))
+        .filter(|line| !line.is_empty())
+        .collect();
+    found.dedup();
+    if found.is_empty() {
+        None
+    } else {
+        Some(format!("Codex CLI failed: {}", found.join(" — ")))
+    }
 }
 
 /// Whether an error says the model will think regardless of the setting.
@@ -1655,5 +2944,146 @@ mod tests {
     fn a_small_diff_passes_through_untouched() {
         let diff = file_diff("a.rs", 3, 10);
         assert_eq!(fit_diff(&diff, "", 48_000), diff);
+    }
+
+    #[test]
+    fn claude_defaults_to_haiku_and_preserves_other_providers_models() {
+        let mut ai = config::Ai::default();
+        assert_eq!(ai.provider, AiProvider::OpenRouter);
+        assert_eq!(ai.active_model(), None);
+
+        ai.model = Some("anthropic/claude-sonnet-4.5".to_string());
+        assert_eq!(ai.active_model().as_deref(), Some("anthropic/claude-sonnet-4.5"));
+
+        ai.provider = AiProvider::Claude;
+        assert_eq!(ai.active_model().as_deref(), Some("haiku"));
+
+        ai.claude_model = Some("sonnet".to_string());
+        assert_eq!(ai.active_model().as_deref(), Some("sonnet"));
+
+        ai.claude_model = Some("   ".to_string());
+        assert_eq!(ai.active_model().as_deref(), Some("haiku"));
+
+        ai.provider = AiProvider::Codex;
+        assert_eq!(ai.active_model(), None);
+        ai.codex_model = Some("gpt-5.4-mini".to_string());
+        assert_eq!(ai.active_model().as_deref(), Some("gpt-5.4-mini"));
+
+        ai.provider = AiProvider::Antigravity;
+        assert_eq!(ai.active_model(), None);
+        ai.antigravity_model = Some("gemini-3.8-flash-low".to_string());
+        assert_eq!(ai.active_model().as_deref(), Some("gemini-3.8-flash-low"));
+    }
+
+    #[test]
+    fn old_config_without_provider_defaults_to_openrouter_and_haiku_for_claude() {
+        let parsed: config::Ai = serde_json::from_str(
+            r#"{
+                "model": "openai/gpt-4o",
+                "max_tokens": 3000,
+                "reasoning": "off",
+                "commit_style": "plain",
+                "commit_prompt": null
+            }"#,
+        )
+        .unwrap();
+        assert_eq!(parsed.provider, AiProvider::OpenRouter);
+        assert_eq!(parsed.model.as_deref(), Some("openai/gpt-4o"));
+        assert_eq!(parsed.claude_model.as_deref(), Some("haiku"));
+    }
+
+    #[test]
+    fn parses_agy_models_output_grouping_effort_variants() {
+        let raw = "\r⠋ Fetching available models...\rgemini-4-neon-high\tGemini 4 Neon (High)\ngemini-4-neon-low\tGemini 4 Neon (Low)\ngemini-4-neon-xhigh\tGemini 4 Neon (XHigh)\ngemini-pro-orchestrator-neon\tOrchestrator (Neon)\n";
+        let list = parse_agy_models(raw);
+        assert_eq!(list.len(), 2);
+        assert_eq!(list[0].id, "gemini-4-neon");
+        assert_eq!(list[0].name, "Gemini 4 Neon");
+        assert_eq!(list[0].effort_levels, vec!["low", "high", "xhigh"]);
+        assert_eq!(list[0].default_effort.as_deref(), Some("low"));
+        assert_eq!(
+            resolve_antigravity_args(&list, Some("gemini-4-neon"), Some("xhigh")),
+            (Some("gemini-4-neon-xhigh".to_string()), None)
+        );
+        assert_eq!(
+            resolve_antigravity_args(&list, Some("gemini-4-neon"), None),
+            (Some("gemini-4-neon-low".to_string()), None)
+        );
+        assert_eq!(list[1].id, "gemini-pro-orchestrator-neon");
+        assert!(list[1].effort_levels.is_empty());
+    }
+
+    #[test]
+    fn parses_claude_init_models_ordering_haiku_first_with_efforts() {
+        let items = vec![
+            serde_json::json!({"value": "default", "displayName": "Default"}),
+            serde_json::json!({
+                "value": "opus",
+                "displayName": "Opus 5.5",
+                "description": "Complex work",
+                "supportedEffortLevels": ["low", "medium", "high"],
+                "supportsThinkingOff": false
+            }),
+            serde_json::json!({
+                "value": "haiku",
+                "displayName": "Haiku 5.5",
+                "description": "Fastest",
+                "supportedEffortLevels": ["low", "medium", "high"],
+                "supportsThinkingOff": true
+            }),
+        ];
+        let list = parse_claude_init_models(&items);
+        assert_eq!(list.len(), 2);
+        assert_eq!(list[0].id, "haiku");
+        assert_eq!(list[0].name, "Haiku 5.5");
+        assert_eq!(list[0].effort_levels, vec!["off", "low", "medium", "high"]);
+        assert_eq!(list[1].id, "opus");
+        assert_eq!(list[1].effort_levels, vec!["low", "medium", "high"]);
+    }
+
+    #[test]
+    fn parses_codex_app_server_and_cache_models_with_efforts() {
+        let rpc = vec![
+            serde_json::json!({"id": "hidden-one", "hidden": true}),
+            serde_json::json!({
+                "id": "gpt-6-luna",
+                "displayName": "GPT-6-Luna",
+                "description": "Fast",
+                "hidden": false,
+                "defaultReasoningEffort": "medium",
+                "supportedReasoningEfforts": [
+                    {"reasoningEffort": "low"},
+                    {"reasoningEffort": "medium"},
+                    {"reasoningEffort": "high"}
+                ]
+            }),
+        ];
+        let from_rpc = parse_codex_app_server_models(&rpc);
+        assert_eq!(from_rpc.len(), 1);
+        assert_eq!(from_rpc[0].id, "gpt-6-luna");
+        assert_eq!(from_rpc[0].effort_levels, vec!["low", "medium", "high"]);
+        assert_eq!(from_rpc[0].default_effort.as_deref(), Some("medium"));
+
+        let raw = r#"{
+            "models": [
+                {"slug": "secret-model", "display_name": "Secret", "visibility": "hide"},
+                {"slug": "gpt-6-luna", "display_name": "GPT-6-Luna", "description": "Fast coding model", "visibility": "list", "default_reasoning_level": "medium", "supported_reasoning_levels": [{"effort": "low"}, {"effort": "high"}]}
+            ]
+        }"#;
+        let list = parse_codex_models_cache(raw);
+        assert_eq!(list.len(), 1);
+        assert_eq!(list[0].id, "gpt-6-luna");
+        assert_eq!(list[0].effort_levels, vec!["low", "high"]);
+        assert_eq!(list[0].default_effort.as_deref(), Some("medium"));
+    }
+
+    #[test]
+    fn extracts_codex_error_from_verbose_stderr() {
+        let stderr = "OpenAI Codex v0.169.0\n--------\nworkdir: /tmp\nERROR: The 'foo' model is not supported.\nERROR: The 'foo' model is not supported.\n";
+        assert_eq!(
+            extract_codex_error(stderr).as_deref(),
+            Some("Codex CLI failed: The 'foo' model is not supported.")
+        );
+        assert_eq!(extract_codex_error("nothing wrong here"), None);
     }
 }

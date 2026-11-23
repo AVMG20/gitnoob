@@ -180,9 +180,53 @@ function install() {
     if (cmd === 'ai_status') {
       return {
         configured: true,
+        provider: 'openrouter',
         model: 'anthropic/claude-sonnet-4.5',
         default_commit_prompt: DEFAULT_COMMIT_PROMPT
       }
+    }
+    if (cmd === 'ai_cli_info') {
+      return [
+        { provider: 'claude', binary: 'claude', available: true, path: '/usr/local/bin/claude', version: '2.0.0' },
+        { provider: 'codex', binary: 'codex', available: true, path: '/usr/local/bin/codex', version: '0.169.0' },
+        { provider: 'antigravity', binary: 'agy', available: false, path: null, version: null }
+      ]
+    }
+    if (cmd === 'ai_cli_models') {
+      if (args.provider === 'claude') {
+        return [
+          {
+            id: 'haiku',
+            name: 'Haiku 5.5',
+            note: 'Fastest for quick answers',
+            effort_levels: ['low', 'medium', 'high', 'xhigh', 'max']
+          },
+          {
+            id: 'sonnet',
+            name: 'Sonnet 5.5',
+            note: 'Most efficient for simpler tasks',
+            effort_levels: ['low', 'medium', 'high', 'xhigh', 'max']
+          },
+          {
+            id: 'opus',
+            name: 'Opus 5.5',
+            note: 'For complex work and everyday tasks',
+            effort_levels: ['low', 'medium', 'high', 'xhigh', 'max']
+          }
+        ]
+      }
+      if (args.provider === 'codex') {
+        return [
+          {
+            id: 'gpt-6-luna',
+            name: 'GPT-6-Luna',
+            note: 'Fast and affordable model for easier tasks.',
+            effort_levels: ['low', 'medium', 'high', 'xhigh', 'max'],
+            default_effort: 'medium'
+          }
+        ]
+      }
+      return []
     }
     if (cmd === 'reset_preview') {
       // The hard-reset question, which is the only reset that asks one.

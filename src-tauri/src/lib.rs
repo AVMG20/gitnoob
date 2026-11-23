@@ -2079,6 +2079,22 @@ fn ai_status(state: Aimed) -> ai::AiStatus {
 }
 
 #[tauri::command]
+async fn ai_cli_info() -> Result<Vec<ai::CliInfo>, String> {
+    blocking(|| Ok(ai::cli_info())).await
+}
+
+#[tauri::command]
+async fn ai_cli_models(
+    provider: config::AiProvider,
+    refresh: Option<bool>,
+    state: Aimed,
+) -> Result<Vec<ai::CliModel>, String> {
+    let refresh = refresh.unwrap_or(false);
+    let config_dir = state.config_dir();
+    blocking(move || ai::cli_models(&config_dir, provider, refresh)).await
+}
+
+#[tauri::command]
 async fn ai_models(refresh: Option<bool>, state: Aimed) -> Result<Vec<ai::Model>, String> {
     ai::models(&state, refresh.unwrap_or(false)).await
 }
@@ -2693,6 +2709,8 @@ pub fn run() {
             forge_review_file_text,
             avatar,
             ai_status,
+            ai_cli_info,
+            ai_cli_models,
             ai_models,
             ai_commit_message,
             ai_commit_message_for,

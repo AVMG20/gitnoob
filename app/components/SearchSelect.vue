@@ -225,7 +225,7 @@ watch(query, () => (active.value = 0))
 .scrim {
   position: fixed;
   inset: 0;
-  z-index: 60;
+  z-index: 70;
 }
 
 .panel {

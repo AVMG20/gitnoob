@@ -329,11 +329,44 @@ impl WindowSize {
     }
 }
 
+/// How AI requests are answered: OpenRouter over HTTPS, or a local CLI already
+/// installed and signed in on this machine.
+#[derive(Serialize, Deserialize, Clone, Copy, PartialEq, Eq, Hash, Debug, Default)]
+#[serde(rename_all = "lowercase")]
+pub enum AiProvider {
+    #[default]
+    OpenRouter,
+    Claude,
+    Codex,
+    Antigravity,
+}
+
 #[derive(Serialize, Deserialize, Clone)]
 pub struct Ai {
+    /// Which backend answers AI requests.
+    #[serde(default)]
+    pub provider: AiProvider,
     /// An OpenRouter model id, e.g. `anthropic/claude-sonnet-4.5`.
     #[serde(default)]
     pub model: Option<String>,
+    /// Model passed to `claude --model`. Defaults to `haiku`.
+    #[serde(default = "default_claude_model")]
+    pub claude_model: Option<String>,
+    /// Thinking/effort level passed to `claude --effort`. `None` uses the CLI default.
+    #[serde(default)]
+    pub claude_effort: Option<String>,
+    /// Model passed to `codex exec -m`. `None` leaves it to Codex's own default.
+    #[serde(default)]
+    pub codex_model: Option<String>,
+    /// Reasoning effort passed to Codex (`model_reasoning_effort`). `None` uses the model default.
+    #[serde(default)]
+    pub codex_effort: Option<String>,
+    /// Model passed to `agy --model`. `None` leaves it to Antigravity's own default.
+    #[serde(default)]
+    pub antigravity_model: Option<String>,
+    /// Thinking/effort level for Antigravity CLI. `None` uses the model default.
+    #[serde(default)]
+    pub antigravity_effort: Option<String>,
     #[serde(default = "default_max_tokens")]
     pub max_tokens: u32,
     /// How hard the model should think before answering, in OpenRouter's own
@@ -350,6 +383,43 @@ pub struct Ai {
     /// built-in default, which is what a fresh config carries.
     #[serde(default)]
     pub commit_prompt: Option<String>,
+}
+
+impl Ai {
+    /// The model name in force for the active provider, or `None` when the
+    /// provider either has none chosen (OpenRouter) or uses its CLI default.
+    pub fn active_model(&self) -> Option<String> {
+        let non_empty = |value: &Option<String>| {
+            value
+                .as_deref()
+                .map(str::trim)
+                .filter(|s| !s.is_empty())
+                .map(str::to_string)
+        };
+        match self.provider {
+            AiProvider::OpenRouter => non_empty(&self.model),
+            AiProvider::Claude => non_empty(&self.claude_model).or_else(default_claude_model),
+            AiProvider::Codex => non_empty(&self.codex_model),
+            AiProvider::Antigravity => non_empty(&self.antigravity_model),
+        }
+    }
+
+    /// The thinking/effort level in force for the active CLI provider.
+    pub fn active_effort(&self) -> Option<String> {
+        let non_empty = |value: &Option<String>| {
+            value
+                .as_deref()
+                .map(str::trim)
+                .filter(|s| !s.is_empty())
+                .map(str::to_string)
+        };
+        match self.provider {
+            AiProvider::OpenRouter => None,
+            AiProvider::Claude => non_empty(&self.claude_effort),
+            AiProvider::Codex => non_empty(&self.codex_effort),
+            AiProvider::Antigravity => non_empty(&self.antigravity_effort),
+        }
+    }
 }
 
 #[derive(Serialize, Deserialize, Clone)]
@@ -428,10 +498,22 @@ fn default_profile_match() -> String {
     "ask".to_string()
 }
 
+/// Fast and cheap enough for commit messages and small conflict merges.
+fn default_claude_model() -> Option<String> {
+    Some("haiku".to_string())
+}
+
 impl Default for Ai {
     fn default() -> Self {
         Ai {
+            provider: AiProvider::OpenRouter,
             model: None,
+            claude_model: default_claude_model(),
+            claude_effort: None,
+            codex_model: None,
+            codex_effort: None,
+            antigravity_model: None,
+            antigravity_effort: None,
             max_tokens: default_max_tokens(),
             reasoning: default_reasoning(),
             commit_style: default_commit_style(),

@@ -1,5 +1,6 @@
 import { invoke } from './useInvoke'
 import { computed, reactive } from 'vue'
+import { AI_PROVIDER_LABELS, type AiProvider } from './useConfig'
 
 export interface Model {
   id: string
@@ -12,8 +13,25 @@ export interface Model {
   multimodal: boolean
 }
 
+export interface CliInfo {
+  provider: AiProvider
+  binary: string
+  available: boolean
+  path: string | null
+  version: string | null
+}
+
+export interface CliModel {
+  id: string
+  name: string
+  note: string
+  effort_levels?: string[]
+  default_effort?: string | null
+}
+
 export interface AiStatus {
   configured: boolean
+  provider?: AiProvider
   model: string | null
   /** What the settings box starts from, sent by the backend that owns it. */
   default_commit_prompt: string
@@ -25,10 +43,15 @@ export interface CommitMessage {
 }
 
 const store = reactive({
-  status: { configured: false, model: null, default_commit_prompt: '' } as AiStatus,
+  status: { configured: false, provider: 'openrouter', model: null, default_commit_prompt: '' } as AiStatus,
   models: [] as Model[],
   loadingModels: false,
   modelsError: null as string | null,
+  cliInfo: [] as CliInfo[],
+  loadingCliInfo: false,
+  cliModels: {} as Partial<Record<AiProvider, CliModel[]>>,
+  loadingCliModels: {} as Partial<Record<AiProvider, boolean>>,
+  cliModelsError: {} as Partial<Record<AiProvider, string | null>>,
   /** Set while a request is in flight, so buttons can show what is happening. */
   busy: null as string | null
 })
@@ -53,6 +76,38 @@ export function useAi() {
     }
   }
 
+  async function loadCliInfo() {
+    if (store.loadingCliInfo) return
+    store.loadingCliInfo = true
+    try {
+      const info = await invoke<CliInfo[]>('ai_cli_info')
+      if (Array.isArray(info)) store.cliInfo = info
+    } catch {
+      // Leave whatever we had; settings shows "Checking…" or "Not found".
+    } finally {
+      store.loadingCliInfo = false
+    }
+  }
+
+  async function loadCliModels(provider: AiProvider, refresh = false) {
+    if (provider === 'openrouter') return
+    if (store.loadingCliModels[provider]) return
+    store.loadingCliModels = { ...store.loadingCliModels, [provider]: true }
+    store.cliModelsError = { ...store.cliModelsError, [provider]: null }
+    try {
+      const list = await invoke<CliModel[]>('ai_cli_models', { provider, refresh })
+      store.cliModels = { ...store.cliModels, [provider]: Array.isArray(list) ? list : [] }
+    } catch (error) {
+      store.cliModelsError = { ...store.cliModelsError, [provider]: String(error) }
+    } finally {
+      store.loadingCliModels = { ...store.loadingCliModels, [provider]: false }
+    }
+  }
+
+  function cliFor(provider: AiProvider): CliInfo | null {
+    return store.cliInfo.find((entry) => entry.provider === provider) ?? null
+  }
+
   async function run<T>(label: string, fn: () => Promise<T>): Promise<T | null> {
     store.busy = label
     try {
@@ -67,6 +122,9 @@ export function useAi() {
     configured,
     refreshStatus,
     loadModels,
+    loadCliInfo,
+    loadCliModels,
+    cliFor,
     /**
      * A message for what is about to be committed. `amend` describes HEAD's
      * change with the staged one on top, which is what an amend makes; `draft`
@@ -94,6 +152,15 @@ export function useAi() {
     resolveConflict: (path: string, index: number) =>
       run('conflict', () => invoke<string[]>('ai_resolve_conflict', { path, index }))
   }
+}
+
+/** Short label for the active AI backend + model, or null when not ready. */
+export function aiSummaryLabel(status: AiStatus): string | null {
+  if (!status.configured) return null
+  const provider = status.provider ?? 'openrouter'
+  if (provider === 'openrouter') return status.model
+  const name = AI_PROVIDER_LABELS[provider]
+  return status.model ? `${name} · ${status.model}` : name
 }
 
 /** Prices come per million tokens; show them the way OpenRouter quotes them. */

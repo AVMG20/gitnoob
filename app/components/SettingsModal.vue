@@ -9,6 +9,7 @@ import {
   ExternalLink,
   Github,
   Gitlab,
+  Globe,
   Keyboard,
   KeyRound,
   Palette,
@@ -17,12 +18,14 @@ import {
   Settings2,
   ShieldCheck,
   Sparkles,
+  Terminal,
   Trash2,
   User,
   Users,
   X
 } from 'lucide-vue-next'
 import {
+  AI_PROVIDER_LABELS,
   DEFAULT_HOSTS,
   FORGE_LABELS,
   OPENROUTER_SECRET,
@@ -30,13 +33,14 @@ import {
   COMMIT_FLOW_DEFAULTS,
   emptyProfile,
   useConfig,
+  type AiProvider,
   type CommitFlowSettings,
   type ForgeKind,
   type Profile
 } from '~/composables/useConfig'
 import { forgetAvatars } from '~/composables/useAvatars'
 import { useForge } from '~/composables/useForge'
-import { useAi } from '~/composables/useAi'
+import { aiSummaryLabel, useAi } from '~/composables/useAi'
 import { useGit } from '~/composables/useGit'
 import { describeKey, useSsh } from '~/composables/useSsh'
 import { SYSTEM_PAIR, useTheme } from '~/composables/useTheme'
@@ -384,6 +388,146 @@ function chooseKey(path: string) {
 // --- AI
 const apiKey = ref('')
 const keySaved = computed(() => config.hasSecret(OPENROUTER_SECRET))
+
+const AI_METHODS: { id: AiProvider; label: string; subtitle: string; binary?: string }[] = [
+  { id: 'claude', label: 'Claude CLI', subtitle: 'Local claude CLI', binary: 'claude' },
+  { id: 'codex', label: 'Codex CLI', subtitle: 'Local codex CLI', binary: 'codex' },
+  { id: 'antigravity', label: 'Antigravity CLI', subtitle: 'Local agy CLI', binary: 'agy' },
+  { id: 'openrouter', label: 'OpenRouter', subtitle: 'API key · any model' }
+]
+
+const EFFORT_LABELS: Record<string, string> = {
+  off: 'Off',
+  minimal: 'Minimal',
+  low: 'Low',
+  medium: 'Medium',
+  high: 'High',
+  xhigh: 'XHigh',
+  max: 'Max',
+  ultra: 'Ultra'
+}
+
+const effortLabel = (level: string) => EFFORT_LABELS[level] ?? level
+
+const aiProvider = computed<AiProvider>(() => config.settings.value?.ai.provider ?? 'openrouter')
+const activeCli = computed(() => (aiProvider.value === 'openrouter' ? null : ai.cliFor(aiProvider.value)))
+const aiSummary = computed(() => aiSummaryLabel(ai.store.status))
+
+const activeCliBinary = computed(
+  () => AI_METHODS.find((m) => m.id === aiProvider.value)?.binary ?? ''
+)
+
+const activeCliModels = computed(() => {
+  if (aiProvider.value === 'openrouter') return []
+  return ai.store.cliModels[aiProvider.value] ?? []
+})
+
+const loadingActiveCliModels = computed(() => {
+  if (aiProvider.value === 'openrouter') return false
+  return ai.store.loadingCliModels[aiProvider.value] === true
+})
+
+const activeCliModelsError = computed(() => {
+  if (aiProvider.value === 'openrouter') return null
+  return ai.store.cliModelsError[aiProvider.value] ?? null
+})
+
+const activeCliModelId = computed(() => {
+  const aiSettings = config.settings.value?.ai
+  if (aiProvider.value === 'claude') return aiSettings?.claude_model?.trim() || 'haiku'
+  if (aiProvider.value === 'codex') return aiSettings?.codex_model?.trim() || ''
+  if (aiProvider.value === 'antigravity') return aiSettings?.antigravity_model?.trim() || ''
+  return ''
+})
+
+const activeCliEffort = computed(() => {
+  const aiSettings = config.settings.value?.ai
+  if (aiProvider.value === 'claude') return aiSettings?.claude_effort?.trim() || ''
+  if (aiProvider.value === 'codex') return aiSettings?.codex_effort?.trim() || ''
+  if (aiProvider.value === 'antigravity') return aiSettings?.antigravity_effort?.trim() || ''
+  return ''
+})
+
+const selectedCliModel = computed(() => {
+  const list = activeCliModels.value
+  const id = activeCliModelId.value
+  if (id) return list.find((m) => m.id === id) ?? null
+  return list[0] ?? null
+})
+
+const activeCliEffortLevels = computed(() => {
+  if (selectedCliModel.value) {
+    return selectedCliModel.value.effort_levels ?? []
+  }
+  // Before models finish loading (or while using CLI default with no list yet),
+  // still offer the common levels for Claude and Codex.
+  if (aiProvider.value === 'claude' || aiProvider.value === 'codex') {
+    return ['low', 'medium', 'high', 'xhigh', 'max']
+  }
+  return []
+})
+
+async function pickAiProvider(provider: AiProvider) {
+  if (provider === aiProvider.value) return
+  await patchAi({ provider })
+  if (provider !== 'openrouter' && !ai.store.cliModels[provider]?.length) {
+    void ai.loadCliModels(provider)
+  }
+}
+
+async function pickCliModel(provider: AiProvider, id: string) {
+  const trimmed = id.trim()
+  const model = (ai.store.cliModels[provider] ?? []).find((m) => m.id === trimmed)
+  const currentEffort = activeCliEffort.value
+  const keepEffort =
+    !currentEffort ||
+    !model?.effort_levels?.length ||
+    model.effort_levels.includes(currentEffort)
+
+  if (provider === 'claude') {
+    await patchAi({
+      claude_model: trimmed || 'haiku',
+      ...(keepEffort ? {} : { claude_effort: null })
+    })
+  } else if (provider === 'codex') {
+    await patchAi({
+      codex_model: trimmed || null,
+      ...(keepEffort ? {} : { codex_effort: null })
+    })
+  } else if (provider === 'antigravity') {
+    await patchAi({
+      antigravity_model: trimmed || null,
+      ...(keepEffort ? {} : { antigravity_effort: null })
+    })
+  }
+}
+
+async function pickCliEffort(provider: AiProvider, level: string) {
+  const next = level.trim() || null
+  if (provider === 'claude') await patchAi({ claude_effort: next })
+  else if (provider === 'codex') await patchAi({ codex_effort: next })
+  else if (provider === 'antigravity') await patchAi({ antigravity_effort: next })
+}
+
+async function recheckCli() {
+  await ai.loadCliInfo()
+  await ai.refreshStatus()
+  if (aiProvider.value !== 'openrouter') {
+    await ai.loadCliModels(aiProvider.value, true)
+  }
+}
+
+watch(
+  () => [section.value, aiProvider.value] as const,
+  ([now, provider]) => {
+    if (now !== 'ai') return
+    if (!ai.store.cliInfo.length) void ai.loadCliInfo()
+    if (provider !== 'openrouter' && !ai.store.cliModels[provider]?.length) {
+      void ai.loadCliModels(provider)
+    }
+  },
+  { immediate: true }
+)
 
 async function saveKey() {
   await config.setSecret(OPENROUTER_SECRET, apiKey.value.trim())
@@ -833,71 +977,277 @@ onMounted(async () => {
         </section>
 
         <!-- AI -->
-        <section v-else-if="section === 'ai'">
+        <section v-else-if="section === 'ai'" data-section="ai">
           <h2>AI</h2>
           <p class="dim intro">
-            Requests go through OpenRouter, so one key works for every model. The key is stored in
-            the keychain and only sent to OpenRouter.
+            Write commit messages, pull request descriptions and merge conflict resolutions.
+            Choose a local CLI already signed in on this machine, or connect OpenRouter with an
+            API key.
           </p>
-
-          <label class="field">
-            <span class="label"><KeyRound :size="12" /> OpenRouter API key</span>
-            <span class="key-row">
-              <input
-                v-model="apiKey"
-                type="password"
-                autocomplete="off"
-                :placeholder="keySaved ? 'Stored — type to replace' : 'sk-or-…'"
-              />
-              <button class="btn btn-primary" :disabled="!apiKey.trim()" @click="saveKey">
-                Save
-              </button>
-              <button v-if="keySaved" class="btn btn-ghost" @click="((apiKey = ''), saveKey())">
-                Remove
-              </button>
-            </span>
-            <span class="hint" :class="keySaved ? 'ok' : 'faint'">
-              {{ keySaved ? 'A key is stored in the keychain.' : 'No key stored yet.' }}
-            </span>
-          </label>
 
           <div class="field">
-            <span class="label">Model</span>
-            <ModelPicker :selected="config.settings.value?.ai.model ?? null" @pick="pickModel" />
+            <span class="label">Method</span>
+            <div class="ai-providers" role="radiogroup" aria-label="AI method">
+              <button
+                v-for="method in AI_METHODS"
+                :key="method.id"
+                type="button"
+                class="ai-provider"
+                :class="{ on: aiProvider === method.id }"
+                :data-provider="method.id"
+                @click="pickAiProvider(method.id)"
+              >
+                <span class="ai-provider-top">
+                  <component
+                    :is="method.id === 'openrouter' ? Globe : Terminal"
+                    :size="14"
+                    class="ai-provider-icon"
+                  />
+                  <span class="ai-provider-name">{{ method.label }}</span>
+                  <Check v-if="aiProvider === method.id" :size="12" class="ai-tick" />
+                </span>
+                <span class="ai-provider-meta">
+                  <span class="faint small">{{ method.subtitle }}</span>
+                  <span
+                    v-if="method.id === 'openrouter'"
+                    class="ai-badge"
+                    :class="keySaved ? 'ok' : 'faint'"
+                  >
+                    {{ keySaved ? 'Key saved' : 'API key' }}
+                  </span>
+                  <span
+                    v-else-if="ai.cliFor(method.id)?.available"
+                    class="ai-badge ok"
+                  >
+                    Installed
+                  </span>
+                  <span
+                    v-else-if="ai.store.cliInfo.length"
+                    class="ai-badge faint"
+                  >
+                    Not found
+                  </span>
+                </span>
+              </button>
+            </div>
           </div>
 
-          <label class="field">
-            <span class="label">Thinking</span>
-            <select
-              :value="config.settings.value?.ai.reasoning"
-              @change="patchAi({ reasoning: ($event.target as HTMLSelectElement).value })"
-            >
-              <option v-for="level in REASONING_LEVELS" :key="level.value" :value="level.value">
-                {{ level.label }}
-              </option>
-            </select>
-          </label>
-          <p class="hint faint no-top">
-            How much the model reasons first. Thinking tokens cost money and commit messages rarely
-            need them. Models that can't reason ignore this.
-          </p>
+          <!-- Selected method configuration -->
+          <div class="ai-panel">
+            <!-- Local CLI configuration (Claude / Codex / Antigravity) -->
+            <template v-if="aiProvider !== 'openrouter'">
+              <div class="cli-status" data-testid="cli-status">
+                <span
+                  class="status-dot"
+                  :class="activeCli?.available ? 'ok' : ai.store.cliInfo.length ? 'missing' : 'idle'"
+                />
+                <div class="cli-status-body">
+                  <template v-if="activeCli?.available">
+                    <span class="cli-status-title">
+                      {{ AI_PROVIDER_LABELS[aiProvider] }} is installed
+                      <span v-if="activeCli.version" class="pill mono">{{ activeCli.version }}</span>
+                    </span>
+                    <span v-if="activeCli.path" class="faint small mono truncate block">
+                      {{ activeCli.path }}
+                    </span>
+                  </template>
+                  <template v-else-if="ai.store.loadingCliInfo && !activeCli">
+                    <span class="dim small">
+                      Checking for
+                      <span class="mono">{{ AI_METHODS.find((m) => m.id === aiProvider)?.binary }}</span>…
+                    </span>
+                  </template>
+                  <template v-else>
+                    <span class="cli-status-title bad">
+                      <span class="mono">{{ AI_METHODS.find((m) => m.id === aiProvider)?.binary }}</span>
+                      was not found on your PATH
+                    </span>
+                    <span class="faint small block">
+                      Install {{ AI_PROVIDER_LABELS[aiProvider] }} and sign in, then click Recheck.
+                    </span>
+                  </template>
+                </div>
+                <button
+                  type="button"
+                  class="btn tiny"
+                  data-testid="cli-recheck"
+                  :disabled="ai.store.loadingCliInfo || loadingActiveCliModels"
+                  title="Recheck installation and refresh models from the CLI"
+                  @click="recheckCli"
+                >
+                  <RefreshCw :size="12" :class="{ spin: ai.store.loadingCliInfo || loadingActiveCliModels }" />
+                  Recheck
+                </button>
+              </div>
 
-          <label class="field narrow">
-            <span class="label">Max tokens per answer</span>
-            <input
-              type="number"
-              class="max-tokens"
-              min="256"
-              max="200000"
-              step="100"
-              :value="config.settings.value?.ai.max_tokens"
-              @change="saveMaxTokens($event)"
-            />
-          </label>
-          <p class="hint faint no-top">
-            The longest answer the model may give, thinking included. Raise it if answers get cut
-            off; lower it to limit cost. Large conflicts get more.
-          </p>
+              <!-- Live model picker and thinking mode (only when the CLI is available or still being checked) -->
+              <template v-if="!activeCli || activeCli.available">
+                <div class="field">
+                  <span class="label">Model</span>
+                  <p v-if="activeCliModelsError" class="hint bad">{{ activeCliModelsError }}</p>
+                  <div
+                    v-else-if="loadingActiveCliModels && !activeCliModels.length"
+                    class="cli-model-loading dim small"
+                  >
+                    <RefreshCw :size="12" class="spin" />
+                    Loading models from <span class="mono">{{ activeCliBinary }}</span>…
+                  </div>
+                  <div
+                    v-else-if="activeCliModels.length"
+                    class="cli-model-list"
+                    data-testid="cli-models"
+                  >
+                    <button
+                      v-if="aiProvider !== 'claude'"
+                      type="button"
+                      class="cli-model-item"
+                      :class="{ on: !activeCliModelId }"
+                      data-model=""
+                      @click="pickCliModel(aiProvider, '')"
+                    >
+                      <Check v-if="!activeCliModelId" :size="13" class="cli-model-tick" />
+                      <span v-else class="cli-model-tick-space" />
+                      <span class="cli-model-main">
+                        <span class="cli-model-name">CLI default</span>
+                        <span class="faint small">
+                          {{ aiProvider === 'codex' ? 'from ~/.codex/config.toml' : 'from agy config' }}
+                        </span>
+                      </span>
+                    </button>
+                    <button
+                      v-for="model in activeCliModels"
+                      :key="model.id"
+                      type="button"
+                      class="cli-model-item"
+                      :class="{ on: activeCliModelId === model.id }"
+                      :data-model="model.id"
+                      @click="pickCliModel(aiProvider, model.id)"
+                    >
+                      <Check v-if="activeCliModelId === model.id" :size="13" class="cli-model-tick" />
+                      <span v-else class="cli-model-tick-space" />
+                      <span class="cli-model-main">
+                        <span class="cli-model-head">
+                          <span class="cli-model-name truncate">{{ model.name }}</span>
+                          <span
+                            v-if="model.id !== model.name"
+                            class="cli-model-id mono faint truncate"
+                          >
+                            {{ model.id }}
+                          </span>
+                        </span>
+                        <span v-if="model.note" class="faint small truncate">{{ model.note }}</span>
+                      </span>
+                    </button>
+                  </div>
+                  <p v-else class="hint faint">
+                    No models reported yet. Make sure you are signed in to
+                    <span class="mono">{{ activeCliBinary }}</span> and click Recheck.
+                  </p>
+                </div>
+
+                <!-- Thinking / effort mode -->
+                <div v-if="activeCliEffortLevels.length" class="field">
+                  <span class="label">Thinking</span>
+                  <div class="choices cli-efforts" data-testid="cli-efforts">
+                    <button
+                      type="button"
+                      class="choice"
+                      :class="{ on: !activeCliEffort }"
+                      data-effort=""
+                      @click="pickCliEffort(aiProvider, '')"
+                    >
+                      Default
+                    </button>
+                    <button
+                      v-for="level in activeCliEffortLevels"
+                      :key="level"
+                      type="button"
+                      class="choice"
+                      :class="{ on: activeCliEffort === level }"
+                      :data-effort="level"
+                      @click="pickCliEffort(aiProvider, level)"
+                    >
+                      {{ effortLabel(level) }}
+                    </button>
+                  </div>
+                  <span class="hint faint">
+                    Lower is faster for commit messages; higher helps on tricky merge conflicts.
+                  </span>
+                </div>
+              </template>
+
+              <p class="hint faint no-bottom">
+                Uses your local {{ AI_PROVIDER_LABELS[aiProvider] }} sign-in — no API key is stored
+                here. Model lists are cached for 2 hours.
+              </p>
+            </template>
+
+            <!-- OpenRouter configuration -->
+            <template v-else>
+              <label class="field">
+                <span class="label"><KeyRound :size="12" /> OpenRouter API key</span>
+                <span class="key-row">
+                  <input
+                    v-model="apiKey"
+                    type="password"
+                    autocomplete="off"
+                    :placeholder="keySaved ? 'Stored — type to replace' : 'sk-or-…'"
+                  />
+                  <button class="btn btn-primary" :disabled="!apiKey.trim()" @click="saveKey">
+                    Save
+                  </button>
+                  <button v-if="keySaved" class="btn btn-ghost" @click="((apiKey = ''), saveKey())">
+                    Remove
+                  </button>
+                </span>
+                <span class="hint" :class="keySaved ? 'ok' : 'faint'">
+                  {{ keySaved ? 'A key is stored in the keychain.' : 'No key stored yet.' }}
+                </span>
+              </label>
+
+              <div class="field">
+                <span class="label">Model</span>
+                <ModelPicker :selected="config.settings.value?.ai.model ?? null" @pick="pickModel" />
+              </div>
+
+              <div class="two openrouter-tuning">
+                <div>
+                  <label class="field">
+                    <span class="label">Thinking</span>
+                    <select
+                      :value="config.settings.value?.ai.reasoning"
+                      @change="patchAi({ reasoning: ($event.target as HTMLSelectElement).value })"
+                    >
+                      <option v-for="level in REASONING_LEVELS" :key="level.value" :value="level.value">
+                        {{ level.label }}
+                      </option>
+                    </select>
+                  </label>
+                  <p class="hint faint no-top">
+                    Thinking tokens cost money and commit messages rarely need them.
+                  </p>
+                </div>
+
+                <div>
+                  <label class="field">
+                    <span class="label">Max tokens per answer</span>
+                    <input
+                      type="number"
+                      class="max-tokens"
+                      min="256"
+                      max="200000"
+                      step="100"
+                      :value="config.settings.value?.ai.max_tokens"
+                      @change="saveMaxTokens($event)"
+                    />
+                  </label>
+                  <p class="hint faint no-top">
+                    Thinking included. Raise if answers get cut off; large conflicts get more.
+                  </p>
+                </div>
+              </div>
+            </template>
+          </div>
 
           <!-- The instructions themselves rather than a choice between two of
                them: what makes a good commit message here is a house rule, and
@@ -907,7 +1257,7 @@ onMounted(async () => {
             <textarea
               v-model="commitPrompt"
               class="prompt"
-              rows="12"
+              rows="10"
               spellcheck="false"
               placeholder="What the model is told before it is shown the diff"
               @blur="saveCommitPrompt"
@@ -920,9 +1270,18 @@ onMounted(async () => {
             </button>
           </p>
 
-          <p class="hint faint">
+          <p v-if="aiSummary" class="hint ok">
+            Ready — using <span class="mono">{{ aiSummary }}</span>. The commit box gets a Generate
+            button and the conflict resolver gets "Resolve with AI".
+          </p>
+          <p v-else-if="aiProvider === 'openrouter'" class="hint faint">
             With a key and a model set, the commit box gets a Generate button and the conflict
             resolver gets "Resolve with AI".
+          </p>
+          <p v-else class="hint faint">
+            Once <span class="mono">{{ AI_METHODS.find((m) => m.id === aiProvider)?.binary }}</span>
+            is installed, the commit box gets a Generate button and the conflict resolver gets
+            "Resolve with AI".
           </p>
         </section>
 
@@ -2525,5 +2884,220 @@ select {
 .check .sub {
   display: block;
   font-size: 11px;
+}
+
+/* --- AI */
+
+.ai-providers {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px;
+}
+
+.ai-provider {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 9px 11px;
+  background: var(--bg);
+  border: 1px solid var(--line-soft);
+  border-radius: var(--radius-lg);
+  text-align: left;
+  transition: border-color 0.1s, background 0.1s;
+}
+
+.ai-provider:hover {
+  border-color: var(--line);
+  background: var(--bg-hover);
+}
+
+.ai-provider.on,
+.ai-provider.on:hover {
+  background: var(--bg);
+  border-color: var(--primary);
+  box-shadow: 0 0 0 1px var(--primary);
+}
+
+.ai-provider-top {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+}
+
+.ai-provider-icon {
+  flex: none;
+  color: var(--text-dim);
+}
+
+.ai-provider.on .ai-provider-icon {
+  color: var(--accent);
+}
+
+.ai-provider-name {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text);
+}
+
+.ai-tick {
+  margin-left: auto;
+  padding: 2px;
+  box-sizing: content-box;
+  border-radius: var(--radius-pill);
+  color: var(--primary-fg);
+  background: var(--primary);
+}
+
+.ai-provider-meta {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.ai-badge {
+  font-size: 10.5px;
+  font-weight: 500;
+}
+
+.ai-panel {
+  margin-bottom: 16px;
+  padding: 14px 16px;
+  border-radius: var(--radius-lg);
+  background: var(--canvas);
+  border: 1px solid var(--line-soft);
+}
+
+.cli-status {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  padding-bottom: 12px;
+  margin-bottom: 14px;
+  border-bottom: 1px solid var(--line-soft);
+}
+
+.status-dot {
+  width: 8px;
+  height: 8px;
+  margin-top: 5px;
+  border-radius: 50%;
+  flex: none;
+}
+
+.status-dot.ok {
+  background: var(--green);
+}
+
+.status-dot.missing {
+  background: var(--red);
+}
+
+.status-dot.idle {
+  background: var(--text-faint);
+}
+
+.cli-status-body {
+  flex: 1;
+  min-width: 0;
+}
+
+.cli-status-title {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 6px;
+  font-size: 12.5px;
+  font-weight: 600;
+}
+
+.cli-model-loading {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 10px 12px;
+  border-radius: var(--radius);
+  border: 1px solid var(--line-soft);
+  background: var(--bg);
+}
+
+.cli-model-list {
+  display: flex;
+  flex-direction: column;
+  max-height: 220px;
+  overflow-y: auto;
+  padding: 4px;
+  border-radius: var(--radius);
+  border: 1px solid var(--line);
+  background: var(--bg);
+}
+
+.cli-model-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  padding: 6px 8px;
+  border-radius: var(--radius-sm);
+  text-align: left;
+}
+
+.cli-model-item:hover {
+  background: var(--bg-hover);
+}
+
+.cli-model-item.on {
+  background: var(--bg-active);
+}
+
+.cli-model-tick {
+  flex: none;
+  color: var(--accent);
+}
+
+.cli-model-tick-space {
+  width: 13px;
+  flex: none;
+}
+
+.cli-model-main {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+}
+
+.cli-model-head {
+  display: flex;
+  align-items: baseline;
+  gap: 7px;
+  min-width: 0;
+}
+
+.cli-model-name {
+  font-size: 12.5px;
+  font-weight: 500;
+  color: var(--text);
+}
+
+.cli-model-item.on .cli-model-name {
+  font-weight: 600;
+}
+
+.cli-model-id {
+  font-size: 10.5px;
+}
+
+.cli-efforts {
+  flex-wrap: wrap;
+}
+
+.no-bottom {
+  margin-bottom: 0;
+}
+
+.openrouter-tuning .hint.no-top {
+  margin-bottom: 0;
 }
 </style>

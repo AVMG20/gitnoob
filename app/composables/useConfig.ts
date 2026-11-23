@@ -39,8 +39,24 @@ export interface Profile {
 
 export type ReasoningLevel = 'off' | 'minimal' | 'low' | 'medium' | 'high'
 
+export type AiProvider = 'openrouter' | 'claude' | 'codex' | 'antigravity'
+
+export const AI_PROVIDER_LABELS: Record<AiProvider, string> = {
+  claude: 'Claude CLI',
+  codex: 'Codex CLI',
+  antigravity: 'Antigravity CLI',
+  openrouter: 'OpenRouter'
+}
+
 export interface AiSettings {
+  provider?: AiProvider
   model: string | null
+  claude_model?: string | null
+  claude_effort?: string | null
+  codex_model?: string | null
+  codex_effort?: string | null
+  antigravity_model?: string | null
+  antigravity_effort?: string | null
   max_tokens: number
   reasoning: ReasoningLevel
   commit_style: 'plain' | 'conventional'

@@ -12,7 +12,7 @@ import {
 } from 'lucide-vue-next'
 import { FORGE_LABELS, useConfig } from '~/composables/useConfig'
 import { useForge } from '~/composables/useForge'
-import { useAi } from '~/composables/useAi'
+import { aiSummaryLabel, useAi } from '~/composables/useAi'
 import { useUpdates } from '~/composables/useUpdates'
 import { aimedAt } from '~/composables/useInvoke'
 
@@ -133,9 +133,9 @@ async function pick(id: string) {
             <span v-else class="faint">not set</span>
           </div>
           <div class="row">
-            <span class="faint">AI model</span>
-            <span v-if="ai.store.status.model" class="mono small truncate">
-              {{ ai.store.status.model }}
+            <span class="faint">AI</span>
+            <span v-if="aiSummaryLabel(ai.store.status)" class="mono small truncate">
+              {{ aiSummaryLabel(ai.store.status) }}
             </span>
             <span v-else class="faint">not configured</span>
           </div>
