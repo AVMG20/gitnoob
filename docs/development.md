@@ -169,7 +169,7 @@ Add to .gitignore offers the path anchored with a leading `/` (`/app/etc/env.php
 
 A folder's menu stages, unstages and discards the changed files the status lists inside it, never the folder as a pathspec, so a discard saves each file for undo and leaves new files alone. Folder history is `git log` of the folder as a literal pathspec, without `--follow`, which means one file; its commits open in the graph. A folder shows how many changed files it holds.
 
-Two switches at the end of the filter box, kept across restarts in `gitnoob.filesView`: Changed files only draws a tree of its own from the status (every folder open until shut, nothing read from disk), and the eye hides what git ignores. Both are also on the menu of the empty space under the rows, with New file, New folder, Paste and Close all folders.
+The eye at the end of the filter box hides what git ignores, kept across restarts in `gitnoob.filesView`. It is also on the menu of the empty space under the rows, with New file, New folder, Paste and Close all folders. There is no changed-files-only view on purpose: the right panel is that list.
 
 ## The search window
 

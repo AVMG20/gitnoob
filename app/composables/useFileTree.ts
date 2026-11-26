@@ -19,8 +19,6 @@ export interface TreeSession {
   filter: string
   /** Folders that are open, by path relative to the work tree. */
   open: Record<string, true>
-  /** With only changed files showing, the folders shut: they start open. */
-  changedShut: Record<string, true>
   scroll: number
   /** A file to bring into view: the one just opened, or one asked for. */
   reveal: { path: string; seq: number } | null
@@ -34,7 +32,6 @@ const nowhere: TreeSession = reactive({
   mode: 'branches',
   filter: '',
   open: {},
-  changedShut: {},
   scroll: 0,
   reveal: null
 })
@@ -50,7 +47,6 @@ export function treeSession(): TreeSession {
       mode: 'branches',
       filter: '',
       open: {},
-      changedShut: {},
       scroll: 0,
       reveal: null
     }) as TreeSession
@@ -61,22 +57,20 @@ export function treeSession(): TreeSession {
 
 /**
  * How the tree is drawn, the same in every project and kept across restarts:
- * whether what git ignores is listed, and whether only changed files are.
+ * whether what git ignores is listed.
  */
 export interface TreeView {
   showIgnored: boolean
-  changedOnly: boolean
 }
 
 const VIEW_KEY = 'gitnoob.filesView'
 
 function readView(): TreeView {
-  const fallback: TreeView = { showIgnored: true, changedOnly: false }
+  const fallback: TreeView = { showIgnored: true }
   try {
     const saved = JSON.parse(localStorage.getItem(VIEW_KEY) ?? 'null') as Partial<TreeView> | null
     return {
-      showIgnored: typeof saved?.showIgnored === 'boolean' ? saved.showIgnored : true,
-      changedOnly: typeof saved?.changedOnly === 'boolean' ? saved.changedOnly : false
+      showIgnored: typeof saved?.showIgnored === 'boolean' ? saved.showIgnored : true
     }
   } catch {
     return fallback
@@ -229,9 +223,7 @@ export function resetFileTree() {
   nowhere.mode = 'branches'
   nowhere.filter = ''
   nowhere.open = {}
-  nowhere.changedShut = {}
   nowhere.scroll = 0
   treeView.showIgnored = true
-  treeView.changedOnly = false
   nowhere.reveal = null
 }

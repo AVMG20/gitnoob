@@ -407,25 +407,4 @@ describe('how the tree is drawn', () => {
     expect(listed(w)).not.toContain('vendor')
     expect(treeView.showIgnored).toBe(false)
   })
-
-  it('shows only changed files, folders open, without reading the disk', async () => {
-    const w = await show()
-    const before = called('list_dir').length
-    await w.find('button[aria-label="Changed files only"]').trigger('click')
-    await flushPromises()
-    expect(listed(w)).toEqual([
-      'app',
-      'app/Billing',
-      'app/Billing/Money.php',
-      'app/Billing/Old.php',
-      'app/Billing/TaxRates.php',
-      'app/Http',
-      'app/Http/New.php'
-    ])
-    expect(called('list_dir').length).toBe(before)
-
-    await row(w, 'app/Billing').trigger('click', { detail: 1 })
-    await flushPromises()
-    expect(listed(w)).not.toContain('app/Billing/Money.php')
-  })
 })

@@ -21,7 +21,6 @@ import {
   FolderClock,
   FolderOpen,
   FolderPlus,
-  GitCompareArrows,
   History,
   Minus,
   Palette,
@@ -237,58 +236,6 @@ const treeRows = computed<Row[]>(() => {
   return out
 })
 
-/**
- * Only what changed, as a tree of its own: built from the status, every
- * folder open unless it was shut in this view, and nothing read from disk.
- */
-const changedRows = computed<Row[]>(() => {
-  const kids = new Map<string, Map<string, Child>>()
-  for (const [path, mark] of marks.value) {
-    const parts = path.split('/')
-    for (let at = 0; at < parts.length; at++) {
-      const dir = parts.slice(0, at).join('/')
-      const here = kids.get(dir) ?? new Map<string, Child>()
-      const name = parts[at]!
-      if (!here.has(name)) {
-        const folder = at < parts.length - 1
-        here.set(name, {
-          name,
-          path: parts.slice(0, at + 1).join('/'),
-          dir: folder,
-          ignored: false,
-          link: false,
-          gone: !folder && mark.kind === 'deleted'
-        })
-      }
-      kids.set(dir, here)
-    }
-  }
-  const out: Row[] = []
-  const shut = session.value.changedShut
-  const visit = (dir: string, depth: number) => {
-    const entries = [...(kids.get(dir)?.values() ?? [])].sort(
-      (a, b) => Number(b.dir) - Number(a.dir) || a.name.toLowerCase().localeCompare(b.name.toLowerCase())
-    )
-    for (const entry of entries) {
-      const isOpen = entry.dir && !shut[entry.path]
-      out.push({
-        key: entry.path,
-        path: entry.path,
-        name: entry.name,
-        depth,
-        dir: entry.dir,
-        ignored: false,
-        link: false,
-        open: isOpen,
-        gone: !!entry.gone
-      })
-      if (isOpen) visit(entry.path, depth + 1)
-    }
-  }
-  visit('', 0)
-  return out
-})
-
 // --- the filter
 
 const found = ref<FoundFile[]>([])
@@ -331,11 +278,7 @@ const editing = ref<Editing | null>(null)
 
 /** The rows on screen, with the one a new name is being typed in. */
 const rows = computed<Row[]>(() => {
-  const base = filtering.value
-    ? foundRows.value
-    : treeView.changedOnly
-      ? changedRows.value
-      : treeRows.value
+  const base = filtering.value ? foundRows.value : treeRows.value
   const edit = editing.value
   if (!edit || edit.kind === 'rename' || filtering.value) return base
   const at = edit.parent ? base.findIndex((row) => row.dir && row.path === edit.parent) : -1
@@ -750,12 +693,6 @@ const current = computed(() => {
  * with one file at the bottom would otherwise take three clicks to reach.
  */
 async function toggle(row: Row) {
-  if (treeView.changedOnly && !filtering.value) {
-    const shut = session.value.changedShut
-    if (shut[row.path]) delete shut[row.path]
-    else shut[row.path] = true
-    return
-  }
   const open = session.value.open
   if (open[row.path]) {
     shut(row.path)
@@ -769,13 +706,6 @@ async function toggle(row: Row) {
 
 /** Shuts a folder and every folder open inside it. */
 function shut(path: string) {
-  if (treeView.changedOnly && !filtering.value) {
-    session.value.changedShut[path] = true
-    for (const row of changedRows.value) {
-      if (row.dir && row.path.startsWith(`${path}/`)) session.value.changedShut[row.path] = true
-    }
-    return
-  }
   const open = session.value.open
   delete open[path]
   const inside = `${path}/`
@@ -821,11 +751,6 @@ const EXPAND_LIMIT = 500
  * never followed, so it cannot run in circles.
  */
 async function expandAll(row: Row) {
-  if (treeView.changedOnly && !filtering.value) {
-    const shut = session.value.changedShut
-    for (const dir of Object.keys(shut)) if (within(row.path, dir)) delete shut[dir]
-    return
-  }
   const open = session.value.open
   const keepIgnored = row.ignored
   const gone = new Set<string>(row.gone ? [row.path] : [])
@@ -897,7 +822,6 @@ async function reveal(path: string) {
   const open = session.value.open
   const dirs = ancestors(path)
   for (const dir of dirs) open[dir] = true
-  if (treeView.changedOnly) for (const dir of dirs) delete session.value.changedShut[dir]
   await Promise.all(dirs.filter((dir) => !(dir in here.value)).map((dir) => loadDir(dir)))
   if (filtering.value) return
   await nextTick()
@@ -945,19 +869,11 @@ async function focusEdit() {
 async function startCreate(parent: string, dir: boolean) {
   endQuery()
   if (filtering.value) session.value.filter = ''
-  if (treeView.changedOnly && parent && !changedRows.value.some((row) => row.dir && row.path === parent)) {
-    // A folder with no changes in it is not in that view to type under.
-    treeView.changedOnly = false
-  }
   if (parent) {
-    if (treeView.changedOnly) {
-      for (const dir of [...ancestors(parent), parent]) delete session.value.changedShut[dir]
-    } else {
-      const open = session.value.open
-      const dirs = [...ancestors(parent), parent]
-      for (const one of dirs) open[one] = true
-      await Promise.all(dirs.filter((one) => !(one in here.value)).map((one) => loadDir(one)))
-    }
+    const open = session.value.open
+    const dirs = [...ancestors(parent), parent]
+    for (const one of dirs) open[one] = true
+    await Promise.all(dirs.filter((one) => !(one in here.value)).map((one) => loadDir(one)))
   }
   editing.value = { kind: dir ? 'dir' : 'file', parent, path: '', name: '', dir }
   await focusEdit()
@@ -1453,10 +1369,6 @@ function onMenu(event: MouseEvent, row: Row) {
 
 /** Shuts every folder. */
 function closeAll() {
-  if (treeView.changedOnly) {
-    for (const row of changedRows.value) if (row.dir) session.value.changedShut[row.path] = true
-    return
-  }
   for (const dir of Object.keys(session.value.open)) delete session.value.open[dir]
 }
 
@@ -1482,12 +1394,6 @@ function onListMenu(event: MouseEvent) {
         icon: treeView.showIgnored ? Eye : EyeOff,
         hint: treeView.showIgnored ? '✓' : undefined,
         action: () => (treeView.showIgnored = !treeView.showIgnored)
-      },
-      {
-        label: 'Changed files only',
-        icon: GitCompareArrows,
-        hint: treeView.changedOnly ? '✓' : undefined,
-        action: () => (treeView.changedOnly = !treeView.changedOnly)
       },
       { separator: true, label: '' },
       { label: 'Close all folders', icon: ChevronsDownUp, action: closeAll }
@@ -1615,17 +1521,6 @@ const DOT_TITLE: Record<string, string> = {
       <button
         type="button"
         class="toggle"
-        :class="{ on: treeView.changedOnly }"
-        :aria-pressed="treeView.changedOnly"
-        title="Changed files only"
-        aria-label="Changed files only"
-        @click="treeView.changedOnly = !treeView.changedOnly"
-      >
-        <GitCompareArrows :size="13" />
-      </button>
-      <button
-        type="button"
-        class="toggle"
         :class="{ on: !treeView.showIgnored }"
         :aria-pressed="treeView.showIgnored"
         :title="treeView.showIgnored ? 'Hide ignored files' : 'Show ignored files'"
@@ -1750,10 +1645,6 @@ const DOT_TITLE: Record<string, string> = {
         </div>
       </div>
       <p v-if="filtering && !found.length" class="empty">No files match.</p>
-      <p v-else-if="!filtering && treeView.changedOnly && !rows.length" class="empty">
-        Nothing has changed.
-        <button class="again" @click="treeView.changedOnly = false">Show every file</button>
-      </p>
       <p v-else-if="!filtering && failed" class="empty">
         Could not read this folder.
         <button class="again" @click="loadDir('')">Try again</button>
@@ -1813,7 +1704,7 @@ const DOT_TITLE: Record<string, string> = {
   font-size: 12.5px;
 }
 
-/* The two view switches at the end of the filter box. */
+/* The ignored-files switch at the end of the filter box. */
 .toggle {
   flex: none;
   display: grid;
