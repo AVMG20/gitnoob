@@ -172,7 +172,12 @@ fn augmented_path_dirs() -> Vec<PathBuf> {
             extras.push(PathBuf::from(appdata).join("npm"));
         }
         if let Some(local) = std::env::var_os("LOCALAPPDATA") {
-            extras.push(PathBuf::from(local).join("Microsoft").join("WinGet").join("Links"));
+            extras.push(
+                PathBuf::from(local)
+                    .join("Microsoft")
+                    .join("WinGet")
+                    .join("Links"),
+            );
         }
     }
 
@@ -509,7 +514,8 @@ fn fetch_claude_models(bin: &Path) -> Result<Vec<CliModel>, String> {
     .env_remove("CLAUDECODE")
     .env_remove("CLAUDE_CODE_ENTRYPOINT");
 
-    let init_req = r#"{"type":"control_request","request_id":"1","request":{"subtype":"initialize"}}"#;
+    let init_req =
+        r#"{"type":"control_request","request_id":"1","request":{"subtype":"initialize"}}"#;
     let live = query_json_rpc_lines(cmd, &[init_req], Duration::from_secs(12), |msg| {
         if msg.get("type").and_then(|v| v.as_str()) != Some("control_response") {
             return None;
@@ -664,7 +670,12 @@ fn fetch_codex_models(bin: &Path) -> Result<Vec<CliModel>, String> {
 fn parse_codex_app_server_models(items: &[serde_json::Value]) -> Vec<CliModel> {
     items
         .iter()
-        .filter(|item| !item.get("hidden").and_then(|v| v.as_bool()).unwrap_or(false))
+        .filter(|item| {
+            !item
+                .get("hidden")
+                .and_then(|v| v.as_bool())
+                .unwrap_or(false)
+        })
         .filter_map(|item| {
             let id = item
                 .get("id")
@@ -846,10 +857,7 @@ fn split_agy_effort(id: &str, name: &str) -> Option<(String, String, String)> {
             }
             let base_name = name
                 .rsplit_once(" (")
-                .filter(|(_, tail)| {
-                    tail.trim_end_matches(')')
-                        .eq_ignore_ascii_case(effort)
-                })
+                .filter(|(_, tail)| tail.trim_end_matches(')').eq_ignore_ascii_case(effort))
                 .map(|(head, _)| head.trim())
                 .unwrap_or(name);
             return Some((
@@ -878,10 +886,7 @@ fn parse_agy_models(stdout: &str) -> Vec<CliModel> {
         let split = line
             .split_once('\t')
             .map(|(a, b)| (a.trim(), b.trim()))
-            .or_else(|| {
-                line.find("  ")
-                    .map(|at| (&line[..at], line[at..].trim()))
-            });
+            .or_else(|| line.find("  ").map(|at| (&line[..at], line[at..].trim())));
         let Some((id, name)) = split else {
             continue;
         };
@@ -1336,8 +1341,7 @@ fn complete_cli(
     system: &str,
     user: &str,
 ) -> Result<(Reply, String), String> {
-    let binary = cli_binary_name(provider)
-        .ok_or_else(|| "Unsupported CLI provider".to_string())?;
+    let binary = cli_binary_name(provider).ok_or_else(|| "Unsupported CLI provider".to_string())?;
     let bin_path = find_binary(binary).ok_or_else(|| {
         format!(
             "{} (`{binary}`) was not found on your PATH — install it or pick another provider in Settings › AI",
@@ -1530,10 +1534,8 @@ fn run_codex(
 ) -> Result<String, String> {
     static SEQ: AtomicU64 = AtomicU64::new(0);
     let seq = SEQ.fetch_add(1, Ordering::Relaxed);
-    let out_file = std::env::temp_dir().join(format!(
-        "gitnoob-codex-{}-{seq}.txt",
-        std::process::id()
-    ));
+    let out_file =
+        std::env::temp_dir().join(format!("gitnoob-codex-{}-{seq}.txt", std::process::id()));
     let _guard = TempFileGuard(out_file.clone());
 
     let mut cmd = cli_command(bin);
@@ -2953,7 +2955,10 @@ mod tests {
         assert_eq!(ai.active_model(), None);
 
         ai.model = Some("anthropic/claude-sonnet-4.5".to_string());
-        assert_eq!(ai.active_model().as_deref(), Some("anthropic/claude-sonnet-4.5"));
+        assert_eq!(
+            ai.active_model().as_deref(),
+            Some("anthropic/claude-sonnet-4.5")
+        );
 
         ai.provider = AiProvider::Claude;
         assert_eq!(ai.active_model().as_deref(), Some("haiku"));
