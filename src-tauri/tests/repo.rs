@@ -10,8 +10,8 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 
 use gitnoob_lib::state::AppState;
 use gitnoob_lib::{
-    blame, complete, conflict, create, deps, diff, edit, editorconfig, files, graph, image,
-    journal, rebase, refs, remote, search, symbols, work, worktree,
+    blame, complete, conflict, create, deps, diff, edit, editorconfig, fileops, files, graph,
+    image, journal, rebase, refs, remote, search, symbols, work, worktree,
 };
 
 static COUNTER: AtomicUsize = AtomicUsize::new(0);
@@ -13658,4 +13658,401 @@ fn blame_of_a_working_file_numbers_the_lines_on_disk() {
     // Emptied, there are no lines to answer for.
     sandbox.write("a.txt", "");
     assert!(blame::of(&state, "a.txt", None).unwrap().is_empty());
+}
+
+// --- changing files from the Files tree -------------------------------------
+
+#[test]
+fn a_new_file_and_a_new_folder_are_made_with_the_folders_on_the_way() {
+    let sandbox = Sandbox::new("create");
+    sandbox.commit("a.txt", "one\n", "Base");
+    let state = sandbox.state();
+
+    assert_eq!(
+        fileops::create(&state, "src/deep/new.ts", false).unwrap(),
+        "src/deep/new.ts"
+    );
+    assert_eq!(
+        std::fs::read(sandbox.root.join("src/deep/new.ts")).unwrap(),
+        b""
+    );
+    assert_eq!(
+        fileops::create(&state, "docs/guides", true).unwrap(),
+        "docs/guides"
+    );
+    assert!(sandbox.root.join("docs/guides").is_dir());
+
+    assert!(fileops::create(&state, "a.txt", false)
+        .unwrap_err()
+        .contains("already there"));
+    assert!(fileops::create(&state, "../outside.txt", false).is_err());
+    assert!(fileops::create(&state, ".git/hooks/x", false).is_err());
+    assert!(!sandbox.root.join("../outside.txt").exists());
+}
+
+#[test]
+fn renaming_a_tracked_file_is_a_git_mv_the_commit_records_as_a_rename() {
+    let sandbox = Sandbox::new("rename-tracked");
+    sandbox.commit("old[1].txt", "one\ntwo\nthree\n", "Base");
+    // A file the bracket would match as a pathspec, left alone.
+    sandbox.commit("old1.txt", "other\n", "Decoy");
+    let state = sandbox.state();
+
+    fileops::rename(&state, "old[1].txt", "lib/new.txt").unwrap();
+
+    assert!(sandbox.root.join("lib/new.txt").exists());
+    assert!(!sandbox.root.join("old[1].txt").exists());
+    assert!(sandbox.root.join("old1.txt").exists());
+    let status = refs::status(&state).unwrap();
+    let moved = status
+        .staged
+        .iter()
+        .find(|entry| entry.path == "lib/new.txt")
+        .expect("the move is staged");
+    assert_eq!(moved.from.as_deref(), Some("old[1].txt"));
+    assert!(status.unstaged.is_empty());
+}
+
+#[test]
+fn renaming_an_untracked_file_is_a_plain_rename() {
+    let sandbox = Sandbox::new("rename-untracked");
+    sandbox.commit("a.txt", "one\n", "Base");
+    sandbox.write("draft.md", "notes\n");
+    let state = sandbox.state();
+
+    fileops::rename(&state, "draft.md", "notes.md").unwrap();
+
+    assert_eq!(
+        std::fs::read_to_string(sandbox.root.join("notes.md")).unwrap(),
+        "notes\n"
+    );
+    let status = refs::status(&state).unwrap();
+    assert!(status.staged.is_empty(), "nothing was added to the index");
+    assert!(status
+        .unstaged
+        .iter()
+        .any(|e| e.path == "notes.md" && e.kind == "untracked"));
+}
+
+#[test]
+fn a_change_of_case_only_is_a_rename_too() {
+    let sandbox = Sandbox::new("rename-case");
+    sandbox.commit("readme.md", "hello\n", "Base");
+    let state = sandbox.state();
+
+    fileops::rename(&state, "readme.md", "README.md").unwrap();
+
+    let names: Vec<String> = std::fs::read_dir(&sandbox.root)
+        .unwrap()
+        .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
+        .collect();
+    assert!(names.contains(&"README.md".to_string()), "{names:?}");
+    assert!(!names.contains(&"readme.md".to_string()), "{names:?}");
+    assert_eq!(sandbox.git(&["ls-files"]).trim(), "README.md");
+}
+
+#[test]
+fn moving_a_folder_takes_its_untracked_files_along_and_refuses_to_overwrite() {
+    let sandbox = Sandbox::new("move-folder");
+    std::fs::create_dir_all(sandbox.root.join("src/util")).unwrap();
+    std::fs::create_dir_all(sandbox.root.join("lib")).unwrap();
+    sandbox.write("lib/keep.txt", "keep\n");
+    sandbox.commit("src/util/strings.rs", "fn a() {}\n", "Base");
+    sandbox.write("src/util/scratch.rs", "// mine\n");
+    let state = sandbox.state();
+
+    let refused = fileops::move_into(&state, &["src".to_string()], "src/util").unwrap();
+    assert!(refused.error.unwrap().contains("into itself"));
+    assert!(refused.to.is_empty());
+
+    let moved = fileops::move_into(&state, &["src/util".to_string()], "lib").unwrap();
+    assert_eq!(moved.to, ["lib/util"]);
+    assert!(moved.error.is_none());
+    assert!(sandbox.root.join("lib/util/strings.rs").exists());
+    assert!(sandbox.root.join("lib/util/scratch.rs").exists());
+    assert!(!sandbox.root.join("src/util").exists());
+    assert_eq!(
+        sandbox.git(&["ls-files", "lib/util"]).trim(),
+        "lib/util/strings.rs"
+    );
+
+    sandbox.write("other.txt", "x\n");
+    assert!(fileops::rename(&state, "other.txt", "lib/keep.txt")
+        .unwrap_err()
+        .contains("already there"));
+    assert_eq!(
+        std::fs::read_to_string(sandbox.root.join("lib/keep.txt")).unwrap(),
+        "keep\n"
+    );
+}
+
+#[test]
+fn copying_into_the_same_folder_is_a_duplicate_with_a_free_name() {
+    let sandbox = Sandbox::new("copy");
+    std::fs::create_dir_all(sandbox.root.join("conf/nested")).unwrap();
+    sandbox.write("conf/nested/x.ini", "x=1\n");
+    sandbox.commit("conf/app.env.php", "<?php\n", "Base");
+    let state = sandbox.state();
+
+    let one = fileops::copy_into(&state, &["conf/app.env.php".to_string()], "conf").unwrap();
+    let two = fileops::copy_into(&state, &["conf/app.env.php".to_string()], "conf").unwrap();
+    assert_eq!(one, ["conf/app.env copy.php"]);
+    assert_eq!(two, ["conf/app.env copy 2.php"]);
+    assert_eq!(
+        std::fs::read_to_string(sandbox.root.join("conf/app.env copy.php")).unwrap(),
+        "<?php\n"
+    );
+
+    let folder = fileops::copy_into(&state, &["conf".to_string()], "").unwrap();
+    assert_eq!(folder, ["conf copy"]);
+    assert!(sandbox.root.join("conf copy/nested/x.ini").exists());
+    assert!(
+        fileops::copy_into(&state, &["conf".to_string()], "conf/nested")
+            .unwrap_err()
+            .contains("into itself")
+    );
+    // Copies are new files: git is told nothing.
+    assert!(refs::status(&state).unwrap().staged.is_empty());
+}
+
+#[test]
+fn deleting_a_tracked_folder_shows_it_deleted_and_undo_puts_it_back() {
+    let sandbox = Sandbox::new("delete-folder");
+    std::fs::create_dir_all(sandbox.root.join("old")).unwrap();
+    sandbox.write("old/a.txt", "a\n");
+    sandbox.commit("old/b.txt", "b\n", "Base");
+    sandbox.write("old/b.txt", "b edited\n");
+    sandbox.write("old/new.txt", "never committed\n");
+    let state = sandbox.state();
+
+    let said = fileops::delete(&state, &["old".to_string()], false).unwrap();
+    assert!(said.contains("old"), "{said}");
+    assert!(!sandbox.root.join("old").exists());
+    let status = refs::status(&state).unwrap();
+    assert!(status
+        .unstaged
+        .iter()
+        .any(|e| e.path == "old/a.txt" && e.kind == "deleted"));
+
+    journal::undo(&state).unwrap();
+    assert_eq!(
+        std::fs::read_to_string(sandbox.root.join("old/a.txt")).unwrap(),
+        "a\n"
+    );
+    assert_eq!(
+        std::fs::read_to_string(sandbox.root.join("old/b.txt")).unwrap(),
+        "b edited\n"
+    );
+    assert_eq!(
+        std::fs::read_to_string(sandbox.root.join("old/new.txt")).unwrap(),
+        "never committed\n"
+    );
+}
+
+#[test]
+fn deleting_a_tracked_file_can_be_discarded_back() {
+    let sandbox = Sandbox::new("delete-file");
+    sandbox.commit("keep.txt", "keep\n", "Base");
+    let state = sandbox.state();
+
+    fileops::delete(&state, &["keep.txt".to_string()], false).unwrap();
+    assert!(!sandbox.root.join("keep.txt").exists());
+    work::discard(&state, &["keep.txt".to_string()]).unwrap();
+    assert_eq!(
+        std::fs::read_to_string(sandbox.root.join("keep.txt")).unwrap(),
+        "keep\n"
+    );
+}
+
+#[test]
+fn untracking_leaves_the_file_on_disk_and_stages_its_removal() {
+    let sandbox = Sandbox::new("untrack");
+    sandbox.commit(".env", "SECRET=1\n", "Oops");
+    let state = sandbox.state();
+
+    fileops::untrack(&state, &[".env".to_string()]).unwrap();
+
+    assert_eq!(
+        std::fs::read_to_string(sandbox.root.join(".env")).unwrap(),
+        "SECRET=1\n"
+    );
+    let status = refs::status(&state).unwrap();
+    assert!(status
+        .staged
+        .iter()
+        .any(|e| e.path == ".env" && e.kind == "deleted"));
+    assert!(status
+        .unstaged
+        .iter()
+        .any(|e| e.path == ".env" && e.kind == "untracked"));
+}
+
+#[test]
+fn an_ignore_rule_can_go_to_the_local_exclude_file() {
+    let sandbox = Sandbox::new("exclude");
+    sandbox.commit("a.txt", "one\n", "Base");
+    sandbox.write("mine.local", "x\n");
+    let state = sandbox.state();
+
+    refs::add_ignore_rule(&state, "/mine.local", true).unwrap();
+
+    let exclude = std::fs::read_to_string(sandbox.root.join(".git/info/exclude")).unwrap();
+    assert!(
+        exclude.lines().any(|line| line == "/mine.local"),
+        "{exclude}"
+    );
+    assert!(!sandbox.root.join(".gitignore").exists());
+    assert!(!refs::status(&state)
+        .unwrap()
+        .unstaged
+        .iter()
+        .any(|e| e.path == "mine.local"));
+    // Asked twice, written once.
+    refs::add_ignore_rule(&state, "/mine.local", true).unwrap();
+    let again = std::fs::read_to_string(sandbox.root.join(".git/info/exclude")).unwrap();
+    assert_eq!(again.matches("/mine.local").count(), 1);
+}
+
+#[test]
+fn a_folders_history_is_every_commit_that_touched_anything_in_it() {
+    let sandbox = Sandbox::new("folder-history");
+    std::fs::create_dir_all(sandbox.root.join("a[1]")).unwrap();
+    std::fs::create_dir_all(sandbox.root.join("a1")).unwrap();
+    sandbox.commit("a[1]/x.txt", "x\n", "First in the folder");
+    sandbox.commit("a1/y.txt", "y\n", "In the look-alike");
+    sandbox.commit("a[1]/z.txt", "z\n", "Second in the folder");
+    let state = sandbox.state();
+
+    let commits = blame::history_of(&state, "a[1]", 50, true).unwrap();
+    let summaries: Vec<&str> = commits.iter().map(|c| c.summary.as_str()).collect();
+    assert_eq!(summaries, ["Second in the folder", "First in the folder"]);
+}
+
+#[test]
+fn a_dropped_file_is_written_under_a_free_name() {
+    let sandbox = Sandbox::new("import");
+    sandbox.commit("logo.png", "old\n", "Base");
+    let state = sandbox.state();
+
+    let name = fileops::free_name(&state, "", "logo.png").unwrap();
+    assert_eq!(name, "logo copy.png");
+    // "hello" in base64.
+    fileops::import(&state, &format!("assets/{}", "logo.png"), "aGVsbG8=").unwrap();
+    assert_eq!(
+        std::fs::read(sandbox.root.join("assets/logo.png")).unwrap(),
+        b"hello"
+    );
+    assert!(fileops::import(&state, "logo.png", "aGVsbG8=")
+        .unwrap_err()
+        .contains("already there"));
+}
+
+#[test]
+fn a_move_of_several_stops_at_the_first_that_cannot_go_and_says_what_moved() {
+    let sandbox = Sandbox::new("move-some");
+    std::fs::create_dir_all(sandbox.root.join("dest")).unwrap();
+    sandbox.write("dest/b.txt", "already\n");
+    sandbox.write("a.txt", "a\n");
+    sandbox.commit("b.txt", "b\n", "Base");
+    let state = sandbox.state();
+
+    let moved =
+        fileops::move_into(&state, &["a.txt".to_string(), "b.txt".to_string()], "dest").unwrap();
+    assert_eq!(moved.from, ["a.txt"]);
+    assert_eq!(moved.to, ["dest/a.txt"]);
+    assert!(moved.error.unwrap().contains("already there"));
+    assert!(sandbox.root.join("b.txt").exists());
+}
+
+#[test]
+fn a_folder_with_a_deleted_tracked_file_still_moves() {
+    let sandbox = Sandbox::new("move-deleted-inside");
+    std::fs::create_dir_all(sandbox.root.join("d")).unwrap();
+    sandbox.write("d/a.txt", "a\n");
+    sandbox.commit("d/b.txt", "b\n", "Base");
+    std::fs::remove_file(sandbox.root.join("d/b.txt")).unwrap();
+    let state = sandbox.state();
+
+    fileops::rename(&state, "d", "e/d").unwrap();
+
+    assert!(sandbox.root.join("e/d/a.txt").exists());
+    assert!(!sandbox.root.join("d").exists());
+    let status = refs::status(&state).unwrap();
+    assert!(status
+        .unstaged
+        .iter()
+        .any(|e| e.path == "d/b.txt" && e.kind == "deleted"));
+}
+
+#[test]
+fn a_tracked_folder_can_change_case_only() {
+    let sandbox = Sandbox::new("rename-folder-case");
+    std::fs::create_dir_all(sandbox.root.join("views")).unwrap();
+    sandbox.commit("views/a.txt", "a\n", "Base");
+    let state = sandbox.state();
+
+    fileops::rename(&state, "views", "Views").unwrap();
+
+    let names: Vec<String> = std::fs::read_dir(&sandbox.root)
+        .unwrap()
+        .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
+        .collect();
+    assert!(names.contains(&"Views".to_string()), "{names:?}");
+    assert!(!names.contains(&"views".to_string()), "{names:?}");
+    assert!(
+        !names.iter().any(|name| name.contains("gitnoob-rename")),
+        "{names:?}"
+    );
+    assert_eq!(sandbox.git(&["ls-files"]).trim(), "Views/a.txt");
+}
+
+#[test]
+fn a_failed_move_leaves_no_folders_behind() {
+    let sandbox = Sandbox::new("move-cleanup");
+    sandbox.commit("a.txt", "a\n", "Base");
+    let state = sandbox.state();
+
+    // A tracked file that is not on disk cannot be moved at all.
+    std::fs::remove_file(sandbox.root.join("a.txt")).unwrap();
+    assert!(fileops::rename(&state, "a.txt", "new/deep/a.txt").is_err());
+    assert!(!sandbox.root.join("new").exists());
+}
+
+#[test]
+fn nothing_is_made_or_moved_outside_the_work_tree_or_inside_git() {
+    let sandbox = Sandbox::new("fileops-guard");
+    sandbox.commit("a.txt", "a\n", "Base");
+    let state = sandbox.state();
+    let outside = sandbox
+        .root
+        .join("..")
+        .join(format!("gitnoob-outside-{}", std::process::id()));
+
+    for bad in [
+        "../x.txt",
+        "a/../../x.txt",
+        ".git/x",
+        ".GIT/hooks/x",
+        "/etc/x",
+    ] {
+        assert!(fileops::create(&state, bad, false).is_err(), "{bad}");
+        assert!(fileops::rename(&state, "a.txt", bad).is_err(), "{bad}");
+        assert!(fileops::import(&state, bad, "aGVsbG8=").is_err(), "{bad}");
+    }
+    assert!(fileops::copy_into(&state, &["a.txt".to_string()], "..").is_err());
+    assert!(fileops::delete(&state, &[".git".to_string()], false).is_err());
+    assert!(sandbox.root.join("a.txt").exists());
+    assert!(sandbox.root.join(".git/HEAD").exists());
+
+    #[cfg(unix)]
+    {
+        std::fs::create_dir_all(&outside).unwrap();
+        std::os::unix::fs::symlink(&outside, sandbox.root.join("out")).unwrap();
+        assert!(fileops::create(&state, "out/x.txt", false).is_err());
+        assert!(fileops::rename(&state, "a.txt", "out/a.txt").is_err());
+        assert!(fileops::copy_into(&state, &["a.txt".to_string()], "out").is_err());
+        assert!(!outside.join("x.txt").exists());
+        assert!(!outside.join("a.txt").exists());
+        let _ = std::fs::remove_dir_all(&outside);
+    }
 }

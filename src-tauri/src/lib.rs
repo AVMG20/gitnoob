@@ -9,6 +9,7 @@ pub mod deps;
 pub mod diff;
 pub mod edit;
 pub mod editorconfig;
+pub mod fileops;
 pub mod files;
 pub mod forge;
 pub mod frameworks;
@@ -818,9 +819,66 @@ async fn worktree_remove(
     worktree::remove(&state, &path, force.unwrap_or(false))
 }
 
+/// Adds a rule to the root `.gitignore`, or with `local` to
+/// `.git/info/exclude`.
 #[tauri::command]
-fn add_to_gitignore(pattern: String, state: Aimed) -> Result<String, String> {
-    refs::add_to_gitignore(&state, &pattern)
+fn add_to_gitignore(pattern: String, local: Option<bool>, state: Aimed) -> Result<String, String> {
+    refs::add_ignore_rule(&state, &pattern, local.unwrap_or(false))
+}
+
+// --- changing the files in the work tree -----------------------------------
+
+/// An empty file, or with `dir` a folder, with any folders on the way.
+#[tauri::command]
+async fn create_path(path: String, dir: Option<bool>, state: Aimed) -> Result<String, String> {
+    blocking(move || fileops::create(&state, &path, dir.unwrap_or(false))).await
+}
+
+/// Renames or moves one path: `git mv` when git tracks it. Answers with the
+/// new path.
+#[tauri::command]
+async fn rename_path(from: String, to: String, state: Aimed) -> Result<String, String> {
+    blocking(move || fileops::rename(&state, &from, &to)).await
+}
+
+/// Moves paths into a folder under their own names.
+#[tauri::command]
+async fn move_paths(
+    paths: Vec<String>,
+    dest: String,
+    state: Aimed,
+) -> Result<fileops::Moved, String> {
+    blocking(move || fileops::move_into(&state, &paths, &dest)).await
+}
+
+/// Copies paths into a folder; a taken name gets ` copy` added.
+#[tauri::command]
+async fn copy_paths(paths: Vec<String>, dest: String, state: Aimed) -> Result<Vec<String>, String> {
+    blocking(move || fileops::copy_into(&state, &paths, &dest)).await
+}
+
+/// Moves files and folders to the Trash, saved for undo first.
+#[tauri::command]
+async fn trash_paths(paths: Vec<String>, state: Aimed) -> Result<String, String> {
+    blocking(move || fileops::delete(&state, &paths, true)).await
+}
+
+/// `git rm --cached`: git stops tracking the paths, which stay on disk.
+#[tauri::command]
+async fn untrack_paths(paths: Vec<String>, state: Aimed) -> Result<String, String> {
+    blocking(move || fileops::untrack(&state, &paths)).await
+}
+
+/// A free name for `name` in the folder `dir`.
+#[tauri::command]
+async fn free_name(dir: String, name: String, state: Aimed) -> Result<String, String> {
+    blocking(move || fileops::free_name(&state, &dir, &name)).await
+}
+
+/// Writes a file dropped in from outside the window. `data` is base64.
+#[tauri::command]
+async fn import_file(path: String, data: String, state: Aimed) -> Result<String, String> {
+    blocking(move || fileops::import(&state, &path, &data)).await
 }
 
 // --- git lfs -----------------------------------------------------------------
@@ -911,9 +969,10 @@ async fn blame_file(
 async fn file_history(
     path: String,
     limit: Option<usize>,
+    folder: Option<bool>,
     state: Aimed,
 ) -> Result<Vec<blame::FileCommit>, String> {
-    blame::history(&state, &path, limit.unwrap_or(200))
+    blame::history_of(&state, &path, limit.unwrap_or(200), folder.unwrap_or(false))
 }
 
 // --- signatures --------------------------------------------------------------
@@ -2572,6 +2631,14 @@ pub fn run() {
             worktree_add,
             worktree_remove,
             add_to_gitignore,
+            create_path,
+            rename_path,
+            move_paths,
+            copy_paths,
+            trash_paths,
+            untrack_paths,
+            free_name,
+            import_file,
             run_git,
             lfs_status,
             lfs_pull,

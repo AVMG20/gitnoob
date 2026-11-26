@@ -255,21 +255,36 @@ fn read_commit(repo: &Repository, oid: git2::Oid) -> (String, String, String, i6
 /// reason to ask: the commits before the rename are the ones you cannot find
 /// any other way.
 pub fn history(state: &AppState, path: &str, limit: usize) -> Result<Vec<FileCommit>, String> {
+    history_of(state, path, limit, false)
+}
+
+/// Every commit that touched a file, or with `folder` anything inside a
+/// folder. `--follow` only means something for one file, so a folder's
+/// history is the plain log of a literal pathspec.
+pub fn history_of(
+    state: &AppState,
+    path: &str,
+    limit: usize,
+    folder: bool,
+) -> Result<Vec<FileCommit>, String> {
     let root = state.path()?;
     let count = limit.to_string();
-    let raw = crate::git_cmd::run_checked(
-        &root,
-        &[
-            "log",
-            "--follow",
-            "--no-show-signature",
-            "--format=%H%x1f%an%x1f%ae%x1f%at%x1f%s",
-            "-n",
-            &count,
-            "--",
-            path,
-        ],
-    )?;
+    let spec = format!(":(literal){}", path.trim_matches('/'));
+    let mut args = vec!["log"];
+    if !folder {
+        args.push("--follow");
+    }
+    args.extend([
+        "--no-show-signature",
+        "--format=%H%x1f%an%x1f%ae%x1f%at%x1f%s",
+        "-n",
+        &count,
+        "--",
+    ]);
+    // A file keeps its plain path: `--follow` wants exactly one, and
+    // `:(literal)` is what keeps a folder named `a[1]` from matching `a1`.
+    args.push(if folder { spec.as_str() } else { path });
+    let raw = crate::git_cmd::run_checked(&root, &args)?;
     Ok(read_history(&raw))
 }
 

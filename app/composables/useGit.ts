@@ -1543,9 +1543,12 @@ export function useGit() {
   const blameFile = (path: string, commit?: string | null) =>
     invoke<BlameRun[]>('blame_file', { path, commit: commit ?? null })
 
-  /** Every commit that touched a file, newest first, across renames. */
-  const fileHistory = (path: string, limit = 200) =>
-    guard('File history', () => invoke<FileCommit[]>('file_history', { path, limit }))
+  /** Every commit that touched a file, newest first, across renames; with
+      `folder`, every commit that touched anything inside the folder. */
+  const fileHistory = (path: string, limit = 200, folder = false) =>
+    guard(folder ? 'Folder history' : 'File history', () =>
+      invoke<FileCommit[]>('file_history', { path, limit, folder })
+    )
 
   const commitSignature = (oid: string) =>
     invoke<CommitSignature>('commit_signature', { oid }).catch(() => null)
@@ -2250,8 +2253,36 @@ export function useGit() {
     setUpstream: (branch: string, upstream: string) =>
       run<string>('Set upstream', 'set_upstream', { branch, upstream }),
     unsetUpstream: (branch: string) => run<string>('Unset upstream', 'unset_upstream', { branch }),
-    addToGitignore: (pattern: string) =>
-      run<string>('Ignore', 'add_to_gitignore', { pattern }),
+    /** Adds a rule to `.gitignore`, or with `local` to `.git/info/exclude`. */
+    addToGitignore: (pattern: string, local = false) =>
+      run<string>('Ignore', 'add_to_gitignore', { pattern, local }),
+    /**
+     * What the Files tree changes on disk. Each answers with the path, or
+     * paths, as they are afterwards, or null when it failed (and said so).
+     */
+    createPath: (path: string, dir = false) =>
+      run<string>(dir ? 'New folder' : 'New file', 'create_path', { path, dir }),
+    /** `git mv` when git tracks it, a plain rename otherwise. */
+    renamePath: (from: string, to: string) => run<string>('Rename', 'rename_path', { from, to }),
+    /** Stops at the first path that cannot go, and says which moved. */
+    movePaths: (paths: string[], dest: string) =>
+      run<{ from: string[]; to: string[]; error: string | null }>('Move', 'move_paths', {
+        paths,
+        dest
+      }),
+    copyPaths: (paths: string[], dest: string) =>
+      run<string[]>('Copy', 'copy_paths', { paths, dest }),
+    /** To the Trash, saved on the undo history first. */
+    trashPaths: (paths: string[]) => run<string>('Delete', 'trash_paths', { paths }),
+    /** `git rm --cached`: the paths stay on disk. */
+    untrackPaths: (paths: string[]) => run<string>('Stop tracking', 'untrack_paths', { paths }),
+    /** A name nothing in `dir` has yet: `name`, else `name copy`. */
+    freeName: (dir: string, name: string) =>
+      guard('Copy in', () => invoke<string>('free_name', { dir, name })),
+    /** Writes a file dropped in from outside, as base64. No refresh: a drop
+        of many files refreshes once, after the last. */
+    importFile: (path: string, data: string) =>
+      guard('Copy in', () => invoke<string>('import_file', { path, data })),
     commitPatch: (oid: string) => guard('Read patch', () => invoke<string>('commit_patch', { oid })),
     /**
      * Applies one hunk, or only the lines picked out of it.
@@ -2370,6 +2401,12 @@ export function useGit() {
     commitMessageText: (oid: string) =>
       guard('Read message', () => invoke<string>('commit_message_text', { oid })),
 
+    /** Undoes one step of the history by its id, wherever it is in the list. */
+    undoStep: async (id: number) => {
+      const message = await run<string>('Undo', 'undo_step', { id })
+      if (message) note(message)
+      return message
+    },
     undo: async () => {
       const message = await guard('Undo', () => invoke<string>('undo'))
       if (message) note(message)

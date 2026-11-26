@@ -2151,20 +2151,43 @@ pub fn delete_branches(state: &AppState, branches: &[Doomed]) -> Result<Removal,
 
 /// Adds a pattern to the repository's `.gitignore`, creating it if needed.
 pub fn add_to_gitignore(state: &AppState, pattern: &str) -> Result<String, String> {
+    add_ignore_rule(state, pattern, false)
+}
+
+/// Adds a pattern to the root `.gitignore`, or with `local` to
+/// `.git/info/exclude`, which is never committed and so ignores the file on
+/// this machine only. Shared by every worktree, so it is the common git
+/// directory's.
+pub fn add_ignore_rule(state: &AppState, pattern: &str, local: bool) -> Result<String, String> {
     let root = state.path()?;
-    let file = root.join(".gitignore");
+    let pattern = pattern.trim_end_matches(['\r', '\n']);
+    if pattern.trim().is_empty() || pattern.contains('\n') {
+        return Err("An ignore rule is one line".to_string());
+    }
+    let (file, name) = if local {
+        let repo = git2::Repository::open(&root).map_err(|e| e.message().to_string())?;
+        let info = repo.commondir().join("info");
+        std::fs::create_dir_all(&info).map_err(|e| format!("Could not make .git/info: {e}"))?;
+        (info.join("exclude"), ".git/info/exclude")
+    } else {
+        (root.join(".gitignore"), ".gitignore")
+    };
     let mut text = std::fs::read_to_string(&file).unwrap_or_default();
 
-    if text.lines().any(|line| line.trim() == pattern.trim()) {
-        return Ok(format!("{pattern} is already ignored"));
+    if text
+        .lines()
+        .any(|line| line.trim_end_matches('\r') == pattern)
+    {
+        return Ok(format!("{pattern} is already in {name}"));
     }
     if !text.is_empty() && !text.ends_with('\n') {
-        text.push('\n');
+        // Kept in the file's own line endings.
+        text.push_str(if text.contains("\r\n") { "\r\n" } else { "\n" });
     }
-    text.push_str(pattern.trim());
-    text.push('\n');
-    std::fs::write(&file, text).map_err(|e| format!("Could not write .gitignore: {e}"))?;
-    Ok(format!("Added {pattern} to .gitignore"))
+    text.push_str(pattern);
+    text.push_str(if text.contains("\r\n") { "\r\n" } else { "\n" });
+    std::fs::write(&file, text).map_err(|e| format!("Could not write {name}: {e}"))?;
+    Ok(format!("Added {pattern} to {name}"))
 }
 
 #[cfg(test)]

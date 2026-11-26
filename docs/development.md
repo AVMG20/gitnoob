@@ -104,6 +104,7 @@ src-tauri/src
   avatar.rs     author pictures, cached
   watch.rs      filesystem watcher
   files.rs      the Files tree and the file finder: listing, fuzzy matching, the path guard
+  fileops.rs    what the Files tree changes: new, rename and move, copy, delete to the Trash, drops
   search.rs     search inside files, streamed back as events
   edit.rs       reading a file for the editor and saving it
   symbols.rs    code navigation and unused code, with tree-sitter
@@ -152,6 +153,23 @@ What git ignores is decided by the `ignore` crate: `.gitignore` at every level, 
 Every path from the window goes through `files::resolve` before anything touches the disk: joined to the work tree, canonicalized, and refused if it ends up outside the work tree or inside a `.git`, symlinks included. Any new command that takes a path should use it too.
 
 The tree's colours come from `store.status`, not from walking: a changed file in its status colour with a dot (filled staged, ring unstaged, half both), and every folder above it in the same colour. Deleted files are added back into their folder from the status, struck through. Which list the sidebar shows, the filter, the open folders and the scroll are kept per project in `useFileTree.ts`.
+
+### Changing files from the tree
+
+The tree makes, renames, moves, copies and deletes files (`fileops.rs` underneath, `useFileOps.ts` on the window's side). New file and New folder put a name box in the tree as the first row of the folder; a name with slashes (`Http/Controllers/Home.php`) makes the folders on the way, and a new file opens in the editor. F2 or Rename… puts the box on the row itself, with the name picked out and the extension left. Enter or leaving the box acts on it, Esc drops it, and a refusal (the name is taken) brings the box back with what was typed.
+
+- **Rename and move are `git mv` when git tracks the path**, or anything in it for a folder, so the commit records a rename rather than a delete and an add. Anything else is a plain rename. A change of case alone is allowed. Moving is the same call with the folder as the new parent: dragging a row onto a folder (a file row means the folder it is in, the empty space the root), Cut and Paste, or ⌘X / ⌘V with the tree focused. A folder held under the pointer for 700 ms opens.
+- **Copy is plain file I/O**, never `git add`: Copy and Paste, Duplicate, or ⌥ while dropping. A taken name becomes `name copy.ext`, then `name copy 2.ext`.
+- **Delete goes to the Trash** (the Recycle Bin on Windows) through the `trash` crate, on macOS by the file manager call rather than by scripting the Finder. It asks first. Before it runs, every file at or under the paths that git tracks or would list as untracked is saved through `throw_away_saved`, the same as a discard, so the history menu and the notice's Undo put them back; what git ignores is left to the Trash. A folder of more than 10,000 such files is not saved, only trashed. A tracked file deleted this way is an unstaged deletion, so Discard brings it back too. Tests call `fileops::delete` with `to_trash` off so the suite never fills the real Trash.
+- **Files dropped in from the Finder or Explorer are copied in.** `dragDropEnabled` is off for the window (HTML drag and drop needs it off on Windows), so the drop is an ordinary HTML drop: folders are walked with `webkitGetAsEntry`, each top-level item gets a free name from `free_name`, and each file goes to `import_file` as base64. Over 100 MB is skipped.
+
+Before anything under a path moves or goes, every open file is saved (`flushAll`) and the tabs under it are closed, asking first when one holds edits that could not be saved; after a rename or move they open again under the new names. Without that an autosave landing late would write the old name back.
+
+Add to .gitignore offers the path anchored with a leading `/` (`/app/etc/env.php`), every file of its extension, and the folder it is in, with git's wildcard characters escaped (`ignoreRules.ts`); "Only on this machine" writes the first of those to `.git/info/exclude` in the common git directory instead. A rule does nothing for a file git tracks, so the notice after it offers Stop tracking, which is `git rm --cached` and leaves the file on disk.
+
+A folder's menu stages, unstages and discards the changed files the status lists inside it, never the folder as a pathspec, so a discard saves each file for undo and leaves new files alone. Folder history is `git log` of the folder as a literal pathspec, without `--follow`, which means one file; its commits open in the graph. A folder shows how many changed files it holds.
+
+Two switches at the end of the filter box, kept across restarts in `gitnoob.filesView`: Changed files only draws a tree of its own from the status (every folder open until shut, nothing read from disk), and the eye hides what git ignores. Both are also on the menu of the empty space under the rows, with New file, New folder, Paste and Close all folders.
 
 ## The search window
 

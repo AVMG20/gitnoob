@@ -13,6 +13,7 @@ export type Payload =
   | { kind: 'stash'; index: number; message: string }
   | { kind: 'tag'; name: string }
   | { kind: 'file'; path: string; staged: boolean }
+  | { kind: 'tree'; paths: string[] }
 
 const state = reactive({
   payload: null as Payload | null,
@@ -89,5 +90,7 @@ export function describe(payload: Payload) {
       return payload.name
     case 'file':
       return payload.path
+    case 'tree':
+      return payload.paths.join('\n')
   }
 }

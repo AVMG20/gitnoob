@@ -5,16 +5,29 @@ import { h, type FunctionalComponent } from 'vue'
 import {
   ChevronRight,
   ChevronsDown,
+  ChevronsDownUp,
   ChevronsUp,
+  ClipboardPaste,
   Copy,
+  CopyPlus,
+  Eye,
+  EyeOff,
   FileDiff,
+  FilePlus,
+  Files,
   FileText,
+  FileX,
   Folder,
+  FolderClock,
   FolderOpen,
+  FolderPlus,
+  GitCompareArrows,
   History,
   Minus,
   Palette,
+  Pencil,
   Plus,
+  Scissors,
   Search,
   Trash2,
   Undo2,
@@ -25,6 +38,8 @@ import { copyText, relativeTime, useGit } from '~/composables/useGit'
 import { change } from '~/composables/useFileView'
 import { diffMode } from '~/composables/useDiffMode'
 import { useContextMenu, type MenuItem } from '~/composables/useContextMenu'
+import { useDragDrop } from '~/composables/useDragDrop'
+import { useToasts } from '~/composables/useToasts'
 import { openTab, useTabs } from '~/composables/useTabs'
 import {
   ancestors,
@@ -35,9 +50,30 @@ import {
   rootFailed,
   treeFolder,
   treeSession,
+  treeView,
   type DirEntry,
   type FoundFile
 } from '~/composables/useFileTree'
+import {
+  canPaste,
+  carriesFiles,
+  clip,
+  copyEntries,
+  createEntry,
+  deleteEntries,
+  droppedItems,
+  duplicateEntry,
+  importDropped,
+  joinPath,
+  moveEntries,
+  nameOf,
+  parentOf,
+  pasteInto,
+  renameEntry,
+  treeClipboard,
+  within
+} from '~/composables/useFileOps'
+import { ignoreChoices } from '~/composables/ignoreRules'
 import { speedMatch, type SpeedMatch } from '~/composables/speedSearch'
 import { openSearch } from '~/composables/useSearch'
 import { keyLabel, keysFor } from '~/composables/useShortcuts'
@@ -57,6 +93,7 @@ const git = useGit()
 const store = git.store
 const tabs = useTabs()
 const menu = useContextMenu()
+const drag = useDragDrop()
 
 const session = computed(() => treeSession())
 const here = computed(() => listingsHere())
@@ -103,6 +140,15 @@ const folders = computed(() => {
   return out
 })
 
+/** How many changed files are somewhere under each folder. */
+const counts = computed(() => {
+  const out = new Map<string, number>()
+  for (const path of marks.value.keys()) {
+    for (const dir of ancestors(path)) out.set(dir, (out.get(dir) ?? 0) + 1)
+  }
+  return out
+})
+
 interface Row {
   key: string
   path: string
@@ -119,6 +165,8 @@ interface Row {
   /** A filter result: the folder it is in, and the characters that matched. */
   folder?: string
   hits?: number[]
+  /** The row a new file or folder is being named in. */
+  draft?: boolean
 }
 
 type Child = DirEntry & { gone?: boolean }
@@ -169,6 +217,7 @@ const treeRows = computed<Row[]>(() => {
       return
     }
     for (const entry of children(dir)) {
+      if (entry.ignored && !treeView.showIgnored) continue
       const isOpen = entry.dir && !!open[entry.path]
       out.push({
         key: entry.path,
@@ -185,6 +234,58 @@ const treeRows = computed<Row[]>(() => {
     }
   }
   visit('', 0, false)
+  return out
+})
+
+/**
+ * Only what changed, as a tree of its own: built from the status, every
+ * folder open unless it was shut in this view, and nothing read from disk.
+ */
+const changedRows = computed<Row[]>(() => {
+  const kids = new Map<string, Map<string, Child>>()
+  for (const [path, mark] of marks.value) {
+    const parts = path.split('/')
+    for (let at = 0; at < parts.length; at++) {
+      const dir = parts.slice(0, at).join('/')
+      const here = kids.get(dir) ?? new Map<string, Child>()
+      const name = parts[at]!
+      if (!here.has(name)) {
+        const folder = at < parts.length - 1
+        here.set(name, {
+          name,
+          path: parts.slice(0, at + 1).join('/'),
+          dir: folder,
+          ignored: false,
+          link: false,
+          gone: !folder && mark.kind === 'deleted'
+        })
+      }
+      kids.set(dir, here)
+    }
+  }
+  const out: Row[] = []
+  const shut = session.value.changedShut
+  const visit = (dir: string, depth: number) => {
+    const entries = [...(kids.get(dir)?.values() ?? [])].sort(
+      (a, b) => Number(b.dir) - Number(a.dir) || a.name.toLowerCase().localeCompare(b.name.toLowerCase())
+    )
+    for (const entry of entries) {
+      const isOpen = entry.dir && !shut[entry.path]
+      out.push({
+        key: entry.path,
+        path: entry.path,
+        name: entry.name,
+        depth,
+        dir: entry.dir,
+        ignored: false,
+        link: false,
+        open: isOpen,
+        gone: !!entry.gone
+      })
+      if (isOpen) visit(entry.path, depth + 1)
+    }
+  }
+  visit('', 0)
   return out
 })
 
@@ -215,7 +316,44 @@ const foundRows = computed<Row[]>(() =>
   })
 )
 
-const rows = computed(() => (filtering.value ? foundRows.value : treeRows.value))
+const DRAFT = '\u0000draft'
+
+/** A name being typed: a new file or folder in `parent`, or a rename of `path`. */
+interface Editing {
+  kind: 'file' | 'dir' | 'rename'
+  parent: string
+  path: string
+  name: string
+  dir: boolean
+}
+
+const editing = ref<Editing | null>(null)
+
+/** The rows on screen, with the one a new name is being typed in. */
+const rows = computed<Row[]>(() => {
+  const base = filtering.value
+    ? foundRows.value
+    : treeView.changedOnly
+      ? changedRows.value
+      : treeRows.value
+  const edit = editing.value
+  if (!edit || edit.kind === 'rename' || filtering.value) return base
+  const at = edit.parent ? base.findIndex((row) => row.dir && row.path === edit.parent) : -1
+  if (edit.parent && at < 0) return base
+  const draft: Row = {
+    key: DRAFT,
+    path: edit.parent,
+    name: '',
+    depth: at < 0 ? 0 : base[at]!.depth + 1,
+    dir: edit.kind === 'dir',
+    ignored: false,
+    link: false,
+    open: false,
+    gone: false,
+    draft: true
+  }
+  return [...base.slice(0, at + 1), draft, ...base.slice(at + 1)]
+})
 
 async function runFilter() {
   const query = session.value.filter.trim()
@@ -421,13 +559,51 @@ function stepMatch(by: 1 | -1) {
   touchQuery()
 }
 
-function parentOf(path: string) {
-  return path.includes('/') ? path.slice(0, path.lastIndexOf('/')) : ''
+/** The folder something lands in when this row is the target: itself for a
+    folder, the one it is in for a file. */
+function folderFor(row: Row | null | undefined): string {
+  if (!row) return ''
+  if (row.draft) return row.path
+  return row.dir && !row.gone ? row.path : parentOf(row.path)
+}
+
+/** What the keys that change files do, on the selected row. True if one did. */
+function editKey(event: KeyboardEvent): boolean {
+  if (query.value || event.altKey) return false
+  const mod = event.metaKey || event.ctrlKey
+  const row = rows.value[selectedAt.value]
+  const usable = !!row && !row.loading && !row.draft && !row.gone
+  if (event.key === 'F2' && !mod) {
+    if (usable) void startRename(row!)
+    return true
+  }
+  if (event.key === 'Delete' || (mod && event.key === 'Backspace')) {
+    if (usable) askDelete([row!])
+    return true
+  }
+  if (!mod || event.shiftKey) return false
+  switch (event.key.toLowerCase()) {
+    case 'c':
+      if (usable) clip('copy', [row!.path])
+      return true
+    case 'x':
+      if (usable) clip('cut', [row!.path])
+      return true
+    case 'v':
+      void pasteInto(folderFor(row))
+      return true
+  }
+  return false
 }
 
 function onTreeKey(event: KeyboardEvent) {
   // Keys in the filter box, or anything else that takes text, are its own.
   if (event.target !== list.value) return
+  if (editKey(event)) {
+    event.preventDefault()
+    event.stopPropagation()
+    return
+  }
   if (event.metaKey || event.ctrlKey || event.altKey) return
   const count = rows.value.length
   if (!count) return
@@ -574,6 +750,12 @@ const current = computed(() => {
  * with one file at the bottom would otherwise take three clicks to reach.
  */
 async function toggle(row: Row) {
+  if (treeView.changedOnly && !filtering.value) {
+    const shut = session.value.changedShut
+    if (shut[row.path]) delete shut[row.path]
+    else shut[row.path] = true
+    return
+  }
   const open = session.value.open
   if (open[row.path]) {
     shut(row.path)
@@ -587,6 +769,13 @@ async function toggle(row: Row) {
 
 /** Shuts a folder and every folder open inside it. */
 function shut(path: string) {
+  if (treeView.changedOnly && !filtering.value) {
+    session.value.changedShut[path] = true
+    for (const row of changedRows.value) {
+      if (row.dir && row.path.startsWith(`${path}/`)) session.value.changedShut[row.path] = true
+    }
+    return
+  }
   const open = session.value.open
   delete open[path]
   const inside = `${path}/`
@@ -632,6 +821,11 @@ const EXPAND_LIMIT = 500
  * never followed, so it cannot run in circles.
  */
 async function expandAll(row: Row) {
+  if (treeView.changedOnly && !filtering.value) {
+    const shut = session.value.changedShut
+    for (const dir of Object.keys(shut)) if (within(row.path, dir)) delete shut[dir]
+    return
+  }
   const open = session.value.open
   const keepIgnored = row.ignored
   const gone = new Set<string>(row.gone ? [row.path] : [])
@@ -665,7 +859,7 @@ async function expandAll(row: Row) {
  * has no file left and opens on its diff.
  */
 function open(row: Row, preview: boolean) {
-  if (row.loading) return
+  if (row.loading || isEditing(row)) return
   if (row.dir) {
     if (!preview) return
     void toggle(row)
@@ -690,6 +884,7 @@ function sideOf(mark: Mark | undefined): 'staged' | 'unstaged' {
  * second toggle: that opened it and shut it again.
  */
 function onClick(event: MouseEvent, row: Row) {
+  if (isEditing(row)) return
   endQuery()
   selected.value = row.key
   list.value?.focus({ preventScroll: true })
@@ -702,10 +897,11 @@ async function reveal(path: string) {
   const open = session.value.open
   const dirs = ancestors(path)
   for (const dir of dirs) open[dir] = true
+  if (treeView.changedOnly) for (const dir of dirs) delete session.value.changedShut[dir]
   await Promise.all(dirs.filter((dir) => !(dir in here.value)).map((dir) => loadDir(dir)))
   if (filtering.value) return
   await nextTick()
-  scrollTo(treeRows.value.findIndex((row) => row.path === path))
+  scrollTo(rows.value.findIndex((row) => row.path === path && !row.draft))
 }
 
 watch(current, (path) => {
@@ -720,6 +916,223 @@ watch(
   }
 )
 
+// --- naming: new files and folders, renames
+
+/** Whether this row is the one a name is being typed in. */
+function isEditing(row: Row) {
+  const edit = editing.value
+  if (!edit) return false
+  if (row.draft) return true
+  return edit.kind === 'rename' && row.path === edit.path
+}
+
+/** Puts the name box on screen and the caret in it, the name picked out. */
+async function focusEdit() {
+  await nextTick()
+  const at = rows.value.findIndex((row) => isEditing(row))
+  if (at >= 0) scrollTo(at)
+  await nextTick()
+  const box = list.value?.querySelector<HTMLInputElement>('input.edit')
+  if (!box) return
+  box.focus({ preventScroll: true })
+  // A rename picks out the name and leaves the extension, as Finder does.
+  const dot = box.value.lastIndexOf('.')
+  if (editing.value?.kind === 'rename' && !editing.value.dir && dot > 0) box.setSelectionRange(0, dot)
+  else box.select()
+}
+
+/** Starts naming a new file or folder inside `parent` (`''` is the root). */
+async function startCreate(parent: string, dir: boolean) {
+  endQuery()
+  if (filtering.value) session.value.filter = ''
+  if (treeView.changedOnly && parent && !changedRows.value.some((row) => row.dir && row.path === parent)) {
+    // A folder with no changes in it is not in that view to type under.
+    treeView.changedOnly = false
+  }
+  if (parent) {
+    if (treeView.changedOnly) {
+      for (const dir of [...ancestors(parent), parent]) delete session.value.changedShut[dir]
+    } else {
+      const open = session.value.open
+      const dirs = [...ancestors(parent), parent]
+      for (const one of dirs) open[one] = true
+      await Promise.all(dirs.filter((one) => !(one in here.value)).map((one) => loadDir(one)))
+    }
+  }
+  editing.value = { kind: dir ? 'dir' : 'file', parent, path: '', name: '', dir }
+  await focusEdit()
+}
+
+async function startRename(row: Row) {
+  if (row.loading || row.draft || row.gone) return
+  endQuery()
+  editing.value = {
+    kind: 'rename',
+    parent: parentOf(row.path),
+    path: row.path,
+    name: nameOf(row.path),
+    dir: row.dir
+  }
+  await focusEdit()
+}
+
+// The row being renamed, or the folder a name is typed in, gone from under
+// the box (a checkout, a reload): there is nothing left to name.
+watch(rows, (now) => {
+  if (editing.value && !settling && !now.some((row) => isEditing(row))) editing.value = null
+})
+
+/** Set while a name is being acted on, so the blur that follows Enter does
+    not act on it twice. */
+let settling = false
+
+async function commitEdit() {
+  const edit = editing.value
+  if (!edit || settling) return
+  const name = edit.name.trim().replace(/^\/+|\/+$/g, '')
+  if (!name || (edit.kind === 'rename' && name === nameOf(edit.path))) {
+    cancelEdit()
+    return
+  }
+  settling = true
+  editing.value = null
+  try {
+    const done =
+      edit.kind === 'rename'
+        ? await renameEntry(edit.path, joinPath(edit.parent, name))
+        : await createEntry(edit.parent, name, edit.kind === 'dir')
+    if (done === null) {
+      // Refused (taken, not a name): the box comes back with what was typed.
+      editing.value = { ...edit, name }
+      await focusEdit()
+      return
+    }
+    await nextTick()
+    const at = rows.value.findIndex((row) => row.path === done && !row.draft)
+    if (at >= 0) select(at)
+    if (edit.kind !== 'file') list.value?.focus({ preventScroll: true })
+  } finally {
+    settling = false
+  }
+}
+
+function cancelEdit() {
+  editing.value = null
+  list.value?.focus({ preventScroll: true })
+}
+
+function onEditKey(event: KeyboardEvent) {
+  // The tree's own keys (speed search, arrows) are not for the name box.
+  event.stopPropagation()
+  if (event.key === 'Enter') {
+    event.preventDefault()
+    void commitEdit()
+  } else if (event.key === 'Escape') {
+    event.preventDefault()
+    cancelEdit()
+  }
+}
+
+// --- dragging, inside the tree and in from outside
+
+/** The folder a drag would drop into, `''` for the root; null for none. */
+const dropAt = ref<string | null>(null)
+let springTimer: ReturnType<typeof setTimeout> | undefined
+
+function onDragStart(event: DragEvent, row: Row) {
+  if (row.loading || row.draft || row.gone || isEditing(row)) {
+    event.preventDefault()
+    return
+  }
+  drag.begin(event, { kind: 'tree', paths: [row.path] })
+  // ⌥ while dropping copies rather than moves.
+  if (event.dataTransfer) event.dataTransfer.effectAllowed = 'copyMove'
+}
+
+function onDragEnd() {
+  drag.end()
+  dropAt.value = null
+  clearTimeout(springTimer)
+}
+
+/** Whether what is dragged may land in `dest`. */
+function droppable(event: DragEvent, dest: string) {
+  const payload = drag.state.payload
+  if (payload?.kind === 'tree') {
+    if (payload.paths.some((path) => within(path, dest) && path !== dest)) return false
+    if (payload.paths.some((path) => path === dest)) return false
+    // Moving a file into the folder it is in is nothing; copying it is a duplicate.
+    return event.altKey || payload.paths.some((path) => parentOf(path) !== dest)
+  }
+  return !payload && carriesFiles(event.dataTransfer)
+}
+
+function onDragOver(event: DragEvent, row: Row | null) {
+  // A row answers for itself, yes or no: a refusal must not fall through to
+  // the list underneath, which would take it as a drop on the root.
+  if (row) event.stopPropagation()
+  const dest = folderFor(row)
+  if (row?.loading || editing.value || !droppable(event, dest)) {
+    dropAt.value = null
+    clearTimeout(springTimer)
+    return
+  }
+  event.preventDefault()
+  if (event.dataTransfer) {
+    event.dataTransfer.dropEffect = drag.state.payload && !event.altKey ? 'move' : 'copy'
+  }
+  if (dropAt.value === dest) return
+  dropAt.value = dest
+  // Held over a shut folder, it opens, so a drop can go deeper.
+  clearTimeout(springTimer)
+  if (row?.dir && !row.open && !row.gone && !row.draft) {
+    springTimer = setTimeout(() => {
+      if (dropAt.value === row.path) void toggle(row)
+    }, 700)
+  }
+}
+
+function onDragLeave(event: DragEvent) {
+  const box = list.value
+  const entering = event.relatedTarget as Node | null
+  if (box && entering && box.contains(entering)) return
+  dropAt.value = null
+  clearTimeout(springTimer)
+}
+
+async function onDrop(event: DragEvent, row: Row | null) {
+  if (row) event.stopPropagation()
+  const dest = folderFor(row)
+  dropAt.value = null
+  clearTimeout(springTimer)
+  if (row?.loading || editing.value || !droppable(event, dest)) {
+    drag.end()
+    return
+  }
+  const ours = drag.take(['tree'])
+  if (ours) {
+    event.preventDefault()
+    event.stopPropagation()
+    if (event.altKey) await copyEntries(ours.paths, dest)
+    else await moveEntries(ours.paths, dest)
+    return
+  }
+  if (!carriesFiles(event.dataTransfer)) return
+  event.preventDefault()
+  event.stopPropagation()
+  // Read now: the list is emptied once this handler returns.
+  const items = droppedItems(event.dataTransfer)
+  if (items.length) await importDropped(items, dest)
+}
+
+function isCut(row: Row) {
+  return (
+    treeClipboard.mode === 'cut' &&
+    treeClipboard.repo === store.repo?.path &&
+    treeClipboard.paths.includes(row.path)
+  )
+}
+
 // --- menus
 
 /** Asked first: what the tree is about to throw away. */
@@ -727,8 +1140,24 @@ const confirming = ref<{ title: string; text: string; act: string; run: () => un
   null
 )
 
-async function history(event: MouseEvent, path: string) {
-  const commits = await git.fileHistory(path, 31)
+/** The row whose menu is open, ringed so it is clear what the menu is about. */
+const menuRow = ref<string | null>(null)
+
+watch(
+  () => menu.state.open,
+  (open) => {
+    if (!open) menuRow.value = null
+  }
+)
+
+const TRASH = typeof navigator !== 'undefined' && navigator.userAgent.includes('Windows') ? 'Recycle Bin' : 'Trash'
+
+function plural(count: number, word: string) {
+  return `${count} ${word}${count === 1 ? '' : 's'}`
+}
+
+async function history(event: MouseEvent, path: string, folder = false) {
+  const commits = await git.fileHistory(path, 31, folder)
   if (!commits?.length) {
     git.note(`No commits touch ${path} yet`)
     return
@@ -736,9 +1165,99 @@ async function history(event: MouseEvent, path: string) {
   const items: MenuItem[] = commits.slice(0, 30).map((one) => ({
     label: one.summary || one.short,
     hint: `${one.short} · ${relativeTime(one.time)}`,
-    action: () => openTab({ path, commit: one.oid, mode: 'diff' })
+    // A file opens on what that commit did to it; a folder's commit is
+    // shown in the graph, with every file it touched.
+    action: () => (folder ? git.revealCommit(one.oid) : openTab({ path, commit: one.oid, mode: 'diff' }))
   }))
-  menu.show(event, items, path)
+  menu.show(event, items, folder ? `${path}/` : path)
+}
+
+function askDelete(targets: Row[]) {
+  const paths = targets.map((row) => row.path)
+  const one = targets.length === 1 ? targets[0]! : null
+  const what = one ? (one.dir ? `${one.path}/ and everything in it` : one.path) : `${paths.length} items`
+  confirming.value = {
+    title: one ? `Delete ${one.name}?` : `Delete ${paths.length} items?`,
+    text: `${what} ${one ? 'goes' : 'go'} to the ${TRASH}. What git tracks shows up as deleted, so discarding brings it back; undo in the history menu brings back the rest too, except what git ignores, which only the ${TRASH} keeps.`,
+    act: `Move to ${TRASH}`,
+    run: () => deleteEntries(paths)
+  }
+}
+
+/** New, cut, copy, paste, duplicate, rename, delete: the same for any row. */
+function editItems(row: Row): MenuItem[] {
+  const here = folderFor(row)
+  const waiting = canPaste() ? treeClipboard.paths : []
+  const pasteLabel = !waiting.length
+    ? 'Paste'
+    : waiting.length === 1
+      ? `Paste ${nameOf(waiting[0]!)}`
+      : `Paste ${waiting.length} items`
+  return [
+    { label: 'New file…', icon: FilePlus, action: () => startCreate(here, false) },
+    { label: 'New folder…', icon: FolderPlus, action: () => startCreate(here, true) },
+    { separator: true, label: '' },
+    { label: 'Cut', icon: Scissors, hint: keyLabel('mod+x'), disabled: row.gone, action: () => clip('cut', [row.path]) },
+    { label: 'Copy', icon: Files, hint: keyLabel('mod+c'), disabled: row.gone, action: () => clip('copy', [row.path]) },
+    {
+      label: pasteLabel,
+      icon: ClipboardPaste,
+      hint: keyLabel('mod+v'),
+      disabled: !waiting.length,
+      action: () => pasteInto(here)
+    },
+    { label: 'Duplicate', icon: CopyPlus, disabled: row.gone, action: () => duplicateEntry(row.path) },
+    { label: 'Rename…', icon: Pencil, hint: 'F2', disabled: row.gone, action: () => startRename(row) },
+    {
+      label: 'Delete…',
+      icon: Trash2,
+      hint: keyLabel('mod+backspace'),
+      danger: true,
+      disabled: row.gone,
+      action: () => askDelete([row])
+    }
+  ]
+}
+
+async function ignore(pattern: string, local: boolean, row: Row, tracked: boolean) {
+  const said = await git.addToGitignore(pattern, local)
+  if (said === null) return
+  git.note(said)
+  if (tracked) {
+    useToasts().offer(said, [{ label: 'Stop tracking', run: () => untrack(row) }],
+      `Git still tracks ${row.path}, and a rule only keeps out what it does not track yet.`)
+  } else useToasts().info(said)
+}
+
+async function untrack(row: Row) {
+  const said = await git.untrackPaths([row.path])
+  if (said !== null) useToasts().info(said)
+}
+
+/** Add to .gitignore, and Stop tracking when git tracks it. */
+function gitItems(row: Row, tracked: boolean): MenuItem[] {
+  const items: MenuItem[] = []
+  if (!row.ignored && !row.gone) {
+    const choices = ignoreChoices(row.path, row.dir)
+    const children: MenuItem[] = choices.map((one) => ({
+      label: one.label,
+      hint: one.pattern,
+      action: () => ignore(one.pattern, false, row, tracked)
+    }))
+    children.push(
+      { separator: true, label: '' },
+      {
+        label: 'Only on this machine',
+        hint: '.git/info/exclude',
+        action: () => ignore(choices[0]!.pattern, true, row, tracked)
+      }
+    )
+    items.push({ label: 'Add to .gitignore', icon: EyeOff, children })
+  }
+  if (tracked && !row.gone) {
+    items.push({ label: 'Stop tracking', icon: FileX, hint: 'keep on disk', action: () => untrack(row) })
+  }
+  return items
 }
 
 function fileMenu(event: MouseEvent, row: Row) {
@@ -777,25 +1296,11 @@ function fileMenu(event: MouseEvent, row: Row) {
       }
     })
   }
+  if (items[items.length - 1]?.separator !== true) items.push({ separator: true, label: '' })
   const untracked = (store.status?.unstaged ?? []).some(
     (one) => one.path === row.path && one.kind === 'untracked'
   )
-  if (untracked) {
-    items.push({
-      label: 'Delete file…',
-      icon: Trash2,
-      danger: true,
-      action: () => {
-        confirming.value = {
-          title: 'Delete this file?',
-          text: `Git is not tracking ${row.path}, so it is only on disk. Undo in the history menu brings it back.`,
-          act: 'Delete the file',
-          run: () => git.deleteUntracked([row.path])
-        }
-      }
-    })
-  }
-  if (items[items.length - 1]?.separator !== true) items.push({ separator: true, label: '' })
+  items.push(...editItems(row), { separator: true, label: '' })
   items.push(
     { label: 'File history', icon: History, action: () => history(event, row.path) },
     {
@@ -806,7 +1311,11 @@ function fileMenu(event: MouseEvent, row: Row) {
         openTab({ path: row.path, mode: 'file', side: sideOf(mark) })
         diffMode.blame = true
       }
-    },
+    }
+  )
+  const gitOnes = gitItems(row, !untracked && !row.ignored)
+  if (gitOnes.length) items.push({ separator: true, label: '' }, ...gitOnes)
+  items.push(
     { separator: true, label: '' },
     { label: 'Copy path', icon: Copy, action: () => copyText(row.path, 'Path') },
     { label: git.revealLabel, icon: FolderOpen, disabled: row.gone, action: () => git.reveal(row.path) }
@@ -832,6 +1341,20 @@ function swatch(hex: string | null): FunctionalComponent {
     })
 }
 
+/** What the status lists inside a folder, by what can be done with it. */
+function changesUnder(dir: string) {
+  const status = store.status
+  const conflicted = new Set(status?.conflicted ?? [])
+  const inside = (path: string) => within(dir, path) && !conflicted.has(path)
+  const unique = (list: string[]) => [...new Set(list)]
+  const unstaged = (status?.unstaged ?? []).filter((one) => inside(one.path))
+  return {
+    stage: unique(unstaged.map((one) => one.path)),
+    unstage: unique((status?.staged ?? []).filter((one) => inside(one.path)).map((one) => one.path)),
+    discard: unique(unstaged.filter((one) => change(one.kind) !== 'added').map((one) => one.path))
+  }
+}
+
 function dirMenu(event: MouseEvent, row: Row) {
   const repo = store.repo?.path
   const now = folderColor(repo, row.path)?.id ?? null
@@ -850,37 +1373,127 @@ function dirMenu(event: MouseEvent, row: Row) {
       action: () => setFolderColor(repo, row.path, null)
     }
   )
-  menu.show(
-    event,
-    [
-      { label: row.open ? 'Close' : 'Open', icon: Folder, action: () => toggle(row) },
-      { label: 'Open all inside', icon: ChevronsDown, hint: '*', action: () => expandAll(row) },
-      {
-        label: 'Close all inside',
-        icon: ChevronsUp,
-        disabled: !row.open,
-        action: () => shut(row.path)
-      },
-      {
-        label: 'Search in folder…',
-        icon: Search,
-        hint: keyLabel(keysFor('search.text')),
-        action: () => openSearch('text', false, row.path)
-      },
-      { separator: true, label: '' },
-      { label: 'Colour', icon: Palette, children: colors },
-      { separator: true, label: '' },
-      { label: 'Copy path', icon: Copy, action: () => copyText(row.path, 'Path') },
-      { label: git.revealLabel, icon: FolderOpen, disabled: row.gone, action: () => git.reveal(row.path) }
-    ],
-    row.path
+  const items: MenuItem[] = [
+    { label: row.open ? 'Close' : 'Open', icon: Folder, action: () => toggle(row) },
+    { label: 'Open all inside', icon: ChevronsDown, hint: '*', action: () => expandAll(row) },
+    {
+      label: 'Close all inside',
+      icon: ChevronsUp,
+      disabled: !row.open,
+      action: () => shut(row.path)
+    },
+    {
+      label: 'Search in folder…',
+      icon: Search,
+      hint: keyLabel(keysFor('search.text')),
+      action: () => openSearch('text', false, row.path)
+    },
+    { separator: true, label: '' }
+  ]
+  const changes = changesUnder(row.path)
+  if (changes.stage.length) {
+    items.push({
+      label: `Stage ${plural(changes.stage.length, 'file')}`,
+      icon: Plus,
+      action: () => git.stage(changes.stage)
+    })
+  }
+  if (changes.unstage.length) {
+    items.push({
+      label: `Unstage ${plural(changes.unstage.length, 'file')}`,
+      icon: Minus,
+      action: () => git.unstage(changes.unstage)
+    })
+  }
+  if (changes.discard.length) {
+    items.push({
+      label: 'Discard changes…',
+      icon: Undo2,
+      danger: true,
+      action: () => {
+        confirming.value = {
+          title: `Discard the changes in ${row.name}?`,
+          text: `The unstaged changes to ${plural(changes.discard.length, 'file')} in ${row.path}/ go back to what is staged or committed. New files stay, and anything staged stays staged. Undo in the history menu brings them back.`,
+          act: 'Discard',
+          run: () => git.discard(changes.discard)
+        }
+      }
+    })
+  }
+  if (items[items.length - 1]?.separator !== true) items.push({ separator: true, label: '' })
+  items.push(
+    ...editItems(row),
+    { separator: true, label: '' },
+    { label: 'Folder history', icon: FolderClock, action: () => history(event, row.path, true) },
+    { label: 'Colour', icon: Palette, children: colors }
   )
+  // Whether git tracks anything in the folder is not known here; the backend
+  // says so when it does not.
+  const gitOnes = gitItems(row, !row.ignored)
+  if (gitOnes.length) items.push({ separator: true, label: '' }, ...gitOnes)
+  items.push(
+    { separator: true, label: '' },
+    { label: 'Copy path', icon: Copy, action: () => copyText(row.path, 'Path') },
+    { label: git.revealLabel, icon: FolderOpen, disabled: row.gone, action: () => git.reveal(row.path) }
+  )
+  menu.show(event, items, `${row.path}/`)
 }
 
 function onMenu(event: MouseEvent, row: Row) {
-  if (row.loading) return
+  if (row.loading || row.draft || isEditing(row)) {
+    // Not the root's menu either.
+    event.preventDefault()
+    event.stopPropagation()
+    return
+  }
   if (row.dir) dirMenu(event, row)
   else fileMenu(event, row)
+  menuRow.value = row.key
+}
+
+/** Shuts every folder. */
+function closeAll() {
+  if (treeView.changedOnly) {
+    for (const row of changedRows.value) if (row.dir) session.value.changedShut[row.path] = true
+    return
+  }
+  for (const dir of Object.keys(session.value.open)) delete session.value.open[dir]
+}
+
+/** The menu of the empty space under the rows: the root folder's. */
+function onListMenu(event: MouseEvent) {
+  if (editing.value) return
+  const waiting = canPaste() ? treeClipboard.paths : []
+  menu.show(
+    event,
+    [
+      { label: 'New file…', icon: FilePlus, action: () => startCreate('', false) },
+      { label: 'New folder…', icon: FolderPlus, action: () => startCreate('', true) },
+      {
+        label: waiting.length === 1 ? `Paste ${nameOf(waiting[0]!)}` : waiting.length ? `Paste ${waiting.length} items` : 'Paste',
+        icon: ClipboardPaste,
+        hint: keyLabel('mod+v'),
+        disabled: !waiting.length,
+        action: () => pasteInto('')
+      },
+      { separator: true, label: '' },
+      {
+        label: 'Show ignored files',
+        icon: treeView.showIgnored ? Eye : EyeOff,
+        hint: treeView.showIgnored ? '✓' : undefined,
+        action: () => (treeView.showIgnored = !treeView.showIgnored)
+      },
+      {
+        label: 'Changed files only',
+        icon: GitCompareArrows,
+        hint: treeView.changedOnly ? '✓' : undefined,
+        action: () => (treeView.changedOnly = !treeView.changedOnly)
+      },
+      { separator: true, label: '' },
+      { label: 'Close all folders', icon: ChevronsDownUp, action: closeAll }
+    ],
+    store.repo?.name ?? 'Files'
+  )
 }
 
 async function confirm() {
@@ -951,6 +1564,7 @@ onBeforeUnmount(() => {
   clearTimeout(filterTimer)
   clearTimeout(reloadTimer)
   clearTimeout(idleTimer)
+  clearTimeout(springTimer)
 })
 
 /** The colour a folder was given, as styles for its row. */
@@ -961,10 +1575,15 @@ function tint(row: Row) {
 }
 
 function markOf(row: Row) {
-  return row.dir ? null : (marks.value.get(row.path) ?? null)
+  return row.dir || row.draft ? null : (marks.value.get(row.path) ?? null)
+}
+
+function countOf(row: Row) {
+  return row.dir && !row.draft ? (counts.value.get(row.path) ?? 0) : 0
 }
 
 function tone(row: Row) {
+  if (row.draft) return ''
   if (row.dir) return folders.value.get(row.path) ?? ''
   return marks.value.get(row.path)?.kind ?? ''
 }
@@ -993,6 +1612,29 @@ const DOT_TITLE: Record<string, string> = {
         spellcheck="false"
         @keydown="onFilterKey"
       />
+      <button
+        type="button"
+        class="toggle"
+        :class="{ on: treeView.changedOnly }"
+        :aria-pressed="treeView.changedOnly"
+        title="Changed files only"
+        aria-label="Changed files only"
+        @click="treeView.changedOnly = !treeView.changedOnly"
+      >
+        <GitCompareArrows :size="13" />
+      </button>
+      <button
+        type="button"
+        class="toggle"
+        :class="{ on: !treeView.showIgnored }"
+        :aria-pressed="treeView.showIgnored"
+        :title="treeView.showIgnored ? 'Hide ignored files' : 'Show ignored files'"
+        aria-label="Show ignored files"
+        @click="treeView.showIgnored = !treeView.showIgnored"
+      >
+        <Eye v-if="treeView.showIgnored" :size="13" />
+        <EyeOff v-else :size="13" />
+      </button>
     </div>
 
     <div class="list-wrap">
@@ -1004,6 +1646,7 @@ const DOT_TITLE: Record<string, string> = {
     <div
       ref="list"
       class="list"
+      :class="{ 'drop-root': dropAt === '' }"
       role="tree"
       tabindex="0"
       aria-label="Files"
@@ -1012,6 +1655,10 @@ const DOT_TITLE: Record<string, string> = {
       @keydown="onTreeKey"
       @focus="onTreeFocus"
       @blur="onTreeBlur"
+      @contextmenu="onListMenu"
+      @dragover="onDragOver($event, null)"
+      @dragleave="onDragLeave"
+      @drop="onDrop($event, null)"
     >
       <div class="space" :style="{ height: `${rows.length * ROW}px` }">
         <div
@@ -1030,7 +1677,12 @@ const DOT_TITLE: Record<string, string> = {
               cursor: filtering && at === cursor,
               selected: at === selectedAt,
               matched: speedHits.has(at),
-              tinted: !!tint(row)
+              tinted: !!tint(row),
+              draft: row.draft,
+              editing: isEditing(row),
+              'menu-on': row.key === menuRow,
+              drop: row.dir && !row.loading && !row.draft && row.path === dropAt,
+              cut: isCut(row)
             }
           ]"
           :style="{ top: `${at * ROW}px`, paddingLeft: `${8 + row.depth * 14}px`, ...tint(row) }"
@@ -1041,14 +1693,38 @@ const DOT_TITLE: Record<string, string> = {
           :aria-expanded="row.dir ? row.open : undefined"
           :aria-selected="!row.dir && row.path === current"
           @click="onClick($event, row)"
+          :draggable="!row.loading && !row.draft && !row.gone && !isEditing(row)"
           @dblclick="open(row, false)"
           @contextmenu="onMenu($event, row)"
+          @dragstart="onDragStart($event, row)"
+          @dragend="onDragEnd"
+          @dragover="onDragOver($event, row)"
+          @drop="onDrop($event, row)"
         >
           <ChevronRight v-if="row.dir" :size="12" class="chev" :class="{ down: row.open }" />
           <span v-else class="chev-space" />
-          <FileIcon v-if="!row.loading" :path="row.path" :folder="row.dir" :open="row.open" />
+          <FileIcon
+            v-if="!row.loading"
+            :path="row.draft ? editing?.name || 'untitled' : row.path"
+            :folder="row.dir"
+            :open="row.open"
+          />
           <span v-else class="icon-space" />
-          <span class="name">
+          <input
+            v-if="editing && isEditing(row)"
+            v-model="editing.name"
+            class="edit"
+            spellcheck="false"
+            autocomplete="off"
+            :aria-label="editing.kind === 'rename' ? `New name for ${editing.path}` : editing.kind === 'dir' ? 'Folder name' : 'File name'"
+            :placeholder="editing.kind === 'dir' ? 'Folder name' : editing.kind === 'file' ? 'File name, or path/to/file' : ''"
+            @keydown="onEditKey"
+            @blur="commitEdit"
+            @click.stop
+            @dblclick.stop
+            @mousedown.stop
+          />
+          <span v-else class="name">
             <template v-for="(piece, index) in pieces(row, at)" :key="index">
               <mark v-if="piece.hit && query" class="speed-hit">{{ piece.text }}</mark>
               <b v-else-if="piece.hit">{{ piece.text }}</b>
@@ -1057,6 +1733,11 @@ const DOT_TITLE: Record<string, string> = {
           </span>
           <span v-if="row.folder" class="folder-of">{{ row.folder }}</span>
           <span v-if="row.dir && row.ignored" class="tag">ignored</span>
+          <span
+            v-if="countOf(row)"
+            class="count"
+            :title="`${countOf(row)} changed ${countOf(row) === 1 ? 'file' : 'files'} inside`"
+          >{{ countOf(row) }}</span>
           <span v-if="row.link" class="tag">link</span>
           <span
             v-if="markOf(row)"
@@ -1069,6 +1750,10 @@ const DOT_TITLE: Record<string, string> = {
         </div>
       </div>
       <p v-if="filtering && !found.length" class="empty">No files match.</p>
+      <p v-else-if="!filtering && treeView.changedOnly && !rows.length" class="empty">
+        Nothing has changed.
+        <button class="again" @click="treeView.changedOnly = false">Show every file</button>
+      </p>
       <p v-else-if="!filtering && failed" class="empty">
         Could not read this folder.
         <button class="again" @click="loadDir('')">Try again</button>
@@ -1128,6 +1813,28 @@ const DOT_TITLE: Record<string, string> = {
   font-size: 12.5px;
 }
 
+/* The two view switches at the end of the filter box. */
+.toggle {
+  flex: none;
+  display: grid;
+  place-items: center;
+  width: 20px;
+  height: 20px;
+  margin-right: -4px;
+  border-radius: var(--radius-sm);
+  color: var(--text-faint);
+}
+
+.toggle:hover {
+  color: var(--text);
+  background: var(--bg-hover);
+}
+
+.toggle.on {
+  color: var(--accent-soft);
+  background: var(--bg-active);
+}
+
 .list-wrap {
   position: relative;
   display: grid;
@@ -1145,8 +1852,41 @@ const DOT_TITLE: Record<string, string> = {
 
 /* The row the keyboard is on: a ring, while the tree has the focus, so it is
    not taken for the open file's highlight. */
-.list:focus .row.selected {
+.list:focus .row.selected,
+.row.menu-on {
   box-shadow: inset 0 0 0 1px var(--ring);
+}
+
+/* Where a drag would land: the folder, or the whole list for the root. */
+.row.drop,
+.list.drop-root {
+  background: color-mix(in oklab, var(--accent) 16%, transparent);
+}
+
+.list.drop-root {
+  box-shadow: inset 0 0 0 1px var(--ring);
+}
+
+/* Cut, waiting for a paste. */
+.row.cut {
+  opacity: 0.5;
+}
+
+/* The name box, in a row's place, the size of the name it stands for. */
+.edit {
+  flex: 1;
+  min-width: 0;
+  height: 20px;
+  padding: 0 4px;
+  margin-left: -4px;
+  font: inherit;
+  font-size: 12.5px;
+  color: var(--text);
+  background: var(--bg);
+  border: 1px solid var(--ring);
+  border-radius: var(--radius-sm);
+  box-shadow: var(--focus);
+  user-select: text;
 }
 
 /* The speed search's query, small, over the top of the rows. */
@@ -1341,6 +2081,24 @@ const DOT_TITLE: Record<string, string> = {
 }
 
 .tag + .dot {
+  margin-left: 4px;
+}
+
+/* How many changed files a folder holds, in its colour. */
+.count {
+  flex: none;
+  margin-left: auto;
+  min-width: 16px;
+  padding: 0 4px;
+  font-size: 10.5px;
+  line-height: 15px;
+  text-align: center;
+  font-variant-numeric: tabular-nums;
+  border-radius: 8px;
+  background: color-mix(in oklab, currentColor 14%, transparent);
+}
+
+.tag + .count {
   margin-left: 4px;
 }
 

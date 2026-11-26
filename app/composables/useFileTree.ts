@@ -1,4 +1,4 @@
-import { reactive } from 'vue'
+import { reactive, watch } from 'vue'
 import { invoke } from './useInvoke'
 import { useGit } from './useGit'
 import { setFileRevealer } from './useTabs'
@@ -19,6 +19,8 @@ export interface TreeSession {
   filter: string
   /** Folders that are open, by path relative to the work tree. */
   open: Record<string, true>
+  /** With only changed files showing, the folders shut: they start open. */
+  changedShut: Record<string, true>
   scroll: number
   /** A file to bring into view: the one just opened, or one asked for. */
   reveal: { path: string; seq: number } | null
@@ -28,7 +30,14 @@ export interface TreeSession {
 // not a change anything on screen has to hear about.
 const sessions = new Map<string, TreeSession>()
 /** For the window with no repository open, which has no files to show. */
-const nowhere: TreeSession = reactive({ mode: 'branches', filter: '', open: {}, scroll: 0, reveal: null })
+const nowhere: TreeSession = reactive({
+  mode: 'branches',
+  filter: '',
+  open: {},
+  changedShut: {},
+  scroll: 0,
+  reveal: null
+})
 let revealSeq = 0
 
 /** The sidebar state of the project on screen. */
@@ -37,11 +46,55 @@ export function treeSession(): TreeSession {
   if (!path) return nowhere
   let found = sessions.get(path)
   if (!found) {
-    found = reactive({ mode: 'branches', filter: '', open: {}, scroll: 0, reveal: null }) as TreeSession
+    found = reactive({
+      mode: 'branches',
+      filter: '',
+      open: {},
+      changedShut: {},
+      scroll: 0,
+      reveal: null
+    }) as TreeSession
     sessions.set(path, found)
   }
   return found
 }
+
+/**
+ * How the tree is drawn, the same in every project and kept across restarts:
+ * whether what git ignores is listed, and whether only changed files are.
+ */
+export interface TreeView {
+  showIgnored: boolean
+  changedOnly: boolean
+}
+
+const VIEW_KEY = 'gitnoob.filesView'
+
+function readView(): TreeView {
+  const fallback: TreeView = { showIgnored: true, changedOnly: false }
+  try {
+    const saved = JSON.parse(localStorage.getItem(VIEW_KEY) ?? 'null') as Partial<TreeView> | null
+    return {
+      showIgnored: typeof saved?.showIgnored === 'boolean' ? saved.showIgnored : true,
+      changedOnly: typeof saved?.changedOnly === 'boolean' ? saved.changedOnly : false
+    }
+  } catch {
+    return fallback
+  }
+}
+
+export const treeView = reactive<TreeView>(readView())
+
+watch(
+  () => ({ ...treeView }),
+  (view) => {
+    try {
+      localStorage.setItem(VIEW_KEY, JSON.stringify(view))
+    } catch {
+      // Private window or blocked storage: the choice lasts the session.
+    }
+  }
+)
 
 /** Every folder a path sits in, outermost first: `a/b/c.txt` is `a`, `a/b`. */
 export function ancestors(path: string): string[] {
@@ -176,6 +229,9 @@ export function resetFileTree() {
   nowhere.mode = 'branches'
   nowhere.filter = ''
   nowhere.open = {}
+  nowhere.changedShut = {}
   nowhere.scroll = 0
+  treeView.showIgnored = true
+  treeView.changedOnly = false
   nowhere.reveal = null
 }
